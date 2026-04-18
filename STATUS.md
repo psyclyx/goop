@@ -2,23 +2,26 @@
 
 ## Current
 
-Iteration 25. Chore cycle + design review.
-29 tests pass. Build clean. Demo runs. 3171 LOC.
+Iteration 26. Feature iteration.
+34 tests pass. Build clean. Demo runs. 3483 LOC.
 
 ## Iteration Count
 
-25
+26
 
 ## Done This Iteration
 
-- Archived iterations 20–24 to docs/archive/
-- Design review: assessed all 9 source files, documented observations
-- Updated DESIGN.md with iteration 25 review (size thresholds, deferred items, validations)
-- Marked scroll clamping as resolved from iteration 10 deferred list
+- Added text input widget with fixed 256-byte buffer, cursor tracking, insert/delete
+- Added backspace keycode to event system
+- Text input handles character events when focused, backspace to delete
+- Draws background, text content, cursor line (when focused), focus ring
+- Focusable via click and tab navigation
+- Added to demo widget tree
+- 5 new tests (dispatch: 4, draw: 2)
 
 ## Next
 
-1. Text input widget — next feature target
+1. Arrow key cursor movement for text input (left/right keycodes)
 2. Extract interaction bg helper in draw.zig when 4th widget needs it
 3. Plan dispatch.zig extraction if it passes ~800 lines
 
@@ -33,3 +36,6 @@ Iteration 25. Chore cycle + design review.
 - Focus ring draws outside widget bounds — may clip in scroll areas
 - No keyboard-driven slider value change (arrow keys)
 - Magic numbers for focus ring inset and checkbox/radio indicator inset
+- Text input cursor position uses approximate char_width (font_size * 0.6) — will be wrong for non-monospace fonts
+- Text input only handles printable ASCII — no UTF-8 multi-byte support
+- Text input has no placeholder text or selection support
