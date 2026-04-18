@@ -4,8 +4,8 @@ const goop = @import("goop");
 pub fn main() !void {
     std.debug.print("goop demo\n", .{});
 
-    var clay = try goop.Clay.init(std.heap.page_allocator);
-    defer clay.deinit(std.heap.page_allocator);
+    var ctx = try goop.Context.init(std.heap.page_allocator, .{});
+    defer ctx.deinit(std.heap.page_allocator);
 
-    std.debug.print("clay initialized\n", .{});
+    std.debug.print("context initialized, tree has {d} nodes\n", .{ctx.tree.count()});
 }
