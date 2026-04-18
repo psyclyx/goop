@@ -1,0 +1,17 @@
+.{
+    .name = .goop,
+    .version = "0.0.1",
+    .fingerprint = 0x765e9aef600002e2,
+    .paths = .{
+        "src",
+        "vendor",
+        "build.zig",
+        "build.zig.zon",
+    },
+    .dependencies = .{
+        .snail = .{
+            .url = "https://github.com/psyclyx/snail/archive/a855345685c283a2a180defe5b0db9c0a21cba18.tar.gz",
+            .hash = "snail-0.0.1-vw75SE07UgATNIS1CJYjVrUvrZiic3XvMynFFBcyzabB",
+        },
+    },
+}
