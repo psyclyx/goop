@@ -42,7 +42,22 @@ pub const Context = struct {
 
     pub fn deinit(self: *Context, allocator: std.mem.Allocator) void {
         self.tree.deinit();
+        c.Clay_SetCurrentContext(null);
         allocator.free(self.clay_arena);
+    }
+
+    /// Run layout: walk the widget tree through clay and write back rects.
+    pub fn doLayout(self: *Context) void {
+        layout.run(&self.tree, self.theme);
+    }
+
+    /// Update layout dimensions (e.g. on window resize).
+    pub fn setDimensions(self: *Context, width: u32, height: u32) void {
+        _ = self;
+        c.Clay_SetLayoutDimensions(.{
+            .width = @floatFromInt(width),
+            .height = @floatFromInt(height),
+        });
     }
 
     pub const InitOptions = struct {
@@ -60,7 +75,24 @@ test "context initializes" {
     try std.testing.expectEqual(@as(u32, 0), ctx.tree.count());
 }
 
+test "layout produces non-zero rects" {
+    const allocator = std.testing.allocator;
+    var ctx = try Context.init(allocator, .{ .width = 800, .height = 600 });
+    defer ctx.deinit(allocator);
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    _ = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
+    _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "hello" } });
+
+    ctx.doLayout();
+
+    const root_rect = ctx.tree.getConst(root).layout_rect;
+    try std.testing.expect(root_rect.w > 0);
+    try std.testing.expect(root_rect.h > 0);
+}
+
 test {
     _ = widget;
     _ = style;
+    _ = layout;
 }
