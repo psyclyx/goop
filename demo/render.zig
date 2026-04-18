@@ -1,0 +1,222 @@
+const std = @import("std");
+const goop = @import("goop");
+
+const gl = @cImport({
+    @cDefine("GL_GLEXT_PROTOTYPES", "1");
+    @cInclude("GL/glcorearb.h");
+});
+
+const DrawCommand = goop.DrawCommand;
+const DrawList = goop.DrawList;
+
+pub const Renderer = struct {
+    program: gl.GLuint,
+    vao: gl.GLuint,
+    vbo: gl.GLuint,
+    u_rect: gl.GLint,
+    u_color: gl.GLint,
+    u_viewport: gl.GLint,
+    u_corner_radius: gl.GLint,
+    viewport_w: f32,
+    viewport_h: f32,
+    scissor_stack: [16]Scissor = undefined,
+    scissor_depth: u32 = 0,
+
+    const Scissor = struct { x: i32, y: i32, w: i32, h: i32 };
+
+    const vert_src =
+        \\#version 330 core
+        \\layout(location = 0) in vec2 a_pos;
+        \\uniform vec4 u_rect;
+        \\uniform vec2 u_viewport;
+        \\void main() {
+        \\    vec2 pixel = u_rect.xy + a_pos * u_rect.zw;
+        \\    vec2 ndc = (pixel / u_viewport) * 2.0 - 1.0;
+        \\    ndc.y = -ndc.y;
+        \\    gl_Position = vec4(ndc, 0.0, 1.0);
+        \\}
+    ;
+
+    const frag_src =
+        \\#version 330 core
+        \\uniform vec4 u_color;
+        \\uniform vec4 u_rect;
+        \\uniform vec2 u_viewport;
+        \\uniform float u_corner_radius;
+        \\out vec4 frag_color;
+        \\void main() {
+        \\    vec2 pixel = gl_FragCoord.xy;
+        \\    pixel.y = u_viewport.y - pixel.y;
+        \\    vec2 half_size = u_rect.zw * 0.5;
+        \\    vec2 center = u_rect.xy + half_size;
+        \\    float r = min(u_corner_radius, min(half_size.x, half_size.y));
+        \\    vec2 d = abs(pixel - center) - half_size + r;
+        \\    float dist = length(max(d, 0.0)) - r;
+        \\    if (dist > 0.5) discard;
+        \\    float alpha = 1.0 - smoothstep(-0.5, 0.5, dist);
+        \\    frag_color = vec4(u_color.rgb, u_color.a * alpha);
+        \\}
+    ;
+
+    pub fn init(w: u32, h: u32) Renderer {
+        const vs = compileShader(gl.GL_VERTEX_SHADER, vert_src);
+        const fs = compileShader(gl.GL_FRAGMENT_SHADER, frag_src);
+        const program = gl.glCreateProgram();
+        gl.glAttachShader(program, vs);
+        gl.glAttachShader(program, fs);
+        gl.glLinkProgram(program);
+        gl.glDeleteShader(vs);
+        gl.glDeleteShader(fs);
+
+        // Check link status
+        var success: gl.GLint = 0;
+        gl.glGetProgramiv(program, gl.GL_LINK_STATUS, &success);
+        if (success == 0) {
+            var buf: [512]u8 = undefined;
+            var len: gl.GLsizei = 0;
+            gl.glGetProgramInfoLog(program, 512, &len, &buf);
+            std.debug.print("shader link error: {s}\n", .{buf[0..@intCast(len)]});
+        }
+
+        // Unit quad: two triangles
+        const vertices = [_]f32{
+            0, 0, 1, 0, 1, 1,
+            0, 0, 1, 1, 0, 1,
+        };
+
+        var vao: gl.GLuint = 0;
+        var vbo: gl.GLuint = 0;
+        gl.glGenVertexArrays(1, &vao);
+        gl.glGenBuffers(1, &vbo);
+        gl.glBindVertexArray(vao);
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, @sizeOf(@TypeOf(vertices)), &vertices, gl.GL_STATIC_DRAW);
+        gl.glVertexAttribPointer(0, 2, gl.GL_FLOAT, gl.GL_FALSE, 2 * @sizeOf(f32), null);
+        gl.glEnableVertexAttribArray(0);
+        gl.glBindVertexArray(0);
+
+        return .{
+            .program = program,
+            .vao = vao,
+            .vbo = vbo,
+            .u_rect = gl.glGetUniformLocation(program, "u_rect"),
+            .u_color = gl.glGetUniformLocation(program, "u_color"),
+            .u_viewport = gl.glGetUniformLocation(program, "u_viewport"),
+            .u_corner_radius = gl.glGetUniformLocation(program, "u_corner_radius"),
+            .viewport_w = @floatFromInt(w),
+            .viewport_h = @floatFromInt(h),
+        };
+    }
+
+    pub fn deinit(self: *Renderer) void {
+        gl.glDeleteVertexArrays(1, &self.vao);
+        gl.glDeleteBuffers(1, &self.vbo);
+        gl.glDeleteProgram(self.program);
+    }
+
+    pub fn beginFrame(self: *Renderer, w: u32, h: u32) void {
+        self.viewport_w = @floatFromInt(w);
+        self.viewport_h = @floatFromInt(h);
+        self.scissor_depth = 0;
+        gl.glViewport(0, 0, @intCast(w), @intCast(h));
+        gl.glClearColor(0.12, 0.12, 0.12, 1.0);
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        gl.glEnable(gl.GL_BLEND);
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
+        gl.glDisable(gl.GL_SCISSOR_TEST);
+    }
+
+    pub fn render(self: *Renderer, draw_list: DrawList) void {
+        gl.glUseProgram(self.program);
+        gl.glBindVertexArray(self.vao);
+        gl.glUniform2f(self.u_viewport, self.viewport_w, self.viewport_h);
+
+        for (draw_list.commands) |cmd| {
+            switch (cmd) {
+                .rect => |r| self.drawRect(r),
+                .text => |t| self.drawText(t),
+                .clip => |c| self.applyClip(c),
+            }
+        }
+
+        gl.glBindVertexArray(0);
+        gl.glUseProgram(0);
+        gl.glDisable(gl.GL_SCISSOR_TEST);
+    }
+
+    fn drawRect(self: *Renderer, r: DrawCommand.DrawRect) void {
+        const color = colorToVec4(r.color);
+        gl.glUniform4f(self.u_rect, r.bounds.x, r.bounds.y, r.bounds.w, r.bounds.h);
+        gl.glUniform4f(self.u_color, color[0], color[1], color[2], color[3]);
+        gl.glUniform1f(self.u_corner_radius, r.corner_radius);
+        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6);
+    }
+
+    fn drawText(self: *Renderer, t: DrawCommand.DrawText) void {
+        // Placeholder: draw a small colored rect to show text position
+        // Real text rendering will come with snail integration
+        const char_w = t.font_size * 0.6;
+        const text_w = char_w * @as(f32, @floatFromInt(t.text.len));
+        const color = colorToVec4(t.color);
+        gl.glUniform4f(self.u_rect, t.x, t.y, text_w, t.font_size);
+        gl.glUniform4f(self.u_color, color[0], color[1], color[2], color[3] * 0.5);
+        gl.glUniform1f(self.u_corner_radius, 2.0);
+        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6);
+    }
+
+    fn applyClip(self: *Renderer, c: DrawCommand.ClipRect) void {
+        if (c.bounds) |bounds| {
+            // Push clip
+            if (self.scissor_depth < self.scissor_stack.len) {
+                const vh: i32 = @intFromFloat(self.viewport_h);
+                self.scissor_stack[self.scissor_depth] = .{
+                    .x = @intFromFloat(bounds.x),
+                    .y = vh - @as(i32, @intFromFloat(bounds.y + bounds.h)),
+                    .w = @intFromFloat(bounds.w),
+                    .h = @intFromFloat(bounds.h),
+                };
+                const s = self.scissor_stack[self.scissor_depth];
+                self.scissor_depth += 1;
+                gl.glEnable(gl.GL_SCISSOR_TEST);
+                gl.glScissor(s.x, s.y, s.w, s.h);
+            }
+        } else {
+            // Pop clip
+            if (self.scissor_depth > 0) {
+                self.scissor_depth -= 1;
+            }
+            if (self.scissor_depth > 0) {
+                const s = self.scissor_stack[self.scissor_depth - 1];
+                gl.glScissor(s.x, s.y, s.w, s.h);
+            } else {
+                gl.glDisable(gl.GL_SCISSOR_TEST);
+            }
+        }
+    }
+
+    fn compileShader(shader_type: gl.GLenum, source: [*:0]const u8) gl.GLuint {
+        const shader = gl.glCreateShader(shader_type);
+        const sources = [_][*c]const u8{source};
+        gl.glShaderSource(shader, 1, &sources, null);
+        gl.glCompileShader(shader);
+
+        var success: gl.GLint = 0;
+        gl.glGetShaderiv(shader, gl.GL_COMPILE_STATUS, &success);
+        if (success == 0) {
+            var buf: [512]u8 = undefined;
+            var len: gl.GLsizei = 0;
+            gl.glGetShaderInfoLog(shader, 512, &len, &buf);
+            std.debug.print("shader compile error: {s}\n", .{buf[0..@intCast(len)]});
+        }
+        return shader;
+    }
+
+    fn colorToVec4(c: goop.Color) [4]f32 {
+        return .{
+            @as(f32, @floatFromInt(c.r)) / 255.0,
+            @as(f32, @floatFromInt(c.g)) / 255.0,
+            @as(f32, @floatFromInt(c.b)) / 255.0,
+            @as(f32, @floatFromInt(c.a)) / 255.0,
+        };
+    }
+};
