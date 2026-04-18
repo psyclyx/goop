@@ -2,33 +2,30 @@
 
 ## Current
 
-Iteration 11. Abstracted text measurement out of core — layout.zig no longer
-imports snail. TextMeasureCtx is now a generic function pointer + opaque
-context. Snail adapter moved to demo. 13/13 tests pass. Library builds
-without snail dependency.
+Iteration 12. Context now stores its allocator — pushEvent, deinit,
+generateDrawList, freeDrawList no longer take an allocator parameter.
+13/13 tests pass. Library and demo build clean.
 
 ## Iteration Count
 
-11
+12
 
 ## Done This Iteration
 
-- Replaced snail-specific TextMeasureCtx with generic MeasureTextFn + opaque ctx
-- Removed snail import from layout.zig and snail dep from goop_mod/test_mod
-- Moved snail measurement code to demo/main.zig as SnailTextCtx adapter
-- Exported MeasureTextFn and TextDimensions from goop.zig
+- Stored allocator in Context struct (set once in init)
+- Removed allocator param from pushEvent, deinit, generateDrawList, freeDrawList
+- Updated all call sites in tests and demo
 
 ## Next
 
-1. Clean up pushEvent API (Context owns event queue allocator)
-2. Slider drag interaction
-3. Frame callback in demo
-4. Border rendering
-5. Checkbox widget
+1. Slider drag interaction
+2. Frame callback in demo
+3. Border rendering
+4. Checkbox widget
+5. Widget tree mutation/removal API
 
 ## What's Wrong
 
-- pushEvent takes allocator on every call — API friction, Context already has one
 - Widget tree is append-only — no removal/mutation API
 - No dirty tracking — full layout + full draw list every frame
 - Scroll values accumulate unbounded — no clamping to content bounds
