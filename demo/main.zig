@@ -238,6 +238,7 @@ fn noopRepeatInfo(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: i32, _: i32) callconv(
 fn evdevToKeycode(scancode: u32) goop.Event.Keycode {
     return switch (scancode) {
         14 => .backspace,
+        111 => .delete,
         15 => .tab,
         28 => .enter,
         57 => .space,

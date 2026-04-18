@@ -116,6 +116,16 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                         }
                     }
                 },
+                .delete => {
+                    if (k.state == .pressed or k.state == .repeat) {
+                        if (mouse.focused) |f| {
+                            const node = tree.get(f);
+                            if (node.kind == .text_input) {
+                                node.kind.text_input.deleteForward();
+                            }
+                        }
+                    }
+                },
                 .left => {
                     if (k.state == .pressed or k.state == .repeat) {
                         if (mouse.focused) |f| {
@@ -691,6 +701,40 @@ test "text input backspace deletes characters" {
     }, &mouse, style.Theme.default);
 
     try std.testing.expectEqualStrings("ab", tree.getConst(ti).kind.text_input.content());
+}
+
+test "text input delete key deletes forward" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Click to focus
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    // Type "abc", move cursor left twice, then delete forward
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'a' } },
+        .{ .text = .{ .codepoint = 'b' } },
+        .{ .text = .{ .codepoint = 'c' } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+        .{ .key = .{ .scancode = 111, .keycode = .delete, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    // Should delete 'b', leaving "ac" with cursor at position 1
+    try std.testing.expectEqualStrings("ac", tree.getConst(ti).kind.text_input.content());
+    try std.testing.expectEqual(@as(u8, 1), tree.getConst(ti).kind.text_input.cursor);
 }
 
 test "text input ignores input when not focused" {

@@ -44,6 +44,7 @@ pub const Event = union(enum) {
         space,
         escape,
         backspace,
+        delete,
         left,
         right,
         home,

@@ -97,6 +97,15 @@ pub const WidgetKind = union(enum) {
             self.len -= 1;
             self.cursor -= 1;
         }
+
+        pub fn deleteForward(self: *TextInput) void {
+            if (self.cursor >= self.len) return;
+            var i: usize = self.cursor;
+            while (i < self.len - 1) : (i += 1) {
+                self.buffer[i] = self.buffer[i + 1];
+            }
+            self.len -= 1;
+        }
     };
 };
 
