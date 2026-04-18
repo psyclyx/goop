@@ -2,37 +2,27 @@
 
 ## Current
 
-Iteration 20. Chore cycle: archived iterations 15–19, processed inbox, pruned.
+Iteration 21. Added demo timeout support.
 23/23 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-20
+21
 
 ## Done This Iteration
 
-- Archived iterations 15–19 summary to docs/archive/
-- Processed inbox: demo window popup complaint → elevated to top priority
-- Marked iteration 10 design review items as implemented in DESIGN.md
-- Cleared inbox
-
-## Review Notes (iterations 15–19)
-
-- Steady widget progress: borders (16), checkbox (17–18), radio button (19)
-- All new widgets follow established pattern: WidgetKind + dispatch + draw + layout + tests + demo
-- Code growth is proportional — no bloat detected
-- Module sizes reasonable: draw.zig 510, dispatch.zig 375, layout.zig 413, widget.zig 180
+- Added `GOOP_DEMO_TIMEOUT` env var: demo exits after N seconds
+- Uses poll-based Wayland dispatch (100ms poll timeout) when timeout is active
+- Normal (no timeout) path unchanged — still uses blocking `wl_display_dispatch`
 
 ## Next
 
-1. Fix demo to not require manual kill — add timeout or headless mode (user inbox complaint)
-2. Extract slider thumb width to style (hardcoded in draw.zig and dispatch.zig)
-3. Design review at iteration 25
-4. Text input widget (stretch)
+1. Extract slider thumb width to style (hardcoded in draw.zig and dispatch.zig)
+2. Design review at iteration 25
+3. Text input widget (stretch)
 
 ## What's Wrong
 
-- **Demo pops up windows requiring manual kill** — top priority per user feedback
 - Widget tree is append-only — no removal/mutation API
 - No dirty tracking — full layout + full draw list every frame
 - Scroll values accumulate unbounded — no clamping to content bounds
