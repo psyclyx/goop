@@ -2,28 +2,26 @@
 
 ## Current
 
-Iteration 26. Feature iteration.
-34 tests pass. Build clean. Demo runs. 3483 LOC.
+Iteration 27. Feature iteration.
+35 tests pass. Build clean. Demo runs. 3578 LOC.
 
 ## Iteration Count
 
-26
+27
 
 ## Done This Iteration
 
-- Added text input widget with fixed 256-byte buffer, cursor tracking, insert/delete
-- Added backspace keycode to event system
-- Text input handles character events when focused, backspace to delete
-- Draws background, text content, cursor line (when focused), focus ring
-- Focusable via click and tab navigation
-- Added to demo widget tree
-- 5 new tests (dispatch: 4, draw: 2)
+- Added `left` and `right` keycodes to event system
+- Dispatch handles left/right arrow keys to move text input cursor
+- Cursor clamps to [0, len] at boundaries
+- Mapped evdev scancodes 105/106 in demo
+- 1 new test covering cursor movement, insertion at mid-position, boundary clamping
 
 ## Next
 
-1. Arrow key cursor movement for text input (left/right keycodes)
-2. Extract interaction bg helper in draw.zig when 4th widget needs it
-3. Plan dispatch.zig extraction if it passes ~800 lines
+1. Extract interaction bg helper in draw.zig when 4th widget needs it
+2. Plan dispatch.zig extraction if it passes ~800 lines
+3. Home/End keys for text input cursor (jump to start/end)
 
 ## What's Wrong
 
