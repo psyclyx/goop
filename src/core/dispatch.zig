@@ -1,7 +1,8 @@
 const std = @import("std");
 const widget = @import("widget.zig");
 const event = @import("event.zig");
-const draw = @import("draw.zig");
+const focus = @import("focus.zig");
+const hittest = @import("hittest.zig");
 
 /// Transient input state tracked across events.
 pub const MouseState = struct {
@@ -47,14 +48,14 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                     mouse.left_down = true;
                     updateHover(tree, mouse);
                     // Mark the hovered widget as pressed and record press target
-                    const target = hitTest(tree, mouse.x, mouse.y);
+                    const target = hittest.hitTest(tree, mouse.x, mouse.y);
                     mouse.press_target = target;
                     if (target) |t| {
                         tree.get(t).interaction.pressed = true;
                         // Focus the clicked widget
-                        if (isFocusable(tree.getConst(t).kind)) {
+                        if (focus.isFocusable(tree.getConst(t).kind)) {
                             mouse.focused = t;
-                            syncFocusFlags(tree, mouse.focused);
+                            focus.syncFocusFlags(tree, mouse.focused);
                         }
                         // Start slider drag
                         if (tree.getConst(t).kind == .slider) {
@@ -66,7 +67,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                     // Released
                     mouse.left_down = false;
                     mouse.drag_target = null;
-                    const release_target = hitTest(tree, mouse.x, mouse.y);
+                    const release_target = hittest.hitTest(tree, mouse.x, mouse.y);
 
                     // Click detection: released on the same widget we pressed on
                     if (mouse.press_target) |pt| {
@@ -82,7 +83,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
         },
         .mouse_scroll => |ms| {
             // Find the scroll area under the cursor and adjust scroll offset
-            const target = hitTestKind(tree, mouse.x, mouse.y, .scroll_area);
+            const target = hittest.hitTestKind(tree, mouse.x, mouse.y, .scroll_area);
             if (target) |t| {
                 const node = tree.get(t);
                 node.kind.scroll_area.scroll_x += ms.dx;
@@ -98,11 +99,11 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                 .tab => {
                     if (k.state == .pressed or k.state == .repeat) {
                         if (mouse.shift_down) {
-                            mouse.focused = focusPrev(tree, mouse.focused);
+                            mouse.focused = focus.focusPrev(tree, mouse.focused);
                         } else {
-                            mouse.focused = focusNext(tree, mouse.focused);
+                            mouse.focused = focus.focusNext(tree, mouse.focused);
                         }
-                        syncFocusFlags(tree, mouse.focused);
+                        focus.syncFocusFlags(tree, mouse.focused);
                     }
                 },
                 .backspace => {
@@ -186,50 +187,13 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
 
 /// Update hovered state for all nodes based on current mouse position.
 fn updateHover(tree: *widget.Tree, mouse: *const MouseState) void {
-    const top = hitTest(tree, mouse.x, mouse.y);
+    const top = hittest.hitTest(tree, mouse.x, mouse.y);
     for (tree.nodes.items) |*node| {
         node.interaction.hovered = false;
     }
     if (top) |t| {
         tree.get(t).interaction.hovered = true;
     }
-}
-
-/// Find the topmost (last in tree order) interactive widget at (x, y).
-/// Skips text widgets (they don't receive interaction).
-fn hitTest(tree: *const widget.Tree, x: f32, y: f32) ?widget.NodeHandle {
-    var result: ?widget.NodeHandle = null;
-    for (tree.nodes.items, 0..) |node, i| {
-        if (!isInteractive(node.kind)) continue;
-        if (pointInRect(x, y, node.layout_rect)) {
-            result = @enumFromInt(@as(u32, @intCast(i)));
-        }
-    }
-    return result;
-}
-
-/// Find the topmost widget of a specific kind at (x, y).
-fn hitTestKind(tree: *const widget.Tree, x: f32, y: f32, kind_tag: std.meta.Tag(widget.WidgetKind)) ?widget.NodeHandle {
-    var result: ?widget.NodeHandle = null;
-    for (tree.nodes.items, 0..) |node, i| {
-        if (node.kind != kind_tag) continue;
-        if (pointInRect(x, y, node.layout_rect)) {
-            result = @enumFromInt(@as(u32, @intCast(i)));
-        }
-    }
-    return result;
-}
-
-fn isInteractive(kind: widget.WidgetKind) bool {
-    return switch (kind) {
-        .button, .checkbox, .radio_button, .slider, .scroll_area, .container, .text_input => true,
-        .text => false,
-    };
-}
-
-fn pointInRect(x: f32, y: f32, rect: draw.Rect) bool {
-    return x >= rect.x and x < rect.x + rect.w and
-        y >= rect.y and y < rect.y + rect.h;
 }
 
 /// Update a slider's value based on mouse x position within its track.
@@ -301,82 +265,6 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
             node.kind.radio_button.clicked = true;
         },
         else => {},
-    }
-}
-
-/// Whether a widget kind can receive keyboard focus.
-fn isFocusable(kind: widget.WidgetKind) bool {
-    return switch (kind) {
-        .button, .checkbox, .radio_button, .slider, .text_input => true,
-        .text, .container, .scroll_area => false,
-    };
-}
-
-/// Find the next focusable widget in tree order after `current`.
-/// Wraps around to the first focusable widget.
-fn focusNext(tree: *const widget.Tree, current: ?widget.NodeHandle) ?widget.NodeHandle {
-    const nodes = tree.nodes.items;
-    if (nodes.len == 0) return null;
-
-    const start: u32 = if (current) |c| @intFromEnum(c) + 1 else 0;
-
-    // Search from start to end, then wrap from 0 to start
-    var i: u32 = start;
-    var wrapped = false;
-    while (true) {
-        if (i >= nodes.len) {
-            if (wrapped) return current;
-            i = 0;
-            wrapped = true;
-        }
-        if (wrapped and current != null and i >= @intFromEnum(current.?) + 1) return current;
-        if (isFocusable(nodes[i].kind)) return @enumFromInt(i);
-        i += 1;
-    }
-}
-
-/// Find the previous focusable widget in tree order before `current`.
-/// Wraps around to the last focusable widget.
-fn focusPrev(tree: *const widget.Tree, current: ?widget.NodeHandle) ?widget.NodeHandle {
-    const nodes = tree.nodes.items;
-    if (nodes.len == 0) return null;
-
-    const len: u32 = @intCast(nodes.len);
-    const start: u32 = if (current) |c| @intFromEnum(c) else len;
-
-    // Search backwards from start-1, wrapping at 0 to end
-    if (start == 0) {
-        // Wrap to end
-        var i: u32 = len;
-        while (i > 0) {
-            i -= 1;
-            if (isFocusable(nodes[i].kind)) return @enumFromInt(i);
-        }
-        return current;
-    }
-
-    var i: u32 = start - 1;
-    while (true) {
-        if (isFocusable(nodes[i].kind)) return @enumFromInt(i);
-        if (i == 0) break;
-        i -= 1;
-    }
-    // Wrap: search from end backwards to start
-    i = len;
-    while (i > start) {
-        i -= 1;
-        if (isFocusable(nodes[i].kind)) return @enumFromInt(i);
-    }
-    return current;
-}
-
-/// Update the `.focused` flag on all nodes to match the current focus target.
-fn syncFocusFlags(tree: *widget.Tree, focused: ?widget.NodeHandle) void {
-    for (tree.nodes.items) |*node| {
-        node.interaction.focused = false;
-    }
-    if (focused) |f| {
-        tree.get(f).interaction.focused = true;
     }
 }
 

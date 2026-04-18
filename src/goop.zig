@@ -277,4 +277,6 @@ test {
     _ = layout;
     _ = draw;
     _ = dispatch;
+    _ = @import("core/focus.zig");
+    _ = @import("core/hittest.zig");
 }
