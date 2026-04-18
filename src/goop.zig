@@ -78,15 +78,22 @@ pub const Context = struct {
                 .button => {
                     node.kind.button.clicked = false;
                 },
+                .checkbox => {
+                    node.kind.checkbox.clicked = false;
+                },
                 else => {},
             }
         }
     }
 
-    /// Check if a button was clicked this frame.
+    /// Check if a widget was clicked this frame (buttons and checkboxes).
     pub fn wasClicked(self: *const Context, handle: NodeHandle) bool {
         const node = self.tree.getConst(handle);
-        return node.kind == .button and node.kind.button.clicked;
+        return switch (node.kind) {
+            .button => node.kind.button.clicked,
+            .checkbox => node.kind.checkbox.clicked,
+            else => false,
+        };
     }
 
     /// Check if a checkbox is currently checked.

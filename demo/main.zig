@@ -82,6 +82,7 @@ const State = struct {
     btn_a: goop.NodeHandle = @enumFromInt(0),
     btn_b: goop.NodeHandle = @enumFromInt(0),
     btn_c: goop.NodeHandle = @enumFromInt(0),
+    checkbox: goop.NodeHandle = @enumFromInt(0),
     click_count: u32 = 0,
 };
 
@@ -330,6 +331,9 @@ fn buildWidgetTree(state: *State) !void {
     // Text label
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "goop demo - click the buttons" } });
 
+    // Checkbox
+    state.checkbox = try ctx.tree.addChild(root, .{ .checkbox = .{ .label = "Enable option" } });
+
     // Slider
     _ = try ctx.tree.addChild(root, .{ .slider = .{ .value = 0.5, .min = 0, .max = 1 } });
 
@@ -487,6 +491,11 @@ pub fn main() !void {
         if (ctx.wasClicked(state.btn_c)) {
             state.click_count += 1;
             std.debug.print("Button C clicked! (total: {})\n", .{state.click_count});
+        }
+
+        // Log checkbox state changes (checkbox toggles itself on click)
+        if (ctx.wasClicked(state.checkbox)) {
+            std.debug.print("Checkbox toggled: {}\n", .{ctx.isChecked(state.checkbox)});
         }
 
         // Render

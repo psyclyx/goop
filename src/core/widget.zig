@@ -42,6 +42,7 @@ pub const WidgetKind = union(enum) {
     pub const Checkbox = struct {
         label: []const u8,
         checked: bool = false,
+        clicked: bool = false,
     };
 
     pub const Slider = struct {

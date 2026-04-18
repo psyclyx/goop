@@ -150,6 +150,7 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
         },
         .checkbox => {
             node.kind.checkbox.checked = !node.kind.checkbox.checked;
+            node.kind.checkbox.clicked = true;
         },
         else => {},
     }
