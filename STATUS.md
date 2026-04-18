@@ -2,26 +2,28 @@
 
 ## Current
 
-Iteration 18. Added checkbox to demo scene.
-18/18 tests pass. Build clean. Demo runs.
+Iteration 19. Added radio button widget.
+23/23 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-18
+19
 
 ## Done This Iteration
 
-- Added checkbox widget to demo scene ("Enable option")
-- Added `clicked` field to `Checkbox` struct for click detection parity with buttons
-- Extended `wasClicked()` and `clearClickedFlags()` to handle checkboxes
-- Demo logs checkbox toggle state to stderr on click
+- Added `RadioButton` to `WidgetKind` union with `label`, `group`, `selected`, `clicked` fields
+- Mutual exclusivity: clicking a radio button deselects all others in the same group
+- Circular rendering via `corner_radius = box_size / 2`
+- Added to dispatch (isInteractive, fireClick with group scan), draw, layout
+- Added `isSelected()` to Context API; extended `wasClicked()` and `clearClickedFlags()`
+- Demo scene: three radio buttons (Option A/B/C) in group 1, with logging
+- 5 new tests: dispatch group behavior, draw unselected/selected, context integration
 
 ## Next
 
-1. Demo: run with timeout, add screenshot/headless capture for review
+1. Chore cycle (iteration 20): archive stale context, review last 5 commits, prune
 2. Extract slider thumb width to style (currently hardcoded in draw.zig and dispatch.zig)
-3. Radio button widget
-4. Chore cycle (iteration 20)
+3. Text input widget (stretch)
 
 ## What's Wrong
 
@@ -35,4 +37,4 @@ Iteration 18. Added checkbox to demo scene.
 - Slider thumb width (16px) is hardcoded in both draw.zig and dispatch.zig
 - Demo has no timeout or headless capture — can hang, requires manual kill
 - Border rendering not yet visually verified — needs demo screenshot
-- Checkbox box is drawn at font_size square — may not align perfectly with text baseline
+- Radio button circle rendering depends on renderer supporting corner_radius well
