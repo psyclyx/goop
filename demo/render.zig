@@ -1,5 +1,6 @@
 const std = @import("std");
 const goop = @import("goop");
+const snail = @import("snail");
 
 const gl = @cImport({
     @cDefine("GL_GLEXT_PROTOTYPES", "1");
@@ -9,7 +10,11 @@ const gl = @cImport({
 const DrawCommand = goop.DrawCommand;
 const DrawList = goop.DrawList;
 
+const MAX_GLYPHS = 4096;
+const VERTEX_BUF_LEN = MAX_GLYPHS * snail.FLOATS_PER_GLYPH;
+
 pub const Renderer = struct {
+    // Rect shader state
     program: gl.GLuint,
     vao: gl.GLuint,
     vbo: gl.GLuint,
@@ -21,6 +26,13 @@ pub const Renderer = struct {
     viewport_h: f32,
     scissor_stack: [16]Scissor = undefined,
     scissor_depth: u32 = 0,
+
+    // Snail text state
+    text_renderer: snail.Renderer,
+    text_batch: snail.Batch,
+    vertex_buf: []f32,
+    font: *const snail.Font,
+    atlas: *const snail.Atlas,
 
     const Scissor = struct { x: i32, y: i32, w: i32, h: i32 };
 
@@ -58,7 +70,7 @@ pub const Renderer = struct {
         \\}
     ;
 
-    pub fn init(w: u32, h: u32) Renderer {
+    pub fn init(w: u32, h: u32, font: *const snail.Font, atlas: *const snail.Atlas) !Renderer {
         const vs = compileShader(gl.GL_VERTEX_SHADER, vert_src);
         const fs = compileShader(gl.GL_FRAGMENT_SHADER, frag_src);
         const program = gl.glCreateProgram();
@@ -68,7 +80,6 @@ pub const Renderer = struct {
         gl.glDeleteShader(vs);
         gl.glDeleteShader(fs);
 
-        // Check link status
         var success: gl.GLint = 0;
         gl.glGetProgramiv(program, gl.GL_LINK_STATUS, &success);
         if (success == 0) {
@@ -95,6 +106,12 @@ pub const Renderer = struct {
         gl.glEnableVertexAttribArray(0);
         gl.glBindVertexArray(0);
 
+        // Snail text renderer
+        var text_renderer = try snail.Renderer.init();
+        text_renderer.uploadAtlas(atlas);
+
+        const vertex_buf = try std.heap.page_allocator.alloc(f32, VERTEX_BUF_LEN);
+
         return .{
             .program = program,
             .vao = vao,
@@ -105,6 +122,11 @@ pub const Renderer = struct {
             .u_corner_radius = gl.glGetUniformLocation(program, "u_corner_radius"),
             .viewport_w = @floatFromInt(w),
             .viewport_h = @floatFromInt(h),
+            .text_renderer = text_renderer,
+            .text_batch = snail.Batch.init(vertex_buf),
+            .vertex_buf = vertex_buf,
+            .font = font,
+            .atlas = atlas,
         };
     }
 
@@ -112,6 +134,8 @@ pub const Renderer = struct {
         gl.glDeleteVertexArrays(1, &self.vao);
         gl.glDeleteBuffers(1, &self.vbo);
         gl.glDeleteProgram(self.program);
+        self.text_renderer.deinit();
+        std.heap.page_allocator.free(self.vertex_buf);
     }
 
     pub fn beginFrame(self: *Renderer, w: u32, h: u32) void {
@@ -127,21 +151,52 @@ pub const Renderer = struct {
     }
 
     pub fn render(self: *Renderer, draw_list: DrawList) void {
+        for (draw_list.commands) |cmd| {
+            switch (cmd) {
+                .rect => |r| {
+                    self.flushText();
+                    self.bindRectProgram();
+                    self.drawRect(r);
+                },
+                .text => |t| self.addText(t),
+                .clip => |c| {
+                    self.flushText();
+                    self.bindRectProgram();
+                    self.applyClip(c);
+                },
+            }
+        }
+        self.flushText();
+
+        gl.glDisable(gl.GL_SCISSOR_TEST);
+    }
+
+    fn bindRectProgram(self: *Renderer) void {
         gl.glUseProgram(self.program);
         gl.glBindVertexArray(self.vao);
         gl.glUniform2f(self.u_viewport, self.viewport_w, self.viewport_h);
+    }
 
-        for (draw_list.commands) |cmd| {
-            switch (cmd) {
-                .rect => |r| self.drawRect(r),
-                .text => |t| self.drawText(t),
-                .clip => |c| self.applyClip(c),
-            }
-        }
+    fn addText(self: *Renderer, t: DrawCommand.DrawText) void {
+        const color = colorToVec4(t.color);
+        // goop y is top of text box; snail y is baseline (Y-up in ortho).
+        // With ortho(0, w, h, 0), Y=0 is top, Y=h is bottom.
+        // snail draws glyphs relative to baseline going upward in its coord system.
+        // We use ortho(0, w, 0, h) so Y=0 is bottom — then baseline = viewport_h - (t.y + font_size * 0.8)
+        // Actually simpler: use ortho(0, w, h, 0) for Y-down, and pass y + ascent as baseline.
+        const baseline_y = t.y + t.font_size;
+        _ = self.text_batch.addString(self.atlas, self.font, t.text, t.x, baseline_y, t.font_size, color);
+    }
 
-        gl.glBindVertexArray(0);
-        gl.glUseProgram(0);
-        gl.glDisable(gl.GL_SCISSOR_TEST);
+    fn flushText(self: *Renderer) void {
+        if (self.text_batch.glyphCount() == 0) return;
+
+        // Y-down orthographic projection matching goop's coordinate system
+        const mvp = snail.Mat4.ortho(0, self.viewport_w, self.viewport_h, 0, -1, 1);
+
+        self.text_renderer.beginFrame();
+        self.text_renderer.draw(self.text_batch.slice(), mvp, self.viewport_w, self.viewport_h);
+        self.text_batch.reset();
     }
 
     fn drawRect(self: *Renderer, r: DrawCommand.DrawRect) void {
@@ -152,21 +207,8 @@ pub const Renderer = struct {
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6);
     }
 
-    fn drawText(self: *Renderer, t: DrawCommand.DrawText) void {
-        // Placeholder: draw a small colored rect to show text position
-        // Real text rendering will come with snail integration
-        const char_w = t.font_size * 0.6;
-        const text_w = char_w * @as(f32, @floatFromInt(t.text.len));
-        const color = colorToVec4(t.color);
-        gl.glUniform4f(self.u_rect, t.x, t.y, text_w, t.font_size);
-        gl.glUniform4f(self.u_color, color[0], color[1], color[2], color[3] * 0.5);
-        gl.glUniform1f(self.u_corner_radius, 2.0);
-        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6);
-    }
-
-    fn applyClip(self: *Renderer, c: DrawCommand.ClipRect) void {
-        if (c.bounds) |bounds| {
-            // Push clip
+    fn applyClip(self: *Renderer, c_cmd: DrawCommand.ClipRect) void {
+        if (c_cmd.bounds) |bounds| {
             if (self.scissor_depth < self.scissor_stack.len) {
                 const vh: i32 = @intFromFloat(self.viewport_h);
                 self.scissor_stack[self.scissor_depth] = .{
@@ -181,7 +223,6 @@ pub const Renderer = struct {
                 gl.glScissor(s.x, s.y, s.w, s.h);
             }
         } else {
-            // Pop clip
             if (self.scissor_depth > 0) {
                 self.scissor_depth -= 1;
             }

@@ -2,14 +2,22 @@ const std = @import("std");
 const c = @cImport({
     @cInclude("clay.h");
 });
+const snail = @import("snail");
 const widget = @import("widget.zig");
 const style_mod = @import("style.zig");
 const draw = @import("draw.zig");
 
+/// Opaque context for snail-based text measurement.
+/// Pass to `run()` to get accurate glyph-aware text sizing.
+pub const TextMeasureCtx = struct {
+    font: *const snail.Font,
+    atlas: *const snail.Atlas,
+};
+
 /// Run the layout pass: walk the widget tree, feed elements to clay,
 /// compute layout, and write computed rects back to each node.
-pub fn run(tree: *widget.Tree, theme: style_mod.Theme) void {
-    c.Clay_SetMeasureTextFunction(&measureText, null);
+pub fn run(tree: *widget.Tree, theme: style_mod.Theme, text_ctx: ?*const TextMeasureCtx) void {
+    c.Clay_SetMeasureTextFunction(&measureText, @constCast(@ptrCast(text_ctx)));
     c.Clay_BeginLayout();
 
     for (tree.nodes.items, 0..) |node, i| {
@@ -294,13 +302,55 @@ fn fixedSizing(px: f32) c.Clay_SizingAxis {
 fn measureText(
     text: c.Clay_StringSlice,
     config: [*c]c.Clay_TextElementConfig,
-    _: ?*anyopaque,
+    user_data: ?*anyopaque,
 ) callconv(.c) c.Clay_Dimensions {
     const font_size: f32 = @floatFromInt(config.*.fontSize);
+
+    if (user_data) |ptr| {
+        const ctx: *const TextMeasureCtx = @ptrCast(@alignCast(ptr));
+        const str = text.chars[0..@intCast(text.length)];
+        const width = measureStringWidth(ctx.atlas, ctx.font, str, font_size);
+        return .{ .width = width, .height = font_size };
+    }
+
+    // Fallback: rough approximation when no font is loaded
     const char_width = font_size * 0.6;
     const len: f32 = @floatFromInt(text.length);
     return .{
         .width = len * char_width,
         .height = font_size,
     };
+}
+
+fn measureStringWidth(
+    atlas: *const snail.Atlas,
+    font: *const snail.Font,
+    text: []const u8,
+    font_size: f32,
+) f32 {
+    const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
+    var width: f32 = 0;
+    var prev_gid: u16 = 0;
+    const view = std.unicode.Utf8View.initUnchecked(text);
+    var it = view.iterator();
+    while (it.nextCodepoint()) |cp| {
+        const gid = font.glyphIndex(cp) catch 0;
+        if (gid == 0) {
+            width += scale * 500;
+            prev_gid = 0;
+            continue;
+        }
+        if (prev_gid != 0) {
+            const kern = font.getKerning(prev_gid, gid) catch 0;
+            width += @as(f32, @floatFromInt(kern)) * scale;
+        }
+        const info = atlas.getGlyph(gid) orelse {
+            width += scale * 500;
+            prev_gid = gid;
+            continue;
+        };
+        width += @as(f32, @floatFromInt(info.advance_width)) * scale;
+        prev_gid = gid;
+    }
+    return width;
 }

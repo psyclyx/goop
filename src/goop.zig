@@ -19,6 +19,7 @@ pub const Style = style.Style;
 pub const Color = style.Color;
 pub const DrawCommand = draw.DrawCommand;
 pub const DrawList = draw.DrawList;
+pub const TextMeasureCtx = layout.TextMeasureCtx;
 
 pub const Context = struct {
     clay_arena: []u8,
@@ -85,8 +86,10 @@ pub const Context = struct {
     }
 
     /// Run layout: walk the widget tree through clay and write back rects.
-    pub fn doLayout(self: *Context) void {
-        layout.run(&self.tree, self.theme);
+    /// Pass a TextMeasureCtx for accurate snail-based text measurement,
+    /// or null to use a rough character-width approximation.
+    pub fn doLayout(self: *Context, text_ctx: ?*const TextMeasureCtx) void {
+        layout.run(&self.tree, self.theme, text_ctx);
     }
 
     /// Generate draw commands from the laid-out widget tree.
@@ -133,7 +136,7 @@ test "layout produces non-zero rects" {
     _ = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "hello" } });
 
-    ctx.doLayout();
+    ctx.doLayout(null);
 
     const root_rect = ctx.tree.getConst(root).layout_rect;
     try std.testing.expect(root_rect.w > 0);
@@ -149,7 +152,7 @@ test "layout then draw produces commands" {
     _ = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "hello" } });
 
-    ctx.doLayout();
+    ctx.doLayout(null);
     var dl = try ctx.generateDrawList(allocator);
     defer ctx.freeDrawList(&dl, allocator);
 
@@ -165,7 +168,7 @@ test "event dispatch detects button click" {
     const root = try ctx.tree.addRoot(.{ .container = .{} });
     const btn = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
 
-    ctx.doLayout();
+    ctx.doLayout(null);
 
     // Button should have a non-zero rect after layout
     const btn_rect = ctx.tree.getConst(btn).layout_rect;

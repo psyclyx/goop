@@ -1,5 +1,6 @@
 const std = @import("std");
 const goop = @import("goop");
+const snail = @import("snail");
 const render = @import("render.zig");
 
 const wl = @cImport({
@@ -288,6 +289,55 @@ fn buildWidgetTree(state: *State) !void {
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 8" } });
 }
 
+// ── Font loading ──
+
+const c_io = @cImport({
+    @cInclude("stdio.h");
+    @cInclude("stdlib.h");
+});
+
+fn loadFont(alloc: std.mem.Allocator) ![]u8 {
+    return readFile(alloc, "/run/current-system/sw/share/X11/fonts/DejaVuSans.ttf") catch
+        readFile(alloc, "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf") catch
+        readFile(alloc, "/usr/share/fonts/TTF/DejaVuSans.ttf") catch
+        loadFontFontconfig(alloc);
+}
+
+fn loadFontFontconfig(alloc: std.mem.Allocator) ![]u8 {
+    // Use fontconfig to find a sans-serif font (works on NixOS)
+    const pipe = c_io.popen("fc-match -f '%{file}' 'sans-serif'", "r") orelse return error.FontNotFound;
+    defer _ = c_io.pclose(pipe);
+    var path_buf: [1024]u8 = undefined;
+    const n = c_io.fread(&path_buf, 1, path_buf.len, pipe);
+    if (n == 0) return error.FontNotFound;
+    const path = path_buf[0..n];
+    std.debug.print("fontconfig resolved: {s}\n", .{path});
+    return readFile(alloc, path);
+}
+
+fn readFile(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
+    var path_z: [1024]u8 = undefined;
+    if (path.len >= path_z.len) return error.PathTooLong;
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+    const fp = c_io.fopen(&path_z, "rb") orelse return error.FileNotFound;
+    defer _ = c_io.fclose(fp);
+    _ = c_io.fseek(fp, 0, c_io.SEEK_END);
+    const tell = c_io.ftell(fp);
+    if (tell < 0) return error.ReadFailed;
+    const size: usize = @intCast(tell);
+    _ = c_io.fseek(fp, 0, c_io.SEEK_SET);
+    const buf = try alloc.alloc(u8, size);
+    errdefer alloc.free(buf);
+    const read = c_io.fread(buf.ptr, 1, size, fp);
+    if (read != size) {
+        alloc.free(buf);
+        return error.ReadFailed;
+    }
+    std.debug.print("loaded font: {s} ({} bytes)\n", .{ path, size });
+    return buf;
+}
+
 // ── Main ──
 
 pub fn main() !void {
@@ -323,14 +373,32 @@ pub fn main() !void {
     try initEgl(&state, display);
     defer deinitEgl(&state);
 
+    // Load font
+    const font_data = loadFont(allocator) catch |err| {
+        std.debug.print("failed to load font: {}\n", .{err});
+        return err;
+    };
+    defer allocator.free(font_data);
+
+    var font = try snail.Font.init(font_data);
+    defer font.deinit();
+
+    // Build glyph atlas for printable ASCII
+    var codepoints: [95]u32 = undefined;
+    for (0..95) |i| codepoints[i] = @intCast(32 + i);
+    var atlas = try snail.Atlas.init(allocator, &font, &codepoints);
+    defer atlas.deinit();
+
+    const text_measure_ctx = goop.TextMeasureCtx{ .font = &font, .atlas = &atlas };
+
     // goop context + widget tree
     var ctx = try goop.Context.init(allocator, .{ .width = state.width, .height = state.height });
     defer ctx.deinit(allocator);
     state.ctx = &ctx;
     try buildWidgetTree(&state);
 
-    // GL renderer
-    var renderer = render.Renderer.init(state.width, state.height);
+    // GL renderer (with snail text support)
+    var renderer = try render.Renderer.init(state.width, state.height, &font, &atlas);
     defer renderer.deinit();
 
     std.debug.print("goop demo running ({}x{})\n", .{ state.width, state.height });
@@ -344,7 +412,7 @@ pub fn main() !void {
 
         // Process frame
         ctx.clearClickedFlags();
-        ctx.doLayout();
+        ctx.doLayout(&text_measure_ctx);
         ctx.processEvents();
 
         // Check clicks

@@ -37,6 +37,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     demo_mod.addImport("goop", goop_mod);
+    demo_mod.addImport("snail", snail_mod);
     demo_mod.addIncludePath(b.path("demo/protocol"));
     demo_mod.addCSourceFile(.{ .file = b.path("demo/protocol/xdg-shell-protocol.c") });
     demo_mod.linkSystemLibrary("wayland-client", .{});
