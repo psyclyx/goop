@@ -47,6 +47,7 @@ pub const Theme = struct {
     border_radius: f32 = 4,
     border_width: f32 = 1,
     spacing: f32 = 4,
+    thumb_width: f32 = 16,
 
     pub const default: Theme = .{};
 };
@@ -60,6 +61,7 @@ pub const Style = struct {
     padding: ?Edges = null,
     border_radius: ?f32 = null,
     border_width: ?f32 = null,
+    thumb_width: ?f32 = null,
 
     pub fn resolve(self: Style, theme: Theme) ResolvedStyle {
         return .{
@@ -70,6 +72,7 @@ pub const Style = struct {
             .padding = self.padding orelse theme.padding,
             .border_radius = self.border_radius orelse theme.border_radius,
             .border_width = self.border_width orelse theme.border_width,
+            .thumb_width = self.thumb_width orelse theme.thumb_width,
         };
     }
 };
@@ -83,6 +86,7 @@ pub const ResolvedStyle = struct {
     padding: Edges,
     border_radius: f32,
     border_width: f32,
+    thumb_width: f32,
 };
 
 test "style resolves against theme" {

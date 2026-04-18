@@ -66,7 +66,7 @@ pub const Context = struct {
     /// Process all queued events: hit test, update interaction state,
     /// detect clicks. Call after doLayout.
     pub fn processEvents(self: *Context) void {
-        dispatch.process(&self.tree, self.events.items, &self.mouse);
+        dispatch.process(&self.tree, self.events.items, &self.mouse, self.theme);
         self.events.clearRetainingCapacity();
     }
 

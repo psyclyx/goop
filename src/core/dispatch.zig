@@ -17,19 +17,21 @@ pub const MouseState = struct {
 /// Process a batch of events against the widget tree.
 /// Updates interaction state (hovered, pressed) and widget state (clicked).
 /// Call after doLayout so layout_rects are populated.
-pub fn process(tree: *widget.Tree, events: []const event.Event, mouse: *MouseState) void {
+const style = @import("style.zig");
+
+pub fn process(tree: *widget.Tree, events: []const event.Event, mouse: *MouseState, theme: style.Theme) void {
     for (events) |ev| {
-        processOne(tree, ev, mouse);
+        processOne(tree, ev, mouse, theme);
     }
 }
 
-fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState) void {
+fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: style.Theme) void {
     switch (ev) {
         .mouse_move => |mm| {
             mouse.x = mm.x;
             mouse.y = mm.y;
             if (mouse.drag_target) |dt| {
-                updateSliderValue(tree, dt, mouse.x);
+                updateSliderValue(tree, dt, mouse.x, theme);
             }
             updateHover(tree, mouse);
         },
@@ -48,7 +50,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState) void {
                         // Start slider drag
                         if (tree.getConst(t).kind == .slider) {
                             mouse.drag_target = t;
-                            updateSliderValue(tree, t, mouse.x);
+                            updateSliderValue(tree, t, mouse.x, theme);
                         }
                     }
                 } else {
@@ -131,10 +133,11 @@ fn pointInRect(x: f32, y: f32, rect: draw.Rect) bool {
 }
 
 /// Update a slider's value based on mouse x position within its track.
-fn updateSliderValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32) void {
+fn updateSliderValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32, theme: style.Theme) void {
     const node = tree.get(handle);
     const rect = node.layout_rect;
-    const thumb_w: f32 = 16;
+    const resolved = node.style_override.resolve(theme);
+    const thumb_w = resolved.thumb_width;
     const usable = rect.w - thumb_w;
     if (usable <= 0) return;
     const t = std.math.clamp((mouse_x - rect.x - thumb_w * 0.5) / usable, 0, 1);
@@ -183,12 +186,12 @@ test "hover updates on mouse move" {
     var mouse = MouseState{};
 
     // Move onto button
-    process(&tree, &.{.{ .mouse_move = .{ .x = 50, .y = 20 } }}, &mouse);
+    process(&tree, &.{.{ .mouse_move = .{ .x = 50, .y = 20 } }}, &mouse, style.Theme.default);
     try std.testing.expect(tree.getConst(btn).interaction.hovered);
     try std.testing.expect(!tree.getConst(root).interaction.hovered);
 
     // Move off button but still on root
-    process(&tree, &.{.{ .mouse_move = .{ .x = 500, .y = 300 } }}, &mouse);
+    process(&tree, &.{.{ .mouse_move = .{ .x = 500, .y = 300 } }}, &mouse, style.Theme.default);
     try std.testing.expect(!tree.getConst(btn).interaction.hovered);
     try std.testing.expect(tree.getConst(root).interaction.hovered);
 }
@@ -210,7 +213,7 @@ test "button click sets clicked flag" {
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
-    }, &mouse);
+    }, &mouse, style.Theme.default);
 
     try std.testing.expect(tree.getConst(btn).kind.button.clicked);
     try std.testing.expect(!tree.getConst(btn).interaction.pressed);
@@ -233,7 +236,7 @@ test "press and release on different widgets does not click" {
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 500, .y = 300 } },
-    }, &mouse);
+    }, &mouse, style.Theme.default);
 
     try std.testing.expect(!tree.getConst(btn).kind.button.clicked);
 }
@@ -254,7 +257,7 @@ test "slider drag updates value" {
     // Click at the midpoint of the slider track
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 110, .y = 20 } },
-    }, &mouse);
+    }, &mouse, style.Theme.default);
 
     // Should have started dragging
     try std.testing.expect(mouse.drag_target != null);
@@ -264,25 +267,25 @@ test "slider drag updates value" {
     // Drag to the right end
     process(&tree, &.{
         .{ .mouse_move = .{ .x = 210, .y = 20 } },
-    }, &mouse);
+    }, &mouse, style.Theme.default);
     try std.testing.expectApproxEqAbs(@as(f32, 100), tree.getConst(sl).kind.slider.value, 1.0);
 
     // Drag to the left end
     process(&tree, &.{
         .{ .mouse_move = .{ .x = 10, .y = 20 } },
-    }, &mouse);
+    }, &mouse, style.Theme.default);
     try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(sl).kind.slider.value, 1.0);
 
     // Release — drag should stop
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 10, .y = 20 } },
-    }, &mouse);
+    }, &mouse, style.Theme.default);
     try std.testing.expect(mouse.drag_target == null);
 
     // Move after release should not change value
     process(&tree, &.{
         .{ .mouse_move = .{ .x = 150, .y = 20 } },
-    }, &mouse);
+    }, &mouse, style.Theme.default);
     try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(sl).kind.slider.value, 1.0);
 }
 
@@ -303,14 +306,14 @@ test "checkbox toggles on click" {
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
-    }, &mouse);
+    }, &mouse, style.Theme.default);
     try std.testing.expect(tree.getConst(cb).kind.checkbox.checked);
 
     // Click again to uncheck
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
-    }, &mouse);
+    }, &mouse, style.Theme.default);
     try std.testing.expect(!tree.getConst(cb).kind.checkbox.checked);
 }
 
@@ -335,7 +338,7 @@ test "radio button selects and deselects group siblings" {
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
-    }, &mouse);
+    }, &mouse, style.Theme.default);
     try std.testing.expect(tree.getConst(rb1).kind.radio_button.selected);
     try std.testing.expect(!tree.getConst(rb2).kind.radio_button.selected);
 
@@ -343,7 +346,7 @@ test "radio button selects and deselects group siblings" {
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 50 } },
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 50 } },
-    }, &mouse);
+    }, &mouse, style.Theme.default);
     try std.testing.expect(!tree.getConst(rb1).kind.radio_button.selected);
     try std.testing.expect(tree.getConst(rb2).kind.radio_button.selected);
 
@@ -354,7 +357,7 @@ test "radio button selects and deselects group siblings" {
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 80 } },
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 80 } },
-    }, &mouse);
+    }, &mouse, style.Theme.default);
     try std.testing.expect(tree.getConst(rb2).kind.radio_button.selected);
     try std.testing.expect(tree.getConst(rb3).kind.radio_button.selected);
 }
@@ -369,7 +372,7 @@ test "scroll area responds to mouse scroll" {
 
     var mouse = MouseState{ .x = 150, .y = 100 };
 
-    process(&tree, &.{.{ .mouse_scroll = .{ .dx = 0, .dy = 30 } }}, &mouse);
+    process(&tree, &.{.{ .mouse_scroll = .{ .dx = 0, .dy = 30 } }}, &mouse, style.Theme.default);
 
     try std.testing.expectApproxEqAbs(@as(f32, 30), tree.getConst(scroll).kind.scroll_area.scroll_y, 0.01);
 }

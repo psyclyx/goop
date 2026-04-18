@@ -301,7 +301,7 @@ fn emitSlider(
     // Thumb
     const range = sl.max - sl.min;
     const t = if (range > 0) (sl.value - sl.min) / range else 0;
-    const thumb_w: f32 = 16;
+    const thumb_w = resolved.thumb_width;
     const usable = rect.w - thumb_w;
     const thumb_x = rect.x + usable * t;
 
