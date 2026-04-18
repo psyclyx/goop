@@ -16,6 +16,8 @@ pub const Event = event.Event;
 pub const Theme = style.Theme;
 pub const Style = style.Style;
 pub const Color = style.Color;
+pub const DrawCommand = draw.DrawCommand;
+pub const DrawList = draw.DrawList;
 
 pub const Context = struct {
     clay_arena: []u8,
@@ -49,6 +51,17 @@ pub const Context = struct {
     /// Run layout: walk the widget tree through clay and write back rects.
     pub fn doLayout(self: *Context) void {
         layout.run(&self.tree, self.theme);
+    }
+
+    /// Generate draw commands from the laid-out widget tree.
+    /// Caller must call freeDrawList when done.
+    pub fn generateDrawList(self: *Context, allocator: std.mem.Allocator) !DrawList {
+        return draw.generate(&self.tree, self.theme, allocator);
+    }
+
+    /// Free a DrawList returned by generateDrawList.
+    pub fn freeDrawList(_: *Context, dl: *DrawList, allocator: std.mem.Allocator) void {
+        draw.freeDrawList(dl, allocator);
     }
 
     /// Update layout dimensions (e.g. on window resize).
@@ -91,8 +104,26 @@ test "layout produces non-zero rects" {
     try std.testing.expect(root_rect.h > 0);
 }
 
+test "layout then draw produces commands" {
+    const allocator = std.testing.allocator;
+    var ctx = try Context.init(allocator, .{ .width = 800, .height = 600 });
+    defer ctx.deinit(allocator);
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    _ = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
+    _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "hello" } });
+
+    ctx.doLayout();
+    var dl = try ctx.generateDrawList(allocator);
+    defer ctx.freeDrawList(&dl, allocator);
+
+    // Should have at least: container bg, button bg, button text, text label
+    try std.testing.expect(dl.commands.len >= 4);
+}
+
 test {
     _ = widget;
     _ = style;
     _ = layout;
+    _ = draw;
 }
