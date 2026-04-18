@@ -207,7 +207,7 @@ fn pointerMotion(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, sx: wl.wl_fixed_
     const state: *State = @ptrCast(@alignCast(data));
     const x = fixedToF32(sx);
     const y = fixedToF32(sy);
-    state.ctx.pushEvent(allocator, .{ .mouse_move = .{ .x = x, .y = y } }) catch {};
+    state.ctx.pushEvent(.{ .mouse_move = .{ .x = x, .y = y } }) catch {};
     state.needs_redraw = true;
 }
 
@@ -224,7 +224,7 @@ fn pointerButton(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: u32, button: 
     // Use last known mouse position from the mouse state
     const mx = state.ctx.mouse.x;
     const my = state.ctx.mouse.y;
-    state.ctx.pushEvent(allocator, .{ .mouse_button = .{
+    state.ctx.pushEvent(.{ .mouse_button = .{
         .button = goop_button,
         .state = goop_state,
         .x = mx,
@@ -238,7 +238,7 @@ fn pointerAxis(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, axis: u32, value: 
     const v = fixedToF32(value);
     const dx: f32 = if (axis == 1) v else 0; // WL_POINTER_AXIS_HORIZONTAL_SCROLL
     const dy: f32 = if (axis == 0) v else 0; // WL_POINTER_AXIS_VERTICAL_SCROLL
-    state.ctx.pushEvent(allocator, .{ .mouse_scroll = .{ .dx = dx, .dy = dy } }) catch {};
+    state.ctx.pushEvent(.{ .mouse_scroll = .{ .dx = dx, .dy = dy } }) catch {};
     state.needs_redraw = true;
 }
 
@@ -431,7 +431,7 @@ pub fn main() !void {
 
     // goop context + widget tree
     var ctx = try goop.Context.init(allocator, .{ .width = state.width, .height = state.height });
-    defer ctx.deinit(allocator);
+    defer ctx.deinit();
     state.ctx = &ctx;
     try buildWidgetTree(&state);
 
@@ -468,8 +468,8 @@ pub fn main() !void {
         }
 
         // Render
-        var dl = try ctx.generateDrawList(allocator);
-        defer ctx.freeDrawList(&dl, allocator);
+        var dl = try ctx.generateDrawList();
+        defer ctx.freeDrawList(&dl);
 
         renderer.beginFrame(state.width, state.height);
         renderer.render(dl);

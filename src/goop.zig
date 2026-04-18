@@ -24,6 +24,7 @@ pub const MeasureTextFn = layout.MeasureTextFn;
 pub const TextDimensions = layout.TextDimensions;
 
 pub const Context = struct {
+    allocator: std.mem.Allocator,
     clay_arena: []u8,
     tree: Tree,
     theme: Theme,
@@ -42,6 +43,7 @@ pub const Context = struct {
             .height = @floatFromInt(opts.height),
         }, .{});
         return .{
+            .allocator = allocator,
             .clay_arena = arena,
             .tree = Tree.init(allocator),
             .theme = opts.theme,
@@ -49,16 +51,16 @@ pub const Context = struct {
         };
     }
 
-    pub fn deinit(self: *Context, allocator: std.mem.Allocator) void {
-        self.events.deinit(allocator);
+    pub fn deinit(self: *Context) void {
+        self.events.deinit(self.allocator);
         self.tree.deinit();
         c.Clay_SetCurrentContext(null);
-        allocator.free(self.clay_arena);
+        self.allocator.free(self.clay_arena);
     }
 
     /// Queue an input event for processing.
-    pub fn pushEvent(self: *Context, allocator: std.mem.Allocator, ev: Event) !void {
-        try self.events.append(allocator, ev);
+    pub fn pushEvent(self: *Context, ev: Event) !void {
+        try self.events.append(self.allocator, ev);
     }
 
     /// Process all queued events: hit test, update interaction state,
@@ -96,13 +98,13 @@ pub const Context = struct {
 
     /// Generate draw commands from the laid-out widget tree.
     /// Caller must call freeDrawList when done.
-    pub fn generateDrawList(self: *Context, allocator: std.mem.Allocator) !DrawList {
-        return draw.generate(&self.tree, self.theme, allocator);
+    pub fn generateDrawList(self: *Context) !DrawList {
+        return draw.generate(&self.tree, self.theme, self.allocator);
     }
 
     /// Free a DrawList returned by generateDrawList.
-    pub fn freeDrawList(_: *Context, dl: *DrawList, allocator: std.mem.Allocator) void {
-        draw.freeDrawList(dl, allocator);
+    pub fn freeDrawList(self: *Context, dl: *DrawList) void {
+        draw.freeDrawList(dl, self.allocator);
     }
 
     /// Update layout dimensions (e.g. on window resize).
@@ -122,17 +124,15 @@ pub const Context = struct {
 };
 
 test "context initializes" {
-    const allocator = std.testing.allocator;
-    var ctx = try Context.init(allocator, .{});
-    defer ctx.deinit(allocator);
+    var ctx = try Context.init(std.testing.allocator, .{});
+    defer ctx.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), ctx.tree.count());
 }
 
 test "layout produces non-zero rects" {
-    const allocator = std.testing.allocator;
-    var ctx = try Context.init(allocator, .{ .width = 800, .height = 600 });
-    defer ctx.deinit(allocator);
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
+    defer ctx.deinit();
 
     const root = try ctx.tree.addRoot(.{ .container = .{} });
     _ = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
@@ -146,26 +146,24 @@ test "layout produces non-zero rects" {
 }
 
 test "layout then draw produces commands" {
-    const allocator = std.testing.allocator;
-    var ctx = try Context.init(allocator, .{ .width = 800, .height = 600 });
-    defer ctx.deinit(allocator);
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
+    defer ctx.deinit();
 
     const root = try ctx.tree.addRoot(.{ .container = .{} });
     _ = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "hello" } });
 
     ctx.doLayout(null);
-    var dl = try ctx.generateDrawList(allocator);
-    defer ctx.freeDrawList(&dl, allocator);
+    var dl = try ctx.generateDrawList();
+    defer ctx.freeDrawList(&dl);
 
     // Should have at least: container bg, button bg, button text, text label
     try std.testing.expect(dl.commands.len >= 4);
 }
 
 test "event dispatch detects button click" {
-    const allocator = std.testing.allocator;
-    var ctx = try Context.init(allocator, .{ .width = 800, .height = 600 });
-    defer ctx.deinit(allocator);
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
+    defer ctx.deinit();
 
     const root = try ctx.tree.addRoot(.{ .container = .{} });
     const btn = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
@@ -177,8 +175,8 @@ test "event dispatch detects button click" {
     const click_x = btn_rect.x + btn_rect.w / 2;
     const click_y = btn_rect.y + btn_rect.h / 2;
 
-    try ctx.pushEvent(allocator, .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = click_y } });
-    try ctx.pushEvent(allocator, .{ .mouse_button = .{ .button = .left, .state = .released, .x = click_x, .y = click_y } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = click_y } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = click_x, .y = click_y } });
     ctx.processEvents();
 
     try std.testing.expect(ctx.wasClicked(btn));
