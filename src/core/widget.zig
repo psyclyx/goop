@@ -24,6 +24,7 @@ pub const WidgetKind = union(enum) {
     radio_button: RadioButton,
     slider: Slider,
     scroll_area: ScrollArea,
+    text_input: TextInput,
 
     pub const Container = struct {
         direction: Direction = .column,
@@ -62,6 +63,40 @@ pub const WidgetKind = union(enum) {
     pub const ScrollArea = struct {
         scroll_x: f32 = 0,
         scroll_y: f32 = 0,
+    };
+
+    pub const TextInput = struct {
+        buffer: [256]u8 = [_]u8{0} ** 256,
+        len: u8 = 0,
+        cursor: u8 = 0,
+
+        pub fn content(self: *const TextInput) []const u8 {
+            return self.buffer[0..self.len];
+        }
+
+        pub fn insert(self: *TextInput, byte: u8) void {
+            if (self.len >= self.buffer.len) return;
+            // Shift bytes right to make room at cursor
+            var i: usize = self.len;
+            while (i > self.cursor) : (i -= 1) {
+                self.buffer[i] = self.buffer[i - 1];
+            }
+            self.buffer[self.cursor] = byte;
+            self.len += 1;
+            self.cursor += 1;
+        }
+
+        pub fn deleteBack(self: *TextInput) void {
+            if (self.cursor == 0) return;
+            // Shift bytes left over the deleted character
+            const pos = self.cursor - 1;
+            var i: usize = pos;
+            while (i < self.len - 1) : (i += 1) {
+                self.buffer[i] = self.buffer[i + 1];
+            }
+            self.len -= 1;
+            self.cursor -= 1;
+        }
     };
 };
 

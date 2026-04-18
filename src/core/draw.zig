@@ -79,6 +79,7 @@ fn emitNode(
         .checkbox => |cb| try emitCheckbox(node, cb, resolved, theme, commands, allocator),
         .radio_button => |rb| try emitRadioButton(node, rb, resolved, theme, commands, allocator),
         .slider => |sl| try emitSlider(node, sl, resolved, theme, commands, allocator),
+        .text_input => |ti| try emitTextInput(node, ti, resolved, theme, commands, allocator),
         .scroll_area => try emitScrollArea(tree, handle, node, resolved, theme, commands, allocator),
     }
 }
@@ -321,6 +322,63 @@ fn emitSlider(
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
 
+fn emitTextInput(
+    node: *const widget.Node,
+    ti: widget.WidgetKind.TextInput,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    const rect = node.layout_rect;
+
+    const bg = if (node.interaction.pressed)
+        theme.bg_active
+    else if (node.interaction.hovered)
+        theme.bg_hover
+    else
+        resolved.bg;
+
+    // Background
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = rect,
+        .color = bg,
+        .border_color = resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = resolved.border_radius,
+    } });
+
+    // Text content
+    const content = ti.content();
+    try commands.append(allocator, .{ .text = .{
+        .x = rect.x + resolved.padding.left,
+        .y = rect.y + resolved.padding.top,
+        .text = content,
+        .color = resolved.fg,
+        .font_size = resolved.font_size,
+    } });
+
+    // Cursor (thin rect when focused)
+    if (node.interaction.focused) {
+        const char_width = resolved.font_size * 0.6;
+        const cursor_x = rect.x + resolved.padding.left + @as(f32, @floatFromInt(ti.cursor)) * char_width;
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = .{
+                .x = cursor_x,
+                .y = rect.y + resolved.padding.top,
+                .w = 1,
+                .h = resolved.font_size,
+            },
+            .color = resolved.fg,
+            .border_color = resolved.fg,
+            .border_width = 0,
+            .corner_radius = 0,
+        } });
+    }
+
+    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+}
+
 fn emitScrollArea(
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
@@ -539,4 +597,45 @@ test "scroll area emits clip commands" {
     try std.testing.expect(dl.commands[2] == .text); // child text
     try std.testing.expect(dl.commands[3] == .clip); // pop
     try std.testing.expect(dl.commands[3].clip.bounds == null);
+}
+
+test "text input emits bg and text" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const ti = try tree.addRoot(.{ .text_input = .{} });
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 20, .w = 300, .h = 30 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator);
+    defer freeDrawList(&dl, allocator);
+
+    // Unfocused: bg rect + text = 2 commands
+    try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect); // bg
+    try std.testing.expect(dl.commands[1] == .text); // text content
+}
+
+test "focused text input emits cursor" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const ti = try tree.addRoot(.{ .text_input = .{} });
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 20, .w = 300, .h = 30 };
+    tree.get(ti).interaction.focused = true;
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator);
+    defer freeDrawList(&dl, allocator);
+
+    // Focused: bg rect + text + cursor rect + focus ring = 4 commands
+    try std.testing.expectEqual(@as(usize, 4), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect); // bg
+    try std.testing.expect(dl.commands[1] == .text); // text content
+    try std.testing.expect(dl.commands[2] == .rect); // cursor
+    try std.testing.expect(dl.commands[3] == .rect); // focus ring
 }

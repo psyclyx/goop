@@ -105,6 +105,16 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                         syncFocusFlags(tree, mouse.focused);
                     }
                 },
+                .backspace => {
+                    if (k.state == .pressed or k.state == .repeat) {
+                        if (mouse.focused) |f| {
+                            const node = tree.get(f);
+                            if (node.kind == .text_input) {
+                                node.kind.text_input.deleteBack();
+                            }
+                        }
+                    }
+                },
                 .space, .enter => {
                     if (k.state == .pressed) {
                         if (mouse.focused) |f| {
@@ -113,6 +123,17 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                     }
                 },
                 else => {},
+            }
+        },
+        .text => |t| {
+            if (mouse.focused) |f| {
+                const node = tree.get(f);
+                if (node.kind == .text_input) {
+                    // Only handle printable ASCII for now
+                    if (t.codepoint >= 0x20 and t.codepoint < 0x7F) {
+                        node.kind.text_input.insert(@intCast(t.codepoint));
+                    }
+                }
             }
         },
         else => {},
@@ -157,7 +178,7 @@ fn hitTestKind(tree: *const widget.Tree, x: f32, y: f32, kind_tag: std.meta.Tag(
 
 fn isInteractive(kind: widget.WidgetKind) bool {
     return switch (kind) {
-        .button, .checkbox, .radio_button, .slider, .scroll_area, .container => true,
+        .button, .checkbox, .radio_button, .slider, .scroll_area, .container, .text_input => true,
         .text => false,
     };
 }
@@ -242,7 +263,7 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
 /// Whether a widget kind can receive keyboard focus.
 fn isFocusable(kind: widget.WidgetKind) bool {
     return switch (kind) {
-        .button, .checkbox, .radio_button, .slider => true,
+        .button, .checkbox, .radio_button, .slider, .text_input => true,
         .text, .container, .scroll_area => false,
     };
 }
@@ -679,4 +700,110 @@ test "click sets focus" {
 
     try std.testing.expectEqual(mouse.focused, btn);
     try std.testing.expect(tree.getConst(btn).interaction.focused);
+}
+
+test "text input receives character events" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Click to focus the text input
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(mouse.focused, ti);
+
+    // Type "hi"
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'h' } },
+        .{ .text = .{ .codepoint = 'i' } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expectEqualStrings("hi", tree.getConst(ti).kind.text_input.content());
+}
+
+test "text input backspace deletes characters" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Click to focus
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    // Type "abc" then backspace
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'a' } },
+        .{ .text = .{ .codepoint = 'b' } },
+        .{ .text = .{ .codepoint = 'c' } },
+        .{ .key = .{ .scancode = 14, .keycode = .backspace, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expectEqualStrings("ab", tree.getConst(ti).kind.text_input.content());
+}
+
+test "text input ignores input when not focused" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Type without focusing — should be ignored
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'x' } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expectEqualStrings("", tree.getConst(ti).kind.text_input.content());
+}
+
+test "text input is focusable via tab" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const btn = try tree.addChild(root, .{ .button = .{ .label = "OK" } });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 50, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+    const tab = event.Event{ .key = .{ .scancode = 15, .keycode = .tab, .state = .pressed } };
+
+    // First tab: focus button
+    process(&tree, &.{tab}, &mouse, style.Theme.default);
+    try std.testing.expectEqual(mouse.focused, btn);
+
+    // Second tab: focus text input
+    process(&tree, &.{tab}, &mouse, style.Theme.default);
+    try std.testing.expectEqual(mouse.focused, ti);
+    try std.testing.expect(tree.getConst(ti).interaction.focused);
 }

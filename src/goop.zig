@@ -115,6 +115,11 @@ pub const Context = struct {
         return self.tree.getConst(handle).kind.slider.value;
     }
 
+    /// Get the current text content of a text input.
+    pub fn textInputValue(self: *const Context, handle: NodeHandle) []const u8 {
+        return self.tree.getConst(handle).kind.text_input.content();
+    }
+
     /// Run layout: walk the widget tree through clay and write back rects.
     /// Pass a TextMeasureCtx for accurate snail-based text measurement,
     /// or null to use a rough character-width approximation.

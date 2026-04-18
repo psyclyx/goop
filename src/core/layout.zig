@@ -65,6 +65,7 @@ fn emitNode(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style_mo
         .radio_button => |rb| emitRadioButton(handle, rb, resolved),
         .container => |cont| emitContainer(tree, handle, cont, resolved, theme),
         .slider => emitSlider(handle, resolved),
+        .text_input => |ti| emitTextInput(handle, ti, resolved),
         .scroll_area => emitScrollArea(tree, handle, resolved, theme),
     }
 }
@@ -278,6 +279,46 @@ fn emitSlider(handle: widget.NodeHandle, resolved: style_mod.ResolvedStyle) void
         .border = .{},
         .userData = null,
     });
+    c.Clay__CloseElement();
+}
+
+fn emitTextInput(handle: widget.NodeHandle, ti: widget.WidgetKind.TextInput, resolved: style_mod.ResolvedStyle) void {
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = nodeId(handle),
+        .layout = .{
+            .sizing = .{
+                .width = growSizing(),
+                .height = fixedSizing(resolved.font_size + resolved.padding.top + resolved.padding.bottom),
+            },
+            .padding = clayPadding(resolved.padding),
+            .childGap = 0,
+            .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
+            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
+        },
+        .backgroundColor = clayColor(resolved.bg),
+        .cornerRadius = cornerRadiusAll(resolved.border_radius),
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
+    c.Clay__OpenTextElement(
+        clayString(ti.content()),
+        c.Clay__StoreTextElementConfig(.{
+            .userData = null,
+            .textColor = clayColor(resolved.fg),
+            .fontId = 0,
+            .fontSize = @intFromFloat(resolved.font_size),
+            .letterSpacing = 0,
+            .lineHeight = 0,
+            .wrapMode = c.CLAY_TEXT_WRAP_NONE,
+            .textAlignment = c.CLAY_TEXT_ALIGN_LEFT,
+        }),
+    );
     c.Clay__CloseElement();
 }
 

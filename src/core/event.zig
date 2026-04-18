@@ -43,6 +43,7 @@ pub const Event = union(enum) {
         enter,
         space,
         escape,
+        backspace,
         left_shift,
         right_shift,
         unknown,

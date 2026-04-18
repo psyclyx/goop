@@ -237,6 +237,7 @@ fn noopRepeatInfo(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: i32, _: i32) callconv(
 
 fn evdevToKeycode(scancode: u32) goop.Event.Keycode {
     return switch (scancode) {
+        14 => .backspace,
         15 => .tab,
         28 => .enter,
         57 => .space,
@@ -400,6 +401,9 @@ fn buildWidgetTree(state: *State) !void {
     state.radio_a = try ctx.tree.addChild(root, .{ .radio_button = .{ .label = "Option A", .group = 1, .selected = true } });
     state.radio_b = try ctx.tree.addChild(root, .{ .radio_button = .{ .label = "Option B", .group = 1 } });
     state.radio_c = try ctx.tree.addChild(root, .{ .radio_button = .{ .label = "Option C", .group = 1 } });
+
+    // Text input
+    _ = try ctx.tree.addChild(root, .{ .text_input = .{} });
 
     // Slider
     _ = try ctx.tree.addChild(root, .{ .slider = .{ .value = 0.5, .min = 0, .max = 1 } });
