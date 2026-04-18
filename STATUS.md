@@ -2,28 +2,28 @@
 
 ## Current
 
-Iteration 31.
-37 tests pass. Build clean. Demo runs. 3644 LOC.
+Iteration 32.
+38 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-31
+32
 
 ## Done This Iteration
 
-- Extracted focus.zig (77 lines) and hittest.zig (40 lines) from dispatch.zig
-- dispatch.zig reduced from 974 to 862 lines
-- Tests remain in dispatch.zig (they test integrated behavior)
+- Added Delete key support for text input (forward delete)
+- Added `delete` to Keycode enum, `deleteForward()` to TextInput, dispatch handler, evdev mapping (scancode 111)
+- Added test: "text input delete key deletes forward"
 
 ## Next
 
-1. Delete key support for text input
-2. Text input placeholder text
-3. dispatch.zig still 862 lines — consider extracting scroll/slider helpers or tests
+1. Text input placeholder text
+2. dispatch.zig still large — consider extracting scroll/slider helpers or tests
+3. Text input selection support
 
 ## What's Wrong
 
-- dispatch.zig is 862 lines — still large, tests account for most of it
+- dispatch.zig is ~900 lines — still large, tests account for most of it
 - Widget tree is append-only — no removal/mutation API
 - No dirty tracking — full layout + full draw list every frame
 - Text baseline y-offset is approximate (y + font_size)
