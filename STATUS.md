@@ -2,24 +2,27 @@
 
 ## Current
 
-Build system functional. Clay v0.14 vendored. Snail dependency wired.
-`zig build`, `zig build test`, and `zig build demo` all work.
-Minimal `src/goop.zig` initializes clay. Stub `demo/main.zig` exists.
+Core data structures defined. Widget tree (flat array, handle-based) supports
+container, text, button, slider, scroll_area. Event, style, and draw types
+scaffolded. Context struct owns clay arena + tree + theme. All tests pass,
+library and demo build.
 
 ## Iteration Count
 
-2
+3
 
 ## Next
 
-1. Scaffold core modules (widget.zig, event.zig, layout.zig, style.zig, draw.zig)
-2. Define the widget tree data structure
-3. Wire up clay layout pass
+1. Implement the layout pass (layout.zig) — walk tree, configure clay, write back rects
+2. Implement draw list generation from laid-out tree
+3. Wire event dispatch (hit testing, state updates)
 
 ## What's Wrong
 
-- `src/goop.zig` is a thin clay wrapper — no widget tree, no event model, no draw data
-- `demo/main.zig` is a stub — no window, no rendering
-- `default.nix` references `src/` and `vendor/` correctly now but hasn't been tested as a nix build
-- Zig version is 0.17.0-dev (master) — API may shift
-- `zig-pkg/` directory created by build cache is untracked (should be gitignored)
+- layout.zig is a placeholder — no clay integration yet, nodes have zero-size rects
+- No event processing — events are defined but nothing consumes them
+- draw.zig defines types but nothing generates draw commands
+- demo is still a print-and-exit stub — no window, no rendering
+- Widget tree has no removal/mutation API — append-only
+- No dirty tracking — can't tell when to re-layout or re-draw
+- Zig version is 0.17.0-dev (master) — ArrayListUnmanaged init syntax already differed
