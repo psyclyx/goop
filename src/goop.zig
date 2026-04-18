@@ -89,6 +89,11 @@ pub const Context = struct {
         return node.kind == .button and node.kind.button.clicked;
     }
 
+    /// Get the current value of a slider.
+    pub fn sliderValue(self: *const Context, handle: NodeHandle) f32 {
+        return self.tree.getConst(handle).kind.slider.value;
+    }
+
     /// Run layout: walk the widget tree through clay and write back rects.
     /// Pass a TextMeasureCtx for accurate snail-based text measurement,
     /// or null to use a rough character-width approximation.

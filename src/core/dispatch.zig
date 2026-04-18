@@ -10,6 +10,8 @@ pub const MouseState = struct {
     left_down: bool = false,
     /// The widget that the left button went down on (for click detection).
     press_target: ?widget.NodeHandle = null,
+    /// The slider currently being dragged, if any.
+    drag_target: ?widget.NodeHandle = null,
 };
 
 /// Process a batch of events against the widget tree.
@@ -26,6 +28,9 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState) void {
         .mouse_move => |mm| {
             mouse.x = mm.x;
             mouse.y = mm.y;
+            if (mouse.drag_target) |dt| {
+                updateSliderValue(tree, dt, mouse.x);
+            }
             updateHover(tree, mouse);
         },
         .mouse_button => |mb| {
@@ -40,10 +45,16 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState) void {
                     mouse.press_target = target;
                     if (target) |t| {
                         tree.get(t).interaction.pressed = true;
+                        // Start slider drag
+                        if (tree.getConst(t).kind == .slider) {
+                            mouse.drag_target = t;
+                            updateSliderValue(tree, t, mouse.x);
+                        }
                     }
                 } else {
                     // Released
                     mouse.left_down = false;
+                    mouse.drag_target = null;
                     const release_target = hitTest(tree, mouse.x, mouse.y);
 
                     // Click detection: released on the same widget we pressed on
@@ -117,6 +128,17 @@ fn isInteractive(kind: widget.WidgetKind) bool {
 fn pointInRect(x: f32, y: f32, rect: draw.Rect) bool {
     return x >= rect.x and x < rect.x + rect.w and
         y >= rect.y and y < rect.y + rect.h;
+}
+
+/// Update a slider's value based on mouse x position within its track.
+fn updateSliderValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32) void {
+    const node = tree.get(handle);
+    const rect = node.layout_rect;
+    const thumb_w: f32 = 16;
+    const usable = rect.w - thumb_w;
+    if (usable <= 0) return;
+    const t = std.math.clamp((mouse_x - rect.x - thumb_w * 0.5) / usable, 0, 1);
+    node.kind.slider.value = node.kind.slider.min + t * (node.kind.slider.max - node.kind.slider.min);
 }
 
 /// Fire a click on a widget (currently only buttons respond).
@@ -199,6 +221,54 @@ test "press and release on different widgets does not click" {
     }, &mouse);
 
     try std.testing.expect(!tree.getConst(btn).kind.button.clicked);
+}
+
+test "slider drag updates value" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const sl = try tree.addChild(root, .{ .slider = .{ .value = 0, .min = 0, .max = 100 } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(sl).layout_rect = .{ .x = 10, .y = 10, .w = 200, .h = 24 };
+
+    var mouse = MouseState{};
+
+    // Click at the midpoint of the slider track
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 110, .y = 20 } },
+    }, &mouse);
+
+    // Should have started dragging
+    try std.testing.expect(mouse.drag_target != null);
+    const val_after_press = tree.getConst(sl).kind.slider.value;
+    try std.testing.expect(val_after_press > 40 and val_after_press < 60);
+
+    // Drag to the right end
+    process(&tree, &.{
+        .{ .mouse_move = .{ .x = 210, .y = 20 } },
+    }, &mouse);
+    try std.testing.expectApproxEqAbs(@as(f32, 100), tree.getConst(sl).kind.slider.value, 1.0);
+
+    // Drag to the left end
+    process(&tree, &.{
+        .{ .mouse_move = .{ .x = 10, .y = 20 } },
+    }, &mouse);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(sl).kind.slider.value, 1.0);
+
+    // Release — drag should stop
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 10, .y = 20 } },
+    }, &mouse);
+    try std.testing.expect(mouse.drag_target == null);
+
+    // Move after release should not change value
+    process(&tree, &.{
+        .{ .mouse_move = .{ .x = 150, .y = 20 } },
+    }, &mouse);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(sl).kind.slider.value, 1.0);
 }
 
 test "scroll area responds to mouse scroll" {
