@@ -2,26 +2,23 @@
 
 ## Current
 
-Iteration 27. Feature iteration.
-35 tests pass. Build clean. Demo runs. 3578 LOC.
+Iteration 28. Refactor iteration.
+35 tests pass. Build clean. Demo runs. 3559 LOC.
 
 ## Iteration Count
 
-27
+28
 
 ## Done This Iteration
 
-- Added `left` and `right` keycodes to event system
-- Dispatch handles left/right arrow keys to move text input cursor
-- Cursor clamps to [0, len] at boundaries
-- Mapped evdev scancodes 105/106 in demo
-- 1 new test covering cursor movement, insertion at mid-position, boundary clamping
+- Extracted `interactionBg` helper in draw.zig — was duplicated in button, checkbox, radio_button, text_input emitters
+- Net -19 lines
 
 ## Next
 
-1. Extract interaction bg helper in draw.zig when 4th widget needs it
-2. Plan dispatch.zig extraction if it passes ~800 lines
-3. Home/End keys for text input cursor (jump to start/end)
+1. Home/End keys for text input cursor (jump to start/end)
+2. Plan dispatch.zig extraction when goop.zig passes ~800 lines (currently 280)
+3. Delete key support for text input
 
 ## What's Wrong
 
