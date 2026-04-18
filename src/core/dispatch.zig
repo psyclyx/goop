@@ -78,6 +78,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                 const node = tree.get(t);
                 node.kind.scroll_area.scroll_x += ms.dx;
                 node.kind.scroll_area.scroll_y += ms.dy;
+                clampScroll(tree, t);
             }
         },
         else => {},
@@ -142,6 +143,40 @@ fn updateSliderValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32
     if (usable <= 0) return;
     const t = std.math.clamp((mouse_x - rect.x - thumb_w * 0.5) / usable, 0, 1);
     node.kind.slider.value = node.kind.slider.min + t * (node.kind.slider.max - node.kind.slider.min);
+}
+
+/// Clamp a scroll area's scroll values to keep content in bounds.
+/// Uses children's layout rects from the previous frame.
+fn clampScroll(tree: *widget.Tree, handle: widget.NodeHandle) void {
+    const node = tree.get(handle);
+    const viewport = node.layout_rect;
+    const extent = contentExtent(tree, handle);
+
+    const max_x = @max(extent.w - viewport.w, 0);
+    const max_y = @max(extent.h - viewport.h, 0);
+
+    node.kind.scroll_area.scroll_x = std.math.clamp(node.kind.scroll_area.scroll_x, 0, max_x);
+    node.kind.scroll_area.scroll_y = std.math.clamp(node.kind.scroll_area.scroll_y, 0, max_y);
+}
+
+/// Compute the bounding box size of all direct children of a node.
+/// Returns the total width and height the content occupies.
+fn contentExtent(tree: *const widget.Tree, parent: widget.NodeHandle) struct { w: f32, h: f32 } {
+    const parent_rect = tree.getConst(parent).layout_rect;
+    var max_x: f32 = parent_rect.x;
+    var max_y: f32 = parent_rect.y;
+
+    var iter = tree.children(parent);
+    while (iter.next()) |child| {
+        const r = tree.getConst(child).layout_rect;
+        max_x = @max(max_x, r.x + r.w);
+        max_y = @max(max_y, r.y + r.h);
+    }
+
+    return .{
+        .w = max_x - parent_rect.x,
+        .h = max_y - parent_rect.y,
+    };
 }
 
 /// Fire a click on a widget.
@@ -368,11 +403,53 @@ test "scroll area responds to mouse scroll" {
     defer tree.deinit();
 
     const scroll = try tree.addRoot(.{ .scroll_area = .{} });
+    // Add a child taller than the viewport so scrolling is possible
+    const child = try tree.addChild(scroll, .{ .text = .{ .content = "tall content" } });
     tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 200 };
+    tree.get(child).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 500 };
 
     var mouse = MouseState{ .x = 150, .y = 100 };
 
     process(&tree, &.{.{ .mouse_scroll = .{ .dx = 0, .dy = 30 } }}, &mouse, style.Theme.default);
 
     try std.testing.expectApproxEqAbs(@as(f32, 30), tree.getConst(scroll).kind.scroll_area.scroll_y, 0.01);
+}
+
+test "scroll clamped to content bounds" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{} });
+    const child = try tree.addChild(scroll, .{ .text = .{ .content = "content" } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 200 };
+    tree.get(child).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 400 };
+
+    var mouse = MouseState{ .x = 150, .y = 100 };
+
+    // Scroll way past content — should clamp to max (400 - 200 = 200)
+    process(&tree, &.{.{ .mouse_scroll = .{ .dx = 0, .dy = 9999 } }}, &mouse, style.Theme.default);
+    try std.testing.expectApproxEqAbs(@as(f32, 200), tree.getConst(scroll).kind.scroll_area.scroll_y, 0.01);
+
+    // Scroll negative — should clamp to 0
+    process(&tree, &.{.{ .mouse_scroll = .{ .dx = 0, .dy = -9999 } }}, &mouse, style.Theme.default);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(scroll).kind.scroll_area.scroll_y, 0.01);
+}
+
+test "scroll clamped when content fits viewport" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{} });
+    const child = try tree.addChild(scroll, .{ .text = .{ .content = "small" } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 200 };
+    tree.get(child).layout_rect = .{ .x = 0, .y = 0, .w = 100, .h = 50 };
+
+    var mouse = MouseState{ .x = 150, .y = 100 };
+
+    // Content fits — any scroll should clamp to 0
+    process(&tree, &.{.{ .mouse_scroll = .{ .dx = 50, .dy = 50 } }}, &mouse, style.Theme.default);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(scroll).kind.scroll_area.scroll_x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(scroll).kind.scroll_area.scroll_y, 0.01);
 }
