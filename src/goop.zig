@@ -8,6 +8,7 @@ pub const event = @import("core/event.zig");
 pub const style = @import("core/style.zig");
 pub const draw = @import("core/draw.zig");
 pub const layout = @import("core/layout.zig");
+pub const dispatch = @import("core/dispatch.zig");
 
 pub const Tree = widget.Tree;
 pub const NodeHandle = widget.NodeHandle;
@@ -23,6 +24,8 @@ pub const Context = struct {
     clay_arena: []u8,
     tree: Tree,
     theme: Theme,
+    events: std.ArrayListUnmanaged(Event),
+    mouse: dispatch.MouseState = .{},
 
     pub fn init(allocator: std.mem.Allocator, opts: InitOptions) !Context {
         const min_memory = c.Clay_MinMemorySize();
@@ -39,13 +42,46 @@ pub const Context = struct {
             .clay_arena = arena,
             .tree = Tree.init(allocator),
             .theme = opts.theme,
+            .events = .empty,
         };
     }
 
     pub fn deinit(self: *Context, allocator: std.mem.Allocator) void {
+        self.events.deinit(allocator);
         self.tree.deinit();
         c.Clay_SetCurrentContext(null);
         allocator.free(self.clay_arena);
+    }
+
+    /// Queue an input event for processing.
+    pub fn pushEvent(self: *Context, allocator: std.mem.Allocator, ev: Event) !void {
+        try self.events.append(allocator, ev);
+    }
+
+    /// Process all queued events: hit test, update interaction state,
+    /// detect clicks. Call after doLayout.
+    pub fn processEvents(self: *Context) void {
+        dispatch.process(&self.tree, self.events.items, &self.mouse);
+        self.events.clearRetainingCapacity();
+    }
+
+    /// Clear all button clicked flags. Call at the start of each frame
+    /// so clicks are only observed for one frame.
+    pub fn clearClickedFlags(self: *Context) void {
+        for (self.tree.nodes.items) |*node| {
+            switch (node.kind) {
+                .button => {
+                    node.kind.button.clicked = false;
+                },
+                else => {},
+            }
+        }
+    }
+
+    /// Check if a button was clicked this frame.
+    pub fn wasClicked(self: *const Context, handle: NodeHandle) bool {
+        const node = self.tree.getConst(handle);
+        return node.kind == .button and node.kind.button.clicked;
     }
 
     /// Run layout: walk the widget tree through clay and write back rects.
@@ -121,9 +157,36 @@ test "layout then draw produces commands" {
     try std.testing.expect(dl.commands.len >= 4);
 }
 
+test "event dispatch detects button click" {
+    const allocator = std.testing.allocator;
+    var ctx = try Context.init(allocator, .{ .width = 800, .height = 600 });
+    defer ctx.deinit(allocator);
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    const btn = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
+
+    ctx.doLayout();
+
+    // Button should have a non-zero rect after layout
+    const btn_rect = ctx.tree.getConst(btn).layout_rect;
+    const click_x = btn_rect.x + btn_rect.w / 2;
+    const click_y = btn_rect.y + btn_rect.h / 2;
+
+    try ctx.pushEvent(allocator, .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = click_y } });
+    try ctx.pushEvent(allocator, .{ .mouse_button = .{ .button = .left, .state = .released, .x = click_x, .y = click_y } });
+    ctx.processEvents();
+
+    try std.testing.expect(ctx.wasClicked(btn));
+
+    // After clearing, clicked should be false
+    ctx.clearClickedFlags();
+    try std.testing.expect(!ctx.wasClicked(btn));
+}
+
 test {
     _ = widget;
     _ = style;
     _ = layout;
     _ = draw;
+    _ = dispatch;
 }
