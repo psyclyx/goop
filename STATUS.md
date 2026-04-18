@@ -2,29 +2,28 @@
 
 ## Current
 
-Iteration 30.
-36 tests pass. Build clean. Demo runs. 3637 LOC.
+Iteration 31.
+37 tests pass. Build clean. Demo runs. 3644 LOC.
 
 ## Iteration Count
 
-30
+31
 
 ## Done This Iteration
 
-- Chore cycle: archived iterations 25–29, reviewed last 5 commits, pruned
-- dispatch.zig is 974 lines — past the 800-line extraction threshold
-- Updated DESIGN.md: marked interactionBg resolved, escalated dispatch.zig split
-- Corrected test count (36, not 37)
+- Extracted focus.zig (77 lines) and hittest.zig (40 lines) from dispatch.zig
+- dispatch.zig reduced from 974 to 862 lines
+- Tests remain in dispatch.zig (they test integrated behavior)
 
 ## Next
 
-1. Extract focus.zig and hittest.zig from dispatch.zig (overdue per design review)
-2. Delete key support for text input
-3. Text input placeholder text
+1. Delete key support for text input
+2. Text input placeholder text
+3. dispatch.zig still 862 lines — consider extracting scroll/slider helpers or tests
 
 ## What's Wrong
 
-- dispatch.zig is 974 lines — needs splitting (focus + hittest extraction)
+- dispatch.zig is 862 lines — still large, tests account for most of it
 - Widget tree is append-only — no removal/mutation API
 - No dirty tracking — full layout + full draw list every frame
 - Text baseline y-offset is approximate (y + font_size)
