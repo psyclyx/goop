@@ -2,23 +2,25 @@
 
 ## Current
 
-Iteration 28. Refactor iteration.
-35 tests pass. Build clean. Demo runs. 3559 LOC.
+Iteration 29.
+37 tests pass. Build clean. Demo runs. 3637 LOC.
 
 ## Iteration Count
 
-28
+29
 
 ## Done This Iteration
 
-- Extracted `interactionBg` helper in draw.zig — was duplicated in button, checkbox, radio_button, text_input emitters
-- Net -19 lines
+- Added `home` and `end` keycodes to `Keycode` enum
+- Home/End key handling in dispatch.zig for text input cursor (jump to start/end)
+- Mapped evdev scancodes 102 (home) and 107 (end) in demo
+- Added test for Home/End cursor movement
 
 ## Next
 
-1. Home/End keys for text input cursor (jump to start/end)
+1. Delete key support for text input
 2. Plan dispatch.zig extraction when goop.zig passes ~800 lines (currently 280)
-3. Delete key support for text input
+3. Text input placeholder text
 
 ## What's Wrong
 
