@@ -56,6 +56,7 @@ const State = struct {
     width: u32 = 800,
     height: u32 = 600,
     needs_redraw: bool = true,
+    frame_pending: bool = false,
 
     // Wayland globals
     compositor: ?*wl.wl_compositor = null,
@@ -244,6 +245,26 @@ fn pointerAxis(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, axis: u32, value: 
 
 fn fixedToF32(fixed: wl.wl_fixed_t) f32 {
     return @as(f32, @floatFromInt(fixed)) / 256.0;
+}
+
+// ── Frame callback ──
+
+const frame_listener = wl.wl_callback_listener{
+    .done = &frameDone,
+};
+
+fn frameDone(data: ?*anyopaque, callback: ?*wl.wl_callback, _: u32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    wl.wl_callback_destroy(callback);
+    state.frame_pending = false;
+    state.needs_redraw = true;
+}
+
+fn requestFrame(state: *State) void {
+    if (state.frame_pending) return;
+    const callback = wl.wl_surface_frame(state.surface) orelse return;
+    _ = wl.wl_callback_add_listener(callback, &frame_listener, state);
+    state.frame_pending = true;
 }
 
 // ── EGL setup ──
@@ -441,11 +462,12 @@ pub fn main() !void {
 
     std.debug.print("goop demo running ({}x{})\n", .{ state.width, state.height });
 
-    // Main loop
+    // Main loop — frame-callback paced
     while (state.running) {
+        // Flush outgoing requests, then block until events arrive
         if (wl.wl_display_dispatch(display) == -1) break;
 
-        if (!state.configured or !state.needs_redraw) continue;
+        if (!state.configured or !state.needs_redraw or state.frame_pending) continue;
         state.needs_redraw = false;
 
         // Process frame
@@ -474,6 +496,9 @@ pub fn main() !void {
         renderer.beginFrame(state.width, state.height);
         renderer.render(dl);
         _ = egl.eglSwapBuffers(state.egl_display, state.egl_surface);
+
+        // Request compositor pacing — next draw waits for frame callback
+        requestFrame(&state);
     }
 
     std.debug.print("goop demo exiting\n", .{});
