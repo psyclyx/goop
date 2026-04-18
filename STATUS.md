@@ -2,43 +2,42 @@
 
 ## Current
 
-Iteration 9. Integrated snail GPU text rendering into the core layout and demo
-renderer. Text is now measured with real glyph metrics (advance widths, kerning)
-instead of the 0.6×font_size stub. Demo renders actual text glyphs via snail's
-SDF pipeline. 13/13 tests pass.
+Iteration 10 (design review). Reviewed architecture after 9 iterations and
+~2,000 lines. Core architecture validated — clean module boundaries, correct
+layering. Two actionable findings: core depends on snail (must abstract), and
+pushEvent API takes unnecessary allocator param. 13/13 tests pass.
 
 ## Iteration Count
 
-9
+10
 
 ## Done This Iteration
 
-- layout.zig: added TextMeasureCtx (snail Font+Atlas), wired into Clay's
-  measureText callback via user data pointer
-- goop.zig: exposed TextMeasureCtx, doLayout now accepts optional text context
-- demo/render.zig: integrated snail Renderer+Batch for text; flushes text batch
-  before rect/clip commands to preserve draw order
-- demo/main.zig: loads font via fontconfig fallback, builds glyph atlas for
-  printable ASCII, passes TextMeasureCtx to layout
-- build.zig: added snail module import to demo module
+- Design review: challenged widget tree mutation model, core/snail coupling,
+  transient state placement, event queue API, scroll clamping, frame pacing
+- Updated DESIGN.md with decisions: abstract text measurement, fix pushEvent
+  API; deferred widget removal and interaction result separation (no 3x signal)
+- Validated: Clay integration, draw command model, dispatch, module boundaries
 
 ## Next
 
-1. Verify text baseline positioning visually (may need y-offset tuning)
-2. Slider drag interaction (press on thumb, track mouse_move while held)
-3. Add frame callback for proper Wayland frame pacing
+1. Abstract text measurement out of core (remove snail import from layout.zig)
+2. Clean up pushEvent API (Context owns event queue allocator)
+3. Slider drag interaction
+4. Frame callback in demo
+5. Border rendering
 
 ## What's Wrong
 
-- Text baseline y-offset is approximate (y + font_size) — may render too low
-- Only printable ASCII in atlas — non-ASCII chars will show as fallback boxes
-- No font size variation — all text uses theme default, no per-widget override
-- No frame callback — redraws on every Wayland event batch, not paced
+- Core imports snail in layout.zig — violates "core must not depend on rendering"
+- pushEvent takes allocator on every call — API friction, Context already has one
 - Widget tree is append-only — no removal/mutation API
 - No dirty tracking — full layout + full draw list every frame
-- Slider has no drag interaction — only visual, no mouse control
+- Scroll values accumulate unbounded — no clamping to content bounds
+- Text baseline y-offset is approximate (y + font_size)
+- Slider has no drag interaction — only visual
 - No keyboard/focus navigation
 - No border rendering on rects
+- No frame callback — redraws on every event, not paced
 - Demo uses page_allocator everywhere — no arena/frame allocator
-- pushEvent takes allocator param on every call (queue could own allocator)
 - Font loading uses popen("fc-match") — works but fragile
