@@ -131,8 +131,15 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                         if (mouse.focused) |f| {
                             const node = tree.get(f);
                             if (node.kind == .text_input) {
-                                if (node.kind.text_input.cursor > 0) {
-                                    node.kind.text_input.cursor -= 1;
+                                const ti = &node.kind.text_input;
+                                if (mouse.shift_down) {
+                                    if (ti.selection_anchor == null) ti.selection_anchor = ti.cursor;
+                                    if (ti.cursor > 0) ti.cursor -= 1;
+                                } else if (ti.hasSelection()) {
+                                    ti.cursor = ti.selectionRange().start;
+                                    ti.clearSelection();
+                                } else if (ti.cursor > 0) {
+                                    ti.cursor -= 1;
                                 }
                             }
                         }
@@ -143,8 +150,15 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                         if (mouse.focused) |f| {
                             const node = tree.get(f);
                             if (node.kind == .text_input) {
-                                if (node.kind.text_input.cursor < node.kind.text_input.len) {
-                                    node.kind.text_input.cursor += 1;
+                                const ti = &node.kind.text_input;
+                                if (mouse.shift_down) {
+                                    if (ti.selection_anchor == null) ti.selection_anchor = ti.cursor;
+                                    if (ti.cursor < ti.len) ti.cursor += 1;
+                                } else if (ti.hasSelection()) {
+                                    ti.cursor = ti.selectionRange().end;
+                                    ti.clearSelection();
+                                } else if (ti.cursor < ti.len) {
+                                    ti.cursor += 1;
                                 }
                             }
                         }
@@ -155,7 +169,13 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                         if (mouse.focused) |f| {
                             const node = tree.get(f);
                             if (node.kind == .text_input) {
-                                node.kind.text_input.cursor = 0;
+                                const ti = &node.kind.text_input;
+                                if (mouse.shift_down) {
+                                    if (ti.selection_anchor == null) ti.selection_anchor = ti.cursor;
+                                } else {
+                                    ti.clearSelection();
+                                }
+                                ti.cursor = 0;
                             }
                         }
                     }
@@ -165,7 +185,13 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                         if (mouse.focused) |f| {
                             const node = tree.get(f);
                             if (node.kind == .text_input) {
-                                node.kind.text_input.cursor = node.kind.text_input.len;
+                                const ti = &node.kind.text_input;
+                                if (mouse.shift_down) {
+                                    if (ti.selection_anchor == null) ti.selection_anchor = ti.cursor;
+                                } else {
+                                    ti.clearSelection();
+                                }
+                                ti.cursor = ti.len;
                             }
                         }
                     }
@@ -903,4 +929,199 @@ test "text input home/end keys move cursor" {
         .{ .key = .{ .scancode = 107, .keycode = .end, .state = .pressed } },
     }, &mouse, style.Theme.default);
     try std.testing.expectEqual(@as(u8, 5), tree.getConst(ti).kind.text_input.cursor);
+}
+
+test "shift+arrow creates selection" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Click to focus
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    // Type "hello"
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'h' } },
+        .{ .text = .{ .codepoint = 'e' } },
+        .{ .text = .{ .codepoint = 'l' } },
+        .{ .text = .{ .codepoint = 'l' } },
+        .{ .text = .{ .codepoint = 'o' } },
+    }, &mouse, style.Theme.default);
+
+    // Shift+Left twice — select "lo" (cursor 5->3, anchor 5)
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    const input = &tree.get(ti).kind.text_input;
+    try std.testing.expect(input.hasSelection());
+    try std.testing.expectEqual(@as(u8, 3), input.cursor);
+    try std.testing.expectEqual(@as(?u8, 5), input.selection_anchor);
+    try std.testing.expectEqualStrings("lo", input.selectedContent());
+}
+
+test "arrow without shift collapses selection" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Click to focus
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    // Type "abc"
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'a' } },
+        .{ .text = .{ .codepoint = 'b' } },
+        .{ .text = .{ .codepoint = 'c' } },
+    }, &mouse, style.Theme.default);
+
+    // Shift+Left twice — select "bc"
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    // Release shift, press Left — collapse to start of selection
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    const input = &tree.get(ti).kind.text_input;
+    try std.testing.expect(!input.hasSelection());
+    try std.testing.expectEqual(@as(u8, 1), input.cursor);
+
+    // Now right-collapse: re-select then press Right
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(!input.hasSelection());
+    try std.testing.expectEqual(@as(u8, 3), input.cursor);
+}
+
+test "backspace deletes selection" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Click to focus
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    // Type "abcd"
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'a' } },
+        .{ .text = .{ .codepoint = 'b' } },
+        .{ .text = .{ .codepoint = 'c' } },
+        .{ .text = .{ .codepoint = 'd' } },
+    }, &mouse, style.Theme.default);
+
+    // Select "bc" (shift+left twice from end, then shift+right to deselect 'd', actually let's just select middle)
+    // Move to position 1, then shift+right twice to select "bc"
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 102, .keycode = .home, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    // cursor at 1
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expectEqualStrings("bc", tree.get(ti).kind.text_input.selectedContent());
+
+    // Backspace deletes the selection
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 14, .keycode = .backspace, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expectEqualStrings("ad", tree.get(ti).kind.text_input.content());
+    try std.testing.expectEqual(@as(u8, 1), tree.get(ti).kind.text_input.cursor);
+    try std.testing.expect(!tree.get(ti).kind.text_input.hasSelection());
+}
+
+test "typing replaces selection" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Click to focus
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    // Type "hello"
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'h' } },
+        .{ .text = .{ .codepoint = 'e' } },
+        .{ .text = .{ .codepoint = 'l' } },
+        .{ .text = .{ .codepoint = 'l' } },
+        .{ .text = .{ .codepoint = 'o' } },
+    }, &mouse, style.Theme.default);
+
+    // Select all with Shift+Home
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
+        .{ .key = .{ .scancode = 102, .keycode = .home, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(tree.get(ti).kind.text_input.hasSelection());
+
+    // Type "x" — replaces entire selection
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'x' } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expectEqualStrings("x", tree.get(ti).kind.text_input.content());
+    try std.testing.expect(!tree.get(ti).kind.text_input.hasSelection());
 }

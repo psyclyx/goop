@@ -338,17 +338,29 @@ fn emitTextInput(
         } });
     }
 
-    // Cursor (thin rect when focused)
+    // Selection highlight and cursor (when focused)
     if (node.interaction.focused) {
         const char_width = resolved.font_size * 0.6;
+        const text_y = rect.y + resolved.padding.top;
+
+        // Selection highlight
+        if (ti.hasSelection()) {
+            const range = ti.selectionRange();
+            const sel_x = rect.x + resolved.padding.left + @as(f32, @floatFromInt(range.start)) * char_width;
+            const sel_w = @as(f32, @floatFromInt(range.end - range.start)) * char_width;
+            try commands.append(allocator, .{ .rect = .{
+                .bounds = .{ .x = sel_x, .y = text_y, .w = sel_w, .h = resolved.font_size },
+                .color = theme.selection_bg,
+                .border_color = theme.selection_bg,
+                .border_width = 0,
+                .corner_radius = 0,
+            } });
+        }
+
+        // Cursor
         const cursor_x = rect.x + resolved.padding.left + @as(f32, @floatFromInt(ti.cursor)) * char_width;
         try commands.append(allocator, .{ .rect = .{
-            .bounds = .{
-                .x = cursor_x,
-                .y = rect.y + resolved.padding.top,
-                .w = 1,
-                .h = resolved.font_size,
-            },
+            .bounds = .{ .x = cursor_x, .y = text_y, .w = 1, .h = resolved.font_size },
             .color = resolved.fg,
             .border_color = resolved.fg,
             .border_width = 0,
@@ -671,4 +683,40 @@ test "text input with content shows content not placeholder" {
     try std.testing.expect(dl.commands[1] == .text); // content, not placeholder
     try std.testing.expectEqualStrings("Hi", dl.commands[1].text.text);
     try std.testing.expectEqual(theme.fg, dl.commands[1].text.color);
+}
+
+test "focused text input with selection emits highlight rect" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const ti = try tree.addRoot(.{ .text_input = .{} });
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 20, .w = 300, .h = 30 };
+    tree.get(ti).interaction.focused = true;
+
+    // Insert "hello" then select positions 1..3 ("el")
+    const input = &tree.get(ti).kind.text_input;
+    input.insert('h');
+    input.insert('e');
+    input.insert('l');
+    input.insert('l');
+    input.insert('o');
+    input.cursor = 3;
+    input.selection_anchor = 1;
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator);
+    defer freeDrawList(&dl, allocator);
+
+    // bg rect + text + selection highlight + cursor + focus ring = 5 commands
+    try std.testing.expectEqual(@as(usize, 5), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect); // bg
+    try std.testing.expect(dl.commands[1] == .text); // content
+    try std.testing.expect(dl.commands[2] == .rect); // selection highlight
+    try std.testing.expect(dl.commands[3] == .rect); // cursor
+    try std.testing.expect(dl.commands[4] == .rect); // focus ring
+
+    // Verify selection highlight color
+    try std.testing.expectEqual(theme.selection_bg, dl.commands[2].rect.color);
 }

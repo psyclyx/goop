@@ -69,13 +69,53 @@ pub const WidgetKind = union(enum) {
         buffer: [256]u8 = [_]u8{0} ** 256,
         len: u8 = 0,
         cursor: u8 = 0,
+        selection_anchor: ?u8 = null,
         placeholder: []const u8 = "",
 
         pub fn content(self: *const TextInput) []const u8 {
             return self.buffer[0..self.len];
         }
 
+        pub fn hasSelection(self: *const TextInput) bool {
+            if (self.selection_anchor) |anchor| {
+                return anchor != self.cursor;
+            }
+            return false;
+        }
+
+        pub fn selectionRange(self: *const TextInput) struct { start: u8, end: u8 } {
+            const anchor = self.selection_anchor orelse self.cursor;
+            return if (anchor < self.cursor)
+                .{ .start = anchor, .end = self.cursor }
+            else
+                .{ .start = self.cursor, .end = anchor };
+        }
+
+        pub fn selectedContent(self: *const TextInput) []const u8 {
+            const range = self.selectionRange();
+            return self.buffer[range.start..range.end];
+        }
+
+        pub fn deleteSelection(self: *TextInput) void {
+            const range = self.selectionRange();
+            const sel_len = range.end - range.start;
+            if (sel_len == 0) return;
+            // Shift bytes left to close the gap
+            var i: usize = range.start;
+            while (i < self.len - sel_len) : (i += 1) {
+                self.buffer[i] = self.buffer[i + sel_len];
+            }
+            self.len -= sel_len;
+            self.cursor = range.start;
+            self.selection_anchor = null;
+        }
+
+        pub fn clearSelection(self: *TextInput) void {
+            self.selection_anchor = null;
+        }
+
         pub fn insert(self: *TextInput, byte: u8) void {
+            if (self.hasSelection()) self.deleteSelection();
             if (self.len >= self.buffer.len) return;
             // Shift bytes right to make room at cursor
             var i: usize = self.len;
@@ -88,6 +128,10 @@ pub const WidgetKind = union(enum) {
         }
 
         pub fn deleteBack(self: *TextInput) void {
+            if (self.hasSelection()) {
+                self.deleteSelection();
+                return;
+            }
             if (self.cursor == 0) return;
             // Shift bytes left over the deleted character
             const pos = self.cursor - 1;
@@ -100,6 +144,10 @@ pub const WidgetKind = union(enum) {
         }
 
         pub fn deleteForward(self: *TextInput) void {
+            if (self.hasSelection()) {
+                self.deleteSelection();
+                return;
+            }
             if (self.cursor >= self.len) return;
             var i: usize = self.cursor;
             while (i < self.len - 1) : (i += 1) {
