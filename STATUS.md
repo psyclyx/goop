@@ -2,28 +2,25 @@
 
 ## Current
 
-Iteration 24. Keyboard focus navigation added.
-29 tests pass. Build clean. Demo runs.
+Iteration 25. Chore cycle + design review.
+29 tests pass. Build clean. Demo runs. 3171 LOC.
 
 ## Iteration Count
 
-24
+25
 
 ## Done This Iteration
 
-- Added Keycode enum to event.zig (tab, enter, space, escape, shifts, unknown)
-- Focus tracking in dispatch: Tab/Shift+Tab cycles, Enter/Space activates
-- Click-to-focus on interactive widgets
-- Focus ring rendering in draw.zig (accent-colored border around focused widget)
-- focus_ring color added to Theme
-- Wayland keyboard listener wired up in demo with evdev scancode mapping
-- 4 new tests: tab cycling, shift+tab backwards, enter/space activation, click focus
+- Archived iterations 20–24 to docs/archive/
+- Design review: assessed all 9 source files, documented observations
+- Updated DESIGN.md with iteration 25 review (size thresholds, deferred items, validations)
+- Marked scroll clamping as resolved from iteration 10 deferred list
 
 ## Next
 
-1. Chore cycle at iteration 25
-2. Design review at iteration 25 (10th multiple)
-3. Text input widget (stretch)
+1. Text input widget — next feature target
+2. Extract interaction bg helper in draw.zig when 4th widget needs it
+3. Plan dispatch.zig extraction if it passes ~800 lines
 
 ## What's Wrong
 
@@ -35,3 +32,4 @@ Iteration 24. Keyboard focus navigation added.
 - Scroll clamping uses previous frame's child layout rects — off by one frame on content resize
 - Focus ring draws outside widget bounds — may clip in scroll areas
 - No keyboard-driven slider value change (arrow keys)
+- Magic numbers for focus ring inset and checkbox/radio indicator inset
