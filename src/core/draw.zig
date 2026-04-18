@@ -131,18 +131,10 @@ fn emitButton(
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
 ) !void {
-    // Pick bg based on interaction state
-    const bg = if (node.interaction.pressed)
-        theme.bg_active
-    else if (node.interaction.hovered)
-        theme.bg_hover
-    else
-        resolved.bg;
-
     // Background rect
     try commands.append(allocator, .{ .rect = .{
         .bounds = node.layout_rect,
-        .color = bg,
+        .color = interactionBg(node, resolved, theme),
         .border_color = resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
@@ -172,14 +164,6 @@ fn emitCheckbox(
     const rect = node.layout_rect;
     const box_size = resolved.font_size;
 
-    // Pick bg based on interaction state
-    const bg = if (node.interaction.pressed)
-        theme.bg_active
-    else if (node.interaction.hovered)
-        theme.bg_hover
-    else
-        resolved.bg;
-
     // Checkbox box
     try commands.append(allocator, .{ .rect = .{
         .bounds = .{
@@ -188,7 +172,7 @@ fn emitCheckbox(
             .w = box_size,
             .h = box_size,
         },
-        .color = bg,
+        .color = interactionBg(node, resolved, theme),
         .border_color = resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
@@ -235,13 +219,6 @@ fn emitRadioButton(
     const box_size = resolved.font_size;
     const circle_radius = box_size / 2;
 
-    const bg = if (node.interaction.pressed)
-        theme.bg_active
-    else if (node.interaction.hovered)
-        theme.bg_hover
-    else
-        resolved.bg;
-
     // Outer circle
     try commands.append(allocator, .{ .rect = .{
         .bounds = .{
@@ -250,7 +227,7 @@ fn emitRadioButton(
             .w = box_size,
             .h = box_size,
         },
-        .color = bg,
+        .color = interactionBg(node, resolved, theme),
         .border_color = resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = circle_radius,
@@ -332,17 +309,10 @@ fn emitTextInput(
 ) !void {
     const rect = node.layout_rect;
 
-    const bg = if (node.interaction.pressed)
-        theme.bg_active
-    else if (node.interaction.hovered)
-        theme.bg_hover
-    else
-        resolved.bg;
-
     // Background
     try commands.append(allocator, .{ .rect = .{
         .bounds = rect,
-        .color = bg,
+        .color = interactionBg(node, resolved, theme),
         .border_color = resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
@@ -429,6 +399,17 @@ fn emitFocusRing(
         .border_width = 2,
         .corner_radius = corner_radius + 2,
     } });
+}
+
+/// Resolve the background color for an interactive widget, accounting for
+/// pressed/hovered state.
+fn interactionBg(node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme) style.Color {
+    return if (node.interaction.pressed)
+        theme.bg_active
+    else if (node.interaction.hovered)
+        theme.bg_hover
+    else
+        resolved.bg;
 }
 
 fn emitChildren(
