@@ -81,6 +81,9 @@ pub const Context = struct {
                 .checkbox => {
                     node.kind.checkbox.clicked = false;
                 },
+                .radio_button => {
+                    node.kind.radio_button.clicked = false;
+                },
                 else => {},
             }
         }
@@ -92,6 +95,7 @@ pub const Context = struct {
         return switch (node.kind) {
             .button => node.kind.button.clicked,
             .checkbox => node.kind.checkbox.clicked,
+            .radio_button => node.kind.radio_button.clicked,
             else => false,
         };
     }
@@ -99,6 +103,11 @@ pub const Context = struct {
     /// Check if a checkbox is currently checked.
     pub fn isChecked(self: *const Context, handle: NodeHandle) bool {
         return self.tree.getConst(handle).kind.checkbox.checked;
+    }
+
+    /// Check if a radio button is currently selected.
+    pub fn isSelected(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.radio_button.selected;
     }
 
     /// Get the current value of a slider.
@@ -223,6 +232,38 @@ test "checkbox toggle via events" {
     ctx.processEvents();
 
     try std.testing.expect(ctx.isChecked(cb));
+}
+
+test "radio button group selection via events" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    const rb1 = try ctx.tree.addChild(root, .{ .radio_button = .{ .label = "A", .group = 1 } });
+    const rb2 = try ctx.tree.addChild(root, .{ .radio_button = .{ .label = "B", .group = 1 } });
+
+    ctx.doLayout(null);
+
+    const rb1_rect = ctx.tree.getConst(rb1).layout_rect;
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = rb1_rect.x + 5, .y = rb1_rect.y + 5 } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = rb1_rect.x + 5, .y = rb1_rect.y + 5 } });
+    ctx.processEvents();
+
+    try std.testing.expect(ctx.isSelected(rb1));
+    try std.testing.expect(!ctx.isSelected(rb2));
+    try std.testing.expect(ctx.wasClicked(rb1));
+
+    ctx.clearClickedFlags();
+    try std.testing.expect(!ctx.wasClicked(rb1));
+
+    // Click rb2 — should deselect rb1
+    const rb2_rect = ctx.tree.getConst(rb2).layout_rect;
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = rb2_rect.x + 5, .y = rb2_rect.y + 5 } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = rb2_rect.x + 5, .y = rb2_rect.y + 5 } });
+    ctx.processEvents();
+
+    try std.testing.expect(!ctx.isSelected(rb1));
+    try std.testing.expect(ctx.isSelected(rb2));
 }
 
 test {

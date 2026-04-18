@@ -77,6 +77,7 @@ fn emitNode(
         .text => |txt| try emitText(node, txt, resolved, commands, allocator),
         .button => |btn| try emitButton(tree, handle, node, btn, resolved, theme, commands, allocator),
         .checkbox => |cb| try emitCheckbox(node, cb, resolved, theme, commands, allocator),
+        .radio_button => |rb| try emitRadioButton(node, rb, resolved, theme, commands, allocator),
         .slider => |sl| try emitSlider(node, sl, resolved, theme, commands, allocator),
         .scroll_area => try emitScrollArea(tree, handle, node, resolved, theme, commands, allocator),
     }
@@ -213,6 +214,66 @@ fn emitCheckbox(
         .x = rect.x + resolved.padding.left + box_size + resolved.padding.left,
         .y = rect.y + resolved.padding.top,
         .text = cb.label,
+        .color = resolved.fg,
+        .font_size = resolved.font_size,
+    } });
+}
+
+fn emitRadioButton(
+    node: *const widget.Node,
+    rb: widget.WidgetKind.RadioButton,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    const rect = node.layout_rect;
+    const box_size = resolved.font_size;
+    const circle_radius = box_size / 2;
+
+    const bg = if (node.interaction.pressed)
+        theme.bg_active
+    else if (node.interaction.hovered)
+        theme.bg_hover
+    else
+        resolved.bg;
+
+    // Outer circle
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = .{
+            .x = rect.x + resolved.padding.left,
+            .y = rect.y + resolved.padding.top,
+            .w = box_size,
+            .h = box_size,
+        },
+        .color = bg,
+        .border_color = resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = circle_radius,
+    } });
+
+    // Inner dot when selected
+    if (rb.selected) {
+        const inset: f32 = 3;
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = .{
+                .x = rect.x + resolved.padding.left + inset,
+                .y = rect.y + resolved.padding.top + inset,
+                .w = box_size - inset * 2,
+                .h = box_size - inset * 2,
+            },
+            .color = theme.accent,
+            .border_color = theme.accent,
+            .border_width = 0,
+            .corner_radius = circle_radius - inset,
+        } });
+    }
+
+    // Label text
+    try commands.append(allocator, .{ .text = .{
+        .x = rect.x + resolved.padding.left + box_size + resolved.padding.left,
+        .y = rect.y + resolved.padding.top,
+        .text = rb.label,
         .color = resolved.fg,
         .font_size = resolved.font_size,
     } });
@@ -355,6 +416,49 @@ test "checked checkbox emits indicator" {
     try std.testing.expect(dl.commands[0] == .rect); // box
     try std.testing.expect(dl.commands[1] == .rect); // check indicator
     try std.testing.expect(dl.commands[2] == .text); // label
+}
+
+test "radio button emits circle and label" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const rb = try tree.addRoot(.{ .radio_button = .{ .label = "Option A", .group = 1 } });
+    tree.get(rb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator);
+    defer freeDrawList(&dl, allocator);
+
+    // Unselected: circle rect + label text = 2 commands
+    try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[1] == .text);
+
+    // Corner radius should be half the box size (circular)
+    const circle = dl.commands[0].rect;
+    try std.testing.expectApproxEqAbs(circle.bounds.w / 2, circle.corner_radius, 0.01);
+}
+
+test "selected radio button emits indicator dot" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const rb = try tree.addRoot(.{ .radio_button = .{ .label = "Option A", .group = 1, .selected = true } });
+    tree.get(rb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator);
+    defer freeDrawList(&dl, allocator);
+
+    // Selected: circle rect + indicator dot + label text = 3 commands
+    try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[1] == .rect);
+    try std.testing.expect(dl.commands[2] == .text);
 }
 
 test "slider emits track and thumb" {

@@ -120,7 +120,7 @@ fn hitTestKind(tree: *const widget.Tree, x: f32, y: f32, kind_tag: std.meta.Tag(
 
 fn isInteractive(kind: widget.WidgetKind) bool {
     return switch (kind) {
-        .button, .checkbox, .slider, .scroll_area, .container => true,
+        .button, .checkbox, .radio_button, .slider, .scroll_area, .container => true,
         .text => false,
     };
 }
@@ -141,7 +141,7 @@ fn updateSliderValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32
     node.kind.slider.value = node.kind.slider.min + t * (node.kind.slider.max - node.kind.slider.min);
 }
 
-/// Fire a click on a widget (currently only buttons respond).
+/// Fire a click on a widget.
 fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
     const node = tree.get(handle);
     switch (node.kind) {
@@ -151,6 +151,17 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
         .checkbox => {
             node.kind.checkbox.checked = !node.kind.checkbox.checked;
             node.kind.checkbox.clicked = true;
+        },
+        .radio_button => {
+            const group = node.kind.radio_button.group;
+            // Deselect all other radio buttons in the same group
+            for (tree.nodes.items) |*n| {
+                if (n.kind == .radio_button and n.kind.radio_button.group == group) {
+                    n.kind.radio_button.selected = false;
+                }
+            }
+            node.kind.radio_button.selected = true;
+            node.kind.radio_button.clicked = true;
         },
         else => {},
     }
@@ -301,6 +312,51 @@ test "checkbox toggles on click" {
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
     }, &mouse);
     try std.testing.expect(!tree.getConst(cb).kind.checkbox.checked);
+}
+
+test "radio button selects and deselects group siblings" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const rb1 = try tree.addChild(root, .{ .radio_button = .{ .label = "A", .group = 1 } });
+    const rb2 = try tree.addChild(root, .{ .radio_button = .{ .label = "B", .group = 1 } });
+    const rb3 = try tree.addChild(root, .{ .radio_button = .{ .label = "Other", .group = 2 } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(rb1).layout_rect = .{ .x = 10, .y = 10, .w = 200, .h = 26 };
+    tree.get(rb2).layout_rect = .{ .x = 10, .y = 40, .w = 200, .h = 26 };
+    tree.get(rb3).layout_rect = .{ .x = 10, .y = 70, .w = 200, .h = 26 };
+
+    var mouse = MouseState{};
+
+    // Click rb1
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse);
+    try std.testing.expect(tree.getConst(rb1).kind.radio_button.selected);
+    try std.testing.expect(!tree.getConst(rb2).kind.radio_button.selected);
+
+    // Click rb2 — should deselect rb1
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 50 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 50 } },
+    }, &mouse);
+    try std.testing.expect(!tree.getConst(rb1).kind.radio_button.selected);
+    try std.testing.expect(tree.getConst(rb2).kind.radio_button.selected);
+
+    // rb3 (different group) should be unaffected
+    try std.testing.expect(!tree.getConst(rb3).kind.radio_button.selected);
+
+    // Click rb3 — group 1 should be unaffected
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 80 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 80 } },
+    }, &mouse);
+    try std.testing.expect(tree.getConst(rb2).kind.radio_button.selected);
+    try std.testing.expect(tree.getConst(rb3).kind.radio_button.selected);
 }
 
 test "scroll area responds to mouse scroll" {

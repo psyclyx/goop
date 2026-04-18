@@ -62,6 +62,7 @@ fn emitNode(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style_mo
         .text => |txt| emitText(handle, txt, resolved),
         .button => |btn| emitButton(handle, btn, resolved),
         .checkbox => |cb| emitCheckbox(handle, cb, resolved),
+        .radio_button => |rb| emitRadioButton(handle, rb, resolved),
         .container => |cont| emitContainer(tree, handle, cont, resolved, theme),
         .slider => emitSlider(handle, resolved),
         .scroll_area => emitScrollArea(tree, handle, resolved, theme),
@@ -162,6 +163,46 @@ fn emitCheckbox(handle: widget.NodeHandle, cb: widget.WidgetKind.Checkbox, resol
     });
     c.Clay__OpenTextElement(
         clayString(cb.label),
+        c.Clay__StoreTextElementConfig(.{
+            .userData = null,
+            .textColor = clayColor(resolved.fg),
+            .fontId = 0,
+            .fontSize = @intFromFloat(resolved.font_size),
+            .letterSpacing = 0,
+            .lineHeight = 0,
+            .wrapMode = c.CLAY_TEXT_WRAP_NONE,
+            .textAlignment = c.CLAY_TEXT_ALIGN_LEFT,
+        }),
+    );
+    c.Clay__CloseElement();
+}
+
+fn emitRadioButton(handle: widget.NodeHandle, rb: widget.WidgetKind.RadioButton, resolved: style_mod.ResolvedStyle) void {
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = nodeId(handle),
+        .layout = .{
+            .sizing = .{
+                .width = growSizing(),
+                .height = .{},
+            },
+            .padding = clayPadding(resolved.padding),
+            .childGap = @intFromFloat(resolved.padding.left),
+            .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
+            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
+        },
+        .backgroundColor = .{},
+        .cornerRadius = .{},
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
+    c.Clay__OpenTextElement(
+        clayString(rb.label),
         c.Clay__StoreTextElementConfig(.{
             .userData = null,
             .textColor = clayColor(resolved.fg),

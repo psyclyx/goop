@@ -83,6 +83,9 @@ const State = struct {
     btn_b: goop.NodeHandle = @enumFromInt(0),
     btn_c: goop.NodeHandle = @enumFromInt(0),
     checkbox: goop.NodeHandle = @enumFromInt(0),
+    radio_a: goop.NodeHandle = @enumFromInt(0),
+    radio_b: goop.NodeHandle = @enumFromInt(0),
+    radio_c: goop.NodeHandle = @enumFromInt(0),
     click_count: u32 = 0,
 };
 
@@ -334,6 +337,11 @@ fn buildWidgetTree(state: *State) !void {
     // Checkbox
     state.checkbox = try ctx.tree.addChild(root, .{ .checkbox = .{ .label = "Enable option" } });
 
+    // Radio buttons
+    state.radio_a = try ctx.tree.addChild(root, .{ .radio_button = .{ .label = "Option A", .group = 1, .selected = true } });
+    state.radio_b = try ctx.tree.addChild(root, .{ .radio_button = .{ .label = "Option B", .group = 1 } });
+    state.radio_c = try ctx.tree.addChild(root, .{ .radio_button = .{ .label = "Option C", .group = 1 } });
+
     // Slider
     _ = try ctx.tree.addChild(root, .{ .slider = .{ .value = 0.5, .min = 0, .max = 1 } });
 
@@ -497,6 +505,11 @@ pub fn main() !void {
         if (ctx.wasClicked(state.checkbox)) {
             std.debug.print("Checkbox toggled: {}\n", .{ctx.isChecked(state.checkbox)});
         }
+
+        // Log radio button selection
+        if (ctx.wasClicked(state.radio_a)) std.debug.print("Radio: Option A selected\n", .{});
+        if (ctx.wasClicked(state.radio_b)) std.debug.print("Radio: Option B selected\n", .{});
+        if (ctx.wasClicked(state.radio_c)) std.debug.print("Radio: Option C selected\n", .{});
 
         // Render
         var dl = try ctx.generateDrawList();

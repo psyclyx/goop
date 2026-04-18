@@ -21,6 +21,7 @@ pub const WidgetKind = union(enum) {
     text: Text,
     button: Button,
     checkbox: Checkbox,
+    radio_button: RadioButton,
     slider: Slider,
     scroll_area: ScrollArea,
 
@@ -42,6 +43,13 @@ pub const WidgetKind = union(enum) {
     pub const Checkbox = struct {
         label: []const u8,
         checked: bool = false,
+        clicked: bool = false,
+    };
+
+    pub const RadioButton = struct {
+        label: []const u8,
+        group: u32,
+        selected: bool = false,
         clicked: bool = false,
     };
 
