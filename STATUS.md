@@ -2,30 +2,27 @@
 
 ## Current
 
-Iteration 13. Slider drag interaction implemented — click and drag
-sets slider value proportionally. 14/14 tests pass. Library and demo
-build clean.
+Iteration 14. Frame callback pacing added to demo — rendering is now
+throttled to compositor refresh rate via wl_surface.frame callbacks.
+14/14 tests pass. Library and demo build clean.
 
 ## Iteration Count
 
-13
+14
 
 ## Done This Iteration
 
-- Added drag_target to MouseState for tracking active slider drags
-- Mouse press on slider starts drag and sets value from click position
-- Mouse move during drag updates slider value (clamped to min/max)
-- Mouse release ends drag
-- Added Context.sliderValue convenience accessor
-- Added slider drag test
+- Added wl_callback_listener for wl_surface.frame done events
+- Added requestFrame helper to request compositor pacing
+- Main loop now skips drawing when a frame callback is pending
+- After each swap, a frame callback is requested before the next draw
 
 ## Next
 
-1. Frame callback in demo
-2. Border rendering
-3. Checkbox widget
-4. Widget tree mutation/removal API
-5. Chore cycle (iteration 15)
+1. Border rendering
+2. Checkbox widget
+3. Widget tree mutation/removal API
+4. Chore cycle (iteration 15)
 
 ## What's Wrong
 
@@ -35,7 +32,6 @@ build clean.
 - Text baseline y-offset is approximate (y + font_size)
 - No keyboard/focus navigation
 - No border rendering on rects
-- No frame callback — redraws on every event, not paced
 - Demo uses page_allocator everywhere — no arena/frame allocator
 - Font loading uses popen("fc-match") — works but fragile
 - Slider thumb width (16px) is hardcoded in both draw.zig and dispatch.zig
