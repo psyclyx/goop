@@ -244,6 +244,8 @@ fn evdevToKeycode(scancode: u32) goop.Event.Keycode {
         1 => .escape,
         42 => .left_shift,
         54 => .right_shift,
+        105 => .left,
+        106 => .right,
         else => .unknown,
     };
 }

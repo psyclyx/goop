@@ -115,6 +115,30 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                         }
                     }
                 },
+                .left => {
+                    if (k.state == .pressed or k.state == .repeat) {
+                        if (mouse.focused) |f| {
+                            const node = tree.get(f);
+                            if (node.kind == .text_input) {
+                                if (node.kind.text_input.cursor > 0) {
+                                    node.kind.text_input.cursor -= 1;
+                                }
+                            }
+                        }
+                    }
+                },
+                .right => {
+                    if (k.state == .pressed or k.state == .repeat) {
+                        if (mouse.focused) |f| {
+                            const node = tree.get(f);
+                            if (node.kind == .text_input) {
+                                if (node.kind.text_input.cursor < node.kind.text_input.len) {
+                                    node.kind.text_input.cursor += 1;
+                                }
+                            }
+                        }
+                    }
+                },
                 .space, .enter => {
                     if (k.state == .pressed) {
                         if (mouse.focused) |f| {
@@ -780,6 +804,73 @@ test "text input ignores input when not focused" {
     }, &mouse, style.Theme.default);
 
     try std.testing.expectEqualStrings("", tree.getConst(ti).kind.text_input.content());
+}
+
+test "text input arrow keys move cursor" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Click to focus
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    // Type "abc" — cursor at 3
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'a' } },
+        .{ .text = .{ .codepoint = 'b' } },
+        .{ .text = .{ .codepoint = 'c' } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(@as(u8, 3), tree.getConst(ti).kind.text_input.cursor);
+
+    // Left arrow twice — cursor at 1
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(@as(u8, 1), tree.getConst(ti).kind.text_input.cursor);
+
+    // Right arrow once — cursor at 2
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(@as(u8, 2), tree.getConst(ti).kind.text_input.cursor);
+
+    // Insert 'x' at cursor position 2 — "abxc"
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'x' } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqualStrings("abxc", tree.getConst(ti).kind.text_input.content());
+
+    // Left arrow at position 0 stays at 0
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(@as(u8, 0), tree.getConst(ti).kind.text_input.cursor);
+
+    // Right arrow past end stays at len
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(@as(u8, 4), tree.getConst(ti).kind.text_input.cursor);
 }
 
 test "text input is focusable via tab" {
