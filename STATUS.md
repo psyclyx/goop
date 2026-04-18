@@ -2,28 +2,29 @@
 
 ## Current
 
-Iteration 29.
-37 tests pass. Build clean. Demo runs. 3637 LOC.
+Iteration 30.
+36 tests pass. Build clean. Demo runs. 3637 LOC.
 
 ## Iteration Count
 
-29
+30
 
 ## Done This Iteration
 
-- Added `home` and `end` keycodes to `Keycode` enum
-- Home/End key handling in dispatch.zig for text input cursor (jump to start/end)
-- Mapped evdev scancodes 102 (home) and 107 (end) in demo
-- Added test for Home/End cursor movement
+- Chore cycle: archived iterations 25–29, reviewed last 5 commits, pruned
+- dispatch.zig is 974 lines — past the 800-line extraction threshold
+- Updated DESIGN.md: marked interactionBg resolved, escalated dispatch.zig split
+- Corrected test count (36, not 37)
 
 ## Next
 
-1. Delete key support for text input
-2. Plan dispatch.zig extraction when goop.zig passes ~800 lines (currently 280)
+1. Extract focus.zig and hittest.zig from dispatch.zig (overdue per design review)
+2. Delete key support for text input
 3. Text input placeholder text
 
 ## What's Wrong
 
+- dispatch.zig is 974 lines — needs splitting (focus + hittest extraction)
 - Widget tree is append-only — no removal/mutation API
 - No dirty tracking — full layout + full draw list every frame
 - Text baseline y-offset is approximate (y + font_size)

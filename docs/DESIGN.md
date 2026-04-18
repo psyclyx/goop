@@ -73,13 +73,16 @@ Retained-mode GUI library. Zig 0.16. Embeddable. No window ownership.
 
 ### Observations (act when 3x or blocking)
 
-- **dispatch.zig approaching size threshold.** 682 lines, ~365 are tests.
-  If it grows past ~800, extract focus.zig (focusNext/focusPrev/syncFocusFlags)
-  and hittest.zig (hitTest/pointInRect/isInteractive).
-- **Interaction bg selection duplicated 3x** in draw.zig (button, checkbox,
-  radio button). Extract when a 4th widget needs it.
+- **dispatch.zig past size threshold.** 974 lines (~550 tests). Extract
+  focus.zig (focusNext/focusPrev/syncFocusFlags) and hittest.zig
+  (hitTest/pointInRect/isInteractive). This is now overdue.
 - **Magic numbers** for focus ring inset (-2) and checkbox/radio indicator
   inset (3). Move to Theme when styling becomes configurable.
+
+### Resolved since iteration 25
+
+- **Interaction bg selection** extracted to `interactionBg` helper in draw.zig
+  (iteration 28).
 
 ### Deferred (still waiting)
 
