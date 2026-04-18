@@ -69,6 +69,7 @@ pub const WidgetKind = union(enum) {
         buffer: [256]u8 = [_]u8{0} ** 256,
         len: u8 = 0,
         cursor: u8 = 0,
+        placeholder: []const u8 = "",
 
         pub fn content(self: *const TextInput) []const u8 {
             return self.buffer[0..self.len];

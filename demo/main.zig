@@ -408,7 +408,7 @@ fn buildWidgetTree(state: *State) !void {
     state.radio_c = try ctx.tree.addChild(root, .{ .radio_button = .{ .label = "Option C", .group = 1 } });
 
     // Text input
-    _ = try ctx.tree.addChild(root, .{ .text_input = .{} });
+    _ = try ctx.tree.addChild(root, .{ .text_input = .{ .placeholder = "Type here..." } });
 
     // Slider
     _ = try ctx.tree.addChild(root, .{ .slider = .{ .value = 0.5, .min = 0, .max = 1 } });

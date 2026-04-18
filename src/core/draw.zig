@@ -79,7 +79,7 @@ fn emitNode(
         .checkbox => |cb| try emitCheckbox(node, cb, resolved, theme, commands, allocator),
         .radio_button => |rb| try emitRadioButton(node, rb, resolved, theme, commands, allocator),
         .slider => |sl| try emitSlider(node, sl, resolved, theme, commands, allocator),
-        .text_input => |ti| try emitTextInput(node, ti, resolved, theme, commands, allocator),
+        .text_input => try emitTextInput(node, resolved, theme, commands, allocator),
         .scroll_area => try emitScrollArea(tree, handle, node, resolved, theme, commands, allocator),
     }
 }
@@ -301,12 +301,12 @@ fn emitSlider(
 
 fn emitTextInput(
     node: *const widget.Node,
-    ti: widget.WidgetKind.TextInput,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
 ) !void {
+    const ti = &node.kind.text_input;
     const rect = node.layout_rect;
 
     // Background
@@ -318,15 +318,25 @@ fn emitTextInput(
         .corner_radius = resolved.border_radius,
     } });
 
-    // Text content
+    // Text content or placeholder
     const content = ti.content();
-    try commands.append(allocator, .{ .text = .{
-        .x = rect.x + resolved.padding.left,
-        .y = rect.y + resolved.padding.top,
-        .text = content,
-        .color = resolved.fg,
-        .font_size = resolved.font_size,
-    } });
+    if (content.len > 0) {
+        try commands.append(allocator, .{ .text = .{
+            .x = rect.x + resolved.padding.left,
+            .y = rect.y + resolved.padding.top,
+            .text = content,
+            .color = resolved.fg,
+            .font_size = resolved.font_size,
+        } });
+    } else if (ti.placeholder.len > 0) {
+        try commands.append(allocator, .{ .text = .{
+            .x = rect.x + resolved.padding.left,
+            .y = rect.y + resolved.padding.top,
+            .text = ti.placeholder,
+            .color = theme.placeholder_fg,
+            .font_size = resolved.font_size,
+        } });
+    }
 
     // Cursor (thin rect when focused)
     if (node.interaction.focused) {
@@ -593,10 +603,9 @@ test "text input emits bg and text" {
     var dl = try generate(&tree, theme, allocator);
     defer freeDrawList(&dl, allocator);
 
-    // Unfocused: bg rect + text = 2 commands
-    try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
+    // Unfocused, empty, no placeholder: bg rect only = 1 command
+    try std.testing.expectEqual(@as(usize, 1), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .rect); // bg
-    try std.testing.expect(dl.commands[1] == .text); // text content
 }
 
 test "focused text input emits cursor" {
@@ -613,10 +622,53 @@ test "focused text input emits cursor" {
     var dl = try generate(&tree, theme, allocator);
     defer freeDrawList(&dl, allocator);
 
-    // Focused: bg rect + text + cursor rect + focus ring = 4 commands
-    try std.testing.expectEqual(@as(usize, 4), dl.commands.len);
+    // Focused, empty, no placeholder: bg rect + cursor rect + focus ring = 3 commands
+    try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .rect); // bg
-    try std.testing.expect(dl.commands[1] == .text); // text content
-    try std.testing.expect(dl.commands[2] == .rect); // cursor
-    try std.testing.expect(dl.commands[3] == .rect); // focus ring
+    try std.testing.expect(dl.commands[1] == .rect); // cursor
+    try std.testing.expect(dl.commands[2] == .rect); // focus ring
+}
+
+test "empty text input shows placeholder" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const ti = try tree.addRoot(.{ .text_input = .{ .placeholder = "Enter name" } });
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 20, .w = 300, .h = 30 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator);
+    defer freeDrawList(&dl, allocator);
+
+    // Empty with placeholder: bg rect + placeholder text = 2 commands
+    try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect); // bg
+    try std.testing.expect(dl.commands[1] == .text); // placeholder
+    try std.testing.expectEqualStrings("Enter name", dl.commands[1].text.text);
+    try std.testing.expectEqual(theme.placeholder_fg, dl.commands[1].text.color);
+}
+
+test "text input with content shows content not placeholder" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const ti = try tree.addRoot(.{ .text_input = .{ .placeholder = "Enter name" } });
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 20, .w = 300, .h = 30 };
+    tree.get(ti).kind.text_input.insert('H');
+    tree.get(ti).kind.text_input.insert('i');
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator);
+    defer freeDrawList(&dl, allocator);
+
+    // Has content: bg rect + content text = 2 commands
+    try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect); // bg
+    try std.testing.expect(dl.commands[1] == .text); // content, not placeholder
+    try std.testing.expectEqualStrings("Hi", dl.commands[1].text.text);
+    try std.testing.expectEqual(theme.fg, dl.commands[1].text.color);
 }
