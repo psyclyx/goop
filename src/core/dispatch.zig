@@ -120,7 +120,7 @@ fn hitTestKind(tree: *const widget.Tree, x: f32, y: f32, kind_tag: std.meta.Tag(
 
 fn isInteractive(kind: widget.WidgetKind) bool {
     return switch (kind) {
-        .button, .slider, .scroll_area, .container => true,
+        .button, .checkbox, .slider, .scroll_area, .container => true,
         .text => false,
     };
 }
@@ -147,6 +147,9 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
     switch (node.kind) {
         .button => {
             node.kind.button.clicked = true;
+        },
+        .checkbox => {
+            node.kind.checkbox.checked = !node.kind.checkbox.checked;
         },
         else => {},
     }
@@ -269,6 +272,34 @@ test "slider drag updates value" {
         .{ .mouse_move = .{ .x = 150, .y = 20 } },
     }, &mouse);
     try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(sl).kind.slider.value, 1.0);
+}
+
+test "checkbox toggles on click" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const cb = try tree.addChild(root, .{ .checkbox = .{ .label = "Enable", .checked = false } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(cb).layout_rect = .{ .x = 10, .y = 10, .w = 200, .h = 26 };
+
+    var mouse = MouseState{};
+
+    // Click to check
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse);
+    try std.testing.expect(tree.getConst(cb).kind.checkbox.checked);
+
+    // Click again to uncheck
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse);
+    try std.testing.expect(!tree.getConst(cb).kind.checkbox.checked);
 }
 
 test "scroll area responds to mouse scroll" {

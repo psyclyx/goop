@@ -20,6 +20,7 @@ pub const WidgetKind = union(enum) {
     container: Container,
     text: Text,
     button: Button,
+    checkbox: Checkbox,
     slider: Slider,
     scroll_area: ScrollArea,
 
@@ -36,6 +37,11 @@ pub const WidgetKind = union(enum) {
     pub const Button = struct {
         label: []const u8,
         clicked: bool = false,
+    };
+
+    pub const Checkbox = struct {
+        label: []const u8,
+        checked: bool = false,
     };
 
     pub const Slider = struct {

@@ -89,6 +89,11 @@ pub const Context = struct {
         return node.kind == .button and node.kind.button.clicked;
     }
 
+    /// Check if a checkbox is currently checked.
+    pub fn isChecked(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.checkbox.checked;
+    }
+
     /// Get the current value of a slider.
     pub fn sliderValue(self: *const Context, handle: NodeHandle) f32 {
         return self.tree.getConst(handle).kind.slider.value;
@@ -189,6 +194,28 @@ test "event dispatch detects button click" {
     // After clearing, clicked should be false
     ctx.clearClickedFlags();
     try std.testing.expect(!ctx.wasClicked(btn));
+}
+
+test "checkbox toggle via events" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    const cb = try ctx.tree.addChild(root, .{ .checkbox = .{ .label = "Enable" } });
+
+    ctx.doLayout(null);
+
+    const cb_rect = ctx.tree.getConst(cb).layout_rect;
+    const click_x = cb_rect.x + cb_rect.w / 2;
+    const click_y = cb_rect.y + cb_rect.h / 2;
+
+    try std.testing.expect(!ctx.isChecked(cb));
+
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = click_y } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = click_x, .y = click_y } });
+    ctx.processEvents();
+
+    try std.testing.expect(ctx.isChecked(cb));
 }
 
 test {

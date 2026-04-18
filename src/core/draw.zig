@@ -76,6 +76,7 @@ fn emitNode(
         .container => try emitContainer(tree, handle, node, resolved, theme, commands, allocator),
         .text => |txt| try emitText(node, txt, resolved, commands, allocator),
         .button => |btn| try emitButton(tree, handle, node, btn, resolved, theme, commands, allocator),
+        .checkbox => |cb| try emitCheckbox(node, cb, resolved, theme, commands, allocator),
         .slider => |sl| try emitSlider(node, sl, resolved, theme, commands, allocator),
         .scroll_area => try emitScrollArea(tree, handle, node, resolved, theme, commands, allocator),
     }
@@ -155,6 +156,66 @@ fn emitButton(
     } });
 
     try emitChildren(tree, handle, theme, commands, allocator);
+}
+
+fn emitCheckbox(
+    node: *const widget.Node,
+    cb: widget.WidgetKind.Checkbox,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    const rect = node.layout_rect;
+    const box_size = resolved.font_size;
+
+    // Pick bg based on interaction state
+    const bg = if (node.interaction.pressed)
+        theme.bg_active
+    else if (node.interaction.hovered)
+        theme.bg_hover
+    else
+        resolved.bg;
+
+    // Checkbox box
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = .{
+            .x = rect.x + resolved.padding.left,
+            .y = rect.y + resolved.padding.top,
+            .w = box_size,
+            .h = box_size,
+        },
+        .color = bg,
+        .border_color = resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = resolved.border_radius,
+    } });
+
+    // Check indicator (filled inner rect when checked)
+    if (cb.checked) {
+        const inset: f32 = 3;
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = .{
+                .x = rect.x + resolved.padding.left + inset,
+                .y = rect.y + resolved.padding.top + inset,
+                .w = box_size - inset * 2,
+                .h = box_size - inset * 2,
+            },
+            .color = theme.accent,
+            .border_color = theme.accent,
+            .border_width = 0,
+            .corner_radius = @max(resolved.border_radius - inset, 0),
+        } });
+    }
+
+    // Label text
+    try commands.append(allocator, .{ .text = .{
+        .x = rect.x + resolved.padding.left + box_size + resolved.padding.left,
+        .y = rect.y + resolved.padding.top,
+        .text = cb.label,
+        .color = resolved.fg,
+        .font_size = resolved.font_size,
+    } });
 }
 
 fn emitSlider(
@@ -255,6 +316,45 @@ test "generate draw commands from tree" {
     try std.testing.expect(dl.commands[1] == .rect); // button bg
     try std.testing.expect(dl.commands[2] == .text); // button label
     try std.testing.expect(dl.commands[3] == .text); // text widget
+}
+
+test "checkbox emits box and label" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const cb = try tree.addRoot(.{ .checkbox = .{ .label = "Enable", .checked = false } });
+    tree.get(cb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator);
+    defer freeDrawList(&dl, allocator);
+
+    // Unchecked: box rect + label text = 2 commands
+    try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect); // box
+    try std.testing.expect(dl.commands[1] == .text); // label
+}
+
+test "checked checkbox emits indicator" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const cb = try tree.addRoot(.{ .checkbox = .{ .label = "Enable", .checked = true } });
+    tree.get(cb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator);
+    defer freeDrawList(&dl, allocator);
+
+    // Checked: box rect + indicator rect + label text = 3 commands
+    try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect); // box
+    try std.testing.expect(dl.commands[1] == .rect); // check indicator
+    try std.testing.expect(dl.commands[2] == .text); // label
 }
 
 test "slider emits track and thumb" {
