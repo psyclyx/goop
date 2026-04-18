@@ -2,24 +2,28 @@
 
 ## Current
 
-Iteration 32.
-38 tests pass. Build clean. Demo runs.
+Iteration 33.
+40 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-32
+33
 
 ## Done This Iteration
 
-- Added Delete key support for text input (forward delete)
-- Added `delete` to Keycode enum, `deleteForward()` to TextInput, dispatch handler, evdev mapping (scancode 111)
-- Added test: "text input delete key deletes forward"
+- Added placeholder text support for text input widget
+- Added `placeholder: []const u8` field to TextInput struct
+- Added `placeholder_fg` color to Theme (rgb 120,120,120)
+- Draw placeholder in dimmed color when input is empty, content text when non-empty
+- Fixed emitTextInput to access TextInput via node pointer (was value copy — dangling slice bug)
+- Updated demo to use placeholder: "Type here..."
+- Added tests: "empty text input shows placeholder", "text input with content shows content not placeholder"
 
 ## Next
 
-1. Text input placeholder text
-2. dispatch.zig still large — consider extracting scroll/slider helpers or tests
-3. Text input selection support
+1. dispatch.zig still large — consider extracting scroll/slider helpers or tests
+2. Text input selection support
+3. Text input clipboard (copy/paste)
 
 ## What's Wrong
 
@@ -35,4 +39,4 @@ Iteration 32.
 - Magic numbers for focus ring inset and checkbox/radio indicator inset
 - Text input cursor position uses approximate char_width (font_size * 0.6) — will be wrong for non-monospace fonts
 - Text input only handles printable ASCII — no UTF-8 multi-byte support
-- Text input has no placeholder text or selection support
+- Text input has no selection support
