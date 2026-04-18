@@ -2,34 +2,32 @@
 
 ## Current
 
-Iteration 10 (design review). Reviewed architecture after 9 iterations and
-~2,000 lines. Core architecture validated — clean module boundaries, correct
-layering. Two actionable findings: core depends on snail (must abstract), and
-pushEvent API takes unnecessary allocator param. 13/13 tests pass.
+Iteration 11. Abstracted text measurement out of core — layout.zig no longer
+imports snail. TextMeasureCtx is now a generic function pointer + opaque
+context. Snail adapter moved to demo. 13/13 tests pass. Library builds
+without snail dependency.
 
 ## Iteration Count
 
-10
+11
 
 ## Done This Iteration
 
-- Design review: challenged widget tree mutation model, core/snail coupling,
-  transient state placement, event queue API, scroll clamping, frame pacing
-- Updated DESIGN.md with decisions: abstract text measurement, fix pushEvent
-  API; deferred widget removal and interaction result separation (no 3x signal)
-- Validated: Clay integration, draw command model, dispatch, module boundaries
+- Replaced snail-specific TextMeasureCtx with generic MeasureTextFn + opaque ctx
+- Removed snail import from layout.zig and snail dep from goop_mod/test_mod
+- Moved snail measurement code to demo/main.zig as SnailTextCtx adapter
+- Exported MeasureTextFn and TextDimensions from goop.zig
 
 ## Next
 
-1. Abstract text measurement out of core (remove snail import from layout.zig)
-2. Clean up pushEvent API (Context owns event queue allocator)
-3. Slider drag interaction
-4. Frame callback in demo
-5. Border rendering
+1. Clean up pushEvent API (Context owns event queue allocator)
+2. Slider drag interaction
+3. Frame callback in demo
+4. Border rendering
+5. Checkbox widget
 
 ## What's Wrong
 
-- Core imports snail in layout.zig — violates "core must not depend on rendering"
 - pushEvent takes allocator on every call — API friction, Context already has one
 - Widget tree is append-only — no removal/mutation API
 - No dirty tracking — full layout + full draw list every frame
