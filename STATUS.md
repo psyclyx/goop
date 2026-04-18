@@ -2,24 +2,23 @@
 
 ## Current
 
-Iteration 21. Added demo timeout support.
+Iteration 22. Extracted slider thumb width to style system.
 23/23 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-21
+22
 
 ## Done This Iteration
 
-- Added `GOOP_DEMO_TIMEOUT` env var: demo exits after N seconds
-- Uses poll-based Wayland dispatch (100ms poll timeout) when timeout is active
-- Normal (no timeout) path unchanged — still uses blocking `wl_display_dispatch`
+- Added `thumb_width` field to Theme (default 16), Style, and ResolvedStyle
+- draw.zig reads thumb width from resolved style instead of hardcoded constant
+- dispatch.zig now takes theme parameter; updateSliderValue resolves per-widget style
 
 ## Next
 
-1. Extract slider thumb width to style (hardcoded in draw.zig and dispatch.zig)
-2. Design review at iteration 25
-3. Text input widget (stretch)
+1. Design review at iteration 25
+2. Text input widget (stretch)
 
 ## What's Wrong
 
@@ -29,5 +28,4 @@ Iteration 21. Added demo timeout support.
 - Text baseline y-offset is approximate (y + font_size)
 - No keyboard/focus navigation
 - Font loading uses popen("fc-match") — fragile
-- Slider thumb width (16px) hardcoded in draw.zig and dispatch.zig
 - Radio button circle rendering depends on renderer corner_radius support
