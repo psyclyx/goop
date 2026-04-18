@@ -22,6 +22,8 @@ pub const Renderer = struct {
     u_color: gl.GLint,
     u_viewport: gl.GLint,
     u_corner_radius: gl.GLint,
+    u_border_color: gl.GLint,
+    u_border_width: gl.GLint,
     viewport_w: f32,
     viewport_h: f32,
     scissor_stack: [16]Scissor = undefined,
@@ -55,6 +57,8 @@ pub const Renderer = struct {
         \\uniform vec4 u_rect;
         \\uniform vec2 u_viewport;
         \\uniform float u_corner_radius;
+        \\uniform vec4 u_border_color;
+        \\uniform float u_border_width;
         \\out vec4 frag_color;
         \\void main() {
         \\    vec2 pixel = gl_FragCoord.xy;
@@ -65,8 +69,13 @@ pub const Renderer = struct {
         \\    vec2 d = abs(pixel - center) - half_size + r;
         \\    float dist = length(max(d, 0.0)) - r;
         \\    if (dist > 0.5) discard;
-        \\    float alpha = 1.0 - smoothstep(-0.5, 0.5, dist);
-        \\    frag_color = vec4(u_color.rgb, u_color.a * alpha);
+        \\    float outer_alpha = 1.0 - smoothstep(-0.5, 0.5, dist);
+        \\    float inner_dist = dist + u_border_width;
+        \\    float inner_alpha = smoothstep(-0.5, 0.5, inner_dist);
+        \\    float border_mix = step(0.001, u_border_width) * inner_alpha;
+        \\    vec4 fill = vec4(u_color.rgb, u_color.a * outer_alpha);
+        \\    vec4 border = vec4(u_border_color.rgb, u_border_color.a * outer_alpha);
+        \\    frag_color = mix(fill, border, border_mix);
         \\}
     ;
 
@@ -120,6 +129,8 @@ pub const Renderer = struct {
             .u_color = gl.glGetUniformLocation(program, "u_color"),
             .u_viewport = gl.glGetUniformLocation(program, "u_viewport"),
             .u_corner_radius = gl.glGetUniformLocation(program, "u_corner_radius"),
+            .u_border_color = gl.glGetUniformLocation(program, "u_border_color"),
+            .u_border_width = gl.glGetUniformLocation(program, "u_border_width"),
             .viewport_w = @floatFromInt(w),
             .viewport_h = @floatFromInt(h),
             .text_renderer = text_renderer,
@@ -201,9 +212,12 @@ pub const Renderer = struct {
 
     fn drawRect(self: *Renderer, r: DrawCommand.DrawRect) void {
         const color = colorToVec4(r.color);
+        const border_color = colorToVec4(r.border_color);
         gl.glUniform4f(self.u_rect, r.bounds.x, r.bounds.y, r.bounds.w, r.bounds.h);
         gl.glUniform4f(self.u_color, color[0], color[1], color[2], color[3]);
         gl.glUniform1f(self.u_corner_radius, r.corner_radius);
+        gl.glUniform4f(self.u_border_color, border_color[0], border_color[1], border_color[2], border_color[3]);
+        gl.glUniform1f(self.u_border_width, r.border_width);
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6);
     }
 
