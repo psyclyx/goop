@@ -1,9 +1,6 @@
 zig-out/
-zig-cache/
+zig-pkg/
 .zig-cache/
 .direnv/
 result
 prompt.md
-zig-pkg/
-.zig-cache/
-zig-out/
