@@ -17,6 +17,8 @@ pub const MouseState = struct {
     focused: ?widget.NodeHandle = null,
     /// Whether a shift key is currently held.
     shift_down: bool = false,
+    /// Whether a ctrl key is currently held.
+    ctrl_down: bool = false,
 };
 
 /// Process a batch of events against the widget tree.
@@ -95,6 +97,25 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
             switch (k.keycode) {
                 .left_shift, .right_shift => {
                     mouse.shift_down = k.state == .pressed or k.state == .repeat;
+                },
+                .left_ctrl, .right_ctrl => {
+                    mouse.ctrl_down = k.state == .pressed or k.state == .repeat;
+                },
+                .a => {
+                    if (k.state == .pressed or k.state == .repeat) {
+                        if (mouse.ctrl_down) {
+                            if (mouse.focused) |f| {
+                                const node = tree.get(f);
+                                if (node.kind == .text_input) {
+                                    const ti = &node.kind.text_input;
+                                    if (ti.len > 0) {
+                                        ti.selection_anchor = 0;
+                                        ti.cursor = ti.len;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 },
                 .tab => {
                     if (k.state == .pressed or k.state == .repeat) {
@@ -1124,4 +1145,75 @@ test "typing replaces selection" {
 
     try std.testing.expectEqualStrings("x", tree.get(ti).kind.text_input.content());
     try std.testing.expect(!tree.get(ti).kind.text_input.hasSelection());
+}
+
+test "ctrl+a selects all text" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Click to focus
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    // Type "hello"
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'h' } },
+        .{ .text = .{ .codepoint = 'e' } },
+        .{ .text = .{ .codepoint = 'l' } },
+        .{ .text = .{ .codepoint = 'l' } },
+        .{ .text = .{ .codepoint = 'o' } },
+    }, &mouse, style.Theme.default);
+
+    // Ctrl+A
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 30, .keycode = .a, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    const input = &tree.get(ti).kind.text_input;
+    try std.testing.expect(input.hasSelection());
+    try std.testing.expectEqual(@as(?u8, 0), input.selection_anchor);
+    try std.testing.expectEqual(@as(u8, 5), input.cursor);
+    try std.testing.expectEqualStrings("hello", input.selectedContent());
+}
+
+test "ctrl+a on empty input is no-op" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Click to focus
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    // Ctrl+A on empty
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 30, .keycode = .a, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    const input = &tree.get(ti).kind.text_input;
+    try std.testing.expect(!input.hasSelection());
+    try std.testing.expectEqual(@as(u8, 0), input.cursor);
 }
