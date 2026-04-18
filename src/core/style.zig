@@ -41,6 +41,7 @@ pub const Theme = struct {
 
     bg_hover: Color = Color.rgb(45, 45, 45),
     bg_active: Color = Color.rgb(55, 55, 55),
+    focus_ring: Color = Color.rgba(80, 140, 220, 200),
 
     font_size: f32 = 14,
     padding: Edges = Edges.all(6),

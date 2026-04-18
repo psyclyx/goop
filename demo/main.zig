@@ -76,6 +76,7 @@ const State = struct {
     xdg_toplevel: ?*wl.xdg_toplevel = null,
     egl_window: ?*wl.wl_egl_window = null,
     pointer: ?*wl.wl_pointer = null,
+    keyboard: ?*wl.wl_keyboard = null,
 
     // EGL
     egl_display: egl.EGLDisplay = egl.EGL_NO_DISPLAY,
@@ -177,6 +178,7 @@ fn seatName(_: ?*anyopaque, _: ?*wl.wl_seat, _: [*c]const u8) callconv(.c) void 
 fn seatCapabilities(data: ?*anyopaque, seat: ?*wl.wl_seat, caps: u32) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
     const has_pointer = (caps & wl.WL_SEAT_CAPABILITY_POINTER) != 0;
+    const has_keyboard = (caps & wl.WL_SEAT_CAPABILITY_KEYBOARD) != 0;
 
     if (has_pointer and state.pointer == null) {
         state.pointer = wl.wl_seat_get_pointer(seat);
@@ -184,6 +186,14 @@ fn seatCapabilities(data: ?*anyopaque, seat: ?*wl.wl_seat, caps: u32) callconv(.
     } else if (!has_pointer and state.pointer != null) {
         wl.wl_pointer_destroy(state.pointer);
         state.pointer = null;
+    }
+
+    if (has_keyboard and state.keyboard == null) {
+        state.keyboard = wl.wl_seat_get_keyboard(seat);
+        _ = wl.wl_keyboard_add_listener(state.keyboard, &keyboard_listener, data);
+    } else if (!has_keyboard and state.keyboard != null) {
+        wl.wl_keyboard_destroy(state.keyboard);
+        state.keyboard = null;
     }
 }
 
@@ -207,6 +217,48 @@ fn noopAxisStop(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: u32) callconv(.c)
 fn noopAxisDiscrete(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: i32) callconv(.c) void {}
 fn noopAxisValue120(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: i32) callconv(.c) void {}
 fn noopAxisRelDir(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: u32) callconv(.c) void {}
+
+// ── Keyboard listener ──
+
+const keyboard_listener = wl.wl_keyboard_listener{
+    .keymap = &noopKeymap,
+    .enter = &noopKeyboardEnter,
+    .leave = &noopKeyboardLeave,
+    .key = &keyboardKey,
+    .modifiers = &noopModifiers,
+    .repeat_info = &noopRepeatInfo,
+};
+
+fn noopKeymap(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: i32, _: u32) callconv(.c) void {}
+fn noopKeyboardEnter(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: ?*wl.wl_surface, _: ?*wl.wl_array) callconv(.c) void {}
+fn noopKeyboardLeave(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: ?*wl.wl_surface) callconv(.c) void {}
+fn noopModifiers(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: u32, _: u32, _: u32, _: u32) callconv(.c) void {}
+fn noopRepeatInfo(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: i32, _: i32) callconv(.c) void {}
+
+fn evdevToKeycode(scancode: u32) goop.Event.Keycode {
+    return switch (scancode) {
+        15 => .tab,
+        28 => .enter,
+        57 => .space,
+        1 => .escape,
+        42 => .left_shift,
+        54 => .right_shift,
+        else => .unknown,
+    };
+}
+
+fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: u32, key: u32, key_state: u32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    // Wayland key codes are evdev codes minus 8
+    const scancode = key + 8;
+    const goop_state: goop.Event.Key.KeyState = if (key_state == 1) .pressed else .released;
+    state.ctx.pushEvent(.{ .key = .{
+        .scancode = scancode,
+        .keycode = evdevToKeycode(scancode),
+        .state = goop_state,
+    } }) catch {};
+    state.needs_redraw = true;
+}
 
 fn pointerEnter(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: ?*wl.wl_surface, sx: wl.wl_fixed_t, sy: wl.wl_fixed_t) callconv(.c) void {
     _ = sx;

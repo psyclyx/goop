@@ -30,9 +30,22 @@ pub const Event = union(enum) {
 
     pub const Key = struct {
         scancode: u32,
+        keycode: Keycode = .unknown,
         state: KeyState,
 
         pub const KeyState = enum { pressed, released, repeat };
+    };
+
+    /// Logical key identifiers, independent of platform scancodes.
+    /// The embedder maps platform-specific scancodes to these.
+    pub const Keycode = enum {
+        tab,
+        enter,
+        space,
+        escape,
+        left_shift,
+        right_shift,
+        unknown,
     };
 
     pub const Text = struct {

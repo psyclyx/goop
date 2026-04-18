@@ -156,6 +156,7 @@ fn emitButton(
         .font_size = resolved.font_size,
     } });
 
+    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
     try emitChildren(tree, handle, theme, commands, allocator);
 }
 
@@ -217,6 +218,8 @@ fn emitCheckbox(
         .color = resolved.fg,
         .font_size = resolved.font_size,
     } });
+
+    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitRadioButton(
@@ -277,6 +280,8 @@ fn emitRadioButton(
         .color = resolved.fg,
         .font_size = resolved.font_size,
     } });
+
+    try emitFocusRing(node, theme, circle_radius, commands, allocator);
 }
 
 fn emitSlider(
@@ -312,6 +317,8 @@ fn emitSlider(
         .border_width = 0,
         .corner_radius = resolved.border_radius,
     } });
+
+    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitScrollArea(
@@ -339,6 +346,31 @@ fn emitScrollArea(
 
     // Pop clip
     try commands.append(allocator, .{ .clip = .{ .bounds = null } });
+}
+
+/// Emit a focus ring around a widget's layout rect if it has focus.
+fn emitFocusRing(
+    node: *const widget.Node,
+    theme: style.Theme,
+    corner_radius: f32,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    if (!node.interaction.focused) return;
+    const r = node.layout_rect;
+    const inset: f32 = -2;
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = .{
+            .x = r.x + inset,
+            .y = r.y + inset,
+            .w = r.w - inset * 2,
+            .h = r.h - inset * 2,
+        },
+        .color = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+        .border_color = theme.focus_ring,
+        .border_width = 2,
+        .corner_radius = corner_radius + 2,
+    } });
 }
 
 fn emitChildren(

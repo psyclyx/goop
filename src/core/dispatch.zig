@@ -3,7 +3,7 @@ const widget = @import("widget.zig");
 const event = @import("event.zig");
 const draw = @import("draw.zig");
 
-/// Transient mouse state tracked across events.
+/// Transient input state tracked across events.
 pub const MouseState = struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -12,6 +12,10 @@ pub const MouseState = struct {
     press_target: ?widget.NodeHandle = null,
     /// The slider currently being dragged, if any.
     drag_target: ?widget.NodeHandle = null,
+    /// The currently keyboard-focused widget, if any.
+    focused: ?widget.NodeHandle = null,
+    /// Whether a shift key is currently held.
+    shift_down: bool = false,
 };
 
 /// Process a batch of events against the widget tree.
@@ -47,6 +51,11 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                     mouse.press_target = target;
                     if (target) |t| {
                         tree.get(t).interaction.pressed = true;
+                        // Focus the clicked widget
+                        if (isFocusable(tree.getConst(t).kind)) {
+                            mouse.focused = t;
+                            syncFocusFlags(tree, mouse.focused);
+                        }
                         // Start slider drag
                         if (tree.getConst(t).kind == .slider) {
                             mouse.drag_target = t;
@@ -79,6 +88,31 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                 node.kind.scroll_area.scroll_x += ms.dx;
                 node.kind.scroll_area.scroll_y += ms.dy;
                 clampScroll(tree, t);
+            }
+        },
+        .key => |k| {
+            switch (k.keycode) {
+                .left_shift, .right_shift => {
+                    mouse.shift_down = k.state == .pressed or k.state == .repeat;
+                },
+                .tab => {
+                    if (k.state == .pressed or k.state == .repeat) {
+                        if (mouse.shift_down) {
+                            mouse.focused = focusPrev(tree, mouse.focused);
+                        } else {
+                            mouse.focused = focusNext(tree, mouse.focused);
+                        }
+                        syncFocusFlags(tree, mouse.focused);
+                    }
+                },
+                .space, .enter => {
+                    if (k.state == .pressed) {
+                        if (mouse.focused) |f| {
+                            fireClick(tree, f);
+                        }
+                    }
+                },
+                else => {},
             }
         },
         else => {},
@@ -202,6 +236,82 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
             node.kind.radio_button.clicked = true;
         },
         else => {},
+    }
+}
+
+/// Whether a widget kind can receive keyboard focus.
+fn isFocusable(kind: widget.WidgetKind) bool {
+    return switch (kind) {
+        .button, .checkbox, .radio_button, .slider => true,
+        .text, .container, .scroll_area => false,
+    };
+}
+
+/// Find the next focusable widget in tree order after `current`.
+/// Wraps around to the first focusable widget.
+fn focusNext(tree: *const widget.Tree, current: ?widget.NodeHandle) ?widget.NodeHandle {
+    const nodes = tree.nodes.items;
+    if (nodes.len == 0) return null;
+
+    const start: u32 = if (current) |c| @intFromEnum(c) + 1 else 0;
+
+    // Search from start to end, then wrap from 0 to start
+    var i: u32 = start;
+    var wrapped = false;
+    while (true) {
+        if (i >= nodes.len) {
+            if (wrapped) return current;
+            i = 0;
+            wrapped = true;
+        }
+        if (wrapped and current != null and i >= @intFromEnum(current.?) + 1) return current;
+        if (isFocusable(nodes[i].kind)) return @enumFromInt(i);
+        i += 1;
+    }
+}
+
+/// Find the previous focusable widget in tree order before `current`.
+/// Wraps around to the last focusable widget.
+fn focusPrev(tree: *const widget.Tree, current: ?widget.NodeHandle) ?widget.NodeHandle {
+    const nodes = tree.nodes.items;
+    if (nodes.len == 0) return null;
+
+    const len: u32 = @intCast(nodes.len);
+    const start: u32 = if (current) |c| @intFromEnum(c) else len;
+
+    // Search backwards from start-1, wrapping at 0 to end
+    if (start == 0) {
+        // Wrap to end
+        var i: u32 = len;
+        while (i > 0) {
+            i -= 1;
+            if (isFocusable(nodes[i].kind)) return @enumFromInt(i);
+        }
+        return current;
+    }
+
+    var i: u32 = start - 1;
+    while (true) {
+        if (isFocusable(nodes[i].kind)) return @enumFromInt(i);
+        if (i == 0) break;
+        i -= 1;
+    }
+    // Wrap: search from end backwards to start
+    i = len;
+    while (i > start) {
+        i -= 1;
+        if (isFocusable(nodes[i].kind)) return @enumFromInt(i);
+    }
+    return current;
+}
+
+/// Update the `.focused` flag on all nodes to match the current focus target.
+fn syncFocusFlags(tree: *widget.Tree, focused: ?widget.NodeHandle) void {
+    for (tree.nodes.items) |*node| {
+        node.interaction.focused = false;
+    }
+    if (focused) |f| {
+        tree.get(f).interaction.focused = true;
     }
 }
 
@@ -452,4 +562,121 @@ test "scroll clamped when content fits viewport" {
     process(&tree, &.{.{ .mouse_scroll = .{ .dx = 50, .dy = 50 } }}, &mouse, style.Theme.default);
     try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(scroll).kind.scroll_area.scroll_x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(scroll).kind.scroll_area.scroll_y, 0.01);
+}
+
+test "tab cycles focus through focusable widgets" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const btn = try tree.addChild(root, .{ .button = .{ .label = "A" } });
+    _ = try tree.addChild(root, .{ .text = .{ .content = "skip me" } });
+    const cb = try tree.addChild(root, .{ .checkbox = .{ .label = "B" } });
+    const sl = try tree.addChild(root, .{ .slider = .{ .value = 0 } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
+    tree.get(cb).layout_rect = .{ .x = 10, .y = 50, .w = 200, .h = 26 };
+    tree.get(sl).layout_rect = .{ .x = 10, .y = 80, .w = 200, .h = 24 };
+
+    var mouse = MouseState{};
+    const tab_press = event.Event{ .key = .{ .scancode = 15, .keycode = .tab, .state = .pressed } };
+
+    // First tab: focus button (first focusable)
+    process(&tree, &.{tab_press}, &mouse, style.Theme.default);
+    try std.testing.expectEqual(mouse.focused, btn);
+    try std.testing.expect(tree.getConst(btn).interaction.focused);
+
+    // Second tab: focus checkbox (skips text)
+    process(&tree, &.{tab_press}, &mouse, style.Theme.default);
+    try std.testing.expectEqual(mouse.focused, cb);
+    try std.testing.expect(!tree.getConst(btn).interaction.focused);
+    try std.testing.expect(tree.getConst(cb).interaction.focused);
+
+    // Third tab: focus slider
+    process(&tree, &.{tab_press}, &mouse, style.Theme.default);
+    try std.testing.expectEqual(mouse.focused, sl);
+
+    // Fourth tab: wraps to button
+    process(&tree, &.{tab_press}, &mouse, style.Theme.default);
+    try std.testing.expectEqual(mouse.focused, btn);
+}
+
+test "shift+tab cycles focus backwards" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const btn = try tree.addChild(root, .{ .button = .{ .label = "A" } });
+    const cb = try tree.addChild(root, .{ .checkbox = .{ .label = "B" } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
+    tree.get(cb).layout_rect = .{ .x = 10, .y = 50, .w = 200, .h = 26 };
+
+    var mouse = MouseState{};
+    const shift_down = event.Event{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } };
+    const tab_press = event.Event{ .key = .{ .scancode = 15, .keycode = .tab, .state = .pressed } };
+    const shift_up = event.Event{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } };
+
+    // Shift+Tab from no focus: should go to last focusable (checkbox)
+    process(&tree, &.{ shift_down, tab_press, shift_up }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(mouse.focused, cb);
+
+    // Shift+Tab again: should go to button
+    process(&tree, &.{ shift_down, tab_press, shift_up }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(mouse.focused, btn);
+}
+
+test "enter/space activates focused widget" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const btn = try tree.addChild(root, .{ .button = .{ .label = "OK" } });
+    const cb = try tree.addChild(root, .{ .checkbox = .{ .label = "Toggle" } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
+    tree.get(cb).layout_rect = .{ .x = 10, .y = 50, .w = 200, .h = 26 };
+
+    var mouse = MouseState{};
+
+    // Tab to button, then press Enter
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 15, .keycode = .tab, .state = .pressed } },
+        .{ .key = .{ .scancode = 28, .keycode = .enter, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expect(tree.getConst(btn).kind.button.clicked);
+
+    // Tab to checkbox, press Space to toggle
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 15, .keycode = .tab, .state = .pressed } },
+        .{ .key = .{ .scancode = 57, .keycode = .space, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expect(tree.getConst(cb).kind.checkbox.checked);
+}
+
+test "click sets focus" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const btn = try tree.addChild(root, .{ .button = .{ .label = "A" } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
+
+    var mouse = MouseState{};
+
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expectEqual(mouse.focused, btn);
+    try std.testing.expect(tree.getConst(btn).interaction.focused);
 }
