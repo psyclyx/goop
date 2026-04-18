@@ -13,6 +13,11 @@ const egl = @cImport({
     @cInclude("EGL/egl.h");
 });
 
+const posix = @cImport({
+    @cInclude("poll.h");
+    @cInclude("time.h");
+});
+
 const allocator = std.heap.page_allocator;
 
 /// Snail-based text measurement adapter for goop.
@@ -57,6 +62,8 @@ const State = struct {
     height: u32 = 600,
     needs_redraw: bool = true,
     frame_pending: bool = false,
+    timeout_ns: ?u64 = null,
+    start_time: posix.struct_timespec = .{ .tv_sec = 0, .tv_nsec = 0 },
 
     // Wayland globals
     compositor: ?*wl.wl_compositor = null,
@@ -408,6 +415,20 @@ fn readFile(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
 
 // ── Main ──
 
+fn parseTimeout() ?u64 {
+    const raw = c_io.getenv("GOOP_DEMO_TIMEOUT") orelse return null;
+    const val = std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
+    const secs = std.fmt.parseFloat(f64, val) catch return null;
+    if (secs <= 0) return null;
+    return @intFromFloat(secs * @as(f64, @floatFromInt(std.time.ns_per_s)));
+}
+
+fn getMonotonicNs() u64 {
+    var ts: posix.struct_timespec = undefined;
+    _ = posix.clock_gettime(posix.CLOCK_MONOTONIC, &ts);
+    return @intCast(@as(i128, ts.tv_sec) * std.time.ns_per_s + ts.tv_nsec);
+}
+
 pub fn main() !void {
     // Connect to Wayland
     const display = wl.wl_display_connect(null) orelse {
@@ -417,6 +438,13 @@ pub fn main() !void {
     defer wl.wl_display_disconnect(display);
 
     var state = State{};
+    state.timeout_ns = parseTimeout();
+    if (state.timeout_ns) |t| {
+        std.debug.print("demo will exit after {d:.1}s\n", .{@as(f64, @floatFromInt(t)) / std.time.ns_per_s});
+    }
+    if (state.timeout_ns != null) {
+        _ = posix.clock_gettime(posix.CLOCK_MONOTONIC, &state.start_time);
+    }
 
     // Bind globals
     const registry = wl.wl_display_get_registry(display) orelse return error.NoRegistry;
@@ -476,8 +504,41 @@ pub fn main() !void {
 
     // Main loop — frame-callback paced
     while (state.running) {
-        // Flush outgoing requests, then block until events arrive
-        if (wl.wl_display_dispatch(display) == -1) break;
+        // Check timeout
+        if (state.timeout_ns) |t| {
+            const now = getMonotonicNs();
+            const start = @as(u64, @intCast(@as(i128, state.start_time.tv_sec) * std.time.ns_per_s + state.start_time.tv_nsec));
+            const elapsed = now - start;
+            if (elapsed >= t) {
+                std.debug.print("demo timeout reached, exiting\n", .{});
+                break;
+            }
+        }
+
+        // Dispatch events — use poll with timeout when --timeout is set
+        if (state.timeout_ns != null) {
+            // Non-blocking: flush + prepare read, poll with 100ms timeout, then read
+            while (wl.wl_display_prepare_read(display) != 0)
+                _ = wl.wl_display_dispatch_pending(display);
+            _ = wl.wl_display_flush(display);
+
+            var pfd = posix.pollfd{
+                .fd = wl.wl_display_get_fd(display),
+                .events = posix.POLLIN,
+                .revents = 0,
+            };
+            const poll_ret = posix.poll(&pfd, 1, 100);
+            if (poll_ret > 0) {
+                _ = wl.wl_display_read_events(display);
+                _ = wl.wl_display_dispatch_pending(display);
+            } else {
+                wl.wl_display_cancel_read(display);
+                if (poll_ret < 0) break;
+            }
+        } else {
+            // No timeout — block until events arrive
+            if (wl.wl_display_dispatch(display) == -1) break;
+        }
 
         if (!state.configured or !state.needs_redraw or state.frame_pending) continue;
         state.needs_redraw = false;
