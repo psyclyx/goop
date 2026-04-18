@@ -20,6 +20,8 @@ pub const Color = style.Color;
 pub const DrawCommand = draw.DrawCommand;
 pub const DrawList = draw.DrawList;
 pub const TextMeasureCtx = layout.TextMeasureCtx;
+pub const MeasureTextFn = layout.MeasureTextFn;
+pub const TextDimensions = layout.TextDimensions;
 
 pub const Context = struct {
     clay_arena: []u8,

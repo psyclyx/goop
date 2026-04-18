@@ -15,6 +15,41 @@ const egl = @cImport({
 
 const allocator = std.heap.page_allocator;
 
+/// Snail-based text measurement adapter for goop.
+const SnailTextCtx = struct {
+    font: *const snail.Font,
+    atlas: *const snail.Atlas,
+};
+
+fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) goop.TextDimensions {
+    const ctx: *const SnailTextCtx = @ptrCast(@alignCast(user_data));
+    const scale = font_size / @as(f32, @floatFromInt(ctx.font.unitsPerEm()));
+    var width: f32 = 0;
+    var prev_gid: u16 = 0;
+    const view = std.unicode.Utf8View.initUnchecked(text);
+    var it = view.iterator();
+    while (it.nextCodepoint()) |cp| {
+        const gid = ctx.font.glyphIndex(cp) catch 0;
+        if (gid == 0) {
+            width += scale * 500;
+            prev_gid = 0;
+            continue;
+        }
+        if (prev_gid != 0) {
+            const kern = ctx.font.getKerning(prev_gid, gid) catch 0;
+            width += @as(f32, @floatFromInt(kern)) * scale;
+        }
+        const info = ctx.atlas.getGlyph(gid) orelse {
+            width += scale * 500;
+            prev_gid = gid;
+            continue;
+        };
+        width += @as(f32, @floatFromInt(info.advance_width)) * scale;
+        prev_gid = gid;
+    }
+    return .{ .width = width, .height = font_size };
+}
+
 const State = struct {
     running: bool = true,
     configured: bool = false,
@@ -389,7 +424,10 @@ pub fn main() !void {
     var atlas = try snail.Atlas.init(allocator, &font, &codepoints);
     defer atlas.deinit();
 
-    const text_measure_ctx = goop.TextMeasureCtx{ .font = &font, .atlas = &atlas };
+    const text_measure_ctx = goop.TextMeasureCtx{
+        .measureFn = &snailMeasureText,
+        .user_data = @ptrCast(@constCast(&SnailTextCtx{ .font = &font, .atlas = &atlas })),
+    };
 
     // goop context + widget tree
     var ctx = try goop.Context.init(allocator, .{ .width = state.width, .height = state.height });

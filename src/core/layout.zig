@@ -2,16 +2,24 @@ const std = @import("std");
 const c = @cImport({
     @cInclude("clay.h");
 });
-const snail = @import("snail");
 const widget = @import("widget.zig");
 const style_mod = @import("style.zig");
 const draw = @import("draw.zig");
 
-/// Opaque context for snail-based text measurement.
-/// Pass to `run()` to get accurate glyph-aware text sizing.
+/// Generic text measurement function.
+/// Given a UTF-8 string and font size, return its pixel dimensions.
+pub const MeasureTextFn = *const fn (text: []const u8, font_size: f32, user_data: ?*anyopaque) TextDimensions;
+
+pub const TextDimensions = struct {
+    width: f32,
+    height: f32,
+};
+
+/// Text measurement context: a function pointer + opaque user data.
+/// The embedder provides this to get accurate text sizing.
 pub const TextMeasureCtx = struct {
-    font: *const snail.Font,
-    atlas: *const snail.Atlas,
+    measureFn: MeasureTextFn,
+    user_data: ?*anyopaque = null,
 };
 
 /// Run the layout pass: walk the widget tree, feed elements to clay,
@@ -305,52 +313,19 @@ fn measureText(
     user_data: ?*anyopaque,
 ) callconv(.c) c.Clay_Dimensions {
     const font_size: f32 = @floatFromInt(config.*.fontSize);
+    const str = text.chars[0..@intCast(text.length)];
 
     if (user_data) |ptr| {
         const ctx: *const TextMeasureCtx = @ptrCast(@alignCast(ptr));
-        const str = text.chars[0..@intCast(text.length)];
-        const width = measureStringWidth(ctx.atlas, ctx.font, str, font_size);
-        return .{ .width = width, .height = font_size };
+        const dims = ctx.measureFn(str, font_size, ctx.user_data);
+        return .{ .width = dims.width, .height = dims.height };
     }
 
-    // Fallback: rough approximation when no font is loaded
+    // Fallback: rough approximation when no measurement function is provided
     const char_width = font_size * 0.6;
     const len: f32 = @floatFromInt(text.length);
     return .{
         .width = len * char_width,
         .height = font_size,
     };
-}
-
-fn measureStringWidth(
-    atlas: *const snail.Atlas,
-    font: *const snail.Font,
-    text: []const u8,
-    font_size: f32,
-) f32 {
-    const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
-    var width: f32 = 0;
-    var prev_gid: u16 = 0;
-    const view = std.unicode.Utf8View.initUnchecked(text);
-    var it = view.iterator();
-    while (it.nextCodepoint()) |cp| {
-        const gid = font.glyphIndex(cp) catch 0;
-        if (gid == 0) {
-            width += scale * 500;
-            prev_gid = 0;
-            continue;
-        }
-        if (prev_gid != 0) {
-            const kern = font.getKerning(prev_gid, gid) catch 0;
-            width += @as(f32, @floatFromInt(kern)) * scale;
-        }
-        const info = atlas.getGlyph(gid) orelse {
-            width += scale * 500;
-            prev_gid = gid;
-            continue;
-        };
-        width += @as(f32, @floatFromInt(info.advance_width)) * scale;
-        prev_gid = gid;
-    }
-    return width;
 }

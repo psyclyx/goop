@@ -15,7 +15,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    goop_mod.addImport("snail", snail_mod);
     goop_mod.addIncludePath(b.path("vendor/clay"));
     goop_mod.addCSourceFile(.{
         .file = b.path("vendor/clay/clay.c"),
@@ -66,7 +65,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    test_mod.addImport("snail", snail_mod);
     test_mod.addIncludePath(b.path("vendor/clay"));
     test_mod.addCSourceFile(.{
         .file = b.path("vendor/clay/clay.c"),
