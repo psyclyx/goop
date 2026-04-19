@@ -26,6 +26,9 @@ pub const MouseState = struct {
     drag_origin_x: f32 = 0,
     drag_origin_y: f32 = 0,
     drag_origin_value: f32 = 0,
+    drag_origin_secondary_value: f32 = 0,
+    drag_origin_extent: f32 = 0,
+    drag_column_index: ?u8 = null,
     /// The currently keyboard-focused widget, if any.
     focused: ?widget.NodeHandle = null,
     /// The widget currently hovered by the pointer, if any.
@@ -89,6 +92,9 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                     .slider => updateSliderValue(tree, dt, mouse.x, theme),
                     .drag_value => updateDragValue(tree, dt, mouse.x, mouse),
                     .splitter => updateSplitterRatio(tree, dt, mouse.x, mouse.y, mouse, theme),
+                    .table => {
+                        if (updateTableColumns(tree, dt, mouse)) mouse.layout_changed = true;
+                    },
                     else => {},
                 }
             }
@@ -518,6 +524,20 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
                 mouse.drag_origin_y = mouse.y;
                 mouse.drag_origin_value = tree.getConst(t).kind.splitter.ratio;
             },
+            .table => {
+                if (widget.tableResizeHandleIndexAtPoint(tree, t, mouse.x, mouse.y)) |divider_index| {
+                    const reference_row = widget.tableReferenceRow(tree, t) orelse return;
+                    const left_cell = widget.tableCellAt(tree, reference_row, divider_index) orelse return;
+                    const right_cell = widget.tableCellAt(tree, reference_row, divider_index + 1) orelse return;
+                    mouse.drag_target = t;
+                    mouse.drag_origin_x = mouse.x;
+                    mouse.drag_origin_y = mouse.y;
+                    mouse.drag_origin_value = tree.getConst(left_cell).layout_rect.w;
+                    mouse.drag_origin_secondary_value = tree.getConst(right_cell).layout_rect.w;
+                    mouse.drag_origin_extent = tree.getConst(reference_row).layout_rect.w;
+                    mouse.drag_column_index = divider_index;
+                }
+            },
             .spinbox => {
                 if (clickInSpinBoxDecrement(tree, t, mouse.x)) {
                     stepSpinBox(tree, t, -1, true);
@@ -551,6 +571,9 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
 fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
     mouse.left_down = false;
     mouse.drag_target = null;
+    mouse.drag_column_index = null;
+    mouse.drag_origin_secondary_value = 0;
+    mouse.drag_origin_extent = 0;
     const release_target = hittest.hitTest(tree, mouse.x, mouse.y);
 
     if (mouse.press_target) |pt| {
@@ -622,6 +645,26 @@ fn updateSliderValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32
     if (usable <= 0) return;
     const t = std.math.clamp((mouse_x - rect.x - thumb_w * 0.5) / usable, 0, 1);
     node.kind.slider.value = node.kind.slider.min + t * (node.kind.slider.max - node.kind.slider.min);
+}
+
+fn updateTableColumns(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) bool {
+    const divider_index = mouse.drag_column_index orelse return false;
+    const total_width = if (mouse.drag_origin_extent > 0)
+        mouse.drag_origin_extent
+    else if (widget.tableReferenceRow(tree, handle)) |row|
+        tree.getConst(row).layout_rect.w
+    else
+        return false;
+    if (total_width <= 0) return false;
+
+    const delta = mouse.x - mouse.drag_origin_x;
+    return tree.get(handle).kind.table.resizeColumns(
+        divider_index,
+        total_width,
+        mouse.drag_origin_value,
+        mouse.drag_origin_secondary_value,
+        delta,
+    );
 }
 
 fn updateDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32, mouse: *const MouseState) void {

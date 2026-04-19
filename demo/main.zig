@@ -107,6 +107,7 @@ const State = struct {
     selectable_scene: ?goop.NodeHandle = null,
     selectable_camera: ?goop.NodeHandle = null,
     selectable_light: ?goop.NodeHandle = null,
+    asset_table: ?goop.NodeHandle = null,
     dropdown: ?goop.NodeHandle = null,
     menu_file: ?goop.NodeHandle = null,
     menu_edit: ?goop.NodeHandle = null,
@@ -590,8 +591,18 @@ fn buildWidgetTree(state: *State) !void {
     } });
 
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "Asset Table" } });
-    const asset_table = try ctx.tree.addChild(root, .{ .table = .{ .columns = 3 } });
-    const asset_header = try ctx.tree.addChild(asset_table, .{ .table_row = .{ .header = true } });
+    state.asset_table = try ctx.tree.addChild(root, .{ .table = .{
+        .columns = 3,
+        .resizable = true,
+        .min_column_width = 96,
+    } });
+    {
+        const table = &ctx.tree.get(state.asset_table.?).kind.table;
+        table.column_weights[0] = 0.56;
+        table.column_weights[1] = 0.24;
+        table.column_weights[2] = 0.20;
+    }
+    const asset_header = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{ .header = true } });
     const asset_header_name = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
     const asset_header_type = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
     const asset_header_vis = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
@@ -599,7 +610,7 @@ fn buildWidgetTree(state: *State) !void {
     _ = try ctx.tree.addChild(asset_header_type, .{ .text = .{ .content = "Type" } });
     _ = try ctx.tree.addChild(asset_header_vis, .{ .text = .{ .content = "Visible" } });
 
-    const asset_row_a = try ctx.tree.addChild(asset_table, .{ .table_row = .{ .selected = true } });
+    const asset_row_a = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{ .selected = true } });
     const asset_row_a_name = try ctx.tree.addChild(asset_row_a, .{ .table_cell = .{} });
     const asset_row_a_type = try ctx.tree.addChild(asset_row_a, .{ .table_cell = .{} });
     const asset_row_a_vis = try ctx.tree.addChild(asset_row_a, .{ .table_cell = .{} });
@@ -607,7 +618,7 @@ fn buildWidgetTree(state: *State) !void {
     _ = try ctx.tree.addChild(asset_row_a_type, .{ .text = .{ .content = "Collection" } });
     _ = try ctx.tree.addChild(asset_row_a_vis, .{ .text = .{ .content = "Yes" } });
 
-    const asset_row_b = try ctx.tree.addChild(asset_table, .{ .table_row = .{} });
+    const asset_row_b = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{} });
     const asset_row_b_name = try ctx.tree.addChild(asset_row_b, .{ .table_cell = .{} });
     const asset_row_b_type = try ctx.tree.addChild(asset_row_b, .{ .table_cell = .{} });
     const asset_row_b_vis = try ctx.tree.addChild(asset_row_b, .{ .table_cell = .{} });
@@ -615,7 +626,7 @@ fn buildWidgetTree(state: *State) !void {
     _ = try ctx.tree.addChild(asset_row_b_type, .{ .text = .{ .content = "Object" } });
     _ = try ctx.tree.addChild(asset_row_b_vis, .{ .text = .{ .content = "Yes" } });
 
-    const asset_row_c = try ctx.tree.addChild(asset_table, .{ .table_row = .{} });
+    const asset_row_c = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{} });
     const asset_row_c_name = try ctx.tree.addChild(asset_row_c, .{ .table_cell = .{} });
     const asset_row_c_type = try ctx.tree.addChild(asset_row_c, .{ .table_cell = .{} });
     const asset_row_c_vis = try ctx.tree.addChild(asset_row_c, .{ .table_cell = .{} });
@@ -957,6 +968,14 @@ pub fn main() !void {
         if (state.selectable_scene) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Scene Collection\n", .{});
         if (state.selectable_camera) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Camera Rig\n", .{});
         if (state.selectable_light) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Lighting Set\n", .{});
+        if (state.asset_table) |h| if (ctx.tableChanged(h)) {
+            std.debug.print("Asset table divider {} resized: [{d:.2}, {d:.2}, {d:.2}]\n", .{
+                ctx.tableResizedColumn(h).?,
+                ctx.tableColumnFraction(h, 0).?,
+                ctx.tableColumnFraction(h, 1).?,
+                ctx.tableColumnFraction(h, 2).?,
+            });
+        };
         if (state.dropdown) |h| if (ctx.dropdownChanged(h)) {
             std.debug.print("Dropdown selected: {s}\n", .{ctx.dropdownValue(h)});
         };

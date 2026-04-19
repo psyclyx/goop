@@ -145,8 +145,84 @@ pub const WidgetKind = union(enum) {
     };
 
     pub const Table = struct {
+        pub const max_columns: usize = 32;
+        pub const resize_handle_width: f32 = 8;
+        pub const resize_grip_width: f32 = 2;
+        pub const resize_grip_height: f32 = 12;
+
         columns: u8 = 0,
         striped: bool = true,
+        resizable: bool = false,
+        min_column_width: f32 = 96,
+        changed: bool = false,
+        resized_column: ?u8 = null,
+        active_columns: u8 = 0,
+        column_weights: [max_columns]f32 = [_]f32{0} ** max_columns,
+
+        pub fn syncColumns(self: *Table, columns: u8) void {
+            const clamped: u8 = @intCast(@min(@as(usize, columns), max_columns));
+            if (clamped == 0) {
+                self.active_columns = 0;
+                @memset(&self.column_weights, 0);
+                return;
+            }
+
+            var sum: f32 = 0;
+            var reset = self.active_columns != clamped;
+            if (!reset) {
+                for (self.column_weights[0..clamped]) |weight| {
+                    if (!std.math.isFinite(weight) or weight <= 0) {
+                        reset = true;
+                        break;
+                    }
+                    sum += weight;
+                }
+                if (sum <= 0.0001) reset = true;
+            }
+
+            self.active_columns = clamped;
+            @memset(self.column_weights[clamped..], 0);
+
+            if (reset) {
+                const equal = 1.0 / @as(f32, @floatFromInt(clamped));
+                for (self.column_weights[0..clamped]) |*weight| weight.* = equal;
+                return;
+            }
+
+            if (@abs(sum - 1.0) > 0.0001) {
+                for (self.column_weights[0..clamped]) |*weight| weight.* /= sum;
+            }
+        }
+
+        pub fn columnWeight(self: *const Table, index: usize) ?f32 {
+            if (index >= self.active_columns) return null;
+            return self.column_weights[index];
+        }
+
+        pub fn resizeColumns(
+            self: *Table,
+            divider_index: u8,
+            total_width: f32,
+            origin_left_width: f32,
+            origin_right_width: f32,
+            delta_px: f32,
+        ) bool {
+            if (divider_index + 1 >= self.active_columns or total_width <= 0) return false;
+
+            const pair_total = origin_left_width + origin_right_width;
+            if (pair_total <= 0) return false;
+
+            const min_width = @min(self.min_column_width, pair_total * 0.5);
+            const new_left = std.math.clamp(origin_left_width + delta_px, min_width, pair_total - min_width);
+            if (@abs(new_left - origin_left_width) <= 0.01) return false;
+
+            const new_right = pair_total - new_left;
+            self.column_weights[divider_index] = new_left / total_width;
+            self.column_weights[divider_index + 1] = new_right / total_width;
+            self.changed = true;
+            self.resized_column = divider_index;
+            return true;
+        }
     };
 
     pub const TableRow = struct {
@@ -645,8 +721,98 @@ pub const Tree = struct {
     };
 };
 
+pub fn tableEffectiveColumnCount(tree: *const Tree, table: NodeHandle) u16 {
+    const node = tree.getConst(table);
+    std.debug.assert(node.kind == .table);
+
+    var count: u16 = @as(u16, node.kind.table.columns);
+    var iter = tree.children(table);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .table_row) continue;
+        count = @max(count, tableRowCellCount(tree, child));
+    }
+    return @max(count, 1);
+}
+
+pub fn tableRowCellCount(tree: *const Tree, row: NodeHandle) u16 {
+    var count: u16 = 0;
+    var iter = tree.children(row);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind == .table_cell) count += 1;
+    }
+    return count;
+}
+
+pub fn tableCellAt(tree: *const Tree, row: NodeHandle, index: usize) ?NodeHandle {
+    var current_index: usize = 0;
+    var iter = tree.children(row);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .table_cell) continue;
+        if (current_index == index) return child;
+        current_index += 1;
+    }
+    return null;
+}
+
+pub fn tableReferenceRow(tree: *const Tree, table: NodeHandle) ?NodeHandle {
+    var best: ?NodeHandle = null;
+    var best_is_header = false;
+    var best_cell_count: u16 = 0;
+
+    var iter = tree.children(table);
+    while (iter.next()) |child| {
+        const node = tree.getConst(child);
+        if (node.kind != .table_row) continue;
+
+        const cell_count = tableRowCellCount(tree, child);
+        if (cell_count == 0) continue;
+
+        const is_header = node.kind.table_row.header;
+        if (best == null or (is_header and !best_is_header) or (is_header == best_is_header and cell_count > best_cell_count)) {
+            best = child;
+            best_is_header = is_header;
+            best_cell_count = cell_count;
+        }
+    }
+
+    return best;
+}
+
+pub fn tableResizeHandleRect(tree: *const Tree, table: NodeHandle, divider_index: u8) ?draw.Rect {
+    const node = tree.getConst(table);
+    if (node.kind != .table or !node.kind.table.resizable) return null;
+
+    const row = tableReferenceRow(tree, table) orelse return null;
+    const left = tableCellAt(tree, row, divider_index) orelse return null;
+    _ = tableCellAt(tree, row, divider_index + 1) orelse return null;
+
+    const left_rect = tree.getConst(left).layout_rect;
+    if (left_rect.w <= 0 or left_rect.h <= 0) return null;
+
+    const row_rect = tree.getConst(row).layout_rect;
+    return .{
+        .x = left_rect.x + left_rect.w - WidgetKind.Table.resize_handle_width * 0.5,
+        .y = row_rect.y,
+        .w = WidgetKind.Table.resize_handle_width,
+        .h = row_rect.h,
+    };
+}
+
+pub fn tableResizeHandleIndexAtPoint(tree: *const Tree, table: NodeHandle, x: f32, y: f32) ?u8 {
+    const node = tree.getConst(table);
+    if (node.kind != .table or !node.kind.table.resizable or node.kind.table.active_columns < 2) return null;
+
+    var index: u8 = 0;
+    while (index + 1 < node.kind.table.active_columns) : (index += 1) {
+        const rect = tableResizeHandleRect(tree, table, index) orelse continue;
+        if (x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h) return index;
+    }
+    return null;
+}
+
 fn syncDerivedState(kind: *WidgetKind) void {
     switch (kind.*) {
+        .table => |*table| table.syncColumns(table.columns),
         .drag_value => |*drag_value| drag_value.syncLabel(),
         .spinbox => |*spinbox| spinbox.syncLabel(),
         else => {},

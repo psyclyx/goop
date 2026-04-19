@@ -54,6 +54,7 @@ pub fn isInteractive(kind: widget.WidgetKind) bool {
         .tree_item,
         .dropdown,
         .selectable,
+        .table,
         .menu,
         .popup,
         .menu_item,
@@ -66,7 +67,7 @@ pub fn isInteractive(kind: widget.WidgetKind) bool {
         .container,
         .text_input,
         => true,
-        .text, .list_box, .table, .table_row, .table_cell, .menu_bar, .tooltip, .tab_bar => false,
+        .text, .list_box, .table_row, .table_cell, .menu_bar, .tooltip, .tab_bar => false,
     };
 }
 
@@ -161,6 +162,7 @@ fn tooltipVisible(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
 fn pointHitsWidget(tree: *const widget.Tree, handle: widget.NodeHandle, x: f32, y: f32) bool {
     const node = tree.getConst(handle);
     return switch (node.kind) {
+        .table => widget.tableResizeHandleIndexAtPoint(tree, handle, x, y) != null,
         .splitter => pointInRect(x, y, splitterDividerRect(node.layout_rect, node.kind.splitter, node.style_override.resolve(style.Theme.default))),
         else => pointInRect(x, y, node.layout_rect),
     };

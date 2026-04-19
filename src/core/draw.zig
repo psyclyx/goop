@@ -514,7 +514,6 @@ fn emitTable(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    _ = table;
     try commands.append(allocator, .{ .rect = .{
         .bounds = node.layout_rect,
         .color = resolved.bg,
@@ -522,7 +521,29 @@ fn emitTable(
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
+
     try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+
+    if (table.resizable and table.active_columns >= 2) {
+        var divider_index: u8 = 0;
+        while (divider_index + 1 < table.active_columns) : (divider_index += 1) {
+            const handle_rect = widget.tableResizeHandleRect(tree, handle, divider_index) orelse continue;
+            const grip_color = if (node.interaction.pressed or node.interaction.hovered) theme.accent else resolved.border;
+            const grip_rect = Rect{
+                .x = handle_rect.x + handle_rect.w * 0.5 - widget.WidgetKind.Table.resize_grip_width * 0.5,
+                .y = handle_rect.y + handle_rect.h * 0.5 - widget.WidgetKind.Table.resize_grip_height * 0.5,
+                .w = widget.WidgetKind.Table.resize_grip_width,
+                .h = widget.WidgetKind.Table.resize_grip_height,
+            };
+            try commands.append(allocator, .{ .rect = .{
+                .bounds = grip_rect,
+                .color = grip_color,
+                .border_color = grip_color,
+                .border_width = 0,
+                .corner_radius = widget.WidgetKind.Table.resize_grip_width,
+            } });
+        }
+    }
 }
 
 fn emitTableRow(
@@ -1968,6 +1989,40 @@ test "table emits header fill, stripes, and column dividers" {
     try std.testing.expect(dl.commands[9] == .text); // row type
     try std.testing.expectEqualStrings("Cube", dl.commands[7].text.text);
     try std.testing.expectEqualStrings("Mesh", dl.commands[9].text.text);
+}
+
+test "resizable table emits header grips" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const table = try tree.addRoot(.{ .table = .{
+        .columns = 2,
+        .resizable = true,
+    } });
+    const header = try tree.addChild(table, .{ .table_row = .{ .header = true } });
+    const header_name = try tree.addChild(header, .{ .table_cell = .{} });
+    const header_type = try tree.addChild(header, .{ .table_cell = .{} });
+    const header_name_text = try tree.addChild(header_name, .{ .text = .{ .content = "Name" } });
+    const header_type_text = try tree.addChild(header_type, .{ .text = .{ .content = "Type" } });
+
+    tree.get(table).layout_rect = .{ .x = 0, .y = 0, .w = 280, .h = 28 };
+    tree.get(header).layout_rect = .{ .x = 0, .y = 0, .w = 280, .h = 28 };
+    tree.get(header_name).layout_rect = .{ .x = 0, .y = 0, .w = 140, .h = 28 };
+    tree.get(header_type).layout_rect = .{ .x = 140, .y = 0, .w = 140, .h = 28 };
+    tree.get(header_name_text).layout_rect = .{ .x = 8, .y = 6, .w = 40, .h = 14 };
+    tree.get(header_type_text).layout_rect = .{ .x = 148, .y = 6, .w = 40, .h = 14 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 6), dl.commands.len);
+    try std.testing.expect(dl.commands[5] == .rect);
+    try std.testing.expectApproxEqAbs(@as(f32, 139), dl.commands[5].rect.bounds.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 8), dl.commands[5].rect.bounds.y, 0.01);
+    try std.testing.expectApproxEqAbs(widget.WidgetKind.Table.resize_grip_height, dl.commands[5].rect.bounds.h, 0.01);
 }
 
 test "slider emits track and thumb" {

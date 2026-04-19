@@ -133,6 +133,10 @@ pub const Context = struct {
                 .selectable => |*selectable| {
                     selectable.clicked = false;
                 },
+                .table => |*table| {
+                    table.changed = false;
+                    table.resized_column = null;
+                },
                 .menu => |*menu| {
                     menu.clicked = false;
                 },
@@ -278,6 +282,21 @@ pub const Context = struct {
     /// Check whether a list box selection changed this frame.
     pub fn listBoxChanged(self: *const Context, handle: NodeHandle) bool {
         return self.tree.getConst(handle).kind.list_box.changed;
+    }
+
+    /// Get the retained width fraction for a table column, if present.
+    pub fn tableColumnFraction(self: *const Context, handle: NodeHandle, index: u8) ?f32 {
+        return self.tree.getConst(handle).kind.table.columnWeight(index);
+    }
+
+    /// Check whether a table resized this frame.
+    pub fn tableChanged(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.table.changed;
+    }
+
+    /// Get the divider index that was resized this frame, if any.
+    pub fn tableResizedColumn(self: *const Context, handle: NodeHandle) ?u8 {
+        return self.tree.getConst(handle).kind.table.resized_column;
     }
 
     /// Get the most recent secondary click that occurred this frame, if any.
@@ -725,6 +744,71 @@ test "table layout keeps columns aligned across rows" {
     try std.testing.expectApproxEqAbs(header_vis_rect.x, row_vis_rect.x, 0.01);
     try std.testing.expectApproxEqAbs(header_name_rect.w, header_type_rect.w, 0.01);
     try std.testing.expectApproxEqAbs(header_type_rect.w, header_vis_rect.w, 0.01);
+}
+
+test "resizable table columns update widths in the same frame as drag" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 640, .height = 360 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const table = try ctx.tree.addChild(root, .{ .table = .{
+        .columns = 3,
+        .resizable = true,
+    } });
+    const header = try ctx.tree.addChild(table, .{ .table_row = .{ .header = true } });
+    const header_name = try ctx.tree.addChild(header, .{ .table_cell = .{} });
+    const header_type = try ctx.tree.addChild(header, .{ .table_cell = .{} });
+    const header_vis = try ctx.tree.addChild(header, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(header_name, .{ .text = .{ .content = "Name" } });
+    _ = try ctx.tree.addChild(header_type, .{ .text = .{ .content = "Type" } });
+    _ = try ctx.tree.addChild(header_vis, .{ .text = .{ .content = "Visible" } });
+
+    const row = try ctx.tree.addChild(table, .{ .table_row = .{} });
+    const row_name = try ctx.tree.addChild(row, .{ .table_cell = .{} });
+    const row_type = try ctx.tree.addChild(row, .{ .table_cell = .{} });
+    const row_vis = try ctx.tree.addChild(row, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(row_name, .{ .text = .{ .content = "Cube" } });
+    _ = try ctx.tree.addChild(row_type, .{ .text = .{ .content = "Mesh" } });
+    _ = try ctx.tree.addChild(row_vis, .{ .text = .{ .content = "Yes" } });
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+
+    const initial_name = ctx.tree.getConst(header_name).layout_rect;
+    const initial_type = ctx.tree.getConst(header_type).layout_rect;
+    const divider_x = initial_name.x + initial_name.w;
+    const divider_y = initial_name.y + initial_name.h * 0.5;
+
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .pressed,
+        .x = divider_x,
+        .y = divider_y,
+    } });
+    try ctx.pushEvent(.{ .mouse_move = .{
+        .x = divider_x + 48,
+        .y = divider_y,
+    } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .released,
+        .x = divider_x + 48,
+        .y = divider_y,
+    } });
+    ctx.processEvents();
+
+    const resized_name = ctx.tree.getConst(header_name).layout_rect;
+    const resized_type = ctx.tree.getConst(header_type).layout_rect;
+    const resized_row_name = ctx.tree.getConst(row_name).layout_rect;
+    const resized_row_type = ctx.tree.getConst(row_type).layout_rect;
+
+    try std.testing.expect(ctx.tableChanged(table));
+    try std.testing.expectEqual(@as(?u8, 0), ctx.tableResizedColumn(table));
+    try std.testing.expect(ctx.tableColumnFraction(table, 0).? > (1.0 / 3.0));
+    try std.testing.expect(resized_name.w > initial_name.w);
+    try std.testing.expect(resized_type.w < initial_type.w);
+    try std.testing.expectApproxEqAbs(resized_name.x, resized_row_name.x, 0.01);
+    try std.testing.expectApproxEqAbs(resized_type.x, resized_row_type.x, 0.01);
 }
 
 test "tooltip layout updates in the same frame as hover" {

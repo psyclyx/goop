@@ -25,6 +25,7 @@ pub const TextMeasureCtx = struct {
 /// Run the layout pass: walk the widget tree, feed elements to clay,
 /// compute layout, and write computed rects back to each node.
 pub fn run(tree: *widget.Tree, theme: style_mod.Theme, text_ctx: ?*const TextMeasureCtx) void {
+    syncTableState(tree);
     c.Clay_SetMeasureTextFunction(&measureText, @ptrCast(@constCast(text_ctx)));
     c.Clay_BeginLayout();
 
@@ -558,7 +559,7 @@ fn emitTableRow(
         .border = .{},
         .userData = null,
     });
-    emitTableRowCells(tree, handle, effectiveTableColumnCount(tree, handle), theme);
+    emitTableRowCells(tree, handle, theme);
     c.Clay__CloseElement();
 }
 
@@ -1286,12 +1287,18 @@ fn percentSizing(percent: f32) c.Clay_SizingAxis {
     };
 }
 
-fn emitTableRowCells(tree: *const widget.Tree, row: widget.NodeHandle, columns: u16, theme: style_mod.Theme) void {
-    const slot_percent = 1.0 / @as(f32, @floatFromInt(@max(columns, 1)));
+fn emitTableRowCells(tree: *const widget.Tree, row: widget.NodeHandle, theme: style_mod.Theme) void {
+    const table_handle = tree.getConst(row).parent orelse return;
+    const table = tree.getConst(table_handle).kind.table;
+    const columns = @max(table.active_columns, @as(u8, 1));
 
+    var cell_index: u8 = 0;
     var iter = tree.children(row);
     while (iter.next()) |child| {
         if (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip) continue;
+
+        const slot_percent = table.columnWeight(cell_index) orelse (1.0 / @as(f32, @floatFromInt(columns)));
+        cell_index += 1;
 
         c.Clay__OpenElement();
         c.Clay__ConfigureOpenElement(.{
@@ -1321,16 +1328,6 @@ fn emitTableRowCells(tree: *const widget.Tree, row: widget.NodeHandle, columns: 
     }
 }
 
-fn effectiveTableColumnCount(tree: *const widget.Tree, row: widget.NodeHandle) u16 {
-    const cells = countNonPopupChildren(tree, row);
-    const parent_handle = tree.getConst(row).parent orelse return @max(cells, 1);
-    const parent = tree.getConst(parent_handle);
-    if (parent.kind == .table and parent.kind.table.columns > 0) {
-        return @max(@as(u16, parent.kind.table.columns), cells);
-    }
-    return @max(cells, 1);
-}
-
 fn countNonPopupChildren(tree: *const widget.Tree, parent: widget.NodeHandle) u16 {
     var count: u16 = 0;
     var iter = tree.children(parent);
@@ -1339,6 +1336,14 @@ fn countNonPopupChildren(tree: *const widget.Tree, parent: widget.NodeHandle) u1
         count += 1;
     }
     return count;
+}
+
+fn syncTableState(tree: *widget.Tree) void {
+    for (tree.nodes.items, 0..) |*node, i| {
+        if (!node.alive or node.kind != .table) continue;
+        const handle = tree.handleFromIndex(@intCast(i));
+        node.kind.table.syncColumns(@intCast(widget.tableEffectiveColumnCount(tree, handle)));
+    }
 }
 
 fn directPopupChild(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
