@@ -754,22 +754,26 @@ const c_io = @cImport({
 });
 
 fn loadFont(alloc: std.mem.Allocator) ![]u8 {
-    return readFile(alloc, "/run/current-system/sw/share/X11/fonts/DejaVuSans.ttf") catch
-        readFile(alloc, "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf") catch
-        readFile(alloc, "/usr/share/fonts/TTF/DejaVuSans.ttf") catch
-        loadFontFontconfig(alloc);
+    if (fontPathFromEnv()) |path| {
+        return readFile(alloc, path);
+    }
+
+    const fallback_paths = [_][]const u8{
+        "/run/current-system/sw/share/X11/fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    };
+    for (fallback_paths) |path| {
+        return readFile(alloc, path) catch continue;
+    }
+
+    std.debug.print("font not found; set GOOP_DEMO_FONT_PATH to a TTF file\n", .{});
+    return error.FontNotFound;
 }
 
-fn loadFontFontconfig(alloc: std.mem.Allocator) ![]u8 {
-    // Use fontconfig to find a sans-serif font (works on NixOS)
-    const pipe = c_io.popen("fc-match -f '%{file}' 'sans-serif'", "r") orelse return error.FontNotFound;
-    defer _ = c_io.pclose(pipe);
-    var path_buf: [1024]u8 = undefined;
-    const n = c_io.fread(&path_buf, 1, path_buf.len, pipe);
-    if (n == 0) return error.FontNotFound;
-    const path = path_buf[0..n];
-    std.debug.print("fontconfig resolved: {s}\n", .{path});
-    return readFile(alloc, path);
+fn fontPathFromEnv() ?[]const u8 {
+    const raw = c_io.getenv("GOOP_DEMO_FONT_PATH") orelse return null;
+    return std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
 }
 
 fn readFile(alloc: std.mem.Allocator, path: []const u8) ![]u8 {

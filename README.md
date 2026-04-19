@@ -39,7 +39,8 @@ goop/
 ## Build / Test
 
 Use `nix-shell` first. The shell provides `harfbuzz` and the rest of the demo's
-native dependencies.
+native dependencies. If the demo font is not in one of the built-in fallback
+locations, set `GOOP_DEMO_FONT_PATH` to a `.ttf` file before running it.
 
 ```bash
 nix-shell
@@ -59,7 +60,7 @@ zig build demo
 
 ## Near-Term Priorities
 
-1. Embedder-provided font path instead of `popen("fc-match")`
-2. C API bindings
-3. HiDPI scaling in the demo/runtime model
-4. Keyboard navigation for tables and denser data views
+1. C API bindings
+2. HiDPI scaling in the demo/runtime model
+3. Keyboard navigation for tables and denser data views
+4. Real Wayland clipboard integration in the demo

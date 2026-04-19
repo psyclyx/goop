@@ -8,6 +8,8 @@ is a Wayland embedder with EGL/OpenGL rendering and `snail` text support.
 
 Current baseline: `zig build test` is clean. Use `nix-shell` before
 `zig build`; the shell provides `harfbuzz` and the other demo dependencies.
+Set `GOOP_DEMO_FONT_PATH` if the demo font is not in one of the built-in
+fallback locations.
 
 ## Recent Progress
 
@@ -28,17 +30,17 @@ Current baseline: `zig build test` is clean. Use `nix-shell` before
 - Toolbar and status-bar structural widgets for editor chrome
 - Hover/focus-driven tooltips built on the floating layout path
 - Secondary-click reporting plus caller-managed context menu positioning
+- Demo font loading no longer shells out through `fc-match`
 
 ## Next Priorities
 
-1. Embedder-provided font path instead of `popen("fc-match")`
-2. C API bindings
-3. HiDPI scaling
-4. Keyboard navigation for tables and denser data views
+1. C API bindings
+2. HiDPI scaling
+3. Keyboard navigation for tables and denser data views
+4. Real Wayland clipboard integration
 
 ## Known Issues
 
-- Font loading uses `popen("fc-match")`, which is fragile and Linux-only
 - MSAA sample count is hardcoded to `4` with no capability fallback
 - Text input only handles printable ASCII; UTF-8 editing is not implemented
 - The demo clipboard path does not yet use the real Wayland clipboard

@@ -147,7 +147,6 @@ core API.
 
 ## Current Constraints
 
-- Font discovery still shells out to `fc-match`
 - Text input editing is ASCII-only
 - Clipboard support in the demo is not wired to the real Wayland clipboard
 - The demo assumes 1:1 surface size to physical pixels
@@ -159,10 +158,10 @@ core API.
 
 Near-term work is focused on:
 
-1. Removing the `fc-match` dependency from font loading
-2. Adding a C-facing API layer
-3. Improving runtime portability and display scaling behavior
-4. Polishing denser data-view widgets with keyboard selection behavior
+1. Adding a C-facing API layer
+2. Improving runtime portability and display scaling behavior
+3. Polishing denser data-view widgets with keyboard selection behavior
+4. Replacing the demo clipboard stub with real Wayland clipboard support
 
 ## History
 
