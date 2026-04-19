@@ -9,6 +9,10 @@ const wl = @cImport({
     @cInclude("xdg-shell-client-protocol.h");
 });
 
+const xkb = @cImport({
+    @cInclude("xkbcommon/xkbcommon.h");
+});
+
 const egl = @cImport({
     @cInclude("EGL/egl.h");
 });
@@ -16,6 +20,8 @@ const egl = @cImport({
 const posix = @cImport({
     @cInclude("poll.h");
     @cInclude("time.h");
+    @cInclude("unistd.h");
+    @cInclude("sys/mman.h");
 });
 
 const allocator = std.heap.page_allocator;
@@ -99,6 +105,11 @@ const State = struct {
     // Last known mouse position from Wayland pointer events
     mouse_x: f32 = 0,
     mouse_y: f32 = 0,
+
+    // xkbcommon state for keymap → text conversion
+    xkb_ctx: ?*xkb.xkb_context = null,
+    xkb_keymap: ?*xkb.xkb_keymap = null,
+    xkb_state: ?*xkb.xkb_state = null,
 };
 
 // ── Wayland listeners ──
@@ -225,18 +236,53 @@ fn noopAxisRelDir(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: u32) callconv(.
 // ── Keyboard listener ──
 
 const keyboard_listener = wl.wl_keyboard_listener{
-    .keymap = &noopKeymap,
+    .keymap = &keymapHandler,
     .enter = &noopKeyboardEnter,
     .leave = &noopKeyboardLeave,
     .key = &keyboardKey,
-    .modifiers = &noopModifiers,
+    .modifiers = &modifiersHandler,
     .repeat_info = &noopRepeatInfo,
 };
 
-fn noopKeymap(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: i32, _: u32) callconv(.c) void {}
+fn keymapHandler(data: ?*anyopaque, _: ?*wl.wl_keyboard, format: u32, fd: i32, size: u32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    defer _ = posix.close(fd);
+
+    if (format != wl.WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) return;
+
+    if (state.xkb_ctx == null) {
+        state.xkb_ctx = xkb.xkb_context_new(xkb.XKB_CONTEXT_NO_FLAGS);
+        if (state.xkb_ctx == null) return;
+    }
+
+    const ptr = posix.mmap(null, size, posix.PROT_READ, posix.MAP_SHARED, fd, 0);
+    if (ptr == posix.MAP_FAILED) return;
+    const map_str: [*]const u8 = @ptrCast(ptr);
+    defer _ = posix.munmap(@constCast(@ptrCast(map_str)), size);
+
+    if (state.xkb_state) |s| xkb.xkb_state_unref(s);
+    if (state.xkb_keymap) |k| xkb.xkb_keymap_unref(k);
+
+    state.xkb_keymap = xkb.xkb_keymap_new_from_string(
+        state.xkb_ctx,
+        map_str,
+        xkb.XKB_KEYMAP_FORMAT_TEXT_V1,
+        xkb.XKB_KEYMAP_COMPILE_NO_FLAGS,
+    );
+    if (state.xkb_keymap) |km| {
+        state.xkb_state = xkb.xkb_state_new(km);
+    }
+}
+
 fn noopKeyboardEnter(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: ?*wl.wl_surface, _: ?*wl.wl_array) callconv(.c) void {}
 fn noopKeyboardLeave(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: ?*wl.wl_surface) callconv(.c) void {}
-fn noopModifiers(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: u32, _: u32, _: u32, _: u32) callconv(.c) void {}
+
+fn modifiersHandler(data: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, mods_depressed: u32, mods_latched: u32, mods_locked: u32, group: u32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    if (state.xkb_state) |s| {
+        _ = xkb.xkb_state_update_mask(s, mods_depressed, mods_latched, mods_locked, 0, 0, group);
+    }
+}
 fn noopRepeatInfo(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: i32, _: i32) callconv(.c) void {}
 
 fn evdevToKeycode(scancode: u32) goop.Event.Keycode {
@@ -273,6 +319,19 @@ fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: u32, key: u32,
         .keycode = evdevToKeycode(scancode),
         .state = goop_state,
     } }) catch {};
+
+    // On key press, use xkbcommon to produce a text event with the composed codepoint
+    if (key_state == 1) {
+        if (state.xkb_state) |xkb_st| {
+            // xkb uses evdev keycodes (key + 8)
+            const codepoint = xkb.xkb_state_key_get_utf32(xkb_st, key + 8);
+            if (codepoint >= 0x20 and codepoint < 0x7F) {
+                state.ctx.pushEvent(.{ .text = .{
+                    .codepoint = @intCast(codepoint),
+                } }) catch {};
+            }
+        }
+    }
     state.needs_redraw = true;
 }
 
@@ -659,6 +718,11 @@ pub fn main() !void {
         requestFrame(&state);
         _ = egl.eglSwapBuffers(state.egl_display, state.egl_surface);
     }
+
+    // Clean up xkb state
+    if (state.xkb_state) |s| xkb.xkb_state_unref(s);
+    if (state.xkb_keymap) |k| xkb.xkb_keymap_unref(k);
+    if (state.xkb_ctx) |c| xkb.xkb_context_unref(c);
 
     std.debug.print("goop demo exiting\n", .{});
 }
