@@ -28,6 +28,9 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
+    const build_lib = b.step("build-lib", "Build the static library");
+    build_lib.dependOn(&b.addInstallArtifact(lib, .{}).step);
+
     // ── Demo executable ──
     const demo_mod = b.createModule(.{
         .root_source_file = b.path("demo/main.zig"),
@@ -50,6 +53,9 @@ pub fn build(b: *std.Build) void {
         .root_module = demo_mod,
     });
     b.installArtifact(demo_exe);
+
+    const build_demo = b.step("build-demo", "Build the demo executable");
+    build_demo.dependOn(&b.addInstallArtifact(demo_exe, .{}).step);
 
     const run_demo = b.addRunArtifact(demo_exe);
     run_demo.step.dependOn(b.getInstallStep());

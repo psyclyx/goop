@@ -2,5 +2,6 @@ zig-out/
 zig-pkg/
 .zig-cache/
 .direnv/
+.envrc.local
 result
 prompt.md

@@ -9,8 +9,10 @@ let
   zig = pkgs.zigpkgs.master;
 
   runtimeLibs = with pkgs; [
+    harfbuzz
     libGL
     libglvnd
+    stdenv.cc.cc.lib
     wayland
     libxkbcommon
   ];
@@ -21,34 +23,54 @@ let
     root = ./.;
     fileset = pkgs.lib.fileset.unions [
       ./src
+      ./demo
       ./vendor
       ./build.zig
       ./build.zig.zon
     ];
   };
 
-in
-pkgs.stdenv.mkDerivation {
-  pname = "goop";
-  version = "0.0.1";
-  src = filteredSrc;
+  common = {
+    pname = "goop";
+    version = "0.0.1";
+    src = filteredSrc;
 
-  nativeBuildInputs = with pkgs; [
-    zig
-    pkg-config
-    autoPatchelfHook
-  ];
+    nativeBuildInputs = with pkgs; [
+      zig
+      pkg-config
+      autoPatchelfHook
+    ];
 
-  buildInputs = allBuildInputs;
+    buildInputs = allBuildInputs;
+  };
 
-  buildPhase = ''
-    export XDG_CACHE_HOME="$TMPDIR/.cache"
-    ln -s ${sources.snail} ../snail
-    zig build -Doptimize=ReleaseFast -Dtarget=native-native-gnu
-  '';
+  lib = pkgs.stdenv.mkDerivation (common // {
+    buildPhase = ''
+      export XDG_CACHE_HOME="$TMPDIR/.cache"
+      zig build build-lib --fork=${sources.snail} -Doptimize=ReleaseFast
+    '';
 
-  installPhase = ''
-    mkdir -p $out/lib
-    cp zig-out/lib/* $out/lib/
-  '';
+    installPhase = ''
+      mkdir -p $out/lib
+      cp zig-out/lib/* $out/lib/
+    '';
+  });
+
+  demo = pkgs.stdenv.mkDerivation (common // {
+    pname = "goop-demo";
+
+    buildPhase = ''
+      export XDG_CACHE_HOME="$TMPDIR/.cache"
+      zig build build-demo --fork=${sources.snail} -Doptimize=ReleaseFast
+    '';
+
+    installPhase = ''
+      mkdir -p $out/bin
+      cp zig-out/bin/goop-demo $out/bin/goop-demo
+    '';
+  });
+
+in {
+  inherit lib demo;
+  default = lib;
 }
