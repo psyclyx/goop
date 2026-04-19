@@ -17,7 +17,10 @@ in
       wayland-scanner
       libxkbcommon
       harfbuzz
+      dejavu_fonts
     ];
+
+    GOOP_DEMO_FONT_PATH = "${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSans.ttf";
 
     LD_LIBRARY_PATH = with pkgs;
       pkgs.lib.makeLibraryPath [

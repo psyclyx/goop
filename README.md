@@ -60,7 +60,8 @@ For the current engineering snapshot and rough edges, see
 ## Build
 
 Use `nix-shell` first. The shell provides the pinned Zig 0.16.0 toolchain plus
-the demo's native dependencies, including `harfbuzz`.
+the demo's native dependencies, including `harfbuzz`, and exports
+`GOOP_DEMO_FONT_PATH` for the bundled demo font.
 
 ```sh
 nix-shell
