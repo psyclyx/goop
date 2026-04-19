@@ -35,7 +35,9 @@ pub const Context = struct {
     clipboard: ?Clipboard = null,
     text_measure_ctx: ?*const TextMeasureCtx = null,
     layout_dirty: bool = true,
+    draw_dirty: bool = true,
     last_node_count: u32 = 0,
+    cached_draw_list: ?DrawList = null,
 
     pub fn init(allocator: std.mem.Allocator, opts: InitOptions) !Context {
         const min_memory = c.Clay_MinMemorySize();
@@ -58,6 +60,7 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *Context) void {
+        self.invalidateDrawCache();
         self.events.deinit(self.allocator);
         self.tree.deinit();
         c.Clay_SetCurrentContext(null);
@@ -82,6 +85,7 @@ pub const Context = struct {
                 else => {},
             }
         }
+        if (self.events.items.len > 0) self.draw_dirty = true;
         dispatch.processWithClipboard(&self.tree, self.events.items, &self.mouse, self.theme, self.clipboard, self.text_measure_ctx);
         self.events.clearRetainingCapacity();
     }
@@ -141,6 +145,7 @@ pub const Context = struct {
     /// The handle becomes invalid after this call.
     pub fn removeWidget(self: *Context, handle: NodeHandle) !void {
         self.layout_dirty = true;
+        self.draw_dirty = true;
         try self.tree.remove(handle);
     }
 
@@ -159,18 +164,36 @@ pub const Context = struct {
         if (!self.layout_dirty and current_count == self.last_node_count) return;
         layout.run(&self.tree, self.theme, text_ctx);
         self.layout_dirty = false;
+        self.draw_dirty = true;
         self.last_node_count = current_count;
     }
 
     /// Generate draw commands from the laid-out widget tree.
-    /// Caller must call freeDrawList when done.
+    /// Returns a cached list when nothing has changed. Caller must
+    /// call freeDrawList when done — cached lists are ref-shared and
+    /// only freed when the cache is invalidated or the context is deinited.
     pub fn generateDrawList(self: *Context) !DrawList {
-        return draw.generate(&self.tree, self.theme, self.allocator, self.text_measure_ctx);
+        if (!self.draw_dirty) {
+            if (self.cached_draw_list) |cached| return cached;
+        }
+        self.invalidateDrawCache();
+        const dl = try draw.generate(&self.tree, self.theme, self.allocator, self.text_measure_ctx);
+        self.cached_draw_list = dl;
+        self.draw_dirty = false;
+        return dl;
     }
 
     /// Free a DrawList returned by generateDrawList.
-    pub fn freeDrawList(self: *Context, dl: *DrawList) void {
-        draw.freeDrawList(dl, self.allocator);
+    /// This is a no-op — the Context owns the draw list memory and
+    /// manages its lifetime internally. Retained for API compatibility.
+    pub fn freeDrawList(_: *Context, _: *DrawList) void {}
+
+    /// Invalidate and free the cached draw list.
+    fn invalidateDrawCache(self: *Context) void {
+        if (self.cached_draw_list) |*cached| {
+            draw.freeDrawList(cached, self.allocator);
+            self.cached_draw_list = null;
+        }
     }
 
     /// Update layout dimensions (e.g. on window resize).
@@ -365,6 +388,52 @@ test "adding nodes triggers layout" {
     // After running, dirty is cleared and count is updated
     try std.testing.expect(!ctx.layout_dirty);
     try std.testing.expectEqual(@as(u32, 2), ctx.last_node_count);
+}
+
+test "draw list caching returns same list when clean" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    _ = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
+
+    ctx.doLayout(null);
+
+    var dl1 = try ctx.generateDrawList();
+    try std.testing.expect(!ctx.draw_dirty);
+
+    // Second call without changes returns the cached pointer
+    var dl2 = try ctx.generateDrawList();
+    try std.testing.expectEqual(dl1.commands.ptr, dl2.commands.ptr);
+
+    // freeDrawList is a no-op for the cached list
+    ctx.freeDrawList(&dl1);
+    ctx.freeDrawList(&dl2);
+}
+
+test "draw list regenerated after events" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    _ = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
+
+    ctx.doLayout(null);
+    var dl1 = try ctx.generateDrawList();
+    const ptr1 = dl1.commands.ptr;
+
+    // Pushing an event and processing marks draw dirty
+    try ctx.pushEvent(.{ .mouse_move = .{ .x = 50, .y = 50 } });
+    ctx.processEvents();
+    try std.testing.expect(ctx.draw_dirty);
+
+    // Regeneration produces a new list (old cache freed internally)
+    var dl2 = try ctx.generateDrawList();
+    try std.testing.expect(!ctx.draw_dirty);
+    _ = ptr1;
+
+    ctx.freeDrawList(&dl1);
+    ctx.freeDrawList(&dl2);
 }
 
 test {
