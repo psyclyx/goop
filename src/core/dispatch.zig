@@ -87,8 +87,12 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                             const rel_x = mouse.x - text_x;
                             const char_pos = if (char_width > 0) rel_x / char_width else 0;
                             const rounded: u8 = @intFromFloat(std.math.clamp(@round(char_pos), 0, @as(f32, @floatFromInt(ti.len))));
+                            if (mouse.shift_down) {
+                                if (ti.selection_anchor == null) ti.selection_anchor = ti.cursor;
+                            } else {
+                                ti.selection_anchor = rounded;
+                            }
                             ti.cursor = rounded;
-                            ti.selection_anchor = rounded;
                         }
                         // Start slider drag
                         if (tree.getConst(t).kind == .slider) {
@@ -1537,4 +1541,105 @@ test "click after drag clears selection" {
     }, &mouse, style.Theme.default);
 
     try std.testing.expect(!tree.get(ti).kind.text_input.hasSelection());
+}
+
+test "shift+click extends selection from cursor" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Focus and type "hello"
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 20, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'h' } },
+        .{ .text = .{ .codepoint = 'e' } },
+        .{ .text = .{ .codepoint = 'l' } },
+        .{ .text = .{ .codepoint = 'l' } },
+        .{ .text = .{ .codepoint = 'o' } },
+    }, &mouse, style.Theme.default);
+
+    // Move cursor to position 1 (Home, Right)
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 102, .keycode = .home, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(@as(u8, 1), tree.get(ti).kind.text_input.cursor);
+
+    // Shift+click at char 4: text_x=16, char_width=8.4, midpoint of char 4 = 16 + 4.5*8.4 = 53.8
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 54, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 54, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    const input = &tree.get(ti).kind.text_input;
+    try std.testing.expect(input.hasSelection());
+    try std.testing.expectEqual(@as(?u8, 1), input.selection_anchor);
+    try std.testing.expectEqual(@as(u8, 5), input.cursor);
+    try std.testing.expectEqualStrings("ello", input.selectedContent());
+}
+
+test "shift+click extends existing selection" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Focus and type "abcde"
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 20, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'a' } },
+        .{ .text = .{ .codepoint = 'b' } },
+        .{ .text = .{ .codepoint = 'c' } },
+        .{ .text = .{ .codepoint = 'd' } },
+        .{ .text = .{ .codepoint = 'e' } },
+    }, &mouse, style.Theme.default);
+
+    // Move cursor to position 3
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 102, .keycode = .home, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    // cursor at 3, shift+left to select "c"
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    // anchor=3, cursor=2, selection="c"
+
+    // Shift+click at char 0 to extend: x = 16 + 0*8.4 = 16
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 16, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 16, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    const input = &tree.get(ti).kind.text_input;
+    try std.testing.expect(input.hasSelection());
+    // Anchor should remain at 3 (original anchor), cursor at 0
+    try std.testing.expectEqual(@as(?u8, 3), input.selection_anchor);
+    try std.testing.expectEqual(@as(u8, 0), input.cursor);
+    try std.testing.expectEqualStrings("abc", input.selectedContent());
 }
