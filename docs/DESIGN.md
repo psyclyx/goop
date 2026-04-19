@@ -97,3 +97,46 @@ Retained-mode GUI library. Zig 0.16. Embeddable. No window ownership.
 - Focus navigation via Tab/Shift+Tab. Enter/Space activation.
 - Core-demo decoupling: core has zero demo dependencies.
 - Keyboard event model (Keycode enum + scancode mapping in demo).
+
+## Chore Review — Iteration 40
+
+### Codebase snapshot
+
+4476 LOC total. 56 tests pass. 8 widget types (incl. text input).
+
+| File | Lines | Role |
+|------|-------|------|
+| dispatch.zig | 1645 | Event processing, hit testing, focus |
+| draw.zig | 722 | Draw command generation |
+| layout.zig | 454 | Clay integration |
+| goop.zig | 282 | Public API |
+| widget.zig | 274 | Widget tree data |
+| style.zig | 101 | Theme/style |
+| event.zig | 72 | Event types |
+| demo/main.zig | 652 | Wayland demo |
+| demo/render.zig | 274 | GL33 renderer |
+
+### Review of iterations 35–39
+
+All 5 iterations focused on text input mouse interaction. Text input now
+has: keyboard editing, selection (shift+arrows, shift+home/end, ctrl+a),
+click-to-position, drag-select, shift-click extend. Solid for basic use.
+
+### Observations
+
+- **dispatch.zig still large (1645 lines).** Most growth is tests. Consider
+  extracting text input tests to a separate test file, or extracting text
+  input dispatch logic to its own module.
+- **Approximate char_width (font_size * 0.6)** used for cursor positioning
+  and click-to-position. Will break for proportional fonts. Proper fix
+  needs text measurement integration (MeasureTextFn from layout).
+
+### Resolved since iteration 25
+
+- **dispatch.zig extraction**: focus.zig and hittest.zig extracted (iteration 31).
+- **interactionBg helper**: extracted in draw.zig (iteration 28).
+
+### Deferred (still waiting)
+
+- **Widget tree mutation/removal.** Still append-only.
+- **Interaction result separation.** Still just .clicked on widget data.
