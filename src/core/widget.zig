@@ -104,20 +104,23 @@ pub const WidgetKind = union(enum) {
 
         pub fn deleteSelection(self: *TextInput) void {
             const range = self.selectionRange();
-            const sel_len = range.end - range.start;
-            if (sel_len == 0) return;
-            // Shift bytes left to close the gap
-            var i: usize = range.start;
-            while (i < self.len - sel_len) : (i += 1) {
-                self.buffer[i] = self.buffer[i + sel_len];
-            }
-            self.len -= sel_len;
-            self.cursor = range.start;
-            self.selection_anchor = null;
+            self.deleteRange(range.start, range.end);
         }
 
         pub fn clearSelection(self: *TextInput) void {
             self.selection_anchor = null;
+        }
+
+        pub fn deleteRange(self: *TextInput, start: u8, end: u8) void {
+            if (start >= end) return;
+            const count = end - start;
+            var i: usize = start;
+            while (i < self.len - count) : (i += 1) {
+                self.buffer[i] = self.buffer[i + count];
+            }
+            self.len -= count;
+            self.cursor = start;
+            self.clearSelection();
         }
 
         pub fn insert(self: *TextInput, byte: u8) void {
@@ -167,6 +170,53 @@ pub const WidgetKind = union(enum) {
             self.cursor -= 1;
         }
 
+        pub fn prevWordBoundary(self: *const TextInput, pos: u8) u8 {
+            if (pos == 0 or self.len == 0) return 0;
+
+            var i: usize = @min(pos, self.len);
+
+            while (i > 0 and charClass(self.buffer[i - 1]) == .space) : (i -= 1) {}
+            if (i == 0) return 0;
+
+            const cls = charClass(self.buffer[i - 1]);
+            while (i > 0 and charClass(self.buffer[i - 1]) == cls) : (i -= 1) {}
+
+            return @intCast(i);
+        }
+
+        pub fn nextWordBoundary(self: *const TextInput, pos: u8) u8 {
+            var i: usize = @min(pos, self.len);
+            if (i >= self.len) return self.len;
+
+            while (i < self.len and charClass(self.buffer[i]) == .space) : (i += 1) {}
+            if (i >= self.len) return self.len;
+
+            const cls = charClass(self.buffer[i]);
+            while (i < self.len and charClass(self.buffer[i]) == cls) : (i += 1) {}
+
+            return @intCast(i);
+        }
+
+        pub fn deleteBackWord(self: *TextInput) void {
+            if (self.hasSelection()) {
+                self.deleteSelection();
+                return;
+            }
+            if (self.cursor == 0) return;
+            const start = self.prevWordBoundary(self.cursor);
+            self.deleteRange(start, self.cursor);
+        }
+
+        pub fn deleteForwardWord(self: *TextInput) void {
+            if (self.hasSelection()) {
+                self.deleteSelection();
+                return;
+            }
+            if (self.cursor >= self.len) return;
+            const end = self.nextWordBoundary(self.cursor);
+            self.deleteRange(self.cursor, end);
+        }
+
         /// Find the word boundaries around the given position.
         /// Words are runs of alphanumeric/underscore characters.
         pub fn wordBounds(self: *const TextInput, pos: u8) struct { start: u8, end: u8 } {
@@ -185,6 +235,14 @@ pub const WidgetKind = union(enum) {
 
         fn isWordChar(c: u8) bool {
             return std.ascii.isAlphanumeric(c) or c == '_';
+        }
+
+        const CharClass = enum { word, space, other };
+
+        fn charClass(c: u8) CharClass {
+            if (std.ascii.isWhitespace(c)) return .space;
+            if (isWordChar(c)) return .word;
+            return .other;
         }
 
         pub fn deleteForward(self: *TextInput) void {

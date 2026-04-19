@@ -246,7 +246,11 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                         if (mouse.focused) |f| {
                             const node = tree.get(f);
                             if (node.kind == .text_input) {
-                                node.kind.text_input.deleteBack();
+                                if (mouse.ctrl_down) {
+                                    node.kind.text_input.deleteBackWord();
+                                } else {
+                                    node.kind.text_input.deleteBack();
+                                }
                             }
                         }
                     }
@@ -256,7 +260,11 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                         if (mouse.focused) |f| {
                             const node = tree.get(f);
                             if (node.kind == .text_input) {
-                                node.kind.text_input.deleteForward();
+                                if (mouse.ctrl_down) {
+                                    node.kind.text_input.deleteForwardWord();
+                                } else {
+                                    node.kind.text_input.deleteForward();
+                                }
                             }
                         }
                     }
@@ -269,10 +277,16 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                 const ti = &node.kind.text_input;
                                 if (mouse.shift_down) {
                                     if (ti.selection_anchor == null) ti.selection_anchor = ti.cursor;
-                                    if (ti.cursor > 0) ti.cursor -= 1;
+                                    if (mouse.ctrl_down) {
+                                        ti.cursor = ti.prevWordBoundary(ti.cursor);
+                                    } else if (ti.cursor > 0) {
+                                        ti.cursor -= 1;
+                                    }
                                 } else if (ti.hasSelection()) {
                                     ti.cursor = ti.selectionRange().start;
                                     ti.clearSelection();
+                                } else if (mouse.ctrl_down) {
+                                    ti.cursor = ti.prevWordBoundary(ti.cursor);
                                 } else if (ti.cursor > 0) {
                                     ti.cursor -= 1;
                                 }
@@ -288,10 +302,16 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                 const ti = &node.kind.text_input;
                                 if (mouse.shift_down) {
                                     if (ti.selection_anchor == null) ti.selection_anchor = ti.cursor;
-                                    if (ti.cursor < ti.len) ti.cursor += 1;
+                                    if (mouse.ctrl_down) {
+                                        ti.cursor = ti.nextWordBoundary(ti.cursor);
+                                    } else if (ti.cursor < ti.len) {
+                                        ti.cursor += 1;
+                                    }
                                 } else if (ti.hasSelection()) {
                                     ti.cursor = ti.selectionRange().end;
                                     ti.clearSelection();
+                                } else if (mouse.ctrl_down) {
+                                    ti.cursor = ti.nextWordBoundary(ti.cursor);
                                 } else if (ti.cursor < ti.len) {
                                     ti.cursor += 1;
                                 }

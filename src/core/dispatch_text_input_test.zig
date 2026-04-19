@@ -294,6 +294,119 @@ test "text input home/end keys move cursor" {
     try std.testing.expectEqual(@as(u8, 5), tree.getConst(ti).kind.text_input.cursor);
 }
 
+test "ctrl+left and ctrl+right move by word" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    focusAndType(&s.tree, &mouse, s.ti, "hello world");
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(@as(u8, 6), s.tree.get(s.ti).kind.text_input.cursor);
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(@as(u8, 0), s.tree.get(s.ti).kind.text_input.cursor);
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(@as(u8, 5), s.tree.get(s.ti).kind.text_input.cursor);
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(@as(u8, 11), s.tree.get(s.ti).kind.text_input.cursor);
+}
+
+test "ctrl+shift+arrow selects by word" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    focusAndType(&s.tree, &mouse, s.ti, "hello world");
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    const input = &s.tree.get(s.ti).kind.text_input;
+    try std.testing.expect(input.hasSelection());
+    try std.testing.expectEqual(@as(?u8, 11), input.selection_anchor);
+    try std.testing.expectEqual(@as(u8, 6), input.cursor);
+    try std.testing.expectEqualStrings("world", input.selectedContent());
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } },
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(input.hasSelection());
+    try std.testing.expectEqual(@as(u8, 0), input.selectionRange().start);
+    try std.testing.expectEqual(@as(u8, 11), input.selectionRange().end);
+}
+
+test "ctrl+backspace deletes previous word" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    focusAndType(&s.tree, &mouse, s.ti, "hello world");
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 14, .keycode = .backspace, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expectEqualStrings("hello ", s.tree.get(s.ti).kind.text_input.content());
+    try std.testing.expectEqual(@as(u8, 6), s.tree.get(s.ti).kind.text_input.cursor);
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 14, .keycode = .backspace, .state = .pressed } },
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expectEqualStrings("", s.tree.get(s.ti).kind.text_input.content());
+    try std.testing.expectEqual(@as(u8, 0), s.tree.get(s.ti).kind.text_input.cursor);
+}
+
+test "ctrl+delete deletes next word" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    focusAndType(&s.tree, &mouse, s.ti, "hello world");
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 102, .keycode = .home, .state = .pressed } },
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 111, .keycode = .delete, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expectEqualStrings(" world", s.tree.get(s.ti).kind.text_input.content());
+    try std.testing.expectEqual(@as(u8, 0), s.tree.get(s.ti).kind.text_input.cursor);
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 111, .keycode = .delete, .state = .pressed } },
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expectEqualStrings("", s.tree.get(s.ti).kind.text_input.content());
+    try std.testing.expectEqual(@as(u8, 0), s.tree.get(s.ti).kind.text_input.cursor);
+}
+
 test "shift+arrow creates selection" {
     const allocator = std.testing.allocator;
     var tree = widget.Tree.init(allocator);
