@@ -2,17 +2,16 @@
 
 ## Current
 
-Iteration 42.
+Iteration 43.
 61 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-42
+43
 
 ## Done This Iteration
 
-- Extracted 22 text input tests (~1080 lines) from dispatch.zig into dispatch_text_input_test.zig
-- dispatch.zig reduced from ~1830 to ~760 lines
+- Fixed demo interactivity: pointerButton was reading ctx.mouse (dispatch state, not yet updated) instead of tracking Wayland pointer position locally — all clicks were hitting (0,0)
 
 ## Next
 

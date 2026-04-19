@@ -95,6 +95,10 @@ const State = struct {
     radio_b: goop.NodeHandle = @enumFromInt(0),
     radio_c: goop.NodeHandle = @enumFromInt(0),
     click_count: u32 = 0,
+
+    // Last known mouse position from Wayland pointer events
+    mouse_x: f32 = 0,
+    mouse_y: f32 = 0,
 };
 
 // ── Wayland listeners ──
@@ -280,6 +284,8 @@ fn pointerMotion(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, sx: wl.wl_fixed_
     const state: *State = @ptrCast(@alignCast(data));
     const x = fixedToF32(sx);
     const y = fixedToF32(sy);
+    state.mouse_x = x;
+    state.mouse_y = y;
     state.ctx.pushEvent(.{ .mouse_move = .{ .x = x, .y = y } }) catch {};
     state.needs_redraw = true;
 }
@@ -294,9 +300,9 @@ fn pointerButton(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: u32, button: 
     };
     const goop_state: goop.Event.MouseButton.ButtonState = if (btn_state == 1) .pressed else .released;
 
-    // Use last known mouse position from the mouse state
-    const mx = state.ctx.mouse.x;
-    const my = state.ctx.mouse.y;
+    // Use last known mouse position from Wayland pointer events
+    const mx = state.mouse_x;
+    const my = state.mouse_y;
     state.ctx.pushEvent(.{ .mouse_button = .{
         .button = goop_button,
         .state = goop_state,
