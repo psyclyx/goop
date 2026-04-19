@@ -2,37 +2,34 @@
 
 ## Current
 
-Iteration 49.
+Iteration 50. Design review + chore cycle.
 72 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-49
+50
 
 ## Done This Iteration
 
-- Threaded TextMeasureCtx through dispatch and draw modules
-- Text input cursor positioning (click + drag) now uses real glyph metrics via layout.charIndexAtX
-- Selection highlight and cursor rendering now uses real widths via layout.textWidthUpTo
-- Both helpers fall back to font_size * 0.6 when no measurement context provided
-- Context stores text_measure_ctx from doLayout for use in processEvents and generateDrawList
+- Design review: assessed architecture at 50-iteration mark
+- Archived iterations 45–49
+- Declared first milestone complete (buttons, text, slider, scroll, GL33, Wayland)
+- Proposed milestone 2: dynamic UI (widget removal, draw caching, toolbar, font path)
+- Reviewed all deferred items — widget removal now #1 priority
 
 ## Next
 
-1. Widget tree mutation/removal API
-2. Draw list caching (skip draw generation when only layout skipped and no interaction changed)
-3. Text baseline y-offset — use real font ascent/descent from snail
+1. Widget tree mutation/removal API (generational handles or free-list)
+2. Draw list caching (draw-dirty flag, skip regeneration when unchanged)
+3. Toolbar/menu bar widget
+4. Embedder-provided font path (remove popen)
 
 ## What's Wrong
 
-- Widget tree is append-only — no removal/mutation API
+- Widget tree is append-only — no removal/mutation API (50 iterations deferred, now blocking)
 - No draw list caching — draw list regenerated every frame even when output unchanged
-- Text baseline y-offset is approximate (y + font_size)
-- Font loading uses popen("fc-match") — fragile
-- Scroll clamping uses previous frame's child layout rects — off by one frame
-- Focus ring draws outside widget bounds — may clip in scroll areas
+- Font loading uses popen("fc-match") — fragile, Linux-only
+- MSAA sample count hardcoded to 4 — no fallback if GPU doesn't support it
 - Text input only handles printable ASCII — no UTF-8 multi-byte support
-- Clipboard demo doesn't wire up real Wayland clipboard (wl_data_device) yet
-- Double-click detection requires embedder to provide timestamp_ms (defaults to 0 = disabled)
-- MSAA sample count is hardcoded to 4 — no fallback if GPU doesn't support it
-- charIndexAtX iterates all positions — O(n) per call, fine for short inputs but won't scale to large text fields
+- Clipboard demo doesn't wire up real Wayland clipboard (wl_data_device)
+- No toolbar/menu widget — last item from target widget set

@@ -145,3 +145,91 @@ coordinate bug fixed.
 
 - **Widget tree mutation/removal.** Still append-only.
 - **Interaction result separation.** Still just .clicked on widget data.
+
+## Design Review — Iteration 50
+
+### Codebase snapshot
+
+5306 LOC total. 72 tests pass. 8 widget types.
+
+| File | Lines | Role |
+|------|-------|------|
+| dispatch_text_input_test.zig | 1324 | Text input tests |
+| dispatch.zig | 820 | Event processing, hit testing, focus |
+| draw.zig | 728 | Draw command generation |
+| demo/main.zig | 664 | Wayland demo |
+| layout.zig | 488 | Clay integration |
+| widget.zig | 348 | Widget tree data |
+| goop.zig | 365 | Public API |
+| demo/render.zig | 275 | GL33 renderer |
+| style.zig | 101 | Theme/style |
+| focus.zig | 77 | Focus navigation |
+| event.zig | 76 | Event types |
+| hittest.zig | 40 | Hit testing |
+
+### Hard questions
+
+1. **Is append-only still acceptable?** The tree has been append-only for 50
+   iterations. The demo builds once and never mutates. Any real application
+   (dynamic lists, conditional UI, tab switching) will need removal. This is
+   the single biggest architectural gap. Generational indices or a free-list
+   are the obvious paths. The sibling linked-list pointers make removal
+   non-trivial but not hard.
+
+2. **Is the dirty tracking granular enough?** Current tracking is tree-level:
+   one bool, reset each frame. This skips layout when the tree structure and
+   dimensions are unchanged — a real win. But draw list regeneration has no
+   caching at all. For static UI this means redundant work every frame. A
+   draw-dirty flag (separate from layout-dirty) would be the minimum next
+   step. Per-subtree invalidation is premature.
+
+3. **Is first milestone complete?** Target was: buttons with click feedback,
+   text label, slider, scroll area, rendered via GL33 from Wayland. All
+   present. Text input, checkbox, radio button went beyond scope. The
+   milestone is done. Time to define the next one.
+
+### Decided
+
+- **Text measurement resolved.** Iteration 45 observation about approximate
+  char_width is fixed. Real glyph metrics now used for cursor positioning
+  and selection via TextMeasureCtx threaded through dispatch and draw.
+
+- **Layout dirty tracking shipped.** Tree-level dirty flag skips clay passes.
+  Sufficient for current scale.
+
+### Observations (act when 3x or blocking)
+
+- **draw.zig has no caching.** Draw list regenerated every frame even when
+  nothing changed. Add a draw-dirty flag gated on interaction state changes
+  and layout recalculation.
+- **Font loading uses popen("fc-match").** Works on Linux, breaks everywhere
+  else. Needs embedder-provided font path or embedded default font.
+- **MSAA hardcoded to 4x.** No capability query or fallback. Will fail on
+  some GPUs.
+- **No toolbar/menu widget.** Listed in target widget set but unimplemented.
+  Toolbar is the last target widget not started.
+
+### Resolved since iteration 25
+
+- **dispatch.zig size** — text input tests extracted (iteration 42).
+  dispatch.zig stable at 820 lines.
+- **Approximate char_width** — replaced with real text measurement
+  (iteration 49).
+- **No dirty tracking** — layout dirty tracking added (iteration 46).
+
+### Deferred (still waiting)
+
+- **Widget tree mutation/removal.** Append-only for 50 iterations. Now the
+  #1 priority — blocking for any dynamic UI.
+- **Interaction result separation.** Still .clicked on widget data. Not yet
+  blocking — double-click exists but didn't need a separate results struct.
+
+### Next milestone proposal
+
+**Milestone 2: Dynamic UI.** Ship the ability to add and remove widgets at
+runtime. This unblocks conditional UI, dynamic lists, and real applications.
+Concrete deliverables:
+1. Widget removal API (generational handles or free-list)
+2. Draw list caching (draw-dirty flag, skip when unchanged)
+3. Toolbar/menu bar widget (last target widget)
+4. Embedder-provided font path (remove popen("fc-match"))
