@@ -142,8 +142,8 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
 
                     // Click detection: released on the same widget we pressed on
                     if (mouse.press_target) |pt| {
-                        if (release_target == pt) {
-                            fireClick(tree, pt);
+                        if (release_target) |rt| {
+                            if (rt.eql(pt)) fireClick(tree, pt);
                         }
                         tree.get(pt).interaction.pressed = false;
                     }
@@ -719,22 +719,22 @@ test "tab cycles focus through focusable widgets" {
 
     // First tab: focus button (first focusable)
     process(&tree, &.{tab_press}, &mouse, style.Theme.default);
-    try std.testing.expectEqual(mouse.focused, btn);
+    try std.testing.expect(mouse.focused.?.eql(btn));
     try std.testing.expect(tree.getConst(btn).interaction.focused);
 
     // Second tab: focus checkbox (skips text)
     process(&tree, &.{tab_press}, &mouse, style.Theme.default);
-    try std.testing.expectEqual(mouse.focused, cb);
+    try std.testing.expect(mouse.focused.?.eql(cb));
     try std.testing.expect(!tree.getConst(btn).interaction.focused);
     try std.testing.expect(tree.getConst(cb).interaction.focused);
 
     // Third tab: focus slider
     process(&tree, &.{tab_press}, &mouse, style.Theme.default);
-    try std.testing.expectEqual(mouse.focused, sl);
+    try std.testing.expect(mouse.focused.?.eql(sl));
 
     // Fourth tab: wraps to button
     process(&tree, &.{tab_press}, &mouse, style.Theme.default);
-    try std.testing.expectEqual(mouse.focused, btn);
+    try std.testing.expect(mouse.focused.?.eql(btn));
 }
 
 test "shift+tab cycles focus backwards" {
@@ -757,11 +757,11 @@ test "shift+tab cycles focus backwards" {
 
     // Shift+Tab from no focus: should go to last focusable (checkbox)
     process(&tree, &.{ shift_down, tab_press, shift_up }, &mouse, style.Theme.default);
-    try std.testing.expectEqual(mouse.focused, cb);
+    try std.testing.expect(mouse.focused.?.eql(cb));
 
     // Shift+Tab again: should go to button
     process(&tree, &.{ shift_down, tab_press, shift_up }, &mouse, style.Theme.default);
-    try std.testing.expectEqual(mouse.focused, btn);
+    try std.testing.expect(mouse.focused.?.eql(btn));
 }
 
 test "enter/space activates focused widget" {
@@ -811,7 +811,7 @@ test "click sets focus" {
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expectEqual(mouse.focused, btn);
+    try std.testing.expect(mouse.focused.?.eql(btn));
     try std.testing.expect(tree.getConst(btn).interaction.focused);
 }
 

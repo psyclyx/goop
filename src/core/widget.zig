@@ -2,10 +2,16 @@ const std = @import("std");
 const style = @import("style.zig");
 const draw = @import("draw.zig");
 
-/// Handle to a widget node. Index into the tree's node array.
-pub const NodeHandle = enum(u32) {
-    root = 0,
-    _,
+/// Handle to a widget node. Carries an index into the tree's node array
+/// and a generation counter for stale-handle detection.
+pub const NodeHandle = struct {
+    index: u32,
+    generation: u32,
+
+    /// Two handles are equal iff both index and generation match.
+    pub fn eql(a: NodeHandle, b: NodeHandle) bool {
+        return a.index == b.index and a.generation == b.generation;
+    }
 };
 
 /// Interaction state tracked per widget.
@@ -208,11 +214,15 @@ pub const Node = struct {
     last_child: ?NodeHandle = null,
     next_sibling: ?NodeHandle = null,
     prev_sibling: ?NodeHandle = null,
+
+    generation: u32 = 0,
+    alive: bool = true,
 };
 
 /// The retained widget tree.
 pub const Tree = struct {
     nodes: std.ArrayListUnmanaged(Node) = .empty,
+    free_list: std.ArrayListUnmanaged(u32) = .empty,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) Tree {
@@ -220,6 +230,7 @@ pub const Tree = struct {
     }
 
     pub fn deinit(self: *Tree) void {
+        self.free_list.deinit(self.allocator);
         self.nodes.deinit(self.allocator);
     }
 
@@ -233,18 +244,88 @@ pub const Tree = struct {
         return self.addNode(kind, parent);
     }
 
+    /// Remove a node and all its descendants from the tree.
+    /// The handle becomes invalid after this call.
+    pub fn remove(self: *Tree, handle: NodeHandle) !void {
+        const node = self.getMut(handle);
+
+        // Recursively remove children first
+        var child = node.first_child;
+        while (child) |ch| {
+            const next = self.nodes.items[ch.index].next_sibling;
+            try self.remove(ch);
+            child = next;
+        }
+
+        // Unlink from parent's child list
+        if (node.parent) |ph| {
+            const parent = &self.nodes.items[ph.index];
+            if (parent.first_child) |fc| {
+                if (fc.eql(handle)) {
+                    parent.first_child = node.next_sibling;
+                }
+            }
+            if (parent.last_child) |lc| {
+                if (lc.eql(handle)) {
+                    parent.last_child = node.prev_sibling;
+                }
+            }
+        }
+
+        // Unlink from sibling chain
+        if (node.prev_sibling) |prev| {
+            self.nodes.items[prev.index].next_sibling = node.next_sibling;
+        }
+        if (node.next_sibling) |nxt| {
+            self.nodes.items[nxt.index].prev_sibling = node.prev_sibling;
+        }
+
+        // Mark dead, bump generation, push to free list
+        node.alive = false;
+        node.generation +%= 1;
+        node.parent = null;
+        node.first_child = null;
+        node.last_child = null;
+        node.next_sibling = null;
+        node.prev_sibling = null;
+        try self.free_list.append(self.allocator, handle.index);
+    }
+
     /// Get a pointer to a node by handle.
+    /// Asserts the handle is valid (generation matches and node is alive).
     pub fn get(self: *Tree, handle: NodeHandle) *Node {
-        return &self.nodes.items[@intFromEnum(handle)];
+        const node = &self.nodes.items[handle.index];
+        std.debug.assert(node.alive and node.generation == handle.generation);
+        return node;
     }
 
     /// Get a const pointer to a node by handle.
     pub fn getConst(self: *const Tree, handle: NodeHandle) *const Node {
-        return &self.nodes.items[@intFromEnum(handle)];
+        const node = &self.nodes.items[handle.index];
+        std.debug.assert(node.alive and node.generation == handle.generation);
+        return node;
     }
 
-    /// Number of nodes in the tree.
+    /// Check whether a handle refers to a living node.
+    pub fn isAlive(self: *const Tree, handle: NodeHandle) bool {
+        if (handle.index >= self.nodes.items.len) return false;
+        const node = &self.nodes.items[handle.index];
+        return node.alive and node.generation == handle.generation;
+    }
+
+    /// Build a handle for a live node at the given index.
+    /// Used by modules that iterate nodes by index.
+    pub fn handleFromIndex(self: *const Tree, index: u32) NodeHandle {
+        return .{ .index = index, .generation = self.nodes.items[index].generation };
+    }
+
+    /// Number of live nodes in the tree.
     pub fn count(self: *const Tree) u32 {
+        return @as(u32, @intCast(self.nodes.items.len)) - @as(u32, @intCast(self.free_list.items.len));
+    }
+
+    /// Total number of slots (live + dead). Used for layout dirty checks.
+    pub fn slotCount(self: *const Tree) u32 {
         return @intCast(self.nodes.items.len);
     }
 
@@ -257,18 +338,34 @@ pub const Tree = struct {
     }
 
     fn addNode(self: *Tree, kind: WidgetKind, parent_handle: ?NodeHandle) !NodeHandle {
-        const index: u32 = @intCast(self.nodes.items.len);
-        const handle: NodeHandle = @enumFromInt(index);
+        var index: u32 = undefined;
+        var generation: u32 = undefined;
 
-        try self.nodes.append(self.allocator, .{
-            .kind = kind,
-            .parent = parent_handle,
-        });
+        if (self.free_list.pop()) |reuse_index| {
+            // Reuse a dead slot
+            index = reuse_index;
+            generation = self.nodes.items[index].generation;
+            self.nodes.items[index] = .{
+                .kind = kind,
+                .parent = parent_handle,
+                .generation = generation,
+            };
+        } else {
+            // Append new slot
+            index = @intCast(self.nodes.items.len);
+            generation = 0;
+            try self.nodes.append(self.allocator, .{
+                .kind = kind,
+                .parent = parent_handle,
+            });
+        }
+
+        const handle: NodeHandle = .{ .index = index, .generation = generation };
 
         if (parent_handle) |ph| {
             const parent = self.get(ph);
             if (parent.last_child) |last| {
-                self.get(last).next_sibling = handle;
+                self.nodes.items[last.index].next_sibling = handle;
                 self.nodes.items[index].prev_sibling = last;
             } else {
                 parent.first_child = handle;
@@ -277,6 +374,13 @@ pub const Tree = struct {
         }
 
         return handle;
+    }
+
+    /// Internal: get a mutable pointer without generation check (for remove).
+    fn getMut(self: *Tree, handle: NodeHandle) *Node {
+        const node = &self.nodes.items[handle.index];
+        std.debug.assert(node.alive and node.generation == handle.generation);
+        return node;
     }
 
     pub const ChildIterator = struct {
@@ -301,13 +405,97 @@ test "build and traverse widget tree" {
     const txt = try tree.addChild(root, .{ .text = .{ .content = "hello" } });
 
     try std.testing.expectEqual(@as(u32, 3), tree.count());
-    try std.testing.expectEqual(@as(?NodeHandle, null), tree.getConst(root).parent);
-    try std.testing.expectEqual(@as(?NodeHandle, root), tree.getConst(btn).parent);
+    try std.testing.expect(tree.getConst(root).parent == null);
+    try std.testing.expect(tree.getConst(btn).parent.?.eql(root));
 
     var iter = tree.children(root);
-    try std.testing.expectEqual(@as(?NodeHandle, btn), iter.next());
-    try std.testing.expectEqual(@as(?NodeHandle, txt), iter.next());
-    try std.testing.expectEqual(@as(?NodeHandle, null), iter.next());
+    const first = iter.next().?;
+    try std.testing.expect(first.eql(btn));
+    const second = iter.next().?;
+    try std.testing.expect(second.eql(txt));
+    try std.testing.expect(iter.next() == null);
+}
+
+test "remove leaf node" {
+    const allocator = std.testing.allocator;
+    var tree = Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const btn = try tree.addChild(root, .{ .button = .{ .label = "A" } });
+    _ = try tree.addChild(root, .{ .text = .{ .content = "B" } });
+
+    try std.testing.expectEqual(@as(u32, 3), tree.count());
+
+    try tree.remove(btn);
+    try std.testing.expectEqual(@as(u32, 2), tree.count());
+    try std.testing.expect(!tree.isAlive(btn));
+
+    // Remaining child is still reachable
+    var iter = tree.children(root);
+    try std.testing.expect(iter.next() != null);
+    try std.testing.expect(iter.next() == null);
+}
+
+test "remove subtree recursively" {
+    const allocator = std.testing.allocator;
+    var tree = Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const group = try tree.addChild(root, .{ .container = .{} });
+    _ = try tree.addChild(group, .{ .text = .{ .content = "child1" } });
+    _ = try tree.addChild(group, .{ .text = .{ .content = "child2" } });
+
+    try std.testing.expectEqual(@as(u32, 4), tree.count());
+
+    try tree.remove(group);
+    try std.testing.expectEqual(@as(u32, 1), tree.count());
+
+    // Root has no children
+    var iter = tree.children(root);
+    try std.testing.expect(iter.next() == null);
+}
+
+test "slot reuse after removal" {
+    const allocator = std.testing.allocator;
+    var tree = Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const btn = try tree.addChild(root, .{ .button = .{ .label = "old" } });
+    const old_index = btn.index;
+
+    try tree.remove(btn);
+
+    // Adding a new node should reuse the freed slot
+    const new_btn = try tree.addChild(root, .{ .button = .{ .label = "new" } });
+    try std.testing.expectEqual(old_index, new_btn.index);
+    // Generation must differ
+    try std.testing.expect(new_btn.generation != btn.generation);
+    try std.testing.expect(!btn.eql(new_btn));
+    try std.testing.expect(tree.isAlive(new_btn));
+    try std.testing.expect(!tree.isAlive(btn));
+}
+
+test "remove middle sibling preserves order" {
+    const allocator = std.testing.allocator;
+    var tree = Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const a = try tree.addChild(root, .{ .text = .{ .content = "A" } });
+    const b = try tree.addChild(root, .{ .text = .{ .content = "B" } });
+    const cc = try tree.addChild(root, .{ .text = .{ .content = "C" } });
+
+    try tree.remove(b);
+
+    var iter = tree.children(root);
+    const first = iter.next().?;
+    try std.testing.expect(first.eql(a));
+    const second = iter.next().?;
+    try std.testing.expect(second.eql(cc));
+    try std.testing.expect(iter.next() == null);
 }
 
 test "wordBounds finds word boundaries" {

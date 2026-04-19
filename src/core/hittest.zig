@@ -7,9 +7,10 @@ const draw = @import("draw.zig");
 pub fn hitTest(tree: *const widget.Tree, x: f32, y: f32) ?widget.NodeHandle {
     var result: ?widget.NodeHandle = null;
     for (tree.nodes.items, 0..) |node, i| {
+        if (!node.alive) continue;
         if (!isInteractive(node.kind)) continue;
         if (pointInRect(x, y, node.layout_rect)) {
-            result = @enumFromInt(@as(u32, @intCast(i)));
+            result = tree.handleFromIndex(@intCast(i));
         }
     }
     return result;
@@ -19,9 +20,10 @@ pub fn hitTest(tree: *const widget.Tree, x: f32, y: f32) ?widget.NodeHandle {
 pub fn hitTestKind(tree: *const widget.Tree, x: f32, y: f32, kind_tag: std.meta.Tag(widget.WidgetKind)) ?widget.NodeHandle {
     var result: ?widget.NodeHandle = null;
     for (tree.nodes.items, 0..) |node, i| {
+        if (!node.alive) continue;
         if (node.kind != kind_tag) continue;
         if (pointInRect(x, y, node.layout_rect)) {
-            result = @enumFromInt(@as(u32, @intCast(i)));
+            result = tree.handleFromIndex(@intCast(i));
         }
     }
     return result;

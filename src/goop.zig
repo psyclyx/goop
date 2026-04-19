@@ -90,6 +90,7 @@ pub const Context = struct {
     /// so clicks are only observed for one frame.
     pub fn clearClickedFlags(self: *Context) void {
         for (self.tree.nodes.items) |*node| {
+            if (!node.alive) continue;
             switch (node.kind) {
                 .button => {
                     node.kind.button.clicked = false;
@@ -134,6 +135,18 @@ pub const Context = struct {
     /// Get the current text content of a text input.
     pub fn textInputValue(self: *const Context, handle: NodeHandle) []const u8 {
         return self.tree.getConst(handle).kind.text_input.content();
+    }
+
+    /// Remove a widget and its entire subtree from the tree.
+    /// The handle becomes invalid after this call.
+    pub fn removeWidget(self: *Context, handle: NodeHandle) !void {
+        self.layout_dirty = true;
+        try self.tree.remove(handle);
+    }
+
+    /// Check whether a handle still refers to a living widget.
+    pub fn isAlive(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.isAlive(handle);
     }
 
     /// Run layout: walk the widget tree through clay and write back rects.

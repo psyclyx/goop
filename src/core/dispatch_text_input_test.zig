@@ -51,7 +51,7 @@ test "text input receives character events" {
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
     }, &mouse, style.Theme.default);
-    try std.testing.expectEqual(mouse.focused, ti);
+    try std.testing.expect(mouse.focused.?.eql(ti));
 
     // Type "hi"
     process(&tree, &.{
@@ -232,11 +232,11 @@ test "text input is focusable via tab" {
 
     // First tab: focus button
     process(&tree, &.{tab}, &mouse, style.Theme.default);
-    try std.testing.expectEqual(mouse.focused, btn);
+    try std.testing.expect(mouse.focused.?.eql(btn));
 
     // Second tab: focus text input
     process(&tree, &.{tab}, &mouse, style.Theme.default);
-    try std.testing.expectEqual(mouse.focused, ti);
+    try std.testing.expect(mouse.focused.?.eql(ti));
     try std.testing.expect(tree.getConst(ti).interaction.focused);
 }
 

@@ -93,13 +93,13 @@ const State = struct {
     ctx: *goop.Context = undefined,
 
     // Widget handles for querying state
-    btn_a: goop.NodeHandle = @enumFromInt(0),
-    btn_b: goop.NodeHandle = @enumFromInt(0),
-    btn_c: goop.NodeHandle = @enumFromInt(0),
-    checkbox: goop.NodeHandle = @enumFromInt(0),
-    radio_a: goop.NodeHandle = @enumFromInt(0),
-    radio_b: goop.NodeHandle = @enumFromInt(0),
-    radio_c: goop.NodeHandle = @enumFromInt(0),
+    btn_a: ?goop.NodeHandle = null,
+    btn_b: ?goop.NodeHandle = null,
+    btn_c: ?goop.NodeHandle = null,
+    checkbox: ?goop.NodeHandle = null,
+    radio_a: ?goop.NodeHandle = null,
+    radio_b: ?goop.NodeHandle = null,
+    radio_c: ?goop.NodeHandle = null,
     click_count: u32 = 0,
 
     // Last known mouse position from Wayland pointer events
@@ -683,28 +683,28 @@ pub fn main() !void {
         ctx.processEvents();
 
         // Check clicks
-        if (ctx.wasClicked(state.btn_a)) {
+        if (state.btn_a) |h| if (ctx.wasClicked(h)) {
             state.click_count += 1;
             std.debug.print("Button A clicked! (total: {})\n", .{state.click_count});
-        }
-        if (ctx.wasClicked(state.btn_b)) {
+        };
+        if (state.btn_b) |h| if (ctx.wasClicked(h)) {
             state.click_count += 1;
             std.debug.print("Button B clicked! (total: {})\n", .{state.click_count});
-        }
-        if (ctx.wasClicked(state.btn_c)) {
+        };
+        if (state.btn_c) |h| if (ctx.wasClicked(h)) {
             state.click_count += 1;
             std.debug.print("Button C clicked! (total: {})\n", .{state.click_count});
-        }
+        };
 
         // Log checkbox state changes (checkbox toggles itself on click)
-        if (ctx.wasClicked(state.checkbox)) {
-            std.debug.print("Checkbox toggled: {}\n", .{ctx.isChecked(state.checkbox)});
-        }
+        if (state.checkbox) |h| if (ctx.wasClicked(h)) {
+            std.debug.print("Checkbox toggled: {}\n", .{ctx.isChecked(h)});
+        };
 
         // Log radio button selection
-        if (ctx.wasClicked(state.radio_a)) std.debug.print("Radio: Option A selected\n", .{});
-        if (ctx.wasClicked(state.radio_b)) std.debug.print("Radio: Option B selected\n", .{});
-        if (ctx.wasClicked(state.radio_c)) std.debug.print("Radio: Option C selected\n", .{});
+        if (state.radio_a) |h| if (ctx.wasClicked(h)) std.debug.print("Radio: Option A selected\n", .{});
+        if (state.radio_b) |h| if (ctx.wasClicked(h)) std.debug.print("Radio: Option B selected\n", .{});
+        if (state.radio_c) |h| if (ctx.wasClicked(h)) std.debug.print("Radio: Option C selected\n", .{});
 
         // Render
         var dl = try ctx.generateDrawList();

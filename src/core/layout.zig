@@ -29,8 +29,9 @@ pub fn run(tree: *widget.Tree, theme: style_mod.Theme, text_ctx: ?*const TextMea
     c.Clay_BeginLayout();
 
     for (tree.nodes.items, 0..) |node, i| {
+        if (!node.alive) continue;
         if (node.parent == null) {
-            emitNode(tree, @enumFromInt(@as(u32, @intCast(i))), theme);
+            emitNode(tree, tree.handleFromIndex(@intCast(i)), theme);
         }
     }
 
@@ -41,7 +42,8 @@ pub fn run(tree: *widget.Tree, theme: style_mod.Theme, text_ctx: ?*const TextMea
 
 fn writeBackRects(tree: *widget.Tree) void {
     for (tree.nodes.items, 0..) |*node, i| {
-        const handle: widget.NodeHandle = @enumFromInt(@as(u32, @intCast(i)));
+        if (!node.alive) continue;
+        const handle = tree.handleFromIndex(@intCast(i));
         const data = c.Clay_GetElementData(nodeId(handle));
         if (data.found) {
             node.layout_rect = .{
@@ -378,7 +380,7 @@ fn nodeId(handle: widget.NodeHandle) c.Clay_ElementId {
         .isStaticallyAllocated = true,
         .length = 4,
         .chars = "goop",
-    }, @intFromEnum(handle), 0);
+    }, handle.index, 0);
 }
 
 fn clayColor(col: style_mod.Color) c.Clay_Color {

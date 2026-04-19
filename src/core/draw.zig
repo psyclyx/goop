@@ -49,8 +49,9 @@ pub fn generate(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem
     errdefer commands.deinit(allocator);
 
     for (tree.nodes.items, 0..) |node, i| {
+        if (!node.alive) continue;
         if (node.parent == null) {
-            try emitNode(tree, @enumFromInt(@as(u32, @intCast(i))), theme, &commands, allocator, text_ctx);
+            try emitNode(tree, tree.handleFromIndex(@intCast(i)), theme, &commands, allocator, text_ctx);
         }
     }
 
