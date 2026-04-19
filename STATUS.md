@@ -2,30 +2,31 @@
 
 ## Current
 
-Iteration 45.
-69 tests pass. Build clean. Demo runs.
+Iteration 46.
+72 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-45
+46
 
 ## Done This Iteration
 
-- Chore cycle: archived iterations 40-44, reviewed last 5 commits, updated DESIGN.md
-- Codebase snapshot: 5186 LOC, 69 tests, 8 widget types
-- dispatch.zig size issue resolved (extracted tests in iteration 42, now 824 lines)
+- Layout dirty tracking: `doLayout()` skips full clay pass when nothing layout-affecting changed
+- Mouse-only frames (hover, click) no longer trigger layout recomputation
+- Dirty triggers: tree mutations (node count change), `setDimensions`, key/text/scroll events
+- 3 new tests for dirty tracking behavior
 
 ## Next
 
-1. Dirty tracking — avoid full layout + draw every frame
-2. Real text measurement instead of approximate char_width
-3. Widget tree mutation/removal API
+1. Real text measurement instead of approximate char_width
+2. Widget tree mutation/removal API
+3. Draw list caching (skip draw generation when only layout skipped and no interaction changed)
 
 ## What's Wrong
 
 - Approximate char_width (font_size * 0.6) — wrong for proportional fonts, needs real text measurement
 - Widget tree is append-only — no removal/mutation API
-- No dirty tracking — full layout + full draw list every frame
+- No draw list caching — draw list regenerated every frame even when output unchanged
 - Text baseline y-offset is approximate (y + font_size)
 - Font loading uses popen("fc-match") — fragile
 - Scroll clamping uses previous frame's child layout rects — off by one frame
