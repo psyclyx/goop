@@ -62,5 +62,5 @@ zig build demo
 
 1. C API bindings
 2. HiDPI scaling in the demo/runtime model
-3. Keyboard navigation for tables and denser data views
-4. Real Wayland clipboard integration in the demo
+3. Real Wayland clipboard integration in the demo
+4. UTF-8 text editing in text inputs

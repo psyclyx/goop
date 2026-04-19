@@ -27,6 +27,7 @@ fallback locations.
 - Sortable table headers with retained sort state
 - Multi-select list boxes with Ctrl-toggle and Shift-range behavior
 - Table row selection policies with single/multi-select behavior
+- Keyboard navigation for selectable lists and table rows
 - Toolbar and status-bar structural widgets for editor chrome
 - Hover/focus-driven tooltips built on the floating layout path
 - Secondary-click reporting plus caller-managed context menu positioning
@@ -36,8 +37,8 @@ fallback locations.
 
 1. C API bindings
 2. HiDPI scaling
-3. Keyboard navigation for tables and denser data views
-4. Real Wayland clipboard integration
+3. Real Wayland clipboard integration
+4. UTF-8 text editing in inputs
 
 ## Known Issues
 

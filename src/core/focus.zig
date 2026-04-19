@@ -9,6 +9,7 @@ pub fn isFocusable(kind: widget.WidgetKind) bool {
         .tree_item,
         .dropdown,
         .selectable,
+        .table_row,
         .menu,
         .menu_item,
         .drag_value,
@@ -18,7 +19,7 @@ pub fn isFocusable(kind: widget.WidgetKind) bool {
         .slider,
         .text_input,
         => true,
-        .text, .container, .list_box, .table, .table_row, .table_cell, .toolbar, .status_bar, .menu_bar, .popup, .tooltip, .tab_bar, .scroll_area => false,
+        .text, .container, .list_box, .table, .table_cell, .toolbar, .status_bar, .menu_bar, .popup, .tooltip, .tab_bar, .scroll_area => false,
     };
 }
 
@@ -92,8 +93,9 @@ pub fn syncFocusFlags(tree: *widget.Tree, focused: ?widget.NodeHandle) void {
 
 fn canFocusNode(tree: *const widget.Tree, index: u32) bool {
     const node = tree.nodes.items[index];
-    return node.alive and
-        isFocusable(node.kind) and
-        node.layout_rect.w > 0 and
-        node.layout_rect.h > 0;
+    if (!node.alive or !isFocusable(node.kind) or node.layout_rect.w <= 0 or node.layout_rect.h <= 0) return false;
+    if (node.kind == .table_row) {
+        return widget.tableRowSelectable(tree, tree.handleFromIndex(index));
+    }
+    return true;
 }

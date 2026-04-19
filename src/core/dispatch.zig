@@ -336,7 +336,13 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                 stepSplitter(tree, f, -1, theme);
                             } else if (tree.getConst(f).kind == .selectable) {
                                 if (prevSelectableSibling(tree, f)) |prev| {
-                                    _ = selectSelectable(tree, prev);
+                                    applySelectableKeyboardNavigation(tree, prev, mouse);
+                                    mouse.focused = prev;
+                                    focus.syncFocusFlags(tree, mouse.focused);
+                                }
+                            } else if (tree.getConst(f).kind == .table_row) {
+                                if (prevTableRowSibling(tree, f)) |prev| {
+                                    applyTableRowKeyboardNavigation(tree, prev, mouse);
                                     mouse.focused = prev;
                                     focus.syncFocusFlags(tree, mouse.focused);
                                 }
@@ -358,7 +364,13 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                 stepSplitter(tree, f, 1, theme);
                             } else if (tree.getConst(f).kind == .selectable) {
                                 if (nextSelectableSibling(tree, f)) |next| {
-                                    _ = selectSelectable(tree, next);
+                                    applySelectableKeyboardNavigation(tree, next, mouse);
+                                    mouse.focused = next;
+                                    focus.syncFocusFlags(tree, mouse.focused);
+                                }
+                            } else if (tree.getConst(f).kind == .table_row) {
+                                if (nextTableRowSibling(tree, f)) |next| {
+                                    applyTableRowKeyboardNavigation(tree, next, mouse);
                                     mouse.focused = next;
                                     focus.syncFocusFlags(tree, mouse.focused);
                                 }
@@ -379,6 +391,18 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                     editor.clearSelection();
                                 }
                                 editor.cursor = 0;
+                            } else if (tree.getConst(f).kind == .selectable) {
+                                if (firstSelectableSibling(tree, f)) |first| {
+                                    applySelectableKeyboardNavigation(tree, first, mouse);
+                                    mouse.focused = first;
+                                    focus.syncFocusFlags(tree, mouse.focused);
+                                }
+                            } else if (tree.getConst(f).kind == .table_row) {
+                                if (firstTableDataRow(tree, f)) |first| {
+                                    applyTableRowKeyboardNavigation(tree, first, mouse);
+                                    mouse.focused = first;
+                                    focus.syncFocusFlags(tree, mouse.focused);
+                                }
                             }
                         }
                     }
@@ -393,6 +417,18 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                     editor.clearSelection();
                                 }
                                 editor.cursor = editor.len;
+                            } else if (tree.getConst(f).kind == .selectable) {
+                                if (lastSelectableSibling(tree, f)) |last| {
+                                    applySelectableKeyboardNavigation(tree, last, mouse);
+                                    mouse.focused = last;
+                                    focus.syncFocusFlags(tree, mouse.focused);
+                                }
+                            } else if (tree.getConst(f).kind == .table_row) {
+                                if (lastTableDataRow(tree, f)) |last| {
+                                    applyTableRowKeyboardNavigation(tree, last, mouse);
+                                    mouse.focused = last;
+                                    focus.syncFocusFlags(tree, mouse.focused);
+                                }
                             }
                         }
                     }
@@ -1567,6 +1603,86 @@ fn nextSelectableSibling(tree: *const widget.Tree, handle: widget.NodeHandle) ?w
     return null;
 }
 
+fn firstSelectableSibling(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    const parent_handle = tree.getConst(handle).parent orelse return null;
+    var iter = tree.children(parent_handle);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind == .selectable) return child;
+    }
+    return null;
+}
+
+fn lastSelectableSibling(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    const parent_handle = tree.getConst(handle).parent orelse return null;
+    var iter = tree.children(parent_handle);
+    var last: ?widget.NodeHandle = null;
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind == .selectable) last = child;
+    }
+    return last;
+}
+
+fn prevTableRowSibling(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    var current = tree.getConst(handle).prev_sibling;
+    while (current) |candidate| {
+        const node = tree.getConst(candidate);
+        if (node.kind == .table_row and !node.kind.table_row.header) return candidate;
+        current = node.prev_sibling;
+    }
+    return null;
+}
+
+fn nextTableRowSibling(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    var current = tree.getConst(handle).next_sibling;
+    while (current) |candidate| {
+        const node = tree.getConst(candidate);
+        if (node.kind == .table_row and !node.kind.table_row.header) return candidate;
+        current = node.next_sibling;
+    }
+    return null;
+}
+
+fn firstTableDataRow(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    const parent_handle = tree.getConst(handle).parent orelse return null;
+    var iter = tree.children(parent_handle);
+    while (iter.next()) |child| {
+        const node = tree.getConst(child);
+        if (node.kind == .table_row and !node.kind.table_row.header) return child;
+    }
+    return null;
+}
+
+fn lastTableDataRow(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    const parent_handle = tree.getConst(handle).parent orelse return null;
+    var iter = tree.children(parent_handle);
+    var last: ?widget.NodeHandle = null;
+    while (iter.next()) |child| {
+        const node = tree.getConst(child);
+        if (node.kind == .table_row and !node.kind.table_row.header) last = child;
+    }
+    return last;
+}
+
+fn applySelectableKeyboardNavigation(tree: *widget.Tree, target: widget.NodeHandle, mouse: *const MouseState) void {
+    if (selectableParentListBox(tree, target)) |list_box| {
+        if (tree.getConst(list_box).kind.list_box.selection_mode == .multiple and mouse.shift_down) {
+            _ = selectListBoxMulti(tree, list_box, target, mouse);
+            return;
+        }
+    }
+    _ = selectSelectable(tree, target);
+}
+
+fn applyTableRowKeyboardNavigation(tree: *widget.Tree, target: widget.NodeHandle, mouse: *const MouseState) void {
+    if (!widget.tableRowSelectable(tree, target)) return;
+    const table_handle = tree.getConst(target).parent orelse return;
+    if (tree.getConst(table_handle).kind.table.selection_mode == .multiple and mouse.shift_down) {
+        _ = selectTableRowsMulti(tree, table_handle, target, mouse);
+        return;
+    }
+    _ = selectTableRow(tree, target);
+}
+
 fn firstChildTreeItem(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
     var iter = tree.children(handle);
     while (iter.next()) |child| {
@@ -2236,6 +2352,52 @@ test "table rows support multi-select and additive shift range" {
     }, &mouse, style.Theme.default);
 
     try std.testing.expect(tree.getConst(first).kind.table_row.selected);
+    try std.testing.expect(tree.getConst(second).kind.table_row.selected);
+    try std.testing.expect(tree.getConst(third).kind.table_row.selected);
+    try std.testing.expect(tree.getConst(table).kind.table.selection_changed);
+}
+
+test "table row keyboard navigation moves focus and extends selection" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const table = try tree.addChild(root, .{ .table = .{ .selection_mode = .multiple } });
+    const header = try tree.addChild(table, .{ .table_row = .{ .header = true } });
+    _ = try tree.addChild(header, .{ .table_cell = .{} });
+    const first = try tree.addChild(table, .{ .table_row = .{ .selected = true } });
+    _ = try tree.addChild(first, .{ .table_cell = .{} });
+    const second = try tree.addChild(table, .{ .table_row = .{} });
+    _ = try tree.addChild(second, .{ .table_cell = .{} });
+    const third = try tree.addChild(table, .{ .table_row = .{} });
+    _ = try tree.addChild(third, .{ .table_cell = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    tree.get(table).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 116 };
+    tree.get(header).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 28 };
+    tree.get(first).layout_rect = .{ .x = 10, .y = 38, .w = 220, .h = 28 };
+    tree.get(second).layout_rect = .{ .x = 10, .y = 66, .w = 220, .h = 28 };
+    tree.get(third).layout_rect = .{ .x = 10, .y = 94, .w = 220, .h = 28 };
+
+    var mouse = MouseState{ .focused = first };
+    focus.syncFocusFlags(&tree, mouse.focused);
+    tree.get(table).kind.table.anchor_row = 0;
+
+    process(&tree, &.{.{ .key = .{ .scancode = 108, .keycode = .down, .state = .pressed } }}, &mouse, style.Theme.default);
+    try std.testing.expect(mouse.focused.?.eql(second));
+    try std.testing.expect(!tree.getConst(first).kind.table_row.selected);
+    try std.testing.expect(tree.getConst(second).kind.table_row.selected);
+
+    tree.get(table).kind.table.selection_changed = false;
+
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
+        .{ .key = .{ .scancode = 108, .keycode = .down, .state = .pressed } },
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(mouse.focused.?.eql(third));
     try std.testing.expect(tree.getConst(second).kind.table_row.selected);
     try std.testing.expect(tree.getConst(third).kind.table_row.selected);
     try std.testing.expect(tree.getConst(table).kind.table.selection_changed);

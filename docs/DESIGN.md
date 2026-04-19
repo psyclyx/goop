@@ -151,7 +151,7 @@ core API.
 - Clipboard support in the demo is not wired to the real Wayland clipboard
 - The demo assumes 1:1 surface size to physical pixels
 - There is no C API yet
-- Table/data-view keyboard selection and navigation are still missing
+- UTF-8 text editing and clipboard-backed text input are still incomplete
 - MSAA configuration is fixed at 4x with no fallback path
 
 ## Current Direction
@@ -160,8 +160,8 @@ Near-term work is focused on:
 
 1. Adding a C-facing API layer
 2. Improving runtime portability and display scaling behavior
-3. Polishing denser data-view widgets with keyboard selection behavior
-4. Replacing the demo clipboard stub with real Wayland clipboard support
+3. Replacing the demo clipboard stub with real Wayland clipboard support
+4. Improving text editing beyond the current ASCII-only path
 
 ## History
 
