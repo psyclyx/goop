@@ -214,6 +214,61 @@ test "text input arrow keys move cursor" {
     try std.testing.expectEqual(@as(u8, 4), tree.getConst(ti).kind.text_input.cursor);
 }
 
+test "text input arrow keys move across UTF-8 codepoints" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    focusAndType(&s.tree, &mouse, s.ti, "aé🙂");
+
+    try std.testing.expectEqualStrings("aé🙂", s.tree.get(s.ti).kind.text_input.content());
+    try std.testing.expectEqual(@as(u8, 7), s.tree.get(s.ti).kind.text_input.cursor);
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(@as(u8, 3), s.tree.get(s.ti).kind.text_input.cursor);
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 105, .keycode = .left, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(@as(u8, 1), s.tree.get(s.ti).kind.text_input.cursor);
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(@as(u8, 3), s.tree.get(s.ti).kind.text_input.cursor);
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqual(@as(u8, 7), s.tree.get(s.ti).kind.text_input.cursor);
+}
+
+test "text input backspace and delete operate on UTF-8 codepoints" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    focusAndType(&s.tree, &mouse, s.ti, "aé🙂");
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 14, .keycode = .backspace, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqualStrings("aé", s.tree.get(s.ti).kind.text_input.content());
+    try std.testing.expectEqual(@as(u8, 3), s.tree.get(s.ti).kind.text_input.cursor);
+
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 102, .keycode = .home, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+        .{ .key = .{ .scancode = 111, .keycode = .delete, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expectEqualStrings("a", s.tree.get(s.ti).kind.text_input.content());
+    try std.testing.expectEqual(@as(u8, 1), s.tree.get(s.ti).kind.text_input.cursor);
+}
+
 test "text input is focusable via tab" {
     const allocator = std.testing.allocator;
     var tree = widget.Tree.init(allocator);
@@ -710,6 +765,24 @@ test "click positions cursor in text input" {
 
     const input = &tree.get(ti).kind.text_input;
     try std.testing.expectEqual(@as(u8, 2), input.cursor);
+    try std.testing.expect(!input.hasSelection());
+}
+
+test "click positions cursor on UTF-8 codepoint boundaries" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    focusAndType(&s.tree, &mouse, s.ti, "aé🙂");
+
+    process(&s.tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 32.8, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 32.8, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    const input = &s.tree.get(s.ti).kind.text_input;
+    try std.testing.expectEqual(@as(u8, 3), input.cursor);
     try std.testing.expect(!input.hasSelection());
 }
 
@@ -1227,8 +1300,10 @@ fn focusAndType(tree: *widget.Tree, mouse: *MouseState, ti: widget.NodeHandle, t
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
     }, mouse, style.Theme.default);
-    for (text) |ch| {
-        process(tree, &.{.{ .text = .{ .codepoint = ch } }}, mouse, style.Theme.default);
+    const view = std.unicode.Utf8View.initUnchecked(text);
+    var iter = view.iterator();
+    while (iter.nextCodepoint()) |codepoint| {
+        process(tree, &.{.{ .text = .{ .codepoint = codepoint } }}, mouse, style.Theme.default);
     }
     _ = ti;
 }
@@ -1312,6 +1387,25 @@ test "ctrl+v pastes text from clipboard" {
     }, &mouse, style.Theme.default, cb.clipboard(), null);
 
     try std.testing.expectEqualStrings("hello world", s.tree.get(s.ti).kind.text_input.content());
+}
+
+test "ctrl+v pastes UTF-8 text from clipboard" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    var cb = TestClipboard{};
+    cb.setText("世界🙂");
+
+    focusAndType(&s.tree, &mouse, s.ti, "hi ");
+
+    processWithClipboard(&s.tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 47, .keycode = .v, .state = .pressed } },
+    }, &mouse, style.Theme.default, cb.clipboard(), null);
+
+    try std.testing.expectEqualStrings("hi 世界🙂", s.tree.get(s.ti).kind.text_input.content());
 }
 
 test "ctrl+v replaces selection" {

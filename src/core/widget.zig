@@ -435,44 +435,33 @@ pub const WidgetKind = union(enum) {
 
         pub fn deleteRange(self: *TextInput, start: u8, end: u8) void {
             if (start >= end) return;
-            const count = end - start;
-            var i: usize = start;
-            while (i < self.len - count) : (i += 1) {
-                self.buffer[i] = self.buffer[i + count];
-            }
-            self.len -= count;
+            const count: usize = end - start;
+            std.mem.copyForwards(u8, self.buffer[start .. self.len - @as(u8, @intCast(count))], self.buffer[end..self.len]);
+            self.len -= @intCast(count);
             self.cursor = start;
             self.clearSelection();
         }
 
         pub fn insert(self: *TextInput, byte: u8) void {
-            if (self.hasSelection()) self.deleteSelection();
-            if (self.len >= self.buffer.len) return;
-            // Shift bytes right to make room at cursor
-            var i: usize = self.len;
-            while (i > self.cursor) : (i -= 1) {
-                self.buffer[i] = self.buffer[i - 1];
-            }
-            self.buffer[self.cursor] = byte;
-            self.len += 1;
-            self.cursor += 1;
-            self.clearSelection();
+            self.insertCodepoint(byte);
+        }
+
+        pub fn insertCodepoint(self: *TextInput, codepoint: u21) void {
+            if (!std.unicode.utf8ValidCodepoint(codepoint)) return;
+            var encoded: [4]u8 = undefined;
+            const encoded_len = std.unicode.utf8Encode(codepoint, &encoded) catch return;
+            self.insertSlice(encoded[0..encoded_len]);
         }
 
         pub fn insertSlice(self: *TextInput, text: []const u8) void {
             if (self.hasSelection()) self.deleteSelection();
-            const available = self.buffer.len - self.len;
-            const count: u8 = @intCast(@min(text.len, available));
+            const available: usize = self.buffer.len - self.len;
+            const count = insertableUtf8PrefixLen(text, available);
             if (count == 0) return;
-            // Shift existing bytes right
-            var i: usize = self.len + count - 1;
-            while (i >= self.cursor + count) : (i -= 1) {
-                self.buffer[i] = self.buffer[i - count];
-            }
-            // Copy new text in
+            std.mem.copyBackwards(u8, self.buffer[self.cursor + @as(u8, @intCast(count)) .. self.len + @as(u8, @intCast(count))], self.buffer[self.cursor..self.len]);
             @memcpy(self.buffer[self.cursor .. self.cursor + count], text[0..count]);
-            self.len += count;
-            self.cursor += count;
+            self.len += @intCast(count);
+            self.cursor += @intCast(count);
             self.clearSelection();
         }
 
@@ -482,41 +471,68 @@ pub const WidgetKind = union(enum) {
                 return;
             }
             if (self.cursor == 0) return;
-            // Shift bytes left over the deleted character
-            const pos = self.cursor - 1;
-            var i: usize = pos;
-            while (i < self.len - 1) : (i += 1) {
-                self.buffer[i] = self.buffer[i + 1];
-            }
-            self.len -= 1;
-            self.cursor -= 1;
+            const start = self.prevCodepointBoundary(self.cursor);
+            self.deleteRange(start, self.cursor);
+        }
+
+        pub fn prevCodepointBoundary(self: *const TextInput, pos: u8) u8 {
+            if (pos == 0) return 0;
+            var i: usize = @min(pos, self.len) - 1;
+            while (i > 0 and isContinuationByte(self.buffer[i])) : (i -= 1) {}
+            return @intCast(i);
+        }
+
+        pub fn nextCodepointBoundary(self: *const TextInput, pos: u8) u8 {
+            if (pos >= self.len) return self.len;
+            const start = self.clampToCodepointBoundary(pos);
+            const seq_len = std.unicode.utf8ByteSequenceLength(self.buffer[start]) catch 1;
+            return @intCast(@min(@as(usize, self.len), @as(usize, start) + seq_len));
+        }
+
+        pub fn clampToCodepointBoundary(self: *const TextInput, pos: u8) u8 {
+            var i: usize = @min(pos, self.len);
+            while (i > 0 and i < self.len and isContinuationByte(self.buffer[i])) : (i -= 1) {}
+            return @intCast(i);
         }
 
         pub fn prevWordBoundary(self: *const TextInput, pos: u8) u8 {
             if (pos == 0 or self.len == 0) return 0;
 
-            var i: usize = @min(pos, self.len);
+            var boundary = self.clampToCodepointBoundary(pos);
 
-            while (i > 0 and charClass(self.buffer[i - 1]) == .space) : (i -= 1) {}
-            if (i == 0) return 0;
+            while (boundary > 0) {
+                const previous = self.prevCodepointBoundary(boundary);
+                if (charClass(codepointAt(self, previous)) != .space) break;
+                boundary = previous;
+            }
+            if (boundary == 0) return 0;
 
-            const cls = charClass(self.buffer[i - 1]);
-            while (i > 0 and charClass(self.buffer[i - 1]) == cls) : (i -= 1) {}
+            var start = self.prevCodepointBoundary(boundary);
+            const cls = charClass(codepointAt(self, start));
+            while (start > 0) {
+                const previous = self.prevCodepointBoundary(start);
+                if (charClass(codepointAt(self, previous)) != cls) break;
+                start = previous;
+            }
 
-            return @intCast(i);
+            return start;
         }
 
         pub fn nextWordBoundary(self: *const TextInput, pos: u8) u8 {
-            var i: usize = @min(pos, self.len);
-            if (i >= self.len) return self.len;
+            var boundary = self.clampToCodepointBoundary(pos);
+            if (boundary >= self.len) return self.len;
 
-            while (i < self.len and charClass(self.buffer[i]) == .space) : (i += 1) {}
-            if (i >= self.len) return self.len;
+            while (boundary < self.len and charClass(codepointAt(self, boundary)) == .space) {
+                boundary = self.nextCodepointBoundary(boundary);
+            }
+            if (boundary >= self.len) return self.len;
 
-            const cls = charClass(self.buffer[i]);
-            while (i < self.len and charClass(self.buffer[i]) == cls) : (i += 1) {}
+            const cls = charClass(codepointAt(self, boundary));
+            while (boundary < self.len and charClass(codepointAt(self, boundary)) == cls) {
+                boundary = self.nextCodepointBoundary(boundary);
+            }
 
-            return @intCast(i);
+            return boundary;
         }
 
         pub fn deleteBackWord(self: *TextInput) void {
@@ -543,27 +559,37 @@ pub const WidgetKind = union(enum) {
         /// Words are runs of alphanumeric/underscore characters.
         pub fn wordBounds(self: *const TextInput, pos: u8) struct { start: u8, end: u8 } {
             if (self.len == 0) return .{ .start = 0, .end = 0 };
-            const p: usize = if (pos >= self.len) self.len - 1 else pos;
-            const text = self.buffer[0..self.len];
-            const is_word = isWordChar(text[p]);
-            // Scan left
-            var start: usize = p;
-            while (start > 0 and isWordChar(text[start - 1]) == is_word) start -= 1;
-            // Scan right
-            var end: usize = p;
-            while (end < self.len and isWordChar(text[end]) == is_word) end += 1;
-            return .{ .start = @intCast(start), .end = @intCast(end) };
+            var start = if (pos >= self.len) self.prevCodepointBoundary(self.len) else self.clampToCodepointBoundary(pos);
+            const cls = charClass(codepointAt(self, start));
+
+            while (start > 0) {
+                const previous = self.prevCodepointBoundary(start);
+                if (charClass(codepointAt(self, previous)) != cls) break;
+                start = previous;
+            }
+
+            var end = self.nextCodepointBoundary(start);
+            while (end < self.len) {
+                if (charClass(codepointAt(self, end)) != cls) break;
+                end = self.nextCodepointBoundary(end);
+            }
+
+            return .{ .start = start, .end = end };
         }
 
-        fn isWordChar(c: u8) bool {
-            return std.ascii.isAlphanumeric(c) or c == '_';
+        fn isWordChar(codepoint: u21) bool {
+            if (codepoint < 128) {
+                const c: u8 = @intCast(codepoint);
+                return std.ascii.isAlphanumeric(c) or c == '_';
+            }
+            return true;
         }
 
         const CharClass = enum { word, space, other };
 
-        fn charClass(c: u8) CharClass {
-            if (std.ascii.isWhitespace(c)) return .space;
-            if (isWordChar(c)) return .word;
+        fn charClass(codepoint: u21) CharClass {
+            if (isWhitespaceCodepoint(codepoint)) return .space;
+            if (isWordChar(codepoint)) return .word;
             return .other;
         }
 
@@ -573,11 +599,39 @@ pub const WidgetKind = union(enum) {
                 return;
             }
             if (self.cursor >= self.len) return;
-            var i: usize = self.cursor;
-            while (i < self.len - 1) : (i += 1) {
-                self.buffer[i] = self.buffer[i + 1];
+            const end = self.nextCodepointBoundary(self.cursor);
+            self.deleteRange(self.cursor, end);
+        }
+
+        fn codepointAt(self: *const TextInput, start: u8) u21 {
+            if (start >= self.len) return 0;
+            const seq_len = std.unicode.utf8ByteSequenceLength(self.buffer[start]) catch 1;
+            const end = @min(@as(usize, self.len), @as(usize, start) + seq_len);
+            return std.unicode.utf8Decode(self.buffer[start..end]) catch self.buffer[start];
+        }
+
+        fn isContinuationByte(byte: u8) bool {
+            return (byte & 0b1100_0000) == 0b1000_0000;
+        }
+
+        fn isWhitespaceCodepoint(codepoint: u21) bool {
+            return switch (codepoint) {
+                ' ', '\t', '\n', '\r', 0x0B, 0x0C, 0x85, 0xA0, 0x1680, 0x2000...0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000 => true,
+                else => false,
+            };
+        }
+
+        fn insertableUtf8PrefixLen(text: []const u8, available: usize) usize {
+            if (available == 0 or text.len == 0) return 0;
+
+            const view = std.unicode.Utf8View.init(text) catch return 0;
+            var iter = view.iterator();
+            var prefix_len: usize = 0;
+            while (iter.nextCodepointSlice()) |slice| {
+                if (prefix_len + slice.len > available) break;
+                prefix_len += slice.len;
             }
-            self.len -= 1;
+            return prefix_len;
         }
     };
 };

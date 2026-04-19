@@ -60,6 +60,11 @@ pub const Renderer = struct {
         std.heap.page_allocator.free(self.vector_buf);
     }
 
+    pub fn uploadAtlas(self: *Renderer, atlas: *const snail.Atlas) void {
+        self.atlas = atlas;
+        self.text_renderer.uploadAtlas(atlas);
+    }
+
     pub fn beginFrame(self: *Renderer, w: u32, h: u32, scale: f32) void {
         self.viewport_w = @floatFromInt(w);
         self.viewport_h = @floatFromInt(h);

@@ -248,7 +248,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                     if (mouse.ctrl_down) {
                                         editor.cursor = editor.prevWordBoundary(editor.cursor);
                                     } else if (editor.cursor > 0) {
-                                        editor.cursor -= 1;
+                                        editor.cursor = editor.prevCodepointBoundary(editor.cursor);
                                     }
                                 } else if (editor.hasSelection()) {
                                     editor.cursor = editor.selectionRange().start;
@@ -256,7 +256,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                 } else if (mouse.ctrl_down) {
                                     editor.cursor = editor.prevWordBoundary(editor.cursor);
                                 } else if (editor.cursor > 0) {
-                                    editor.cursor -= 1;
+                                    editor.cursor = editor.prevCodepointBoundary(editor.cursor);
                                 }
                             } else if (tree.getConst(f).kind == .drag_value) {
                                 stepDragValue(tree, f, -1);
@@ -291,7 +291,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                     if (mouse.ctrl_down) {
                                         editor.cursor = editor.nextWordBoundary(editor.cursor);
                                     } else if (editor.cursor < editor.len) {
-                                        editor.cursor += 1;
+                                        editor.cursor = editor.nextCodepointBoundary(editor.cursor);
                                     }
                                 } else if (editor.hasSelection()) {
                                     editor.cursor = editor.selectionRange().end;
@@ -299,7 +299,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                 } else if (mouse.ctrl_down) {
                                     editor.cursor = editor.nextWordBoundary(editor.cursor);
                                 } else if (editor.cursor < editor.len) {
-                                    editor.cursor += 1;
+                                    editor.cursor = editor.nextCodepointBoundary(editor.cursor);
                                 }
                             } else if (tree.getConst(f).kind == .drag_value) {
                                 stepDragValue(tree, f, 1);
@@ -463,15 +463,22 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
         .text => |t| {
             if (mouse.focused) |f| {
                 if (focusedTextEditor(tree, f)) |editor| {
-                    // Only handle printable ASCII for now
-                    if (t.codepoint >= 0x20 and t.codepoint < 0x7F) {
-                        editor.insert(@intCast(t.codepoint));
+                    if (isPrintableTextCodepoint(t.codepoint)) {
+                        editor.insertCodepoint(t.codepoint);
                     }
                 }
             }
         },
         else => {},
     }
+}
+
+fn isPrintableTextCodepoint(codepoint: u21) bool {
+    if (!std.unicode.utf8ValidCodepoint(codepoint)) return false;
+    return switch (codepoint) {
+        0x00...0x1F, 0x7F...0x9F => false,
+        else => true,
+    };
 }
 
 fn focusedTextEditor(tree: *widget.Tree, handle: widget.NodeHandle) ?*widget.WidgetKind.TextInput {

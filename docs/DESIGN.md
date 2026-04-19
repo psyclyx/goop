@@ -158,14 +158,14 @@ core API.
 
 ## Current Constraints
 
-- Text input editing is ASCII-only
-- UTF-8 text editing and clipboard-backed text input are still incomplete
+- Text editing is codepoint-aware UTF-8, but not yet grapheme-cluster-aware
+- IME composition and richer platform text input are still incomplete
 - MSAA configuration is fixed at 4x with no fallback path
 
 ## Current Direction
 
 Near-term work is focused on:
 
-1. Improving text editing beyond the current ASCII-only path
+1. Improving text editing beyond the current codepoint-level path
 2. Hardening the new C-facing surface and examples
 3. Expanding embedder-level samples and validation

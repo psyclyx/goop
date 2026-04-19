@@ -72,6 +72,45 @@ fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) go
     return .{ .width = width, .height = font_size };
 }
 
+fn isPrintableTextCodepoint(codepoint: u32) bool {
+    if (codepoint > std.math.maxInt(u21)) return false;
+    if (!std.unicode.utf8ValidCodepoint(@intCast(codepoint))) return false;
+    if (codepoint < 0x20) return false;
+    if (codepoint >= 0x7F and codepoint < 0xA0) return false;
+    return true;
+}
+
+fn ensureAtlasForDrawList(atlas: *snail.Atlas, renderer: *render.Renderer, draw_list: goop.DrawList) !bool {
+    var unique_codepoints = std.AutoHashMap(u32, void).init(allocator);
+    defer unique_codepoints.deinit();
+
+    for (draw_list.commands) |command| {
+        if (command != .text) continue;
+        const text = command.text.text;
+        const view = std.unicode.Utf8View.init(text) catch continue;
+        var it = view.iterator();
+        while (it.nextCodepoint()) |codepoint| {
+            if (!isPrintableTextCodepoint(codepoint)) continue;
+            try unique_codepoints.put(codepoint, {});
+        }
+    }
+
+    if (unique_codepoints.count() == 0) return false;
+
+    var codepoints = try allocator.alloc(u32, unique_codepoints.count());
+    defer allocator.free(codepoints);
+
+    var index: usize = 0;
+    var it = unique_codepoints.keyIterator();
+    while (it.next()) |codepoint| : (index += 1) {
+        codepoints[index] = codepoint.*;
+    }
+
+    const added = try atlas.addCodepoints(codepoints);
+    if (added) renderer.uploadAtlas(atlas);
+    return added;
+}
+
 const State = struct {
     running: bool = true,
     configured: bool = false,
@@ -797,7 +836,7 @@ fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, serial: u32, _: u32, key:
         if (state.xkb_state) |xkb_st| {
             // xkb uses evdev keycodes (key + 8)
             const codepoint = xkb.xkb_state_key_get_utf32(xkb_st, key + 8);
-            if (codepoint >= 0x20 and codepoint < 0x7F) {
+            if (isPrintableTextCodepoint(codepoint)) {
                 ctx.pushEvent(.{ .text = .{
                     .codepoint = @intCast(codepoint),
                 } }) catch {};
@@ -1291,9 +1330,10 @@ pub fn main() !void {
     var atlas = try snail.Atlas.init(allocator, &font, &codepoints);
     defer atlas.deinit();
 
+    var text_measure = SnailTextCtx{ .font = &font, .atlas = &atlas };
     const text_measure_ctx = goop.TextMeasureCtx{
         .measureFn = &snailMeasureText,
-        .user_data = @ptrCast(@constCast(&SnailTextCtx{ .font = &font, .atlas = &atlas })),
+        .user_data = @ptrCast(&text_measure),
     };
 
     // goop context + widget tree
@@ -1479,6 +1519,11 @@ pub fn main() !void {
         // Render
         var dl = try ctx.generateDrawList();
         defer ctx.freeDrawList(&dl);
+        if (try ensureAtlasForDrawList(&atlas, &renderer, dl)) {
+            ctx.setDimensions(state.logical_width, state.logical_height);
+            ctx.doLayout(&text_measure_ctx);
+            dl = try ctx.generateDrawList();
+        }
 
         renderer.beginFrame(state.buffer_width, state.buffer_height, @floatFromInt(state.buffer_scale));
         renderer.render(dl);

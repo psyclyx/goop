@@ -1800,23 +1800,42 @@ pub fn textWidthUpTo(text: []const u8, pos: usize, font_size: f32, text_ctx: ?*c
 /// Find the character index in text closest to a given pixel x offset.
 /// Iterates through character positions measuring prefixes.
 pub fn charIndexAtX(text: []const u8, len: u8, rel_x: f32, font_size: f32, text_ctx: ?*const TextMeasureCtx) u8 {
-    if (len == 0 or rel_x <= 0) return 0;
+    const text_len: usize = @min(@as(usize, len), text.len);
+    if (text_len == 0 or rel_x <= 0) return 0;
 
-    if (text_ctx) |ctx| {
-        var prev_w: f32 = 0;
-        for (0..len) |i| {
-            const w = ctx.measureFn(text[0 .. i + 1], font_size, ctx.user_data).width;
-            const mid = (prev_w + w) / 2;
-            if (rel_x < mid) return @intCast(i);
-            prev_w = w;
+    const safe_text = text[0..text_len];
+    const view = std.unicode.Utf8View.init(safe_text) catch {
+        if (text_ctx) |ctx| {
+            var prev_w: f32 = 0;
+            for (0..text_len) |i| {
+                const w = ctx.measureFn(safe_text[0 .. i + 1], font_size, ctx.user_data).width;
+                const mid = (prev_w + w) / 2;
+                if (rel_x < mid) return @intCast(i);
+                prev_w = w;
+            }
+            return @intCast(text_len);
         }
-        return len;
-    }
 
-    // Fallback: uniform character width
-    const char_width = font_size * 0.6;
-    const char_pos = if (char_width > 0) rel_x / char_width else 0;
-    return @intFromFloat(std.math.clamp(@round(char_pos), 0, @as(f32, @floatFromInt(len))));
+        const char_width = font_size * 0.6;
+        const char_pos = if (char_width > 0) rel_x / char_width else 0;
+        return @intFromFloat(std.math.clamp(@round(char_pos), 0, @as(f32, @floatFromInt(text_len))));
+    };
+
+    var iter = view.iterator();
+    var prev_w: f32 = 0;
+    var byte_index: usize = 0;
+    while (iter.nextCodepointSlice()) |slice| {
+        const next_index = byte_index + slice.len;
+        const w = if (text_ctx) |ctx|
+            ctx.measureFn(safe_text[0..next_index], font_size, ctx.user_data).width
+        else
+            prev_w + font_size * 0.6;
+        const mid = (prev_w + w) / 2;
+        if (rel_x < mid) return @intCast(byte_index);
+        prev_w = w;
+        byte_index = next_index;
+    }
+    return @intCast(text_len);
 }
 
 fn measureText(

@@ -51,7 +51,7 @@ Still actively in progress:
 
 - API cleanup and broader documentation
 - fractional scaling and broader runtime portability
-- UTF-8 text editing and richer text input behavior
+- IME/composition, grapheme-cluster behavior, and richer text input polish
 - more embedder examples and validation beyond the current demo
 
 For the current engineering snapshot and rough edges, see
