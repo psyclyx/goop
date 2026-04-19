@@ -100,6 +100,30 @@ const State = struct {
     radio_a: ?goop.NodeHandle = null,
     radio_b: ?goop.NodeHandle = null,
     radio_c: ?goop.NodeHandle = null,
+    tree_parent: ?goop.NodeHandle = null,
+    tree_child_a: ?goop.NodeHandle = null,
+    tree_child_b: ?goop.NodeHandle = null,
+    list_box: ?goop.NodeHandle = null,
+    selectable_scene: ?goop.NodeHandle = null,
+    selectable_camera: ?goop.NodeHandle = null,
+    selectable_light: ?goop.NodeHandle = null,
+    dropdown: ?goop.NodeHandle = null,
+    menu_file: ?goop.NodeHandle = null,
+    menu_edit: ?goop.NodeHandle = null,
+    menu_open_recent: ?goop.NodeHandle = null,
+    menu_recent_a: ?goop.NodeHandle = null,
+    menu_recent_b: ?goop.NodeHandle = null,
+    menu_quit: ?goop.NodeHandle = null,
+    menu_copy: ?goop.NodeHandle = null,
+    menu_paste: ?goop.NodeHandle = null,
+    drag_value: ?goop.NodeHandle = null,
+    spinbox: ?goop.NodeHandle = null,
+    tab_scene: ?goop.NodeHandle = null,
+    tab_render: ?goop.NodeHandle = null,
+    splitter: ?goop.NodeHandle = null,
+    context_popup: ?goop.NodeHandle = null,
+    context_action_a: ?goop.NodeHandle = null,
+    context_action_b: ?goop.NodeHandle = null,
     click_count: u32 = 0,
 
     // Last known mouse position from Wayland pointer events
@@ -329,6 +353,8 @@ fn evdevToKeycode(scancode: u32) goop.Event.Keycode {
         102 => .home,
         105 => .left,
         106 => .right,
+        103 => .up,
+        108 => .down,
         107 => .end,
         else => .unknown,
     };
@@ -490,6 +516,30 @@ fn buildWidgetTree(state: *State) !void {
 
     const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
 
+    // Menu bar with a nested submenu.
+    const menu_bar = try ctx.tree.addChild(root, .{ .menu_bar = .{} });
+    state.menu_file = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "File" } });
+    const file_popup = try ctx.tree.addChild(state.menu_file.?, .{ .popup = .{
+        .placement = .below_start,
+        .visible = false,
+    } });
+    state.menu_open_recent = try ctx.tree.addChild(file_popup, .{ .menu_item = .{ .label = "Open Recent" } });
+    const recent_popup = try ctx.tree.addChild(state.menu_open_recent.?, .{ .popup = .{
+        .placement = .right_start,
+        .visible = false,
+    } });
+    state.menu_recent_a = try ctx.tree.addChild(recent_popup, .{ .menu_item = .{ .label = "shot_v014.blend" } });
+    state.menu_recent_b = try ctx.tree.addChild(recent_popup, .{ .menu_item = .{ .label = "layout_blockout.blend" } });
+    state.menu_quit = try ctx.tree.addChild(file_popup, .{ .menu_item = .{ .label = "Quit" } });
+
+    state.menu_edit = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "Edit" } });
+    const edit_popup = try ctx.tree.addChild(state.menu_edit.?, .{ .popup = .{
+        .placement = .below_start,
+        .visible = false,
+    } });
+    state.menu_copy = try ctx.tree.addChild(edit_popup, .{ .menu_item = .{ .label = "Copy" } });
+    state.menu_paste = try ctx.tree.addChild(edit_popup, .{ .menu_item = .{ .label = "Paste" } });
+
     // Row of buttons
     const button_row = try ctx.tree.addChild(root, .{ .container = .{ .direction = .row } });
     state.btn_a = try ctx.tree.addChild(button_row, .{ .button = .{ .label = "Button A" } });
@@ -498,6 +548,83 @@ fn buildWidgetTree(state: *State) !void {
 
     // Text label
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "goop demo - click the buttons" } });
+
+    // Simple outline/tree
+    _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "Outline" } });
+    state.tree_parent = try ctx.tree.addChild(root, .{ .tree_item = .{
+        .label = "Scene",
+        .group = 10,
+        .selected = true,
+        .editable = true,
+        .rename_trigger = .selected_click,
+    } });
+    state.tree_child_a = try ctx.tree.addChild(state.tree_parent.?, .{ .tree_item = .{
+        .label = "Camera",
+        .group = 10,
+        .editable = true,
+        .rename_trigger = .selected_click,
+    } });
+    state.tree_child_b = try ctx.tree.addChild(state.tree_parent.?, .{ .tree_item = .{
+        .label = "Directional Light",
+        .group = 10,
+        .editable = true,
+        .rename_trigger = .selected_click,
+    } });
+
+    _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "List Box" } });
+    state.list_box = try ctx.tree.addChild(root, .{ .list_box = .{} });
+    state.selectable_scene = try ctx.tree.addChild(state.list_box.?, .{ .selectable = .{
+        .label = "Scene Collection",
+        .selected = true,
+    } });
+    state.selectable_camera = try ctx.tree.addChild(state.list_box.?, .{ .selectable = .{
+        .label = "Camera Rig",
+    } });
+    state.selectable_light = try ctx.tree.addChild(state.list_box.?, .{ .selectable = .{
+        .label = "Lighting Set",
+    } });
+
+    // Dropdown composed from a header + popup menu
+    state.dropdown = try ctx.tree.addChild(root, .{ .dropdown = .{ .placeholder = "Viewport mode" } });
+    const dropdown_popup = try ctx.tree.addChild(state.dropdown.?, .{ .popup = .{ .placement = .below_start } });
+    _ = try ctx.tree.addChild(dropdown_popup, .{ .menu_item = .{ .label = "Solid" } });
+    _ = try ctx.tree.addChild(dropdown_popup, .{ .menu_item = .{ .label = "Wireframe" } });
+    _ = try ctx.tree.addChild(dropdown_popup, .{ .menu_item = .{ .label = "Material Preview" } });
+
+    // Numeric editing widgets
+    _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "Numbers" } });
+    const exposure_row = try ctx.tree.addChild(root, .{ .container = .{ .direction = .row } });
+    _ = try ctx.tree.addChild(exposure_row, .{ .text = .{ .content = "Exposure" } });
+    state.drag_value = try ctx.tree.addChild(exposure_row, .{ .drag_value = .{
+        .value = 1.25,
+        .min = -4,
+        .max = 8,
+        .speed = 0.02,
+        .precision = 2,
+    } });
+
+    const samples_row = try ctx.tree.addChild(root, .{ .container = .{ .direction = .row } });
+    _ = try ctx.tree.addChild(samples_row, .{ .text = .{ .content = "Samples" } });
+    state.spinbox = try ctx.tree.addChild(samples_row, .{ .spinbox = .{
+        .value = 64,
+        .min = 1,
+        .max = 512,
+        .step = 1,
+        .precision = 0,
+    } });
+
+    // Tabbed container
+    _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "Editor Tabs" } });
+    const tab_bar = try ctx.tree.addChild(root, .{ .tab_bar = .{} });
+    state.tab_scene = try ctx.tree.addChild(tab_bar, .{ .tab_item = .{
+        .label = "Scene",
+        .selected = true,
+    } });
+    _ = try ctx.tree.addChild(state.tab_scene.?, .{ .text = .{ .content = "Scene tools: hierarchy, transforms, visibility." } });
+    state.tab_render = try ctx.tree.addChild(tab_bar, .{ .tab_item = .{
+        .label = "Render",
+    } });
+    _ = try ctx.tree.addChild(state.tab_render.?, .{ .text = .{ .content = "Render settings: samples, output, color management." } });
 
     // Checkbox
     state.checkbox = try ctx.tree.addChild(root, .{ .checkbox = .{ .label = "Enable option" } });
@@ -513,8 +640,25 @@ fn buildWidgetTree(state: *State) !void {
     // Slider
     _ = try ctx.tree.addChild(root, .{ .slider = .{ .value = 0.5, .min = 0, .max = 1 } });
 
-    // Scroll area with overflowing content
-    const scroll = try ctx.tree.addChild(root, .{ .scroll_area = .{} });
+    // Split view for editor-style panes.
+    _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "Split View" } });
+    state.splitter = try ctx.tree.addChild(root, .{ .splitter = .{
+        .direction = .row,
+        .ratio = 0.56,
+        .min_first = 150,
+        .min_second = 140,
+        .thickness = 8,
+    } });
+    const inspector = try ctx.tree.addChild(state.splitter.?, .{ .container = .{ .direction = .column } });
+    _ = try ctx.tree.addChild(inspector, .{ .text = .{ .content = "Inspector" } });
+    _ = try ctx.tree.addChild(inspector, .{ .text = .{ .content = "Transform" } });
+    _ = try ctx.tree.addChild(inspector, .{ .text = .{ .content = "Location  0.00  1.50  6.20" } });
+    _ = try ctx.tree.addChild(inspector, .{ .text = .{ .content = "Rotation  0.00  0.00  0.00" } });
+    _ = try ctx.tree.addChild(inspector, .{ .text = .{ .content = "Scale     1.00  1.00  1.00" } });
+
+    const viewport = try ctx.tree.addChild(state.splitter.?, .{ .container = .{ .direction = .column } });
+    _ = try ctx.tree.addChild(viewport, .{ .text = .{ .content = "Viewport Notes" } });
+    const scroll = try ctx.tree.addChild(viewport, .{ .scroll_area = .{} });
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 1" } });
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 2" } });
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 3" } });
@@ -523,6 +667,12 @@ fn buildWidgetTree(state: *State) !void {
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 6" } });
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 7" } });
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 8" } });
+
+    // Context menu popup. The demo opens it on secondary click, but callers
+    // can instead use ctx.lastSecondaryClick() to trigger a native popup.
+    state.context_popup = try ctx.tree.addRoot(.{ .popup = .{ .placement = .absolute, .visible = false } });
+    state.context_action_a = try ctx.tree.addChild(state.context_popup.?, .{ .menu_item = .{ .label = "Rename" } });
+    state.context_action_b = try ctx.tree.addChild(state.context_popup.?, .{ .menu_item = .{ .label = "Delete" } });
 }
 
 // ── Font loading ──
@@ -711,6 +861,20 @@ pub fn main() !void {
 
         ctx.processEvents();
 
+        if (ctx.lastSecondaryClick()) |click| {
+            if (state.context_popup) |popup| {
+                const popup_node = ctx.tree.get(popup);
+                popup_node.kind.popup.x = click.x;
+                popup_node.kind.popup.y = click.y;
+                popup_node.kind.popup.visible = true;
+                std.debug.print("Secondary click on widget {} at ({d:.1}, {d:.1})\n", .{
+                    click.target.index,
+                    click.x,
+                    click.y,
+                });
+            }
+        }
+
         // Check clicks
         if (state.btn_a) |h| if (ctx.wasClicked(h)) {
             state.click_count += 1;
@@ -734,6 +898,54 @@ pub fn main() !void {
         if (state.radio_a) |h| if (ctx.wasClicked(h)) std.debug.print("Radio: Option A selected\n", .{});
         if (state.radio_b) |h| if (ctx.wasClicked(h)) std.debug.print("Radio: Option B selected\n", .{});
         if (state.radio_c) |h| if (ctx.wasClicked(h)) std.debug.print("Radio: Option C selected\n", .{});
+        if (state.tree_parent) |h| {
+            if (ctx.treeItemToggled(h)) std.debug.print("Outline root expanded: {}\n", .{ctx.isExpanded(h)});
+            if (ctx.wasClicked(h)) std.debug.print("Outline selected: Scene\n", .{});
+            if (ctx.treeItemRenameCommitted(h)) std.debug.print("Outline renamed: {s}\n", .{ctx.treeItemLabel(h)});
+        }
+        if (state.tree_child_a) |h| {
+            if (ctx.wasClicked(h)) std.debug.print("Outline selected: Camera\n", .{});
+            if (ctx.treeItemRenameCommitted(h)) std.debug.print("Outline renamed: {s}\n", .{ctx.treeItemLabel(h)});
+        }
+        if (state.tree_child_b) |h| {
+            if (ctx.wasClicked(h)) std.debug.print("Outline selected: Directional Light\n", .{});
+            if (ctx.treeItemRenameCommitted(h)) std.debug.print("Outline renamed: {s}\n", .{ctx.treeItemLabel(h)});
+        }
+        if (state.list_box) |h| if (ctx.listBoxChanged(h)) {
+            if (ctx.listBoxSelectedIndex(h)) |index| {
+                std.debug.print("List box selected index: {}\n", .{index});
+            }
+        };
+        if (state.selectable_scene) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Scene Collection\n", .{});
+        if (state.selectable_camera) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Camera Rig\n", .{});
+        if (state.selectable_light) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Lighting Set\n", .{});
+        if (state.dropdown) |h| if (ctx.dropdownChanged(h)) {
+            std.debug.print("Dropdown selected: {s}\n", .{ctx.dropdownValue(h)});
+        };
+        if (state.menu_file) |h| if (ctx.wasClicked(h)) std.debug.print("Menu toggled: File\n", .{});
+        if (state.menu_edit) |h| if (ctx.wasClicked(h)) std.debug.print("Menu toggled: Edit\n", .{});
+        if (state.menu_recent_a) |h| if (ctx.wasClicked(h)) std.debug.print("Recent file: shot_v014.blend\n", .{});
+        if (state.menu_recent_b) |h| if (ctx.wasClicked(h)) std.debug.print("Recent file: layout_blockout.blend\n", .{});
+        if (state.menu_quit) |h| if (ctx.wasClicked(h)) std.debug.print("Menu action: Quit\n", .{});
+        if (state.menu_copy) |h| if (ctx.wasClicked(h)) std.debug.print("Menu action: Copy\n", .{});
+        if (state.menu_paste) |h| if (ctx.wasClicked(h)) std.debug.print("Menu action: Paste\n", .{});
+        if (state.drag_value) |h| if (ctx.dragValueChanged(h)) {
+            std.debug.print("Exposure changed: {d:.2}\n", .{ctx.dragValue(h)});
+        };
+        if (state.spinbox) |h| if (ctx.spinboxChanged(h)) {
+            std.debug.print("Samples changed: {d:.0}\n", .{ctx.spinboxValue(h)});
+        };
+        if (state.tab_scene) |h| if (ctx.wasClicked(h)) {
+            std.debug.print("Tab selected: Scene\n", .{});
+        };
+        if (state.tab_render) |h| if (ctx.wasClicked(h)) {
+            std.debug.print("Tab selected: Render\n", .{});
+        };
+        if (state.splitter) |h| if (ctx.splitterChanged(h)) {
+            std.debug.print("Splitter ratio: {d:.2}\n", .{ctx.splitterRatio(h)});
+        };
+        if (state.context_action_a) |h| if (ctx.wasClicked(h)) std.debug.print("Context action: Rename\n", .{});
+        if (state.context_action_b) |h| if (ctx.wasClicked(h)) std.debug.print("Context action: Delete\n", .{});
 
         // Render
         var dl = try ctx.generateDrawList();

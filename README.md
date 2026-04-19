@@ -9,8 +9,11 @@ the embedder owns the window, input delivery, and final rendering.
 - Core widget tree with generational handles and subtree removal
 - Layout via vendored `clay`
 - Draw command generation with cached draw lists when nothing changed
-- Widgets: container, text, button, checkbox, radio button, slider,
-  scroll area, text input
+- Widgets: container, text, button, checkbox, radio button, tree item,
+  dropdown, list box, selectable, menu bar, menu, popup, menu item, drag
+  value, spinbox, tab bar, tab item, splitter, slider, scroll area, text input
+- Secondary-click reporting for caller-owned context menu handling, with
+  optional in-canvas popup/menu composition
 - Wayland demo with EGL/OpenGL rendering, `xkbcommon` key handling, and
   `snail` text measurement/rendering
 
@@ -34,7 +37,11 @@ goop/
 
 ## Build / Test
 
+Use `nix-shell` first. The shell provides `harfbuzz` and the rest of the demo's
+native dependencies.
+
 ```bash
+nix-shell
 zig build
 zig build test
 zig build demo
@@ -51,7 +58,7 @@ zig build demo
 
 ## Near-Term Priorities
 
-1. Toolbar/menu bar widget
+1. Table/column primitives for denser editor UIs
 2. Embedder-provided font path instead of `popen("fc-match")`
 3. C API bindings
 4. HiDPI scaling in the demo/runtime model

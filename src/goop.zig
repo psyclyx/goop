@@ -24,6 +24,7 @@ pub const MeasureTextFn = layout.MeasureTextFn;
 pub const TextDimensions = layout.TextDimensions;
 
 pub const Clipboard = dispatch.Clipboard;
+pub const SecondaryClick = dispatch.SecondaryClick;
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
@@ -76,9 +77,10 @@ pub const Context = struct {
     /// detect clicks. Call after doLayout. Marks layout dirty if any
     /// events could affect layout (text input, scroll, resize).
     pub fn processEvents(self: *Context) void {
+        self.mouse.layout_changed = false;
         for (self.events.items) |ev| {
             switch (ev) {
-                .key, .text, .mouse_scroll, .resize => {
+                .key, .text, .mouse_button, .mouse_scroll, .resize => {
                     self.layout_dirty = true;
                     break;
                 },
@@ -87,14 +89,25 @@ pub const Context = struct {
         }
         if (self.events.items.len > 0) self.draw_dirty = true;
         dispatch.processWithClipboard(&self.tree, self.events.items, &self.mouse, self.theme, self.clipboard, self.text_measure_ctx);
+        if (self.layout_dirty or self.mouse.layout_changed) {
+            layout.run(&self.tree, self.theme, self.text_measure_ctx);
+            self.layout_dirty = false;
+            self.draw_dirty = true;
+            self.last_node_count = self.tree.count();
+            self.mouse.layout_changed = false;
+        }
         self.events.clearRetainingCapacity();
     }
 
-    /// Clear all button clicked flags. Call at the start of each frame
-    /// so clicks are only observed for one frame.
+    /// Clear transient activation/change flags. Call at the start of each
+    /// frame so clicks, toggles, and selection changes are only observed
+    /// for one frame.
     pub fn clearClickedFlags(self: *Context) void {
+        self.mouse.last_secondary_click = null;
         for (self.tree.nodes.items) |*node| {
             if (!node.alive) continue;
+            node.interaction.primary_clicked = false;
+            node.interaction.secondary_clicked = false;
             switch (node.kind) {
                 .button => {
                     node.kind.button.clicked = false;
@@ -105,20 +118,52 @@ pub const Context = struct {
                 .radio_button => {
                     node.kind.radio_button.clicked = false;
                 },
+                .tree_item => |*tree_item| {
+                    tree_item.clicked = false;
+                    tree_item.toggled = false;
+                    tree_item.rename_committed = false;
+                },
+                .dropdown => |*dropdown| {
+                    dropdown.clicked = false;
+                    dropdown.changed = false;
+                },
+                .list_box => |*list_box| {
+                    list_box.changed = false;
+                },
+                .selectable => |*selectable| {
+                    selectable.clicked = false;
+                },
+                .menu => |*menu| {
+                    menu.clicked = false;
+                },
+                .menu_item => {
+                    node.kind.menu_item.clicked = false;
+                },
+                .drag_value => |*drag_value| {
+                    drag_value.changed = false;
+                },
+                .spinbox => |*spinbox| {
+                    spinbox.changed = false;
+                },
+                .tab_item => |*tab_item| {
+                    tab_item.clicked = false;
+                },
+                .splitter => |*splitter| {
+                    splitter.changed = false;
+                },
                 else => {},
             }
         }
     }
 
-    /// Check if a widget was clicked this frame (buttons and checkboxes).
+    /// Check if a widget was activated with the primary button this frame.
     pub fn wasClicked(self: *const Context, handle: NodeHandle) bool {
-        const node = self.tree.getConst(handle);
-        return switch (node.kind) {
-            .button => node.kind.button.clicked,
-            .checkbox => node.kind.checkbox.clicked,
-            .radio_button => node.kind.radio_button.clicked,
-            else => false,
-        };
+        return self.tree.getConst(handle).interaction.primary_clicked;
+    }
+
+    /// Check if a widget was activated with the secondary button this frame.
+    pub fn wasSecondaryClicked(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).interaction.secondary_clicked;
     }
 
     /// Check if a checkbox is currently checked.
@@ -128,7 +173,39 @@ pub const Context = struct {
 
     /// Check if a radio button is currently selected.
     pub fn isSelected(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.radio_button.selected;
+        const node = self.tree.getConst(handle);
+        return switch (node.kind) {
+            .radio_button => node.kind.radio_button.selected,
+            .tree_item => node.kind.tree_item.selected,
+            .selectable => node.kind.selectable.selected,
+            .tab_item => node.kind.tab_item.selected,
+            else => false,
+        };
+    }
+
+    /// Check whether a tree item is currently expanded.
+    pub fn isExpanded(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.tree_item.expanded;
+    }
+
+    /// Check whether a tree item toggled this frame.
+    pub fn treeItemToggled(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.tree_item.toggled;
+    }
+
+    /// Get the current label content of a tree item.
+    pub fn treeItemLabel(self: *const Context, handle: NodeHandle) []const u8 {
+        return self.tree.getConst(handle).kind.tree_item.label;
+    }
+
+    /// Check whether a tree item is currently in inline rename mode.
+    pub fn treeItemEditing(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.tree_item.editing;
+    }
+
+    /// Check whether a tree item committed a rename this frame.
+    pub fn treeItemRenameCommitted(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.tree_item.rename_committed;
     }
 
     /// Get the current value of a slider.
@@ -136,9 +213,76 @@ pub const Context = struct {
         return self.tree.getConst(handle).kind.slider.value;
     }
 
+    /// Get the current value of a drag value widget.
+    pub fn dragValue(self: *const Context, handle: NodeHandle) f32 {
+        return self.tree.getConst(handle).kind.drag_value.value;
+    }
+
+    /// Check whether a drag value changed this frame.
+    pub fn dragValueChanged(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.drag_value.changed;
+    }
+
+    /// Get the current value of a spinbox.
+    pub fn spinboxValue(self: *const Context, handle: NodeHandle) f32 {
+        return self.tree.getConst(handle).kind.spinbox.value;
+    }
+
+    /// Check whether a spinbox changed this frame.
+    pub fn spinboxChanged(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.spinbox.changed;
+    }
+
+    /// Get the current ratio of a splitter.
+    pub fn splitterRatio(self: *const Context, handle: NodeHandle) f32 {
+        return self.tree.getConst(handle).kind.splitter.ratio;
+    }
+
+    /// Check whether a splitter changed this frame.
+    pub fn splitterChanged(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.splitter.changed;
+    }
+
     /// Get the current text content of a text input.
     pub fn textInputValue(self: *const Context, handle: NodeHandle) []const u8 {
         return self.tree.getConst(handle).kind.text_input.content();
+    }
+
+    /// Get the current selected text of a dropdown.
+    pub fn dropdownValue(self: *const Context, handle: NodeHandle) []const u8 {
+        return self.tree.getConst(handle).kind.dropdown.selected_text;
+    }
+
+    /// Get the selected item index of a dropdown, if any.
+    pub fn dropdownSelectedIndex(self: *const Context, handle: NodeHandle) ?u16 {
+        return self.tree.getConst(handle).kind.dropdown.selected_index;
+    }
+
+    /// Check whether a dropdown selection changed this frame.
+    pub fn dropdownChanged(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.dropdown.changed;
+    }
+
+    /// Get the selected direct child index of a list box, if any.
+    pub fn listBoxSelectedIndex(self: *const Context, handle: NodeHandle) ?u16 {
+        var index: u16 = 0;
+        var iter = self.tree.children(handle);
+        while (iter.next()) |child| {
+            if (self.tree.getConst(child).kind != .selectable) continue;
+            if (self.tree.getConst(child).kind.selectable.selected) return index;
+            index += 1;
+        }
+        return null;
+    }
+
+    /// Check whether a list box selection changed this frame.
+    pub fn listBoxChanged(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.list_box.changed;
+    }
+
+    /// Get the most recent secondary click that occurred this frame, if any.
+    pub fn lastSecondaryClick(self: *const Context) ?SecondaryClick {
+        return self.mouse.last_secondary_click;
     }
 
     /// Remove a widget and its entire subtree from the tree.
@@ -352,13 +496,9 @@ test "layout skips when not dirty" {
     ctx.processEvents();
     try std.testing.expect(!ctx.layout_dirty);
 
-    // Key events dirty layout
+    // Key events trigger a follow-up layout inside processEvents
     try ctx.pushEvent(.{ .key = .{ .scancode = 0, .keycode = .backspace, .state = .pressed } });
     ctx.processEvents();
-    try std.testing.expect(ctx.layout_dirty);
-
-    // Layout clears dirty flag
-    ctx.doLayout(null);
     try std.testing.expect(!ctx.layout_dirty);
 }
 
@@ -434,6 +574,202 @@ test "draw list regenerated after events" {
 
     ctx.freeDrawList(&dl1);
     ctx.freeDrawList(&dl2);
+}
+
+test "collapsed tree item can be reopened across context frames" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const parent = try ctx.tree.addChild(root, .{ .tree_item = .{
+        .label = "Scene",
+        .group = 1,
+    } });
+    const child = try ctx.tree.addChild(parent, .{ .tree_item = .{
+        .label = "Camera",
+        .group = 1,
+    } });
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+
+    const parent_rect = ctx.tree.getConst(parent).layout_rect;
+    const disclosure_x = parent_rect.x + 8;
+    const disclosure_y = parent_rect.y + parent_rect.h * 0.5;
+
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = disclosure_x, .y = disclosure_y } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = disclosure_x, .y = disclosure_y } });
+    ctx.processEvents();
+    try std.testing.expect(!ctx.isExpanded(parent));
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+    try std.testing.expectEqual(draw.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(child).layout_rect);
+
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = disclosure_x, .y = disclosure_y } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = disclosure_x, .y = disclosure_y } });
+    ctx.processEvents();
+    try std.testing.expect(ctx.isExpanded(parent));
+}
+
+test "tab panels switch visibility across context frames" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const tabs = try ctx.tree.addChild(root, .{ .tab_bar = .{} });
+    const scene = try ctx.tree.addChild(tabs, .{ .tab_item = .{
+        .label = "Scene",
+        .selected = true,
+    } });
+    const render = try ctx.tree.addChild(tabs, .{ .tab_item = .{
+        .label = "Render",
+    } });
+    const scene_text = try ctx.tree.addChild(scene, .{ .text = .{ .content = "Scene panel" } });
+    const render_text = try ctx.tree.addChild(render, .{ .text = .{ .content = "Render panel" } });
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+
+    try std.testing.expect(ctx.tree.getConst(scene_text).layout_rect.w > 0);
+    try std.testing.expectEqual(draw.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(render_text).layout_rect);
+
+    const render_rect = ctx.tree.getConst(render).layout_rect;
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = render_rect.x + 5, .y = render_rect.y + 5 } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = render_rect.x + 5, .y = render_rect.y + 5 } });
+    ctx.processEvents();
+
+    try std.testing.expect(ctx.isSelected(render));
+    try std.testing.expect(!ctx.isSelected(scene));
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+
+    try std.testing.expectEqual(draw.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(scene_text).layout_rect);
+    try std.testing.expect(ctx.tree.getConst(render_text).layout_rect.w > 0);
+}
+
+test "list box reports selected index and change across context frames" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const list_box = try ctx.tree.addChild(root, .{ .list_box = .{} });
+    _ = try ctx.tree.addChild(list_box, .{ .selectable = .{
+        .label = "Scene",
+        .selected = true,
+    } });
+    const camera = try ctx.tree.addChild(list_box, .{ .selectable = .{
+        .label = "Camera",
+    } });
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+    try std.testing.expectEqual(@as(?u16, 0), ctx.listBoxSelectedIndex(list_box));
+
+    const camera_rect = ctx.tree.getConst(camera).layout_rect;
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .pressed,
+        .x = camera_rect.x + 5,
+        .y = camera_rect.y + 5,
+    } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .released,
+        .x = camera_rect.x + 5,
+        .y = camera_rect.y + 5,
+    } });
+    ctx.processEvents();
+
+    try std.testing.expect(ctx.listBoxChanged(list_box));
+    try std.testing.expectEqual(@as(?u16, 1), ctx.listBoxSelectedIndex(list_box));
+    try std.testing.expect(ctx.isSelected(camera));
+}
+
+test "menu popup layout updates in the same frame as activation" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const bar = try ctx.tree.addChild(root, .{ .menu_bar = .{} });
+    const file = try ctx.tree.addChild(bar, .{ .menu = .{ .label = "File" } });
+    const popup = try ctx.tree.addChild(file, .{ .popup = .{
+        .placement = .below_start,
+        .visible = false,
+    } });
+    _ = try ctx.tree.addChild(popup, .{ .menu_item = .{ .label = "Open" } });
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+
+    const file_rect = ctx.tree.getConst(file).layout_rect;
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .pressed,
+        .x = file_rect.x + 5,
+        .y = file_rect.y + 5,
+    } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .released,
+        .x = file_rect.x + 5,
+        .y = file_rect.y + 5,
+    } });
+    ctx.processEvents();
+
+    const popup_rect = ctx.tree.getConst(popup).layout_rect;
+    try std.testing.expect(popup_rect.w > 0);
+    try std.testing.expect(popup_rect.h > 0);
+    try std.testing.expect(popup_rect.y >= file_rect.y + file_rect.h - 0.01);
+}
+
+test "submenu hover updates layout in the same frame" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 480, .height = 320 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const bar = try ctx.tree.addChild(root, .{ .menu_bar = .{} });
+    const file = try ctx.tree.addChild(bar, .{ .menu = .{ .label = "File" } });
+    const file_popup = try ctx.tree.addChild(file, .{ .popup = .{
+        .placement = .below_start,
+        .visible = false,
+    } });
+    const recent = try ctx.tree.addChild(file_popup, .{ .menu_item = .{ .label = "Open Recent" } });
+    const recent_popup = try ctx.tree.addChild(recent, .{ .popup = .{
+        .placement = .right_start,
+        .visible = false,
+    } });
+    _ = try ctx.tree.addChild(recent_popup, .{ .menu_item = .{ .label = "shot.blend" } });
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+
+    const file_rect = ctx.tree.getConst(file).layout_rect;
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .pressed,
+        .x = file_rect.x + 5,
+        .y = file_rect.y + 5,
+    } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .released,
+        .x = file_rect.x + 5,
+        .y = file_rect.y + 5,
+    } });
+    ctx.processEvents();
+
+    const recent_rect = ctx.tree.getConst(recent).layout_rect;
+    try ctx.pushEvent(.{ .mouse_move = .{
+        .x = recent_rect.x + 5,
+        .y = recent_rect.y + 5,
+    } });
+    ctx.processEvents();
+
+    const recent_popup_rect = ctx.tree.getConst(recent_popup).layout_rect;
+    try std.testing.expect(recent_popup_rect.w > 0);
+    try std.testing.expect(recent_popup_rect.x >= recent_rect.x + recent_rect.w - 0.01);
 }
 
 test {

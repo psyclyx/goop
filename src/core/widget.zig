@@ -19,6 +19,8 @@ pub const InteractionState = struct {
     hovered: bool = false,
     pressed: bool = false,
     focused: bool = false,
+    primary_clicked: bool = false,
+    secondary_clicked: bool = false,
 };
 
 /// Widget-specific data.
@@ -28,6 +30,19 @@ pub const WidgetKind = union(enum) {
     button: Button,
     checkbox: Checkbox,
     radio_button: RadioButton,
+    tree_item: TreeItem,
+    dropdown: Dropdown,
+    list_box: ListBox,
+    selectable: Selectable,
+    menu_bar: MenuBar,
+    menu: Menu,
+    popup: Popup,
+    menu_item: MenuItem,
+    drag_value: DragValue,
+    spinbox: SpinBox,
+    tab_bar: TabBar,
+    tab_item: TabItem,
+    splitter: Splitter,
     slider: Slider,
     scroll_area: ScrollArea,
     text_input: TextInput,
@@ -58,6 +73,158 @@ pub const WidgetKind = union(enum) {
         group: u32,
         selected: bool = false,
         clicked: bool = false,
+    };
+
+    pub const TreeItem = struct {
+        label: []const u8,
+        group: u32 = 0,
+        editable: bool = false,
+        rename_trigger: RenameTrigger = .none,
+        expanded: bool = true,
+        selected: bool = false,
+        editing: bool = false,
+        clicked: bool = false,
+        toggled: bool = false,
+        rename_committed: bool = false,
+        editor: TextInput = .{},
+
+        pub const RenameTrigger = enum {
+            none,
+            selected_click,
+            double_click,
+        };
+
+        pub fn displayLabel(self: *const TreeItem) []const u8 {
+            return if (self.editing) self.editor.content() else self.label;
+        }
+
+        pub fn beginRename(self: *TreeItem) void {
+            self.editor = .{};
+            self.editor.insertSlice(self.label);
+            self.editor.selection_anchor = 0;
+            self.editor.cursor = self.editor.len;
+            self.rename_committed = false;
+            self.editing = true;
+        }
+
+        pub fn cancelRename(self: *TreeItem) void {
+            self.editor = .{};
+            self.rename_committed = false;
+            self.editing = false;
+        }
+
+        pub fn commitRename(self: *TreeItem) void {
+            self.label = self.editor.content();
+            self.rename_committed = true;
+            self.editing = false;
+        }
+    };
+
+    pub const Dropdown = struct {
+        placeholder: []const u8 = "Select...",
+        selected_text: []const u8 = "",
+        selected_index: ?u16 = null,
+        open: bool = false,
+        clicked: bool = false,
+        changed: bool = false,
+    };
+
+    pub const ListBox = struct {
+        changed: bool = false,
+    };
+
+    pub const Selectable = struct {
+        label: []const u8,
+        group: u32 = 0,
+        selected: bool = false,
+        clicked: bool = false,
+    };
+
+    pub const MenuBar = struct {};
+
+    pub const Menu = struct {
+        label: []const u8,
+        clicked: bool = false,
+    };
+
+    pub const Popup = struct {
+        placement: Placement = .absolute,
+        x: f32 = 0,
+        y: f32 = 0,
+        visible: bool = true,
+        close_on_outside_click: bool = true,
+        z_index: i16 = 100,
+        pointer_passthrough: bool = false,
+
+        pub const Placement = enum {
+            absolute,
+            below_start,
+            below_end,
+            right_start,
+        };
+    };
+
+    pub const MenuItem = struct {
+        label: []const u8,
+        clicked: bool = false,
+    };
+
+    pub const DragValue = struct {
+        value: f32 = 0,
+        min: f32 = -1000000,
+        max: f32 = 1000000,
+        speed: f32 = 0.1,
+        precision: u8 = 2,
+        changed: bool = false,
+        label_buf: [64]u8 = [_]u8{0} ** 64,
+        label_len: u8 = 0,
+
+        pub fn displayValue(self: *const DragValue) []const u8 {
+            return self.label_buf[0..self.label_len];
+        }
+
+        pub fn syncLabel(self: *DragValue) void {
+            const label = formatScalarLabel(&self.label_buf, self.value, self.precision);
+            self.label_len = @intCast(label.len);
+        }
+    };
+
+    pub const SpinBox = struct {
+        value: f32 = 0,
+        min: f32 = -1000000,
+        max: f32 = 1000000,
+        step: f32 = 1,
+        precision: u8 = 2,
+        changed: bool = false,
+        label_buf: [64]u8 = [_]u8{0} ** 64,
+        label_len: u8 = 0,
+
+        pub fn displayValue(self: *const SpinBox) []const u8 {
+            return self.label_buf[0..self.label_len];
+        }
+
+        pub fn syncLabel(self: *SpinBox) void {
+            const label = formatScalarLabel(&self.label_buf, self.value, self.precision);
+            self.label_len = @intCast(label.len);
+        }
+    };
+
+    pub const TabBar = struct {};
+
+    pub const TabItem = struct {
+        label: []const u8,
+        selected: bool = false,
+        clicked: bool = false,
+    };
+
+    pub const Splitter = struct {
+        direction: Container.Direction = .row,
+        ratio: f32 = 0.5,
+        min_first: f32 = 120,
+        min_second: f32 = 120,
+        thickness: f32 = 6,
+        keyboard_step: f32 = 0.02,
+        changed: bool = false,
     };
 
     pub const Slider = struct {
@@ -418,6 +585,8 @@ pub const Tree = struct {
             });
         }
 
+        syncDerivedState(&self.nodes.items[index].kind);
+
         const handle: NodeHandle = .{ .index = index, .generation = generation };
 
         if (parent_handle) |ph| {
@@ -452,6 +621,24 @@ pub const Tree = struct {
         }
     };
 };
+
+fn syncDerivedState(kind: *WidgetKind) void {
+    switch (kind.*) {
+        .drag_value => |*drag_value| drag_value.syncLabel(),
+        .spinbox => |*spinbox| spinbox.syncLabel(),
+        else => {},
+    }
+}
+
+fn formatScalarLabel(buf: *[64]u8, value: f32, precision: u8) []const u8 {
+    return switch (@min(precision, 4)) {
+        0 => std.fmt.bufPrint(buf, "{d:.0}", .{value}) catch "0",
+        1 => std.fmt.bufPrint(buf, "{d:.1}", .{value}) catch "0.0",
+        2 => std.fmt.bufPrint(buf, "{d:.2}", .{value}) catch "0.00",
+        3 => std.fmt.bufPrint(buf, "{d:.3}", .{value}) catch "0.000",
+        else => std.fmt.bufPrint(buf, "{d:.4}", .{value}) catch "0.0000",
+    };
+}
 
 test "build and traverse widget tree" {
     const allocator = std.testing.allocator;

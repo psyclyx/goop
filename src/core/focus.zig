@@ -3,8 +3,22 @@ const widget = @import("widget.zig");
 /// Whether a widget kind can receive keyboard focus.
 pub fn isFocusable(kind: widget.WidgetKind) bool {
     return switch (kind) {
-        .button, .checkbox, .radio_button, .slider, .text_input => true,
-        .text, .container, .scroll_area => false,
+        .button,
+        .checkbox,
+        .radio_button,
+        .tree_item,
+        .dropdown,
+        .selectable,
+        .menu,
+        .menu_item,
+        .drag_value,
+        .spinbox,
+        .tab_item,
+        .splitter,
+        .slider,
+        .text_input,
+        => true,
+        .text, .container, .list_box, .menu_bar, .popup, .tab_bar, .scroll_area => false,
     };
 }
 
@@ -26,7 +40,7 @@ pub fn focusNext(tree: *const widget.Tree, current: ?widget.NodeHandle) ?widget.
             wrapped = true;
         }
         if (wrapped and current != null and i >= current.?.index + 1) return current;
-        if (nodes[i].alive and isFocusable(nodes[i].kind)) return tree.handleFromIndex(i);
+        if (canFocusNode(tree, i)) return tree.handleFromIndex(i);
         i += 1;
     }
 }
@@ -46,14 +60,14 @@ pub fn focusPrev(tree: *const widget.Tree, current: ?widget.NodeHandle) ?widget.
         var i: u32 = len;
         while (i > 0) {
             i -= 1;
-            if (nodes[i].alive and isFocusable(nodes[i].kind)) return tree.handleFromIndex(i);
+            if (canFocusNode(tree, i)) return tree.handleFromIndex(i);
         }
         return current;
     }
 
     var i: u32 = start - 1;
     while (true) {
-        if (nodes[i].alive and isFocusable(nodes[i].kind)) return tree.handleFromIndex(i);
+        if (canFocusNode(tree, i)) return tree.handleFromIndex(i);
         if (i == 0) break;
         i -= 1;
     }
@@ -61,7 +75,7 @@ pub fn focusPrev(tree: *const widget.Tree, current: ?widget.NodeHandle) ?widget.
     i = len;
     while (i > start) {
         i -= 1;
-        if (nodes[i].alive and isFocusable(nodes[i].kind)) return tree.handleFromIndex(i);
+        if (canFocusNode(tree, i)) return tree.handleFromIndex(i);
     }
     return current;
 }
@@ -74,4 +88,12 @@ pub fn syncFocusFlags(tree: *widget.Tree, focused: ?widget.NodeHandle) void {
     if (focused) |f| {
         tree.get(f).interaction.focused = true;
     }
+}
+
+fn canFocusNode(tree: *const widget.Tree, index: u32) bool {
+    const node = tree.nodes.items[index];
+    return node.alive and
+        isFocusable(node.kind) and
+        node.layout_rect.w > 0 and
+        node.layout_rect.h > 0;
 }

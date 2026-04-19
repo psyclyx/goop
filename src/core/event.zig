@@ -48,6 +48,8 @@ pub const Event = union(enum) {
         delete,
         left,
         right,
+        up,
+        down,
         home,
         end,
         left_shift,

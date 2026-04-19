@@ -51,7 +51,17 @@ pub fn generate(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem
     for (tree.nodes.items, 0..) |node, i| {
         if (!node.alive) continue;
         if (node.parent == null) {
-            try emitNode(tree, tree.handleFromIndex(@intCast(i)), theme, &commands, allocator, text_ctx);
+            const handle = tree.handleFromIndex(@intCast(i));
+            if (node.kind != .popup) {
+                try emitNode(tree, handle, theme, &commands, allocator, text_ctx, false);
+            }
+        }
+    }
+
+    for (tree.nodes.items, 0..) |node, i| {
+        if (!node.alive) continue;
+        if (node.parent == null) {
+            try emitFloatingSubtrees(tree, tree.handleFromIndex(@intCast(i)), theme, &commands, allocator, text_ctx);
         }
     }
 
@@ -71,19 +81,35 @@ fn emitNode(
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
 ) std.mem.Allocator.Error!void {
     const node = tree.getConst(handle);
+    if (!shouldDrawNode(tree, handle)) return;
+    if (!in_floating_subtree and node.kind == .popup) return;
     const resolved = node.style_override.resolve(theme);
 
     switch (node.kind) {
-        .container => try emitContainer(tree, handle, node, resolved, theme, commands, allocator, text_ctx),
+        .container => try emitContainer(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .text => |txt| try emitText(node, txt, resolved, commands, allocator),
-        .button => |btn| try emitButton(tree, handle, node, btn, resolved, theme, commands, allocator, text_ctx),
+        .button => |btn| try emitButton(tree, handle, node, btn, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .checkbox => |cb| try emitCheckbox(node, cb, resolved, theme, commands, allocator),
         .radio_button => |rb| try emitRadioButton(node, rb, resolved, theme, commands, allocator),
+        .tree_item => |tree_item| try emitTreeItem(tree, handle, node, tree_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .dropdown => |dropdown| try emitDropdown(tree, handle, node, dropdown, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .list_box => try emitListBox(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .selectable => |selectable| try emitSelectable(node, selectable, resolved, theme, commands, allocator),
+        .menu_bar => try emitMenuBar(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .menu => |menu| try emitMenu(tree, handle, node, menu, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .popup => try emitPopup(tree, handle, node, resolved, theme, commands, allocator, text_ctx),
+        .menu_item => |item| try emitMenuItem(tree, handle, node, item, resolved, theme, commands, allocator),
+        .drag_value => try emitDragValue(node, &node.kind.drag_value, resolved, theme, commands, allocator),
+        .spinbox => try emitSpinBox(node, &node.kind.spinbox, resolved, theme, commands, allocator),
+        .tab_bar => |tab_bar| try emitTabBar(tree, handle, node, tab_bar, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .tab_item => |tab_item| try emitTabItem(tree, handle, node, tab_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .splitter => |splitter| try emitSplitter(tree, handle, node, splitter, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .slider => |sl| try emitSlider(node, sl, resolved, theme, commands, allocator),
         .text_input => try emitTextInput(node, resolved, theme, commands, allocator, text_ctx),
-        .scroll_area => try emitScrollArea(tree, handle, node, resolved, theme, commands, allocator, text_ctx),
+        .scroll_area => try emitScrollArea(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
     }
 }
 
@@ -96,6 +122,7 @@ fn emitContainer(
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
 ) !void {
     // Background rect
     try commands.append(allocator, .{ .rect = .{
@@ -106,7 +133,7 @@ fn emitContainer(
         .corner_radius = resolved.border_radius,
     } });
 
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx);
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
 fn emitText(
@@ -135,6 +162,7 @@ fn emitButton(
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
 ) !void {
     // Background rect
     try commands.append(allocator, .{ .rect = .{
@@ -155,7 +183,7 @@ fn emitButton(
     } });
 
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx);
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
 fn emitCheckbox(
@@ -265,6 +293,550 @@ fn emitRadioButton(
     } });
 
     try emitFocusRing(node, theme, circle_radius, commands, allocator);
+}
+
+fn emitTreeItem(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    item: widget.WidgetKind.TreeItem,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    const rect = node.layout_rect;
+    const depth = treeDepth(tree, handle);
+    const indent = @as(f32, @floatFromInt(depth)) * treeIndent(theme, resolved);
+    const slot_width = disclosureSlotWidth(resolved);
+    const disclosure_x = rect.x + resolved.padding.left + indent;
+    const disclosure_center_x = disclosure_x + slot_width * 0.5;
+    const label_x = disclosure_x + slot_width;
+    const label_y = rect.y + resolved.padding.top;
+    const label = if (item.editing) node.kind.tree_item.editor.content() else item.label;
+    const has_parent = findTreeParent(tree, handle) != null;
+    const has_children = hasNonPopupChildren(tree, handle);
+
+    try emitTreeGuides(tree, handle, rect, resolved, theme, disclosure_center_x, commands, allocator);
+
+    const chrome = treeItemChrome(node, item, resolved, theme);
+    if (chrome.color.a > 0 or chrome.border_width > 0) {
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = rect,
+            .color = chrome.color,
+            .border_color = chrome.border_color,
+            .border_width = chrome.border_width,
+            .corner_radius = resolved.border_radius,
+        } });
+    }
+
+    if (has_children) {
+        try emitTreeDisclosure(disclosure_x, rect, resolved, theme, item.expanded, commands, allocator);
+    }
+    if (has_children or has_parent) {
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = .{
+                .x = disclosure_center_x,
+                .y = rect.y + rect.h * 0.5,
+                .w = @max(label_x - disclosure_center_x - 3, 1),
+                .h = 1,
+            },
+            .color = theme.tree_guide,
+            .border_color = theme.tree_guide,
+            .border_width = 0,
+            .corner_radius = 0,
+        } });
+    }
+
+    if (item.editing) {
+        const editor = &node.kind.tree_item.editor;
+
+        if (editor.hasSelection()) {
+            const range = editor.selectionRange();
+            const sel_start_x = label_x + layout.textWidthUpTo(label, range.start, resolved.font_size, text_ctx);
+            const sel_end_x = label_x + layout.textWidthUpTo(label, range.end, resolved.font_size, text_ctx);
+            try commands.append(allocator, .{ .rect = .{
+                .bounds = .{ .x = sel_start_x, .y = label_y, .w = sel_end_x - sel_start_x, .h = resolved.font_size },
+                .color = theme.selection_bg,
+                .border_color = theme.selection_bg,
+                .border_width = 0,
+                .corner_radius = 0,
+            } });
+        }
+
+        if (label.len > 0) {
+            try commands.append(allocator, .{ .text = .{
+                .x = label_x,
+                .y = label_y,
+                .text = label,
+                .color = resolved.fg,
+                .font_size = resolved.font_size,
+            } });
+        }
+
+        const cursor_x = label_x + layout.textWidthUpTo(label, editor.cursor, resolved.font_size, text_ctx);
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = .{ .x = cursor_x, .y = label_y, .w = 1, .h = resolved.font_size },
+            .color = resolved.fg,
+            .border_color = resolved.fg,
+            .border_width = 0,
+            .corner_radius = 0,
+        } });
+    } else {
+        try commands.append(allocator, .{ .text = .{
+            .x = label_x,
+            .y = label_y,
+            .text = label,
+            .color = resolved.fg,
+            .font_size = resolved.font_size,
+        } });
+    }
+
+    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    if (item.expanded) {
+        try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    } else {
+        try emitPopupChildren(tree, handle, theme, commands, allocator, text_ctx);
+    }
+}
+
+fn emitDropdown(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    dropdown: widget.WidgetKind.Dropdown,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    _ = in_floating_subtree;
+    const label = if (dropdown.selected_text.len > 0)
+        dropdown.selected_text
+    else
+        dropdown.placeholder;
+    const rect = node.layout_rect;
+    const chevron = if (dropdown.open) dropdownChevronUp() else dropdownChevronDown();
+    const chevron_x = rect.x + rect.w - resolved.padding.right - resolved.font_size * 0.6;
+
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = rect,
+        .color = interactionBg(node, resolved, theme),
+        .border_color = resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = resolved.border_radius,
+    } });
+    try commands.append(allocator, .{ .text = .{
+        .x = rect.x + resolved.padding.left,
+        .y = rect.y + resolved.padding.top,
+        .text = label,
+        .color = if (dropdown.selected_text.len > 0) resolved.fg else theme.placeholder_fg,
+        .font_size = resolved.font_size,
+    } });
+    try commands.append(allocator, .{ .text = .{
+        .x = chevron_x,
+        .y = rect.y + resolved.padding.top,
+        .text = chevron,
+        .color = resolved.fg,
+        .font_size = resolved.font_size,
+    } });
+
+    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    if (dropdown.open) {
+        try emitPopupChildren(tree, handle, theme, commands, allocator, text_ctx);
+    }
+}
+
+fn emitListBox(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = node.layout_rect,
+        .color = resolved.bg,
+        .border_color = resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = resolved.border_radius,
+    } });
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn emitSelectable(
+    node: *const widget.Node,
+    selectable: widget.WidgetKind.Selectable,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    const fill = selectableBg(node, selectable.selected, theme);
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = node.layout_rect,
+        .color = fill,
+        .border_color = if (selectable.selected) theme.accent else resolved.border,
+        .border_width = if (selectable.selected) 1 else 0,
+        .corner_radius = resolved.border_radius,
+    } });
+    try commands.append(allocator, .{ .text = .{
+        .x = node.layout_rect.x + resolved.padding.left,
+        .y = node.layout_rect.y + resolved.padding.top,
+        .text = selectable.label,
+        .color = resolved.fg,
+        .font_size = resolved.font_size,
+    } });
+    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+}
+
+fn emitMenuBar(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = node.layout_rect,
+        .color = resolved.bg,
+        .border_color = resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = resolved.border_radius,
+    } });
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn emitMenu(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    menu: widget.WidgetKind.Menu,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    _ = in_floating_subtree;
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = node.layout_rect,
+        .color = if (menuPopupVisible(tree, handle))
+            theme.bg_active
+        else
+            interactionBg(node, resolved, theme),
+        .border_color = resolved.border,
+        .border_width = 0,
+        .corner_radius = resolved.border_radius,
+    } });
+    try commands.append(allocator, .{ .text = .{
+        .x = node.layout_rect.x + resolved.padding.left,
+        .y = node.layout_rect.y + resolved.padding.top,
+        .text = menu.label,
+        .color = resolved.fg,
+        .font_size = resolved.font_size,
+    } });
+    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    _ = text_ctx;
+}
+
+fn emitPopup(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+) !void {
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = node.layout_rect,
+        .color = resolved.bg,
+        .border_color = resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = resolved.border_radius,
+    } });
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, true);
+}
+
+fn emitMenuItem(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    item: widget.WidgetKind.MenuItem,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    const has_popup = directPopupChild(tree, handle) != null;
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = node.layout_rect,
+        .color = if (menuPopupVisible(tree, handle))
+            theme.bg_active
+        else
+            interactionBg(node, resolved, theme),
+        .border_color = resolved.border,
+        .border_width = 0,
+        .corner_radius = resolved.border_radius,
+    } });
+    try commands.append(allocator, .{ .text = .{
+        .x = node.layout_rect.x + resolved.padding.left,
+        .y = node.layout_rect.y + resolved.padding.top,
+        .text = item.label,
+        .color = resolved.fg,
+        .font_size = resolved.font_size,
+    } });
+    if (has_popup) {
+        try emitMenuArrow(node.layout_rect, resolved, commands, allocator, resolved.fg);
+    }
+    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+}
+
+fn emitDragValue(
+    node: *const widget.Node,
+    drag_value: *const widget.WidgetKind.DragValue,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    const rect = node.layout_rect;
+
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = rect,
+        .color = interactionBg(node, resolved, theme),
+        .border_color = if (node.interaction.pressed) theme.accent else resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = resolved.border_radius,
+    } });
+    try commands.append(allocator, .{ .text = .{
+        .x = rect.x + resolved.padding.left,
+        .y = rect.y + resolved.padding.top,
+        .text = drag_value.displayValue(),
+        .color = resolved.fg,
+        .font_size = resolved.font_size,
+    } });
+
+    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+}
+
+fn emitSpinBox(
+    node: *const widget.Node,
+    spinbox: *const widget.WidgetKind.SpinBox,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    const rect = node.layout_rect;
+    const buttons = spinBoxButtons(rect);
+    const field_rect = Rect{
+        .x = buttons.dec.x + buttons.dec.w,
+        .y = rect.y,
+        .w = rect.w - buttons.dec.w - buttons.inc.w,
+        .h = rect.h,
+    };
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = rect,
+        .color = interactionBg(node, resolved, theme),
+        .border_color = resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = resolved.border_radius,
+    } });
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = buttons.dec,
+        .color = theme.bg_hover,
+        .border_color = resolved.border,
+        .border_width = 0,
+        .corner_radius = resolved.border_radius,
+    } });
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = buttons.inc,
+        .color = theme.bg_hover,
+        .border_color = resolved.border,
+        .border_width = 0,
+        .corner_radius = resolved.border_radius,
+    } });
+    try commands.append(allocator, .{ .text = .{
+        .x = buttons.dec.x + buttons.dec.w * 0.5 - resolved.font_size * 0.2,
+        .y = buttons.dec.y + resolved.padding.top,
+        .text = "-",
+        .color = resolved.fg,
+        .font_size = resolved.font_size,
+    } });
+    try commands.append(allocator, .{ .text = .{
+        .x = buttons.inc.x + buttons.inc.w * 0.5 - resolved.font_size * 0.2,
+        .y = buttons.inc.y + resolved.padding.top,
+        .text = "+",
+        .color = resolved.fg,
+        .font_size = resolved.font_size,
+    } });
+    try commands.append(allocator, .{ .text = .{
+        .x = field_rect.x + resolved.padding.left,
+        .y = field_rect.y + resolved.padding.top,
+        .text = spinbox.displayValue(),
+        .color = resolved.fg,
+        .font_size = resolved.font_size,
+    } });
+
+    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+}
+
+fn emitTabBar(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    _: widget.WidgetKind.TabBar,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = node.layout_rect,
+        .color = resolved.bg,
+        .border_color = resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = resolved.border_radius,
+    } });
+
+    var iter = tree.children(handle);
+    while (iter.next()) |child| {
+        const child_node = tree.getConst(child);
+        if (child_node.kind != .tab_item) continue;
+        try emitTabItemHeader(child_node, child_node.kind.tab_item, child_node.style_override.resolve(theme), theme, commands, allocator);
+    }
+
+    if (selectedTabItem(tree, handle)) |selected| {
+        try emitChildren(tree, selected, theme, commands, allocator, text_ctx, in_floating_subtree);
+    }
+}
+
+fn emitTabItem(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    item: widget.WidgetKind.TabItem,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    try emitTabItemHeader(node, item, resolved, theme, commands, allocator);
+    if (item.selected) {
+        try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    } else {
+        try emitPopupChildren(tree, handle, theme, commands, allocator, text_ctx);
+    }
+}
+
+fn emitTabItemHeader(
+    node: *const widget.Node,
+    item: widget.WidgetKind.TabItem,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    const chrome = tabItemChrome(node, item, resolved, theme);
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = node.layout_rect,
+        .color = chrome.color,
+        .border_color = chrome.border_color,
+        .border_width = chrome.border_width,
+        .corner_radius = resolved.border_radius,
+    } });
+    if (item.selected) {
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = .{
+                .x = node.layout_rect.x,
+                .y = node.layout_rect.y + node.layout_rect.h - 2,
+                .w = node.layout_rect.w,
+                .h = 2,
+            },
+            .color = theme.accent,
+            .border_color = theme.accent,
+            .border_width = 0,
+            .corner_radius = 0,
+        } });
+    }
+    try commands.append(allocator, .{ .text = .{
+        .x = node.layout_rect.x + resolved.padding.left,
+        .y = node.layout_rect.y + resolved.padding.top,
+        .text = item.label,
+        .color = resolved.fg,
+        .font_size = resolved.font_size,
+    } });
+
+    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+}
+
+fn emitSplitter(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    splitter: widget.WidgetKind.Splitter,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = node.layout_rect,
+        .color = resolved.bg,
+        .border_color = resolved.border,
+        .border_width = 0,
+        .corner_radius = resolved.border_radius,
+    } });
+
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+
+    const divider = splitterDividerRect(node.layout_rect, splitter, resolved);
+    const grip = splitterGripRect(divider, splitter.direction);
+    const divider_color = if (node.interaction.pressed)
+        theme.bg_active
+    else if (node.interaction.hovered)
+        theme.bg_hover
+    else
+        resolved.border;
+
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = divider,
+        .color = divider_color,
+        .border_color = divider_color,
+        .border_width = 0,
+        .corner_radius = resolved.border_radius,
+    } });
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = grip,
+        .color = if (node.interaction.pressed or node.interaction.focused) theme.accent else resolved.fg,
+        .border_color = if (node.interaction.pressed or node.interaction.focused) theme.accent else resolved.fg,
+        .border_width = 0,
+        .corner_radius = 2,
+    } });
+
+    try emitFocusRingRect(divider, theme, resolved.border_radius, commands, allocator, node.interaction.focused);
 }
 
 fn emitSlider(
@@ -385,6 +957,7 @@ fn emitScrollArea(
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
 ) !void {
     // Background
     try commands.append(allocator, .{ .rect = .{
@@ -398,7 +971,7 @@ fn emitScrollArea(
     // Push clip
     try commands.append(allocator, .{ .clip = .{ .bounds = node.layout_rect } });
 
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx);
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     // Pop clip
     try commands.append(allocator, .{ .clip = .{ .bounds = null } });
@@ -412,8 +985,19 @@ fn emitFocusRing(
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
 ) !void {
-    if (!node.interaction.focused) return;
-    const r = node.layout_rect;
+    try emitFocusRingRect(node.layout_rect, theme, corner_radius, commands, allocator, node.interaction.focused);
+}
+
+fn emitFocusRingRect(
+    rect: Rect,
+    theme: style.Theme,
+    corner_radius: f32,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    focused: bool,
+) !void {
+    if (!focused) return;
+    const r = rect;
     const inset: f32 = -2;
     try commands.append(allocator, .{ .rect = .{
         .bounds = .{
@@ -440,7 +1024,382 @@ fn interactionBg(node: *const widget.Node, resolved: style.ResolvedStyle, theme:
         resolved.bg;
 }
 
+fn selectableBg(node: *const widget.Node, selected: bool, theme: style.Theme) style.Color {
+    return if (node.interaction.pressed)
+        theme.bg_active
+    else if (selected)
+        theme.selection_bg
+    else if (node.interaction.hovered)
+        theme.bg_hover
+    else
+        .{ .r = 0, .g = 0, .b = 0, .a = 0 };
+}
+
+fn directPopupChild(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    var iter = tree.children(handle);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind == .popup) return child;
+    }
+    return null;
+}
+
+fn menuPopupVisible(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    const popup = directPopupChild(tree, handle) orelse return false;
+    return popupShouldDraw(tree, popup);
+}
+
+fn emitMenuArrow(
+    rect: Rect,
+    resolved: style.ResolvedStyle,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    color: style.Color,
+) !void {
+    const mid_y = rect.y + rect.h * 0.5;
+    const right = rect.x + rect.w - resolved.padding.right * 0.75;
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = .{ .x = right - 5, .y = mid_y - 3, .w = 1, .h = 6 },
+        .color = color,
+        .border_color = color,
+        .border_width = 0,
+        .corner_radius = 0,
+    } });
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = .{ .x = right - 3, .y = mid_y - 2, .w = 1, .h = 4 },
+        .color = color,
+        .border_color = color,
+        .border_width = 0,
+        .corner_radius = 0,
+    } });
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = .{ .x = right - 1, .y = mid_y - 1, .w = 1, .h = 2 },
+        .color = color,
+        .border_color = color,
+        .border_width = 0,
+        .corner_radius = 0,
+    } });
+}
+
+fn splitterDividerRect(rect: Rect, splitter: widget.WidgetKind.Splitter, resolved: style.ResolvedStyle) Rect {
+    const inner = splitterInnerRect(rect, resolved);
+    const ratio = clampedSplitterRatio(splitter, rect, resolved);
+    return switch (splitter.direction) {
+        .row => .{
+            .x = inner.x + (inner.w - splitter.thickness) * ratio,
+            .y = inner.y,
+            .w = splitter.thickness,
+            .h = inner.h,
+        },
+        .column => .{
+            .x = inner.x,
+            .y = inner.y + (inner.h - splitter.thickness) * ratio,
+            .w = inner.w,
+            .h = splitter.thickness,
+        },
+    };
+}
+
+fn splitterGripRect(divider: Rect, direction: widget.WidgetKind.Container.Direction) Rect {
+    return switch (direction) {
+        .row => .{
+            .x = divider.x + divider.w * 0.5 - 1,
+            .y = divider.y + divider.h * 0.5 - 12,
+            .w = 2,
+            .h = 24,
+        },
+        .column => .{
+            .x = divider.x + divider.w * 0.5 - 12,
+            .y = divider.y + divider.h * 0.5 - 1,
+            .w = 24,
+            .h = 2,
+        },
+    };
+}
+
+fn splitterInnerRect(rect: Rect, resolved: style.ResolvedStyle) Rect {
+    return .{
+        .x = rect.x + resolved.padding.left,
+        .y = rect.y + resolved.padding.top,
+        .w = @max(rect.w - resolved.padding.left - resolved.padding.right, 0),
+        .h = @max(rect.h - resolved.padding.top - resolved.padding.bottom, 0),
+    };
+}
+
+fn clampedSplitterRatio(
+    splitter: widget.WidgetKind.Splitter,
+    rect: Rect,
+    resolved: style.ResolvedStyle,
+) f32 {
+    const raw = std.math.clamp(splitter.ratio, 0, 1);
+    const available = splitterAvailableExtent(splitter, rect, resolved);
+    if (available <= 0) return raw;
+
+    const min_ratio = std.math.clamp(splitter.min_first / available, 0, 1);
+    const max_ratio = std.math.clamp(1 - splitter.min_second / available, 0, 1);
+    if (min_ratio > max_ratio) return raw;
+    return std.math.clamp(raw, min_ratio, max_ratio);
+}
+
+fn splitterAvailableExtent(
+    splitter: widget.WidgetKind.Splitter,
+    rect: Rect,
+    resolved: style.ResolvedStyle,
+) f32 {
+    const inner = splitterInnerRect(rect, resolved);
+    return switch (splitter.direction) {
+        .row => inner.w - splitter.thickness,
+        .column => inner.h - splitter.thickness,
+    };
+}
+
+fn spinBoxButtons(rect: Rect) struct { dec: Rect, inc: Rect } {
+    const button_w = @min(rect.h, 28);
+    return .{
+        .dec = .{ .x = rect.x, .y = rect.y, .w = button_w, .h = rect.h },
+        .inc = .{ .x = rect.x + rect.w - button_w, .y = rect.y, .w = button_w, .h = rect.h },
+    };
+}
+
+fn tabItemChrome(
+    node: *const widget.Node,
+    item: widget.WidgetKind.TabItem,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+) struct { color: style.Color, border_color: style.Color, border_width: f32 } {
+    return .{
+        .color = if (item.selected)
+            resolved.bg
+        else if (node.interaction.pressed)
+            theme.bg_active
+        else if (node.interaction.hovered)
+            theme.bg_hover
+        else
+            theme.bg,
+        .border_color = resolved.border,
+        .border_width = if (item.selected) resolved.border_width else 0,
+    };
+}
+
+fn treeItemChrome(
+    node: *const widget.Node,
+    item: widget.WidgetKind.TreeItem,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+) struct { color: style.Color, border_color: style.Color, border_width: f32 } {
+    const has_custom_bg = node.style_override.bg != null;
+    const has_custom_border = node.style_override.border != null or node.style_override.border_width != null;
+
+    return .{
+        .color = if (has_custom_bg)
+            interactionBg(node, resolved, theme)
+        else if (item.selected)
+            theme.selection_bg
+        else if (node.interaction.pressed)
+            theme.bg_active
+        else if (node.interaction.hovered)
+            theme.bg_hover
+        else
+            .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+        .border_color = if (has_custom_border)
+            resolved.border
+        else
+            .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+        .border_width = if (has_custom_border)
+            resolved.border_width
+        else
+            0,
+    };
+}
+
+fn emitTreeGuides(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    row_rect: Rect,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    disclosure_center_x: f32,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    var ancestor = tree.getConst(handle).parent;
+    var ancestor_depth = treeDepth(tree, handle);
+
+    while (ancestor) |ancestor_handle| {
+        const ancestor_node = tree.getConst(ancestor_handle);
+        if (ancestor_node.kind == .tree_item) {
+            ancestor_depth -= 1;
+            if (hasNextTreeSibling(tree, ancestor_handle)) {
+                try commands.append(allocator, .{ .rect = .{
+                    .bounds = .{
+                        .x = treeGuideCenterX(row_rect, resolved, theme, ancestor_depth),
+                        .y = row_rect.y,
+                        .w = 1,
+                        .h = row_rect.h,
+                    },
+                    .color = theme.tree_guide,
+                    .border_color = theme.tree_guide,
+                    .border_width = 0,
+                    .corner_radius = 0,
+                } });
+            }
+        }
+        ancestor = ancestor_node.parent;
+    }
+
+    if (findTreeParent(tree, handle) != null) {
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = .{
+                .x = disclosure_center_x,
+                .y = row_rect.y,
+                .w = 1,
+                .h = row_rect.h * 0.5,
+            },
+            .color = theme.tree_guide,
+            .border_color = theme.tree_guide,
+            .border_width = 0,
+            .corner_radius = 0,
+        } });
+    }
+
+    const node = tree.getConst(handle);
+    if (node.kind.tree_item.expanded and hasNonPopupChildren(tree, handle)) {
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = .{
+                .x = disclosure_center_x,
+                .y = row_rect.y + row_rect.h * 0.5,
+                .w = 1,
+                .h = row_rect.h * 0.5,
+            },
+            .color = theme.tree_guide,
+            .border_color = theme.tree_guide,
+            .border_width = 0,
+            .corner_radius = 0,
+        } });
+    }
+}
+
+fn emitTreeDisclosure(
+    disclosure_x: f32,
+    row_rect: Rect,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    expanded: bool,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    const slot_width = disclosureSlotWidth(resolved);
+    const size = @max(resolved.font_size * 0.7, 10);
+    const box_rect = Rect{
+        .x = disclosure_x + (slot_width - size) * 0.5,
+        .y = row_rect.y + (row_rect.h - size) * 0.5,
+        .w = size,
+        .h = size,
+    };
+
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = box_rect,
+        .color = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+        .border_color = if (expanded) theme.accent else resolved.border,
+        .border_width = 1,
+        .corner_radius = 2,
+    } });
+
+    const bar_y = box_rect.y + @floor(box_rect.h * 0.5);
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = .{
+            .x = box_rect.x + 2,
+            .y = bar_y,
+            .w = box_rect.w - 4,
+            .h = 1,
+        },
+        .color = resolved.fg,
+        .border_color = resolved.fg,
+        .border_width = 0,
+        .corner_radius = 0,
+    } });
+
+    if (!expanded) {
+        const bar_x = box_rect.x + @floor(box_rect.w * 0.5);
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = .{
+                .x = bar_x,
+                .y = box_rect.y + 2,
+                .w = 1,
+                .h = box_rect.h - 4,
+            },
+            .color = resolved.fg,
+            .border_color = resolved.fg,
+            .border_width = 0,
+            .corner_radius = 0,
+        } });
+    }
+}
+
+fn hasNextTreeSibling(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    var sibling = tree.getConst(handle).next_sibling;
+    while (sibling) |next_handle| {
+        const next_node = tree.getConst(next_handle);
+        if (next_node.kind != .popup) return true;
+        sibling = next_node.next_sibling;
+    }
+    return false;
+}
+
+fn treeGuideCenterX(
+    row_rect: Rect,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    depth: u32,
+) f32 {
+    const indent = @as(f32, @floatFromInt(depth)) * treeIndent(theme, resolved);
+    return row_rect.x + resolved.padding.left + indent + disclosureSlotWidth(resolved) * 0.5;
+}
+
+fn findTreeParent(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    var current = tree.getConst(handle).parent;
+    while (current) |parent_handle| {
+        if (tree.getConst(parent_handle).kind == .tree_item) return parent_handle;
+        current = tree.getConst(parent_handle).parent;
+    }
+    return null;
+}
+
+fn selectedTabItem(tree: *const widget.Tree, parent: widget.NodeHandle) ?widget.NodeHandle {
+    var iter = tree.children(parent);
+    while (iter.next()) |child| {
+        const node = tree.getConst(child);
+        if (node.kind == .tab_item and node.kind.tab_item.selected) return child;
+    }
+    return null;
+}
+
+fn formatScalar(buf: *[64]u8, value: f32, precision: u8) []const u8 {
+    return switch (@min(precision, 4)) {
+        0 => std.fmt.bufPrint(buf, "{d:.0}", .{value}) catch "0",
+        1 => std.fmt.bufPrint(buf, "{d:.1}", .{value}) catch "0.0",
+        2 => std.fmt.bufPrint(buf, "{d:.2}", .{value}) catch "0.00",
+        3 => std.fmt.bufPrint(buf, "{d:.3}", .{value}) catch "0.000",
+        else => std.fmt.bufPrint(buf, "{d:.4}", .{value}) catch "0.0000",
+    };
+}
+
 fn emitChildren(
+    tree: *const widget.Tree,
+    parent: widget.NodeHandle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    var iter = tree.children(parent);
+    while (iter.next()) |child| {
+        if (!in_floating_subtree and tree.getConst(child).kind == .popup) continue;
+        try emitNode(tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
+    }
+}
+
+fn emitPopupChildren(
     tree: *const widget.Tree,
     parent: widget.NodeHandle,
     theme: style.Theme,
@@ -450,8 +1409,88 @@ fn emitChildren(
 ) !void {
     var iter = tree.children(parent);
     while (iter.next()) |child| {
-        try emitNode(tree, child, theme, commands, allocator, text_ctx);
+        if (tree.getConst(child).kind != .popup) continue;
+        try emitNode(tree, child, theme, commands, allocator, text_ctx, true);
     }
+}
+
+fn emitFloatingSubtrees(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+) !void {
+    if (!shouldDrawNode(tree, handle)) return;
+    const node = tree.getConst(handle);
+    if (node.kind == .popup) {
+        try emitNode(tree, handle, theme, commands, allocator, text_ctx, true);
+        return;
+    }
+
+    var iter = tree.children(handle);
+    while (iter.next()) |child| {
+        if (node.kind == .tree_item and !node.kind.tree_item.expanded and tree.getConst(child).kind != .popup) continue;
+        if (node.kind == .tab_item and !node.kind.tab_item.selected) continue;
+        try emitFloatingSubtrees(tree, child, theme, commands, allocator, text_ctx);
+    }
+}
+
+fn shouldDrawNode(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    const node = tree.getConst(handle);
+    return switch (node.kind) {
+        .popup => popupShouldDraw(tree, handle),
+        else => true,
+    };
+}
+
+fn popupShouldDraw(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    const node = tree.getConst(handle);
+    if (!node.kind.popup.visible) return false;
+
+    if (node.parent) |parent_handle| {
+        const parent = tree.getConst(parent_handle);
+        if (parent.kind == .dropdown) {
+            return parent.kind.dropdown.open;
+        }
+    }
+    return true;
+}
+
+fn hasNonPopupChildren(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    var iter = tree.children(handle);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .popup) return true;
+    }
+    return false;
+}
+
+fn treeDepth(tree: *const widget.Tree, handle: widget.NodeHandle) u32 {
+    var depth: u32 = 0;
+    var current = tree.getConst(handle).parent;
+    while (current) |parent_handle| {
+        const parent = tree.getConst(parent_handle);
+        if (parent.kind == .tree_item) depth += 1;
+        current = parent.parent;
+    }
+    return depth;
+}
+
+fn treeIndent(theme: style.Theme, resolved: style.ResolvedStyle) f32 {
+    return resolved.font_size + theme.spacing;
+}
+
+fn disclosureSlotWidth(resolved: style.ResolvedStyle) f32 {
+    return resolved.font_size + 4;
+}
+
+fn dropdownChevronDown() []const u8 {
+    return "▾";
+}
+
+fn dropdownChevronUp() []const u8 {
+    return "▴";
 }
 
 test "generate draw commands from tree" {
@@ -559,6 +1598,153 @@ test "selected radio button emits indicator dot" {
     try std.testing.expect(dl.commands[0] == .rect);
     try std.testing.expect(dl.commands[1] == .rect);
     try std.testing.expect(dl.commands[2] == .text);
+}
+
+test "selected tree item uses fill without button border" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const item = try tree.addRoot(.{ .tree_item = .{
+        .label = "Scene",
+        .group = 1,
+        .selected = true,
+    } });
+    tree.get(item).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[1] == .text);
+    try std.testing.expectEqual(theme.selection_bg, dl.commands[0].rect.color);
+    try std.testing.expectEqual(@as(f32, 0), dl.commands[0].rect.border_width);
+}
+
+test "expanded tree item emits disclosure and child guides" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const parent = try tree.addChild(root, .{ .tree_item = .{
+        .label = "Scene",
+        .group = 1,
+        .expanded = true,
+    } });
+    const child = try tree.addChild(parent, .{ .tree_item = .{
+        .label = "Camera",
+        .group = 1,
+    } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 240, .h = 80 };
+    tree.get(parent).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 26 };
+    tree.get(child).layout_rect = .{ .x = 10, .y = 36, .w = 220, .h = 26 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 9), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect); // root bg
+    try std.testing.expect(dl.commands[1] == .rect); // parent downward guide
+    try std.testing.expect(dl.commands[2] == .rect); // disclosure box
+    try std.testing.expect(dl.commands[3] == .rect); // disclosure minus
+    try std.testing.expect(dl.commands[4] == .rect); // parent connector
+    try std.testing.expect(dl.commands[5] == .text); // parent label
+    try std.testing.expect(dl.commands[6] == .rect); // child vertical guide
+    try std.testing.expect(dl.commands[7] == .rect); // child connector
+    try std.testing.expect(dl.commands[8] == .text); // child label
+}
+
+test "drag value emits bg and formatted text" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const drag_value = try tree.addRoot(.{ .drag_value = .{
+        .value = 12.5,
+        .precision = 1,
+    } });
+    tree.get(drag_value).layout_rect = .{ .x = 10, .y = 20, .w = 120, .h = 28 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[1] == .text);
+    try std.testing.expectEqualStrings("12.5", dl.commands[1].text.text);
+}
+
+test "spinbox emits buttons and value" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const spinbox = try tree.addRoot(.{ .spinbox = .{
+        .value = 4,
+        .precision = 0,
+    } });
+    tree.get(spinbox).layout_rect = .{ .x = 10, .y = 20, .w = 120, .h = 28 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 6), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[1] == .rect);
+    try std.testing.expect(dl.commands[2] == .rect);
+    try std.testing.expect(dl.commands[3] == .text);
+    try std.testing.expect(dl.commands[4] == .text);
+    try std.testing.expect(dl.commands[5] == .text);
+    try std.testing.expectEqualStrings("4", dl.commands[5].text.text);
+}
+
+test "tab bar emits selected tab header and active panel only" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const tab_bar = try tree.addRoot(.{ .tab_bar = .{} });
+    const scene = try tree.addChild(tab_bar, .{ .tab_item = .{
+        .label = "Scene",
+        .selected = true,
+    } });
+    const render = try tree.addChild(tab_bar, .{ .tab_item = .{
+        .label = "Render",
+    } });
+    const active_text = try tree.addChild(scene, .{ .text = .{ .content = "Active panel" } });
+    const hidden_text = try tree.addChild(render, .{ .text = .{ .content = "Hidden panel" } });
+
+    tree.get(tab_bar).layout_rect = .{ .x = 0, .y = 0, .w = 220, .h = 90 };
+    tree.get(scene).layout_rect = .{ .x = 0, .y = 0, .w = 70, .h = 28 };
+    tree.get(render).layout_rect = .{ .x = 74, .y = 0, .w = 80, .h = 28 };
+    tree.get(active_text).layout_rect = .{ .x = 8, .y = 40, .w = 100, .h = 18 };
+    tree.get(hidden_text).layout_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 7), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect); // tab bar bg
+    try std.testing.expect(dl.commands[1] == .rect); // selected tab rect
+    try std.testing.expect(dl.commands[2] == .rect); // selected tab underline
+    try std.testing.expect(dl.commands[3] == .text); // selected tab label
+    try std.testing.expect(dl.commands[4] == .rect); // inactive tab rect
+    try std.testing.expect(dl.commands[5] == .text); // inactive tab label
+    try std.testing.expect(dl.commands[6] == .text); // selected panel content
+    try std.testing.expectEqualStrings("Active panel", dl.commands[6].text.text);
 }
 
 test "slider emits track and thumb" {

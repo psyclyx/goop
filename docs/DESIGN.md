@@ -62,6 +62,19 @@ Current widget kinds:
 - button
 - checkbox
 - radio button
+- tree item
+- dropdown
+- list box
+- selectable
+- menu bar
+- menu
+- popup
+- menu item
+- drag value
+- spinbox
+- tab bar
+- tab item
+- splitter
 - slider
 - scroll area
 - text input
@@ -80,7 +93,10 @@ to map native input into:
 - resize
 
 `src/core/dispatch.zig` applies those events to widget state. The embedder is
-also responsible for text input sourcing and logical key mapping.
+also responsible for text input sourcing and logical key mapping. Secondary
+clicks are surfaced back to the caller so native context menus remain an
+embedder decision, while the retained tree can also express in-canvas popup
+menus when that is preferable.
 
 ### Layout
 
@@ -130,14 +146,14 @@ core API.
 - Clipboard support in the demo is not wired to the real Wayland clipboard
 - The demo assumes 1:1 surface size to physical pixels
 - There is no C API yet
-- There is no toolbar/menu widget yet
+- There is no table/column widget yet
 - MSAA configuration is fixed at 4x with no fallback path
 
 ## Current Direction
 
 Near-term work is focused on:
 
-1. Completing the target widget set with a toolbar/menu bar widget
+1. Completing denser data-view widgets such as tables/columns
 2. Removing the `fc-match` dependency from font loading
 3. Adding a C-facing API layer
 4. Improving runtime portability and display scaling behavior

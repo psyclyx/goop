@@ -44,6 +44,7 @@ pub const Theme = struct {
     focus_ring: Color = Color.rgba(80, 140, 220, 200),
     placeholder_fg: Color = Color.rgb(120, 120, 120),
     selection_bg: Color = Color.rgba(80, 140, 220, 100),
+    tree_guide: Color = Color.rgba(110, 110, 110, 180),
 
     font_size: f32 = 14,
     padding: Edges = Edges.all(6),
