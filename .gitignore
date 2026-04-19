@@ -5,3 +5,4 @@ zig-pkg/
 .envrc.local
 result
 prompt.md
+.codex
