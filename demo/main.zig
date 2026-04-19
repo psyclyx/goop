@@ -635,7 +635,7 @@ pub fn main() !void {
 
     std.debug.print("goop demo running ({}x{})\n", .{ state.width, state.height });
 
-    // Main loop — frame-callback paced
+    // Wayland dispatch/render loop. Redraws are paced by frame callbacks.
     while (state.running) {
         // Check timeout
         if (state.timeout_ns) |t| {

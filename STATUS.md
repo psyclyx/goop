@@ -1,35 +1,40 @@
 # Status
 
-## Current
+## Snapshot
 
-Iteration 55. Chore cycle (archive, review, prune).
-80 tests pass. Build clean. Demo runs.
+`goop` is an embeddable retained-mode GUI library for Zig 0.16. The core owns
+the widget tree, layout, event dispatch, and draw command generation. The demo
+is a Wayland embedder with EGL/OpenGL rendering and `snail` text support.
 
-## Iteration Count
+Current baseline: 80 tests pass, `zig build` is clean, and the demo runs.
 
-55
+## Recent Progress
 
-## Done This Iteration
+- Generational widget handles with subtree removal
+- Draw-list caching behind `draw_dirty`
+- Pixel-snapped text positioning in the demo renderer
+- `xkbcommon`-driven keyboard input in the demo
 
-- Archived iterations 50–54 to docs/archive/
-- Reviewed last 5 commits: removal API, draw caching, pixel snapping, xkbcommon
-- Updated DESIGN.md: resolved widget removal and draw caching deferrals, added iteration 55 chore review with current codebase snapshot
-- Pruned DESIGN.md milestone 2 checklist (2 of 4 items struck through as done)
+## Next Priorities
 
-## Next
+1. Toolbar/menu bar widget
+2. Embedder-provided font path instead of `popen("fc-match")`
+3. C API bindings
+4. HiDPI scaling
 
-1. Toolbar/menu bar widget (last target widget, milestone 2 item #3)
-2. Embedder-provided font path (milestone 2 item #4, removes popen("fc-match"))
-3. C API bindings (c_api.zig)
+## Known Issues
 
-## What's Wrong
-
-- Font loading uses popen("fc-match") — fragile, Linux-only
-- MSAA sample count hardcoded to 4 — no fallback if GPU doesn't support it
-- Text input only handles printable ASCII — no UTF-8 multi-byte support
-- Clipboard demo doesn't wire up real Wayland clipboard (wl_data_device)
-- No toolbar/menu widget — last item from target widget set
-- No HiDPI scaling — demo treats surface dimensions as 1:1 with physical pixels
+- Font loading uses `popen("fc-match")`, which is fragile and Linux-only
+- MSAA sample count is hardcoded to `4` with no capability fallback
+- Text input only handles printable ASCII; UTF-8 editing is not implemented
+- The demo clipboard path does not yet use the real Wayland clipboard
+- No toolbar/menu widget yet
+- No HiDPI scaling; the demo treats surface size as physical pixels
 - No C API yet
-- `freeDrawList` is a no-op — semver break if anyone relied on manual lifetime
-- widget.zig grew 54% (348→536) from removal logic — watch for further growth
+- `freeDrawList` is a no-op for compatibility; `Context` owns draw-list memory
+- `widget.zig` grew significantly with removal logic and should be watched
+
+## Historical Notes
+
+The previous iteration-by-iteration workflow has been retired. Historical
+records from that loop live in `docs/archive/`.

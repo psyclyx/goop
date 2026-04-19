@@ -2,286 +2,148 @@
 
 ## Overview
 
-Retained-mode GUI library. Zig 0.16. Embeddable. No window ownership.
+`goop` is a retained-mode, embeddable GUI library for Zig 0.16. The library
+does not own the window, platform event loop, or renderer lifecycle. The
+embedder creates a `Context`, builds a widget tree, pushes input events, runs
+layout, and consumes draw commands.
 
-## Core Architecture
+## Goals
 
-- **Widget tree**: retained data structure, user builds and mutates it
-- **Event dispatch**: embedder pushes events as tagged unions, goop routes them
-- **Layout**: delegated to clay (vendored C library)
-- **Draw data**: core emits draw lists (vertices, textures, clips)
-- **Renderers**: optional modules that consume draw data (GL 3.3, GL 4.4, Vulkan)
+- Keep the core independent from windowing and rendering backends
+- Use simple, explicit data structures over framework-heavy abstractions
+- Let embedders own integration details such as font loading, platform input,
+  and swap timing
+- Keep rendering optional: the core emits draw data, not GPU commands
 
-## Key Decisions
+## Non-Goals
 
-- Clay for layout — proven, fast, C, easy to vendor
-- Snail for text — GPU Bezier rendering, already maintained by us
-- Renderers are separate from core — embedder chooses or brings their own
-- C API wraps the Zig API, not the other way around
+- Owning the native event loop
+- Shipping a full application framework
+- Hiding platform input behind a complex adapter layer
+- Baking a renderer backend into the core API
 
-## Design Review — Iteration 10
+## Architecture
 
-### Decided (implemented)
+### Public API
 
-- **Text measurement abstracted from core.** layout.zig uses MeasureTextFn
-  function pointer + opaque context. Snail adapter lives in demo.
-- **Context owns its event queue allocator.** pushEvent uses Context's
-  allocator. No per-call allocator parameter.
+`src/goop.zig` exposes the core modules and the `Context` type. `Context`
+owns:
 
-### Deferred (waiting for 3x signal)
+- the widget tree
+- queued input events
+- mouse/focus interaction state
+- the active theme
+- layout and draw dirty flags
+- a cached draw list
 
-- **Widget tree mutation/removal.** Handles are raw indices — removal needs
-  generational indices or tombstones. No real need yet (demo builds tree once).
-  Decide when dynamic content forces the issue.
-- **Interaction result separation.** Button.clicked lives on widget data,
-  mixed with persistent state. Works for one interaction type. If we add
-  double-click, right-click, or drag-end, extract to a separate results
-  structure.
-- **Scroll clamping.** Scroll values accumulate unbounded. Needs content
-  height from layout to clamp properly — address with scroll area improvements.
+The public flow is:
 
-### Validated
+1. Create a `Context`
+2. Add or remove widgets in the retained tree
+3. Push input events
+4. Run layout
+5. Process events
+6. Generate draw commands
 
-- Clay integration pattern (widget tree → clay elements → rects back)
-- Draw command model (rect/text/clip tagged union)
-- Event dispatch with hit testing (linear scan, fine for current scale)
-- Module boundaries: event types → dispatch → draw generation
-- Theme + per-widget Style override pattern
+### Widget Tree
 
-## Design Review — Iteration 25
+`src/core/widget.zig` stores widgets in an array-backed tree with sibling links.
+Handles are generational:
 
-### Codebase snapshot
+- `NodeHandle = { index, generation }`
+- stale handles are rejected
+- removed slots go onto a free list and can be reused safely
+- removal is subtree-recursive
 
-3171 LOC total. 29 tests pass. 7 widget types.
+Current widget kinds:
 
-| File | Lines | Role |
-|------|-------|------|
-| dispatch.zig | 682 | Event processing, hit testing, focus |
-| draw.zig | 542 | Draw command generation |
-| layout.zig | 413 | Clay integration |
-| goop.zig | 275 | Public API |
-| widget.zig | 180 | Widget tree data |
-| style.zig | 99 | Theme/style |
-| event.zig | 63 | Event types |
-| demo/main.zig | 640 | Wayland demo |
-| demo/render.zig | 277 | GL33 renderer |
+- container
+- text
+- button
+- checkbox
+- radio button
+- slider
+- scroll area
+- text input
 
-### Decided
+### Event Model
 
-- **Scroll clamping done.** Resolved from iteration 10 deferred list.
-  Content bounds now clamped each frame.
+`src/core/event.zig` defines platform-neutral events. The embedder is expected
+to map native input into:
 
-### Observations (act when 3x or blocking)
+- mouse move
+- mouse button
+- mouse scroll
+- key
+- text
+- focus
+- resize
 
-- **dispatch.zig past size threshold.** 974 lines (~550 tests). Extract
-  focus.zig (focusNext/focusPrev/syncFocusFlags) and hittest.zig
-  (hitTest/pointInRect/isInteractive). This is now overdue.
-- **Magic numbers** for focus ring inset (-2) and checkbox/radio indicator
-  inset (3). Move to Theme when styling becomes configurable.
+`src/core/dispatch.zig` applies those events to widget state. The embedder is
+also responsible for text input sourcing and logical key mapping.
 
-### Resolved since iteration 25
-
-- **Interaction bg selection** extracted to `interactionBg` helper in draw.zig
-  (iteration 28).
-
-### Deferred (still waiting)
-
-- **Widget tree mutation/removal.** Still append-only. No dynamic content
-  forces the issue yet.
-- **Interaction result separation.** Still just .clicked on widget data.
-  Wait for double-click/drag-end to force extraction.
+### Layout
 
-### Validated (new)
-
-- Widget addition pattern: ~80 lines across 4 files. Clean.
-- Focus navigation via Tab/Shift+Tab. Enter/Space activation.
-- Core-demo decoupling: core has zero demo dependencies.
-- Keyboard event model (Keycode enum + scancode mapping in demo).
+`src/core/layout.zig` uses vendored `clay` for layout. The layout pass walks the
+retained tree, emits Clay elements, and writes the resulting rectangles back to
+the widget nodes.
 
-## Chore Review — Iteration 45
+Text measurement is injected by the embedder through `TextMeasureCtx`:
 
-### Codebase snapshot
+- if present, layout and text interaction use real measurements
+- if absent, fallback behavior uses a rough width approximation
 
-5186 LOC total. 69 tests pass. 8 widget types (incl. text input).
-
-| File | Lines | Role |
-|------|-------|------|
-| dispatch_text_input_test.zig | 1324 | Text input tests (extracted) |
-| dispatch.zig | 824 | Event processing, hit testing, focus |
-| draw.zig | 722 | Draw command generation |
-| demo/main.zig | 661 | Wayland demo |
-| layout.zig | 454 | Clay integration |
-| widget.zig | 348 | Widget tree data |
-| goop.zig | 285 | Public API |
-| demo/render.zig | 274 | GL33 renderer |
-| style.zig | 101 | Theme/style |
-| focus.zig | 77 | Focus navigation |
-| event.zig | 76 | Event types |
-| hittest.zig | 40 | Hit testing |
-
-### Review of iterations 40–44
-
-Text input feature now mature: double-click word select, clipboard
-(copy/cut/paste via embedder callbacks), mouse interaction complete.
-Test extraction cleaned up dispatch.zig (1645→824 lines). Demo mouse
-coordinate bug fixed.
-
-### Resolved since iteration 40
-
-- **dispatch.zig size**: text input tests extracted to separate file
-  (iteration 42). dispatch.zig now 824 lines — manageable.
-
-### Observations
-
-- **Approximate char_width (font_size * 0.6)** still used for cursor
-  positioning and click-to-position. Proper fix needs text measurement
-  integration (MeasureTextFn from layout). Blocking for proportional fonts.
-- **No dirty tracking.** Full layout + draw list every frame. Not a
-  problem at current scale but will be for real apps.
-- **Text input test file is large (1324 lines, 34 tests).** Acceptable
-  for now since it's isolated, but watch for further growth.
-
-### Deferred (still waiting)
-
-- **Widget tree mutation/removal.** Still append-only.
-- **Interaction result separation.** Still just .clicked on widget data.
-
-## Design Review — Iteration 50
-
-### Codebase snapshot
-
-5306 LOC total. 72 tests pass. 8 widget types.
-
-| File | Lines | Role |
-|------|-------|------|
-| dispatch_text_input_test.zig | 1324 | Text input tests |
-| dispatch.zig | 820 | Event processing, hit testing, focus |
-| draw.zig | 728 | Draw command generation |
-| demo/main.zig | 664 | Wayland demo |
-| layout.zig | 488 | Clay integration |
-| widget.zig | 348 | Widget tree data |
-| goop.zig | 365 | Public API |
-| demo/render.zig | 275 | GL33 renderer |
-| style.zig | 101 | Theme/style |
-| focus.zig | 77 | Focus navigation |
-| event.zig | 76 | Event types |
-| hittest.zig | 40 | Hit testing |
-
-### Hard questions
-
-1. **Is append-only still acceptable?** The tree has been append-only for 50
-   iterations. The demo builds once and never mutates. Any real application
-   (dynamic lists, conditional UI, tab switching) will need removal. This is
-   the single biggest architectural gap. Generational indices or a free-list
-   are the obvious paths. The sibling linked-list pointers make removal
-   non-trivial but not hard.
-
-2. **Is the dirty tracking granular enough?** Current tracking is tree-level:
-   one bool, reset each frame. This skips layout when the tree structure and
-   dimensions are unchanged — a real win. But draw list regeneration has no
-   caching at all. For static UI this means redundant work every frame. A
-   draw-dirty flag (separate from layout-dirty) would be the minimum next
-   step. Per-subtree invalidation is premature.
-
-3. **Is first milestone complete?** Target was: buttons with click feedback,
-   text label, slider, scroll area, rendered via GL33 from Wayland. All
-   present. Text input, checkbox, radio button went beyond scope. The
-   milestone is done. Time to define the next one.
-
-### Decided
-
-- **Text measurement resolved.** Iteration 45 observation about approximate
-  char_width is fixed. Real glyph metrics now used for cursor positioning
-  and selection via TextMeasureCtx threaded through dispatch and draw.
-
-- **Layout dirty tracking shipped.** Tree-level dirty flag skips clay passes.
-  Sufficient for current scale.
-
-### Observations (act when 3x or blocking)
-
-- **draw.zig has no caching.** Draw list regenerated every frame even when
-  nothing changed. Add a draw-dirty flag gated on interaction state changes
-  and layout recalculation.
-- **Font loading uses popen("fc-match").** Works on Linux, breaks everywhere
-  else. Needs embedder-provided font path or embedded default font.
-- **MSAA hardcoded to 4x.** No capability query or fallback. Will fail on
-  some GPUs.
-- **No toolbar/menu widget.** Listed in target widget set but unimplemented.
-  Toolbar is the last target widget not started.
-
-### Resolved since iteration 25
-
-- **dispatch.zig size** — text input tests extracted (iteration 42).
-  dispatch.zig stable at 820 lines.
-- **Approximate char_width** — replaced with real text measurement
-  (iteration 49).
-- **No dirty tracking** — layout dirty tracking added (iteration 46).
-
-### Deferred (still waiting)
-
-- **Widget tree mutation/removal.** Append-only for 50 iterations. Now the
-  #1 priority — blocking for any dynamic UI.
-- **Interaction result separation.** Still .clicked on widget data. Not yet
-  blocking — double-click exists but didn't need a separate results struct.
-
-### Next milestone proposal
-
-**Milestone 2: Dynamic UI.** Ship the ability to add and remove widgets at
-runtime. This unblocks conditional UI, dynamic lists, and real applications.
-Concrete deliverables:
-1. ~~Widget removal API (generational handles or free-list)~~ — done (iter 53)
-2. ~~Draw list caching (draw-dirty flag, skip when unchanged)~~ — done (iter 54)
-3. Toolbar/menu bar widget (last target widget)
-4. Embedder-provided font path (remove popen("fc-match"))
-
-## Chore Review — Iteration 55
-
-### Codebase snapshot
-
-5647 LOC total. 80 tests pass. 8 widget types.
-
-| File | Lines | Role |
-|------|-------|------|
-| dispatch_text_input_test.zig | 1324 | Text input tests |
-| dispatch.zig | 820 | Event processing, hit testing, focus |
-| draw.zig | 729 | Draw command generation |
-| demo/main.zig | 728 | Wayland demo |
-| widget.zig | 536 | Widget tree data (+188, removal/generational handles) |
-| layout.zig | 490 | Clay integration |
-| goop.zig | 447 | Public API (+82, caching/removal API) |
-| demo/render.zig | 277 | GL33 renderer |
-| style.zig | 101 | Theme/style |
-| focus.zig | 77 | Focus navigation |
-| event.zig | 76 | Event types |
-| hittest.zig | 42 | Hit testing |
-
-### Review of iterations 50–54
-
-Two major architectural pieces landed: generational handles with widget removal
-(iter 53) and draw list caching (iter 54). Both were identified as the top
-priorities in the iteration 50 design review. Text rendering quality improved
-(pixel snapping, iter 52) and demo keyboard input is now proper via xkbcommon
-(iter 51).
-
-### Resolved since iteration 50
-
-- **Widget tree mutation/removal.** Deferred since iteration 10. Generational
-  handles (NodeHandle = {index, generation}), free-list slot reuse, recursive
-  subtree removal. 6 new tests. Done in iteration 53.
-- **Draw list caching.** Identified in iteration 50 design review. draw_dirty
-  flag, cached DrawList, invalidation on events/layout/tree changes. 2 new
-  tests. Done in iteration 54.
-
-### Observations (act when 3x or blocking)
-
-- **Font loading uses popen("fc-match").** Fragile, Linux-only. Needs
-  embedder-provided font path or embedded default font.
-- **MSAA hardcoded to 4x.** No capability query or fallback.
-- **No toolbar/menu widget.** Last target widget type not started.
-- **widget.zig grew significantly (348→536).** Generational handle + removal
-  logic is substantial. Still manageable but watch for further growth.
-
-### Deferred (still waiting)
-
-- **Interaction result separation.** Still .clicked on widget data. Not yet
-  blocking.
+This keeps the core independent from any specific font stack.
+
+### Draw Generation
+
+`src/core/draw.zig` turns the laid-out tree into a `DrawList` containing:
+
+- rectangle commands
+- text commands
+- clip commands
+
+The core does not issue GPU calls. The repo currently ships one renderer in
+`demo/render.zig`, used by the Wayland demo.
+
+`Context.generateDrawList()` caches the last draw list and reuses it when
+`draw_dirty` is false. `freeDrawList()` is currently a compatibility no-op
+because the `Context` owns cached draw memory.
+
+## Demo Integration
+
+`demo/main.zig` is the reference embedder:
+
+- Wayland surface and event handling
+- EGL/OpenGL setup
+- `xkbcommon` keyboard translation
+- `snail` font atlas/text measurement integration
+- frame-callback-paced redraw scheduling
+
+The demo is useful as both a sample app and an integration test for the current
+core API.
+
+## Current Constraints
+
+- Font discovery still shells out to `fc-match`
+- Text input editing is ASCII-only
+- Clipboard support in the demo is not wired to the real Wayland clipboard
+- The demo assumes 1:1 surface size to physical pixels
+- There is no C API yet
+- There is no toolbar/menu widget yet
+- MSAA configuration is fixed at 4x with no fallback path
+
+## Current Direction
+
+Near-term work is focused on:
+
+1. Completing the target widget set with a toolbar/menu bar widget
+2. Removing the `fc-match` dependency from font loading
+3. Adding a C-facing API layer
+4. Improving runtime portability and display scaling behavior
+
+## History
+
+The old iteration-based development loop is no longer the active workflow.
+Historical design reviews are preserved in `DESIGN_HISTORY.md`, and iteration
+summaries are preserved in `docs/archive/`.
