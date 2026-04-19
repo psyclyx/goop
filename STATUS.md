@@ -32,13 +32,14 @@ fallback locations.
 - Hover/focus-driven tooltips built on the floating layout path
 - Secondary-click reporting plus caller-managed context menu positioning
 - Demo font loading no longer shells out through `fc-match`
+- Installable C API header plus retained-tree/event/draw wrappers for C
 
 ## Next Priorities
 
-1. C API bindings
-2. HiDPI scaling
-3. Real Wayland clipboard integration
-4. UTF-8 text editing in inputs
+1. HiDPI scaling
+2. Real Wayland clipboard integration
+3. UTF-8 text editing in inputs
+4. Demo/runtime portability polish around the new C surface
 
 ## Known Issues
 
@@ -46,7 +47,6 @@ fallback locations.
 - Text input only handles printable ASCII; UTF-8 editing is not implemented
 - The demo clipboard path does not yet use the real Wayland clipboard
 - No HiDPI scaling; the demo treats surface size as physical pixels
-- No C API yet
 - `freeDrawList` is a no-op for compatibility; `Context` owns draw-list memory
 - `widget.zig` grew significantly with removal logic and should be watched
 

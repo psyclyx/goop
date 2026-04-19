@@ -26,7 +26,8 @@ layout, and consumes draw commands.
 
 ### Public API
 
-`src/goop.zig` exposes the core modules and the `Context` type. `Context`
+`src/goop.zig` exposes the core Zig API, and `include/goop.h`/`src/c_api.zig`
+provide a thin C-facing wrapper over the same retained runtime. `Context`
 owns:
 
 - the widget tree
@@ -44,6 +45,15 @@ The public flow is:
 4. Run layout
 5. Process events
 6. Generate draw commands
+
+The C layer mirrors that flow with:
+
+1. `goop_context_create`
+2. `goop_context_add_root` / `goop_context_add_child`
+3. `goop_context_push_event`
+4. `goop_context_do_layout`
+5. `goop_context_process_events`
+6. `goop_context_generate_draw_list`
 
 ### Widget Tree
 
@@ -148,9 +158,7 @@ core API.
 ## Current Constraints
 
 - Text input editing is ASCII-only
-- Clipboard support in the demo is not wired to the real Wayland clipboard
 - The demo assumes 1:1 surface size to physical pixels
-- There is no C API yet
 - UTF-8 text editing and clipboard-backed text input are still incomplete
 - MSAA configuration is fixed at 4x with no fallback path
 
@@ -158,10 +166,10 @@ core API.
 
 Near-term work is focused on:
 
-1. Adding a C-facing API layer
-2. Improving runtime portability and display scaling behavior
-3. Replacing the demo clipboard stub with real Wayland clipboard support
-4. Improving text editing beyond the current ASCII-only path
+1. Improving runtime portability and display scaling behavior
+2. Replacing the demo clipboard stub with real Wayland clipboard support
+3. Improving text editing beyond the current ASCII-only path
+4. Hardening the new C-facing surface and examples
 
 ## History
 

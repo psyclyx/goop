@@ -10,11 +10,12 @@ pub fn build(b: *std.Build) void {
 
     // ── Core goop module ──
     const goop_mod = b.createModule(.{
-        .root_source_file = b.path("src/goop.zig"),
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    goop_mod.addIncludePath(b.path("include"));
     goop_mod.addIncludePath(b.path("vendor/clay"));
     goop_mod.addCSourceFile(.{
         .file = b.path("vendor/clay/clay.c"),
@@ -27,6 +28,7 @@ pub fn build(b: *std.Build) void {
         .linkage = .static,
     });
     b.installArtifact(lib);
+    b.getInstallStep().dependOn(&b.addInstallHeaderFile(b.path("include/goop.h"), "goop.h").step);
 
     const build_lib = b.step("build-lib", "Build the static library");
     build_lib.dependOn(&b.addInstallArtifact(lib, .{}).step);
@@ -66,11 +68,12 @@ pub fn build(b: *std.Build) void {
 
     // ── Tests ──
     const test_mod = b.createModule(.{
-        .root_source_file = b.path("src/goop.zig"),
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    test_mod.addIncludePath(b.path("include"));
     test_mod.addIncludePath(b.path("vendor/clay"));
     test_mod.addCSourceFile(.{
         .file = b.path("vendor/clay/clay.c"),

@@ -13,6 +13,8 @@ the embedder owns the window, input delivery, and final rendering.
   dropdown, list box, selectable, table, table row, table cell, toolbar,
   status bar, menu bar, menu, popup, tooltip, menu item, drag value,
   spinbox, tab bar, tab item, splitter, slider, scroll area, text input
+- Installable C API in `include/goop.h`, with a descriptor-based retained-tree
+  surface over the same core runtime
 - Secondary-click reporting for caller-owned context menu handling, with
   optional in-canvas popup/menu composition
 - Wayland demo with EGL/OpenGL rendering, `xkbcommon` key handling, and
@@ -22,8 +24,12 @@ the embedder owns the window, input delivery, and final rendering.
 
 ```text
 goop/
+├── include/
+│   └── goop.h            # installable C API header
 ├── src/
-│   ├── goop.zig          # public API
+│   ├── root.zig          # module root + C export wiring
+│   ├── goop.zig          # Zig public API
+│   ├── c_api.zig         # C-facing wrapper layer
 │   └── core/             # widget tree, events, layout, draw generation
 ├── demo/
 │   ├── main.zig          # Wayland embedder + demo app
