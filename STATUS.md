@@ -2,7 +2,7 @@
 
 ## Snapshot
 
-`goop` is an embeddable retained-mode GUI library for Zig 0.16. The core owns
+`goop` is an embeddable retained-mode GUI library for Zig 0.16.0. The core owns
 the widget tree, layout, event dispatch, and draw command generation. The demo
 is a Wayland embedder with EGL/OpenGL rendering and `snail` text support.
 

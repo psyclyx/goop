@@ -8,7 +8,7 @@ let
 in
   pkgs.mkShell {
     packages = with pkgs; [
-      zigpkgs.master
+      zigpkgs."0.16.0"
       pkg-config
       libGL
       libglvnd

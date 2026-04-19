@@ -6,7 +6,7 @@ let
     overlays = [ zig-flake.overlays.default ];
   };
 
-  zig = pkgs.zigpkgs.master;
+  zig = pkgs.zigpkgs."0.16.0";
 
   runtimeLibs = with pkgs; [
     harfbuzz
