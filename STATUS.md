@@ -37,6 +37,7 @@ fallback locations.
 - Demo font loading no longer shells out through `fc-match`
 - Installable C API header plus retained-tree/event/draw wrappers for C
 - Headless C API example built and exercised from `zig build test`
+- Shared `libgoop` install output alongside the static archive
 - Real Wayland clipboard selection in the demo via `wl_data_device_manager`
 
 ## Next Priorities

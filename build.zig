@@ -28,10 +28,21 @@ pub fn build(b: *std.Build) void {
         .linkage = .static,
     });
     b.installArtifact(lib);
+
+    const shared_lib = b.addLibrary(.{
+        .name = "goop",
+        .root_module = goop_mod,
+        .linkage = .dynamic,
+    });
+    b.installArtifact(shared_lib);
+
     b.getInstallStep().dependOn(&b.addInstallHeaderFile(b.path("include/goop.h"), "goop.h").step);
 
     const build_lib = b.step("build-lib", "Build the static library");
     build_lib.dependOn(&b.addInstallArtifact(lib, .{}).step);
+
+    const build_shared_lib = b.step("build-shared-lib", "Build the shared library");
+    build_shared_lib.dependOn(&b.addInstallArtifact(shared_lib, .{}).step);
 
     // ── C API example ──
     const c_example = b.addExecutable(.{

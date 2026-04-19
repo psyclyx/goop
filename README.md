@@ -69,7 +69,7 @@ zig build test          # unit tests
 zig build               # library + demo
 zig build demo          # build and run the Wayland demo
 zig build c-example     # build and run the headless C API example
-zig build install       # install libgoop, goop-demo, and goop.h to zig-out/
+zig build install       # install static/shared libgoop, goop-demo, and goop.h to zig-out/
 ```
 
 The core library only needs libc plus the vendored `clay` C source. The demo
