@@ -221,3 +221,4 @@ nix-shell --run 'zig build demo'
 
 - [STATUS.md](STATUS.md): current snapshot, priorities, known issues
 - [docs/DESIGN.md](docs/DESIGN.md): architecture and constraints
+- [docs/C_API.md](docs/C_API.md): C embedding flow, lifetimes, and example notes
