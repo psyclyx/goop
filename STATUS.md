@@ -22,13 +22,14 @@ Current baseline: `zig build test` is clean. Use `nix-shell` before
 - List boxes and selectable rows for denser editor selections
 - Structural tables with aligned columns, header rows, and striping
 - Resizable table columns with retained width fractions
+- Sortable table headers with retained sort state
 - Toolbar and status-bar structural widgets for editor chrome
 - Hover/focus-driven tooltips built on the floating layout path
 - Secondary-click reporting plus caller-managed context menu positioning
 
 ## Next Priorities
 
-1. Sortable table headers and richer selection models
+1. Richer selection models for lists and data views
 2. Embedder-provided font path instead of `popen("fc-match")`
 3. C API bindings
 4. HiDPI scaling

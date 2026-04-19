@@ -570,6 +570,7 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
 
 fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
     mouse.left_down = false;
+    const dragged_target = mouse.drag_target;
     mouse.drag_target = null;
     mouse.drag_column_index = null;
     mouse.drag_origin_secondary_value = 0;
@@ -578,7 +579,13 @@ fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
 
     if (mouse.press_target) |pt| {
         if (release_target) |rt| {
-            if (rt.eql(pt)) fireClick(tree, pt);
+            if (rt.eql(pt) and !dragSuppressedClick(tree, dragged_target, pt)) {
+                if (tree.isAlive(pt) and tree.getConst(pt).kind == .table) {
+                    activateTable(tree, pt, mouse.x, mouse.y);
+                } else {
+                    fireClick(tree, pt);
+                }
+            }
         }
         if (tree.isAlive(pt)) {
             tree.get(pt).interaction.pressed = false;
@@ -628,11 +635,27 @@ fn hoverChanged(mouse: *const MouseState, hovered: ?widget.NodeHandle) bool {
     return hovered != null;
 }
 
+fn dragSuppressedClick(tree: *const widget.Tree, dragged_target: ?widget.NodeHandle, pressed_target: widget.NodeHandle) bool {
+    const dragged = dragged_target orelse return false;
+    if (!dragged.eql(pressed_target) or !tree.isAlive(pressed_target)) return false;
+    return switch (tree.getConst(pressed_target).kind) {
+        .table => true,
+        else => false,
+    };
+}
+
 fn treeHasTooltip(tree: *const widget.Tree) bool {
     for (tree.nodes.items) |node| {
         if (node.alive and node.kind == .tooltip) return true;
     }
     return false;
+}
+
+fn activateTable(tree: *widget.Tree, handle: widget.NodeHandle, x: f32, y: f32) void {
+    const column = widget.tableHeaderCellIndexAtPoint(tree, handle, x, y) orelse return;
+    const node = tree.get(handle);
+    node.interaction.primary_clicked = true;
+    _ = node.kind.table.toggleSort(column);
 }
 
 /// Update a slider's value based on mouse x position within its track.

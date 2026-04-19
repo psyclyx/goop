@@ -162,7 +162,8 @@ fn tooltipVisible(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
 fn pointHitsWidget(tree: *const widget.Tree, handle: widget.NodeHandle, x: f32, y: f32) bool {
     const node = tree.getConst(handle);
     return switch (node.kind) {
-        .table => widget.tableResizeHandleIndexAtPoint(tree, handle, x, y) != null,
+        .table => widget.tableResizeHandleIndexAtPoint(tree, handle, x, y) != null or
+            widget.tableHeaderCellIndexAtPoint(tree, handle, x, y) != null,
         .splitter => pointInRect(x, y, splitterDividerRect(node.layout_rect, node.kind.splitter, node.style_override.resolve(style.Theme.default))),
         else => pointInRect(x, y, node.layout_rect),
     };

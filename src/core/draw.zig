@@ -616,6 +616,16 @@ fn emitTableCell(
     }
 
     try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+
+    if (tableSortIndicator(tree, handle)) |direction| {
+        try commands.append(allocator, .{ .text = .{
+            .x = node.layout_rect.x + node.layout_rect.w - resolved.padding.right - resolved.font_size * 0.8,
+            .y = node.layout_rect.y + resolved.padding.top,
+            .text = tableSortChevron(direction),
+            .color = theme.accent,
+            .font_size = resolved.font_size,
+        } });
+    }
 }
 
 fn emitMenuBar(
@@ -1264,6 +1274,27 @@ fn tableCellIndex(tree: *const widget.Tree, handle: widget.NodeHandle) usize {
         current = tree.getConst(candidate).prev_sibling;
     }
     return index;
+}
+
+fn tableSortIndicator(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.WidgetKind.Table.SortDirection {
+    const row_handle = tree.getConst(handle).parent orelse return null;
+    const row = tree.getConst(row_handle);
+    if (row.kind != .table_row or !row.kind.table_row.header) return null;
+
+    const table_handle = row.parent orelse return null;
+    const table = tree.getConst(table_handle);
+    if (table.kind != .table or !table.kind.table.sortable) return null;
+
+    const sorted_column = table.kind.table.sorted_column orelse return null;
+    if (sorted_column != tableCellIndex(tree, handle)) return null;
+    return table.kind.table.sort_direction;
+}
+
+fn tableSortChevron(direction: widget.WidgetKind.Table.SortDirection) []const u8 {
+    return switch (direction) {
+        .ascending => "▴",
+        .descending => "▾",
+    };
 }
 
 fn directPopupChild(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
@@ -2095,6 +2126,48 @@ test "resizable table emits header grips" {
     try std.testing.expectApproxEqAbs(@as(f32, 139), dl.commands[5].rect.bounds.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 8), dl.commands[5].rect.bounds.y, 0.01);
     try std.testing.expectApproxEqAbs(widget.WidgetKind.Table.resize_grip_height, dl.commands[5].rect.bounds.h, 0.01);
+}
+
+test "sortable table emits active sort indicator" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const table = try tree.addRoot(.{ .table = .{
+        .columns = 2,
+        .sortable = true,
+        .sorted_column = 1,
+        .sort_direction = .descending,
+    } });
+    tree.get(table).kind.table.syncColumns(2);
+
+    const header = try tree.addChild(table, .{ .table_row = .{ .header = true } });
+    const header_name = try tree.addChild(header, .{ .table_cell = .{} });
+    const header_type = try tree.addChild(header, .{ .table_cell = .{} });
+    const header_name_text = try tree.addChild(header_name, .{ .text = .{ .content = "Name" } });
+    const header_type_text = try tree.addChild(header_type, .{ .text = .{ .content = "Type" } });
+
+    tree.get(table).layout_rect = .{ .x = 0, .y = 0, .w = 280, .h = 28 };
+    tree.get(header).layout_rect = .{ .x = 0, .y = 0, .w = 280, .h = 28 };
+    tree.get(header_name).layout_rect = .{ .x = 0, .y = 0, .w = 140, .h = 28 };
+    tree.get(header_type).layout_rect = .{ .x = 140, .y = 0, .w = 140, .h = 28 };
+    tree.get(header_name_text).layout_rect = .{ .x = 8, .y = 6, .w = 40, .h = 14 };
+    tree.get(header_type_text).layout_rect = .{ .x = 148, .y = 6, .w = 40, .h = 14 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    var found_indicator = false;
+    for (dl.commands) |command| {
+        if (command != .text) continue;
+        if (std.mem.eql(u8, command.text.text, "▾")) {
+            found_indicator = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_indicator);
 }
 
 test "slider emits track and thumb" {

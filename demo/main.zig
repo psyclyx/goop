@@ -600,6 +600,7 @@ fn buildWidgetTree(state: *State) !void {
     state.asset_table = try ctx.tree.addChild(root, .{ .table = .{
         .columns = 3,
         .resizable = true,
+        .sortable = true,
         .min_column_width = 96,
     } });
     {
@@ -992,6 +993,19 @@ pub fn main() !void {
                 ctx.tableColumnFraction(h, 1).?,
                 ctx.tableColumnFraction(h, 2).?,
             });
+        };
+        if (state.asset_table) |h| if (ctx.tableSortChanged(h)) {
+            const column_name = switch (ctx.tableSortedColumn(h).?) {
+                0 => "Name",
+                1 => "Type",
+                2 => "Visible",
+                else => "Unknown",
+            };
+            const direction_name = switch (ctx.tableSortDirection(h).?) {
+                .ascending => "ascending",
+                .descending => "descending",
+            };
+            std.debug.print("Asset table sort: {s} {s}\n", .{ column_name, direction_name });
         };
         if (state.dropdown) |h| if (ctx.dropdownChanged(h)) {
             std.debug.print("Dropdown selected: {s}\n", .{ctx.dropdownValue(h)});

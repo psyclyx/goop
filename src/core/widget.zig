@@ -155,16 +155,26 @@ pub const WidgetKind = union(enum) {
         columns: u8 = 0,
         striped: bool = true,
         resizable: bool = false,
+        sortable: bool = false,
         min_column_width: f32 = 96,
         changed: bool = false,
         resized_column: ?u8 = null,
+        sort_changed: bool = false,
+        sorted_column: ?u8 = null,
+        sort_direction: SortDirection = .ascending,
         active_columns: u8 = 0,
         column_weights: [max_columns]f32 = [_]f32{0} ** max_columns,
+
+        pub const SortDirection = enum {
+            ascending,
+            descending,
+        };
 
         pub fn syncColumns(self: *Table, columns: u8) void {
             const clamped: u8 = @intCast(@min(@as(usize, columns), max_columns));
             if (clamped == 0) {
                 self.active_columns = 0;
+                self.sorted_column = null;
                 @memset(&self.column_weights, 0);
                 return;
             }
@@ -183,6 +193,9 @@ pub const WidgetKind = union(enum) {
             }
 
             self.active_columns = clamped;
+            if (self.sorted_column) |sorted| {
+                if (sorted >= clamped) self.sorted_column = null;
+            }
             @memset(self.column_weights[clamped..], 0);
 
             if (reset) {
@@ -223,6 +236,26 @@ pub const WidgetKind = union(enum) {
             self.column_weights[divider_index + 1] = new_right / total_width;
             self.changed = true;
             self.resized_column = divider_index;
+            return true;
+        }
+
+        pub fn toggleSort(self: *Table, column: u8) bool {
+            if (!self.sortable or column >= self.active_columns) return false;
+
+            if (self.sorted_column) |sorted| {
+                if (sorted == column) {
+                    self.sort_direction = switch (self.sort_direction) {
+                        .ascending => .descending,
+                        .descending => .ascending,
+                    };
+                    self.sort_changed = true;
+                    return true;
+                }
+            }
+
+            self.sorted_column = column;
+            self.sort_direction = .ascending;
+            self.sort_changed = true;
             return true;
         }
     };
@@ -784,6 +817,26 @@ pub fn tableReferenceRow(tree: *const Tree, table: NodeHandle) ?NodeHandle {
     return best;
 }
 
+pub fn tableHeaderRow(tree: *const Tree, table: NodeHandle) ?NodeHandle {
+    var best: ?NodeHandle = null;
+    var best_cell_count: u16 = 0;
+
+    var iter = tree.children(table);
+    while (iter.next()) |child| {
+        const node = tree.getConst(child);
+        if (node.kind != .table_row or !node.kind.table_row.header) continue;
+
+        const cell_count = tableRowCellCount(tree, child);
+        if (cell_count == 0) continue;
+        if (best == null or cell_count > best_cell_count) {
+            best = child;
+            best_cell_count = cell_count;
+        }
+    }
+
+    return best;
+}
+
 pub fn tableResizeHandleRect(tree: *const Tree, table: NodeHandle, divider_index: u8) ?draw.Rect {
     const node = tree.getConst(table);
     if (node.kind != .table or !node.kind.table.resizable) return null;
@@ -811,6 +864,24 @@ pub fn tableResizeHandleIndexAtPoint(tree: *const Tree, table: NodeHandle, x: f3
     var index: u8 = 0;
     while (index + 1 < node.kind.table.active_columns) : (index += 1) {
         const rect = tableResizeHandleRect(tree, table, index) orelse continue;
+        if (x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h) return index;
+    }
+    return null;
+}
+
+pub fn tableHeaderCellIndexAtPoint(tree: *const Tree, table: NodeHandle, x: f32, y: f32) ?u8 {
+    const node = tree.getConst(table);
+    if (node.kind != .table or !node.kind.table.sortable) return null;
+    if (tableResizeHandleIndexAtPoint(tree, table, x, y) != null) return null;
+
+    const row = tableHeaderRow(tree, table) orelse return null;
+    const row_rect = tree.getConst(row).layout_rect;
+    if (!(x >= row_rect.x and x < row_rect.x + row_rect.w and y >= row_rect.y and y < row_rect.y + row_rect.h)) return null;
+
+    var index: u8 = 0;
+    while (index < node.kind.table.active_columns) : (index += 1) {
+        const cell = tableCellAt(tree, row, index) orelse continue;
+        const rect = tree.getConst(cell).layout_rect;
         if (x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h) return index;
     }
     return null;

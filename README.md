@@ -59,7 +59,7 @@ zig build demo
 
 ## Near-Term Priorities
 
-1. Sortable table headers and richer selection models
+1. Richer selection models for lists and data views
 2. Embedder-provided font path instead of `popen("fc-match")`
 3. C API bindings
 4. HiDPI scaling in the demo/runtime model

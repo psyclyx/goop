@@ -136,6 +136,7 @@ pub const Context = struct {
                 .table => |*table| {
                     table.changed = false;
                     table.resized_column = null;
+                    table.sort_changed = false;
                 },
                 .menu => |*menu| {
                     menu.clicked = false;
@@ -297,6 +298,23 @@ pub const Context = struct {
     /// Get the divider index that was resized this frame, if any.
     pub fn tableResizedColumn(self: *const Context, handle: NodeHandle) ?u8 {
         return self.tree.getConst(handle).kind.table.resized_column;
+    }
+
+    /// Get the currently sorted table column, if any.
+    pub fn tableSortedColumn(self: *const Context, handle: NodeHandle) ?u8 {
+        return self.tree.getConst(handle).kind.table.sorted_column;
+    }
+
+    /// Get the current table sort direction, if sorting is active.
+    pub fn tableSortDirection(self: *const Context, handle: NodeHandle) ?widget.WidgetKind.Table.SortDirection {
+        const table = self.tree.getConst(handle).kind.table;
+        if (table.sorted_column == null) return null;
+        return table.sort_direction;
+    }
+
+    /// Check whether table sorting changed this frame.
+    pub fn tableSortChanged(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.table.sort_changed;
     }
 
     /// Get the most recent secondary click that occurred this frame, if any.
@@ -809,6 +827,81 @@ test "resizable table columns update widths in the same frame as drag" {
     try std.testing.expect(resized_type.w < initial_type.w);
     try std.testing.expectApproxEqAbs(resized_name.x, resized_row_name.x, 0.01);
     try std.testing.expectApproxEqAbs(resized_type.x, resized_row_type.x, 0.01);
+}
+
+test "sortable table headers update retained sort state" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 640, .height = 360 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const table = try ctx.tree.addChild(root, .{ .table = .{
+        .columns = 3,
+        .sortable = true,
+    } });
+    const header = try ctx.tree.addChild(table, .{ .table_row = .{ .header = true } });
+    const header_name = try ctx.tree.addChild(header, .{ .table_cell = .{} });
+    const header_type = try ctx.tree.addChild(header, .{ .table_cell = .{} });
+    const header_vis = try ctx.tree.addChild(header, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(header_name, .{ .text = .{ .content = "Name" } });
+    _ = try ctx.tree.addChild(header_type, .{ .text = .{ .content = "Type" } });
+    _ = try ctx.tree.addChild(header_vis, .{ .text = .{ .content = "Visible" } });
+
+    const row = try ctx.tree.addChild(table, .{ .table_row = .{} });
+    const row_name = try ctx.tree.addChild(row, .{ .table_cell = .{} });
+    const row_type = try ctx.tree.addChild(row, .{ .table_cell = .{} });
+    const row_vis = try ctx.tree.addChild(row, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(row_name, .{ .text = .{ .content = "Cube" } });
+    _ = try ctx.tree.addChild(row_type, .{ .text = .{ .content = "Mesh" } });
+    _ = try ctx.tree.addChild(row_vis, .{ .text = .{ .content = "Yes" } });
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+
+    const header_type_rect = ctx.tree.getConst(header_type).layout_rect;
+    const click_x = header_type_rect.x + 12;
+    const click_y = header_type_rect.y + header_type_rect.h * 0.5;
+
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .pressed,
+        .x = click_x,
+        .y = click_y,
+        .timestamp_ms = 10,
+    } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .released,
+        .x = click_x,
+        .y = click_y,
+        .timestamp_ms = 20,
+    } });
+    ctx.processEvents();
+
+    try std.testing.expect(ctx.wasClicked(table));
+    try std.testing.expect(ctx.tableSortChanged(table));
+    try std.testing.expectEqual(@as(?u8, 1), ctx.tableSortedColumn(table));
+    try std.testing.expectEqual(widget.WidgetKind.Table.SortDirection.ascending, ctx.tableSortDirection(table).?);
+
+    ctx.clearClickedFlags();
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .pressed,
+        .x = click_x,
+        .y = click_y,
+        .timestamp_ms = 30,
+    } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .released,
+        .x = click_x,
+        .y = click_y,
+        .timestamp_ms = 40,
+    } });
+    ctx.processEvents();
+
+    try std.testing.expect(ctx.tableSortChanged(table));
+    try std.testing.expectEqual(@as(?u8, 1), ctx.tableSortedColumn(table));
+    try std.testing.expectEqual(widget.WidgetKind.Table.SortDirection.descending, ctx.tableSortDirection(table).?);
 }
 
 test "tooltip layout updates in the same frame as hover" {
