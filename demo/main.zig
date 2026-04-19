@@ -363,6 +363,8 @@ fn initEgl(state: *State, display: *wl.wl_display) !void {
         egl.EGL_BLUE_SIZE,       8,
         egl.EGL_ALPHA_SIZE,      8,
         egl.EGL_RENDERABLE_TYPE, egl.EGL_OPENGL_BIT,
+        egl.EGL_SAMPLE_BUFFERS,  1,
+        egl.EGL_SAMPLES,         4,
         egl.EGL_NONE,
     };
     var config: egl.EGLConfig = null;

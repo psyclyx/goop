@@ -158,6 +158,7 @@ pub const Renderer = struct {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
         gl.glEnable(gl.GL_BLEND);
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
+        gl.glEnable(gl.GL_MULTISAMPLE);
         gl.glDisable(gl.GL_SCISSOR_TEST);
     }
 
