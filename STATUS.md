@@ -2,29 +2,31 @@
 
 ## Current
 
-Iteration 37.
-51 tests pass. Build clean. Demo runs.
+Iteration 38.
+54 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-37
+38
 
 ## Done This Iteration
 
-- Fixed flipped text rendering: snail positions glyph quads in Y-up font coordinates, but the renderer was using a Y-down ortho projection, rendering all text upside-down
-- Changed ortho from (0, w, h, 0) to (0, w, 0, h) for Y-up projection
-- Converted baseline calculation to flip from goop's Y-down to snail's Y-up coords
+- Added mouse click-drag selection in text input
+- On press: set selection_anchor = cursor (instead of clearSelection)
+- On mouse move while dragging: update cursor position to create selection
+- Fixed insert() to clear selection after inserting — prevents phantom selections from stale anchor
+- Added 3 tests: drag forward, drag backward, click-after-drag clears selection
 
 ## Next
 
-1. Mouse drag selection in text input (shift-click or click-drag to select)
-2. Text input clipboard (Ctrl+C/V/X) — needs platform clipboard integration
-3. dispatch.zig is ~1400 lines — consider extracting text input helpers or tests
-4. More letter keys in Keycode enum (add as needed)
+1. Text input clipboard (Ctrl+C/V/X) — needs platform clipboard integration
+2. dispatch.zig is ~1550 lines — consider extracting text input helpers or tests
+3. More letter keys in Keycode enum (add as needed)
+4. Shift-click to extend selection (currently only drag)
 
 ## What's Wrong
 
-- dispatch.zig is ~1400 lines — tests account for most of it
+- dispatch.zig is ~1550 lines — tests account for most of it
 - Widget tree is append-only — no removal/mutation API
 - No dirty tracking — full layout + full draw list every frame
 - Text baseline y-offset is approximate (y + font_size)
