@@ -33,6 +33,8 @@ pub const Context = struct {
     events: std.ArrayListUnmanaged(Event),
     mouse: dispatch.MouseState = .{},
     clipboard: ?Clipboard = null,
+    layout_dirty: bool = true,
+    last_node_count: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, opts: InitOptions) !Context {
         const min_memory = c.Clay_MinMemorySize();
@@ -67,8 +69,18 @@ pub const Context = struct {
     }
 
     /// Process all queued events: hit test, update interaction state,
-    /// detect clicks. Call after doLayout.
+    /// detect clicks. Call after doLayout. Marks layout dirty if any
+    /// events could affect layout (text input, scroll, resize).
     pub fn processEvents(self: *Context) void {
+        for (self.events.items) |ev| {
+            switch (ev) {
+                .key, .text, .mouse_scroll, .resize => {
+                    self.layout_dirty = true;
+                    break;
+                },
+                else => {},
+            }
+        }
         dispatch.processWithClipboard(&self.tree, self.events.items, &self.mouse, self.theme, self.clipboard);
         self.events.clearRetainingCapacity();
     }
@@ -124,10 +136,15 @@ pub const Context = struct {
     }
 
     /// Run layout: walk the widget tree through clay and write back rects.
+    /// Skips the full clay pass if nothing layout-affecting has changed.
     /// Pass a TextMeasureCtx for accurate snail-based text measurement,
     /// or null to use a rough character-width approximation.
     pub fn doLayout(self: *Context, text_ctx: ?*const TextMeasureCtx) void {
+        const current_count = self.tree.count();
+        if (!self.layout_dirty and current_count == self.last_node_count) return;
         layout.run(&self.tree, self.theme, text_ctx);
+        self.layout_dirty = false;
+        self.last_node_count = current_count;
     }
 
     /// Generate draw commands from the laid-out widget tree.
@@ -143,7 +160,7 @@ pub const Context = struct {
 
     /// Update layout dimensions (e.g. on window resize).
     pub fn setDimensions(self: *Context, width: u32, height: u32) void {
-        _ = self;
+        self.layout_dirty = true;
         c.Clay_SetLayoutDimensions(.{
             .width = @floatFromInt(width),
             .height = @floatFromInt(height),
@@ -272,6 +289,67 @@ test "radio button group selection via events" {
 
     try std.testing.expect(!ctx.isSelected(rb1));
     try std.testing.expect(ctx.isSelected(rb2));
+}
+
+test "layout skips when not dirty" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    _ = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
+
+    // First layout runs (dirty by default)
+    ctx.doLayout(null);
+    try std.testing.expect(!ctx.layout_dirty);
+
+    const rect_after_first = ctx.tree.getConst(root).layout_rect;
+    try std.testing.expect(rect_after_first.w > 0);
+
+    // Second layout with no changes — should be a no-op
+    ctx.doLayout(null);
+    try std.testing.expect(!ctx.layout_dirty);
+
+    // Mouse-only events don't dirty layout
+    try ctx.pushEvent(.{ .mouse_move = .{ .x = 50, .y = 50 } });
+    ctx.processEvents();
+    try std.testing.expect(!ctx.layout_dirty);
+
+    // Key events dirty layout
+    try ctx.pushEvent(.{ .key = .{ .scancode = 0, .keycode = .backspace, .state = .pressed } });
+    ctx.processEvents();
+    try std.testing.expect(ctx.layout_dirty);
+
+    // Layout clears dirty flag
+    ctx.doLayout(null);
+    try std.testing.expect(!ctx.layout_dirty);
+}
+
+test "setDimensions dirties layout" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
+    defer ctx.deinit();
+
+    _ = try ctx.tree.addRoot(.{ .container = .{} });
+    ctx.doLayout(null);
+    try std.testing.expect(!ctx.layout_dirty);
+
+    ctx.setDimensions(1024, 768);
+    try std.testing.expect(ctx.layout_dirty);
+}
+
+test "adding nodes triggers layout" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    ctx.doLayout(null);
+    try std.testing.expect(!ctx.layout_dirty);
+
+    // Adding a node changes tree count — doLayout should detect and run
+    _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "new" } });
+    ctx.doLayout(null);
+    // After running, dirty is cleared and count is updated
+    try std.testing.expect(!ctx.layout_dirty);
+    try std.testing.expectEqual(@as(u32, 2), ctx.last_node_count);
 }
 
 test {
