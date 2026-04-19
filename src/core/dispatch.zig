@@ -40,6 +40,23 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
             if (mouse.drag_target) |dt| {
                 updateSliderValue(tree, dt, mouse.x, theme);
             }
+            // Text input drag selection
+            if (mouse.left_down) {
+                if (mouse.press_target) |pt| {
+                    if (tree.getConst(pt).kind == .text_input) {
+                        const node = tree.get(pt);
+                        const rect = node.layout_rect;
+                        const resolved = node.style_override.resolve(theme);
+                        const char_width = resolved.font_size * 0.6;
+                        const ti = &node.kind.text_input;
+                        const text_x = rect.x + resolved.padding.left;
+                        const rel_x = mm.x - text_x;
+                        const char_pos = if (char_width > 0) rel_x / char_width else 0;
+                        const rounded: u8 = @intFromFloat(std.math.clamp(@round(char_pos), 0, @as(f32, @floatFromInt(ti.len))));
+                        ti.cursor = rounded;
+                    }
+                }
+            }
             updateHover(tree, mouse);
         },
         .mouse_button => |mb| {
@@ -71,7 +88,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                             const char_pos = if (char_width > 0) rel_x / char_width else 0;
                             const rounded: u8 = @intFromFloat(std.math.clamp(@round(char_pos), 0, @as(f32, @floatFromInt(ti.len))));
                             ti.cursor = rounded;
-                            ti.clearSelection();
+                            ti.selection_anchor = rounded;
                         }
                         // Start slider drag
                         if (tree.getConst(t).kind == .slider) {
@@ -1381,4 +1398,143 @@ test "click clears existing selection" {
 
     const input = &tree.get(ti).kind.text_input;
     try std.testing.expect(!input.hasSelection());
+}
+
+test "mouse drag selects text" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Focus and type "hello"
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 20, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'h' } },
+        .{ .text = .{ .codepoint = 'e' } },
+        .{ .text = .{ .codepoint = 'l' } },
+        .{ .text = .{ .codepoint = 'l' } },
+        .{ .text = .{ .codepoint = 'o' } },
+    }, &mouse, style.Theme.default);
+
+    // Default theme: font_size=14, padding.left=6, char_width=8.4
+    // text_x = 10 + 6 = 16
+    // Click at x=16 -> char 0; drag to x=41 -> char 3 (round(25/8.4)=round(2.98)=3)
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 16, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    process(&tree, &.{
+        .{ .mouse_move = .{ .x = 41, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    const input = &tree.get(ti).kind.text_input;
+    try std.testing.expect(input.hasSelection());
+    const range = input.selectionRange();
+    try std.testing.expectEqual(@as(u8, 0), range.start);
+    try std.testing.expectEqual(@as(u8, 3), range.end);
+
+    // Release — selection persists
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 41, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expect(input.hasSelection());
+}
+
+test "mouse drag backward selects text" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Focus and type "hello"
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 20, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'h' } },
+        .{ .text = .{ .codepoint = 'e' } },
+        .{ .text = .{ .codepoint = 'l' } },
+        .{ .text = .{ .codepoint = 'l' } },
+        .{ .text = .{ .codepoint = 'o' } },
+    }, &mouse, style.Theme.default);
+
+    // text_x = 16, char_width = 8.4
+    // Click at x=41 -> char 3; drag back to x=16 -> char 0
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 41, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    process(&tree, &.{
+        .{ .mouse_move = .{ .x = 16, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    const input = &tree.get(ti).kind.text_input;
+    try std.testing.expect(input.hasSelection());
+    const range = input.selectionRange();
+    try std.testing.expectEqual(@as(u8, 0), range.start);
+    try std.testing.expectEqual(@as(u8, 3), range.end);
+}
+
+test "click after drag clears selection" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Focus and type "hello"
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 20, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = 'h' } },
+        .{ .text = .{ .codepoint = 'e' } },
+        .{ .text = .{ .codepoint = 'l' } },
+        .{ .text = .{ .codepoint = 'l' } },
+        .{ .text = .{ .codepoint = 'o' } },
+    }, &mouse, style.Theme.default);
+
+    // Drag to select
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 16, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    process(&tree, &.{
+        .{ .mouse_move = .{ .x = 41, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 41, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(tree.get(ti).kind.text_input.hasSelection());
+
+    // Click to clear
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 30, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 30, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(!tree.get(ti).kind.text_input.hasSelection());
 }

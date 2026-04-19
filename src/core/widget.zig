@@ -125,6 +125,7 @@ pub const WidgetKind = union(enum) {
             self.buffer[self.cursor] = byte;
             self.len += 1;
             self.cursor += 1;
+            self.clearSelection();
         }
 
         pub fn deleteBack(self: *TextInput) void {
