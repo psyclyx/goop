@@ -12,18 +12,10 @@ const DrawList = goop.DrawList;
 
 const MAX_GLYPHS = 4096;
 const VERTEX_BUF_LEN = MAX_GLYPHS * snail.FLOATS_PER_GLYPH;
+const MAX_VECTOR_PRIMITIVES = 2048;
+const VECTOR_BUF_LEN = MAX_VECTOR_PRIMITIVES * snail.VECTOR_FLOATS_PER_PRIMITIVE;
 
 pub const Renderer = struct {
-    // Rect shader state
-    program: gl.GLuint,
-    vao: gl.GLuint,
-    vbo: gl.GLuint,
-    u_rect: gl.GLint,
-    u_color: gl.GLint,
-    u_viewport: gl.GLint,
-    u_corner_radius: gl.GLint,
-    u_border_color: gl.GLint,
-    u_border_width: gl.GLint,
     viewport_w: f32,
     viewport_h: f32,
     scissor_stack: [16]Scissor = undefined,
@@ -33,120 +25,37 @@ pub const Renderer = struct {
     text_renderer: snail.Renderer,
     text_batch: snail.Batch,
     vertex_buf: []f32,
+    vector_batch: snail.VectorBatch,
+    vector_buf: []f32,
     font: *const snail.Font,
     atlas: *const snail.Atlas,
 
     const Scissor = struct { x: i32, y: i32, w: i32, h: i32 };
 
-    const vert_src =
-        \\#version 330 core
-        \\layout(location = 0) in vec2 a_pos;
-        \\uniform vec4 u_rect;
-        \\uniform vec2 u_viewport;
-        \\void main() {
-        \\    vec2 pixel = u_rect.xy + a_pos * u_rect.zw;
-        \\    vec2 ndc = (pixel / u_viewport) * 2.0 - 1.0;
-        \\    ndc.y = -ndc.y;
-        \\    gl_Position = vec4(ndc, 0.0, 1.0);
-        \\}
-    ;
-
-    const frag_src =
-        \\#version 330 core
-        \\uniform vec4 u_color;
-        \\uniform vec4 u_rect;
-        \\uniform vec2 u_viewport;
-        \\uniform float u_corner_radius;
-        \\uniform vec4 u_border_color;
-        \\uniform float u_border_width;
-        \\out vec4 frag_color;
-        \\void main() {
-        \\    vec2 pixel = gl_FragCoord.xy;
-        \\    pixel.y = u_viewport.y - pixel.y;
-        \\    vec2 half_size = u_rect.zw * 0.5;
-        \\    vec2 center = u_rect.xy + half_size;
-        \\    float r = min(u_corner_radius, min(half_size.x, half_size.y));
-        \\    vec2 d = abs(pixel - center) - half_size + r;
-        \\    float dist = length(max(d, 0.0)) - r;
-        \\    if (dist > 0.5) discard;
-        \\    float outer_alpha = 1.0 - smoothstep(-0.5, 0.5, dist);
-        \\    float inner_dist = dist + u_border_width;
-        \\    float inner_alpha = smoothstep(-0.5, 0.5, inner_dist);
-        \\    float border_mix = step(0.001, u_border_width) * inner_alpha;
-        \\    vec4 fill = vec4(u_color.rgb, u_color.a * outer_alpha);
-        \\    vec4 border = vec4(u_border_color.rgb, u_border_color.a * outer_alpha);
-        \\    frag_color = mix(fill, border, border_mix);
-        \\}
-    ;
-
     pub fn init(w: u32, h: u32, font: *const snail.Font, atlas: *const snail.Atlas) !Renderer {
-        const vs = compileShader(gl.GL_VERTEX_SHADER, vert_src);
-        const fs = compileShader(gl.GL_FRAGMENT_SHADER, frag_src);
-        const program = gl.glCreateProgram();
-        gl.glAttachShader(program, vs);
-        gl.glAttachShader(program, fs);
-        gl.glLinkProgram(program);
-        gl.glDeleteShader(vs);
-        gl.glDeleteShader(fs);
-
-        var success: gl.GLint = 0;
-        gl.glGetProgramiv(program, gl.GL_LINK_STATUS, &success);
-        if (success == 0) {
-            var buf: [512]u8 = undefined;
-            var len: gl.GLsizei = 0;
-            gl.glGetProgramInfoLog(program, 512, &len, &buf);
-            std.debug.print("shader link error: {s}\n", .{buf[0..@intCast(len)]});
-        }
-
-        // Unit quad: two triangles
-        const vertices = [_]f32{
-            0, 0, 1, 0, 1, 1,
-            0, 0, 1, 1, 0, 1,
-        };
-
-        var vao: gl.GLuint = 0;
-        var vbo: gl.GLuint = 0;
-        gl.glGenVertexArrays(1, &vao);
-        gl.glGenBuffers(1, &vbo);
-        gl.glBindVertexArray(vao);
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
-        gl.glBufferData(gl.GL_ARRAY_BUFFER, @sizeOf(@TypeOf(vertices)), &vertices, gl.GL_STATIC_DRAW);
-        gl.glVertexAttribPointer(0, 2, gl.GL_FLOAT, gl.GL_FALSE, 2 * @sizeOf(f32), null);
-        gl.glEnableVertexAttribArray(0);
-        gl.glBindVertexArray(0);
-
-        // Snail text renderer
         var text_renderer = try snail.Renderer.init();
         text_renderer.uploadAtlas(atlas);
 
         const vertex_buf = try std.heap.page_allocator.alloc(f32, VERTEX_BUF_LEN);
+        const vector_buf = try std.heap.page_allocator.alloc(f32, VECTOR_BUF_LEN);
 
         return .{
-            .program = program,
-            .vao = vao,
-            .vbo = vbo,
-            .u_rect = gl.glGetUniformLocation(program, "u_rect"),
-            .u_color = gl.glGetUniformLocation(program, "u_color"),
-            .u_viewport = gl.glGetUniformLocation(program, "u_viewport"),
-            .u_corner_radius = gl.glGetUniformLocation(program, "u_corner_radius"),
-            .u_border_color = gl.glGetUniformLocation(program, "u_border_color"),
-            .u_border_width = gl.glGetUniformLocation(program, "u_border_width"),
             .viewport_w = @floatFromInt(w),
             .viewport_h = @floatFromInt(h),
             .text_renderer = text_renderer,
             .text_batch = snail.Batch.init(vertex_buf),
             .vertex_buf = vertex_buf,
+            .vector_batch = snail.VectorBatch.init(vector_buf),
+            .vector_buf = vector_buf,
             .font = font,
             .atlas = atlas,
         };
     }
 
     pub fn deinit(self: *Renderer) void {
-        gl.glDeleteVertexArrays(1, &self.vao);
-        gl.glDeleteBuffers(1, &self.vbo);
-        gl.glDeleteProgram(self.program);
         self.text_renderer.deinit();
         std.heap.page_allocator.free(self.vertex_buf);
+        std.heap.page_allocator.free(self.vector_buf);
     }
 
     pub fn beginFrame(self: *Renderer, w: u32, h: u32) void {
@@ -167,26 +76,23 @@ pub const Renderer = struct {
             switch (cmd) {
                 .rect => |r| {
                     self.flushText();
-                    self.bindRectProgram();
-                    self.drawRect(r);
+                    self.addRect(r);
                 },
-                .text => |t| self.addText(t),
+                .text => |t| {
+                    self.flushVector();
+                    self.addText(t);
+                },
                 .clip => |c| {
+                    self.flushVector();
                     self.flushText();
-                    self.bindRectProgram();
                     self.applyClip(c);
                 },
             }
         }
+        self.flushVector();
         self.flushText();
 
         gl.glDisable(gl.GL_SCISSOR_TEST);
-    }
-
-    fn bindRectProgram(self: *Renderer) void {
-        gl.glUseProgram(self.program);
-        gl.glBindVertexArray(self.vao);
-        gl.glUniform2f(self.u_viewport, self.viewport_w, self.viewport_h);
     }
 
     fn addText(self: *Renderer, t: DrawCommand.DrawText) void {
@@ -210,15 +116,26 @@ pub const Renderer = struct {
         self.text_batch.reset();
     }
 
-    fn drawRect(self: *Renderer, r: DrawCommand.DrawRect) void {
-        const color = colorToVec4(r.color);
-        const border_color = colorToVec4(r.border_color);
-        gl.glUniform4f(self.u_rect, r.bounds.x, r.bounds.y, r.bounds.w, r.bounds.h);
-        gl.glUniform4f(self.u_color, color[0], color[1], color[2], color[3]);
-        gl.glUniform1f(self.u_corner_radius, r.corner_radius);
-        gl.glUniform4f(self.u_border_color, border_color[0], border_color[1], border_color[2], border_color[3]);
-        gl.glUniform1f(self.u_border_width, r.border_width);
-        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6);
+    fn addRect(self: *Renderer, r: DrawCommand.DrawRect) void {
+        const rect: snail.VectorRect = .{
+            .x = r.bounds.x,
+            .y = r.bounds.y,
+            .w = r.bounds.w,
+            .h = r.bounds.h,
+        };
+        const fill = colorToVec4(r.color);
+        const border = colorToVec4(r.border_color);
+        if (!self.vector_batch.addRoundedRect(rect, fill, border, r.border_width, r.corner_radius)) {
+            self.flushVector();
+            _ = self.vector_batch.addRoundedRect(rect, fill, border, r.border_width, r.corner_radius);
+        }
+    }
+
+    fn flushVector(self: *Renderer) void {
+        if (self.vector_batch.shapeCount() == 0) return;
+
+        self.text_renderer.drawVector(self.vector_batch.slice(), self.viewport_w, self.viewport_h);
+        self.vector_batch.reset();
     }
 
     fn applyClip(self: *Renderer, c_cmd: DrawCommand.ClipRect) void {
@@ -247,23 +164,6 @@ pub const Renderer = struct {
                 gl.glDisable(gl.GL_SCISSOR_TEST);
             }
         }
-    }
-
-    fn compileShader(shader_type: gl.GLenum, source: [*:0]const u8) gl.GLuint {
-        const shader = gl.glCreateShader(shader_type);
-        const sources = [_][*c]const u8{source};
-        gl.glShaderSource(shader, 1, &sources, null);
-        gl.glCompileShader(shader);
-
-        var success: gl.GLint = 0;
-        gl.glGetShaderiv(shader, gl.GL_COMPILE_STATUS, &success);
-        if (success == 0) {
-            var buf: [512]u8 = undefined;
-            var len: gl.GLsizei = 0;
-            gl.glGetShaderInfoLog(shader, 512, &len, &buf);
-            std.debug.print("shader compile error: {s}\n", .{buf[0..@intCast(len)]});
-        }
-        return shader;
     }
 
     fn colorToVec4(c: goop.Color) [4]f32 {
