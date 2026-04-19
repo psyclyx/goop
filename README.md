@@ -68,6 +68,7 @@ nix-shell
 zig build test          # unit tests
 zig build               # library + demo
 zig build demo          # build and run the Wayland demo
+zig build c-example     # build and run the headless C API example
 zig build install       # install libgoop, goop-demo, and goop.h to zig-out/
 ```
 
@@ -162,6 +163,8 @@ The installed header covers:
 - optional clipboard and text-measure callbacks
 
 See [include/goop.h](include/goop.h) for the full interface.
+For a complete headless example, see [examples/c/basic.c](examples/c/basic.c)
+and run it with `zig build c-example`.
 
 ## Using as a Zig dependency
 

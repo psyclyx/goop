@@ -1,6 +1,10 @@
 const goop = @import("goop.zig");
 const c_api = @import("c_api.zig");
 
+comptime {
+    _ = c_api;
+}
+
 pub const widget = goop.widget;
 pub const event = goop.event;
 pub const style = goop.style;

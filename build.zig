@@ -33,6 +33,29 @@ pub fn build(b: *std.Build) void {
     const build_lib = b.step("build-lib", "Build the static library");
     build_lib.dependOn(&b.addInstallArtifact(lib, .{}).step);
 
+    // ── C API example ──
+    const c_example = b.addExecutable(.{
+        .name = "goop-c-example",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    c_example.root_module.addCSourceFile(.{
+        .file = b.path("examples/c/basic.c"),
+        .flags = &.{"-std=c11"},
+    });
+    c_example.root_module.addIncludePath(b.path("include"));
+    c_example.root_module.linkLibrary(lib);
+
+    const build_c_example = b.step("build-c-example", "Build the headless C API example");
+    build_c_example.dependOn(&c_example.step);
+
+    const run_c_example = b.addRunArtifact(c_example);
+    const c_example_step = b.step("c-example", "Build and run the headless C API example");
+    c_example_step.dependOn(&run_c_example.step);
+
     // ── Demo executable ──
     const demo_mod = b.createModule(.{
         .root_source_file = b.path("demo/main.zig"),
@@ -84,4 +107,5 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&run_c_example.step);
 }

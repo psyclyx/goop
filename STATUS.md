@@ -36,12 +36,13 @@ fallback locations.
 - Secondary-click reporting plus caller-managed context menu positioning
 - Demo font loading no longer shells out through `fc-match`
 - Installable C API header plus retained-tree/event/draw wrappers for C
+- Headless C API example built and exercised from `zig build test`
 - Real Wayland clipboard selection in the demo via `wl_data_device_manager`
 
 ## Next Priorities
 
 1. Demo/runtime portability polish around the new C surface
-2. Header/examples coverage for the C API
+2. Broader C API docs/reference coverage
 3. Richer text input behavior beyond codepoint-level editing
 
 ## Known Issues
