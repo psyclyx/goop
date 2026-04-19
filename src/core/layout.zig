@@ -316,7 +316,10 @@ fn emitContainer(
             },
             .padding = clayPadding(resolved.padding),
             .childGap = @intFromFloat(theme.spacing),
-            .childAlignment = .{},
+            .childAlignment = switch (cont.direction) {
+                .row => .{ .y = c.CLAY_ALIGN_Y_CENTER },
+                .column => .{},
+            },
             .layoutDirection = switch (cont.direction) {
                 .row => c.CLAY_LEFT_TO_RIGHT,
                 .column => c.CLAY_TOP_TO_BOTTOM,
@@ -1987,4 +1990,42 @@ test "splitter layout assigns both panes" {
     try std.testing.expect(left_rect.w > 0 and left_rect.h > 0);
     try std.testing.expect(right_rect.w > 0 and right_rect.h > 0);
     try std.testing.expect(left_rect.x < right_rect.x);
+}
+
+test "row containers center children vertically" {
+    const allocator = std.testing.allocator;
+    const min_memory = c.Clay_MinMemorySize();
+    const arena = try allocator.alloc(u8, min_memory);
+    defer allocator.free(arena);
+
+    const clay_arena = c.Clay_Arena{
+        .capacity = min_memory,
+        .memory = arena.ptr,
+    };
+    _ = c.Clay_Initialize(clay_arena, .{
+        .width = 320,
+        .height = 120,
+    }, .{});
+    defer c.Clay_SetCurrentContext(null);
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const row = try tree.addChild(root, .{ .container = .{ .direction = .row } });
+    const label = try tree.addChild(row, .{ .text = .{ .content = "Exposure" } });
+    const value = try tree.addChild(row, .{ .drag_value = .{
+        .value = 1.25,
+        .precision = 2,
+    } });
+
+    run(&tree, style_mod.Theme.default, null);
+
+    const label_rect = tree.getConst(label).layout_rect;
+    const value_rect = tree.getConst(value).layout_rect;
+    const label_center_y = label_rect.y + label_rect.h * 0.5;
+    const value_center_y = value_rect.y + value_rect.h * 0.5;
+
+    try std.testing.expect(value_rect.h > label_rect.h);
+    try std.testing.expectApproxEqAbs(value_center_y, label_center_y, 0.01);
 }
