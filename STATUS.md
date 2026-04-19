@@ -2,29 +2,27 @@
 
 ## Current
 
-Iteration 47.
+Iteration 48.
 72 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-47
+48
 
 ## Done This Iteration
 
-- Fixed demo frame callback ordering: register `wl_surface_frame` BEFORE `eglSwapBuffers` so the compositor fires callbacks
-- Without this fix, only 1 frame ever rendered — all events accumulated but were never processed
-- Changed `frameDone` to not force `needs_redraw` — demo now renders event-driven instead of continuously
+- Enabled 4x MSAA antialiasing: EGL_SAMPLE_BUFFERS + EGL_SAMPLES in EGL config, glEnable(GL_MULTISAMPLE) in renderer
+- Works alongside existing SDF smoothstep edge softening in fragment shader
+- Addresses inbox "jagged af" report
 
 ## Next
 
-1. Antialiased rendering (inbox: "jagged af")
-2. Real text measurement instead of approximate char_width
-3. Widget tree mutation/removal API
-4. Draw list caching (skip draw generation when only layout skipped and no interaction changed)
+1. Real text measurement instead of approximate char_width
+2. Widget tree mutation/removal API
+3. Draw list caching (skip draw generation when only layout skipped and no interaction changed)
 
 ## What's Wrong
 
-- Rendering is jagged — no antialiasing (inbox note)
 - Approximate char_width (font_size * 0.6) — wrong for proportional fonts, needs real text measurement
 - Widget tree is append-only — no removal/mutation API
 - No draw list caching — draw list regenerated every frame even when output unchanged
@@ -35,3 +33,4 @@ Iteration 47.
 - Text input only handles printable ASCII — no UTF-8 multi-byte support
 - Clipboard demo doesn't wire up real Wayland clipboard (wl_data_device) yet
 - Double-click detection requires embedder to provide timestamp_ms (defaults to 0 = disabled)
+- MSAA sample count is hardcoded to 4 — no fallback if GPU doesn't support it
