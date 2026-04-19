@@ -2,26 +2,25 @@
 
 ## Current
 
-Iteration 54. Draw list caching.
+Iteration 55. Chore cycle (archive, review, prune).
 80 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-54
+55
 
 ## Done This Iteration
 
-- Added `draw_dirty` flag and `cached_draw_list` to Context
-- `generateDrawList()` returns cached list when no events, layout, or tree changes occurred
-- Context owns draw list memory — `freeDrawList()` is now a no-op (API preserved)
-- Cache invalidated on: layout run, event processing, widget removal
-- 2 new tests: caching returns same list, regeneration after events
+- Archived iterations 50–54 to docs/archive/
+- Reviewed last 5 commits: removal API, draw caching, pixel snapping, xkbcommon
+- Updated DESIGN.md: resolved widget removal and draw caching deferrals, added iteration 55 chore review with current codebase snapshot
+- Pruned DESIGN.md milestone 2 checklist (2 of 4 items struck through as done)
 
 ## Next
 
-1. Toolbar/menu bar widget
-2. HiDPI/scale factor support (viewport assumes 1:1 logical:physical)
-3. C API bindings (c_api.zig not yet created)
+1. Toolbar/menu bar widget (last target widget, milestone 2 item #3)
+2. Embedder-provided font path (milestone 2 item #4, removes popen("fc-match"))
+3. C API bindings (c_api.zig)
 
 ## What's Wrong
 
@@ -30,6 +29,7 @@ Iteration 54. Draw list caching.
 - Text input only handles printable ASCII — no UTF-8 multi-byte support
 - Clipboard demo doesn't wire up real Wayland clipboard (wl_data_device)
 - No toolbar/menu widget — last item from target widget set
-- No HiDPI scaling — demo treats Wayland surface dimensions as 1:1 with physical pixels
+- No HiDPI scaling — demo treats surface dimensions as 1:1 with physical pixels
 - No C API yet
-- `freeDrawList` is a no-op — technically a semver break if anyone relied on manual lifetime
+- `freeDrawList` is a no-op — semver break if anyone relied on manual lifetime
+- widget.zig grew 54% (348→536) from removal logic — watch for further growth

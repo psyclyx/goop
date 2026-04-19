@@ -229,7 +229,59 @@ coordinate bug fixed.
 **Milestone 2: Dynamic UI.** Ship the ability to add and remove widgets at
 runtime. This unblocks conditional UI, dynamic lists, and real applications.
 Concrete deliverables:
-1. Widget removal API (generational handles or free-list)
-2. Draw list caching (draw-dirty flag, skip when unchanged)
+1. ~~Widget removal API (generational handles or free-list)~~ — done (iter 53)
+2. ~~Draw list caching (draw-dirty flag, skip when unchanged)~~ — done (iter 54)
 3. Toolbar/menu bar widget (last target widget)
 4. Embedder-provided font path (remove popen("fc-match"))
+
+## Chore Review — Iteration 55
+
+### Codebase snapshot
+
+5647 LOC total. 80 tests pass. 8 widget types.
+
+| File | Lines | Role |
+|------|-------|------|
+| dispatch_text_input_test.zig | 1324 | Text input tests |
+| dispatch.zig | 820 | Event processing, hit testing, focus |
+| draw.zig | 729 | Draw command generation |
+| demo/main.zig | 728 | Wayland demo |
+| widget.zig | 536 | Widget tree data (+188, removal/generational handles) |
+| layout.zig | 490 | Clay integration |
+| goop.zig | 447 | Public API (+82, caching/removal API) |
+| demo/render.zig | 277 | GL33 renderer |
+| style.zig | 101 | Theme/style |
+| focus.zig | 77 | Focus navigation |
+| event.zig | 76 | Event types |
+| hittest.zig | 42 | Hit testing |
+
+### Review of iterations 50–54
+
+Two major architectural pieces landed: generational handles with widget removal
+(iter 53) and draw list caching (iter 54). Both were identified as the top
+priorities in the iteration 50 design review. Text rendering quality improved
+(pixel snapping, iter 52) and demo keyboard input is now proper via xkbcommon
+(iter 51).
+
+### Resolved since iteration 50
+
+- **Widget tree mutation/removal.** Deferred since iteration 10. Generational
+  handles (NodeHandle = {index, generation}), free-list slot reuse, recursive
+  subtree removal. 6 new tests. Done in iteration 53.
+- **Draw list caching.** Identified in iteration 50 design review. draw_dirty
+  flag, cached DrawList, invalidation on events/layout/tree changes. 2 new
+  tests. Done in iteration 54.
+
+### Observations (act when 3x or blocking)
+
+- **Font loading uses popen("fc-match").** Fragile, Linux-only. Needs
+  embedder-provided font path or embedded default font.
+- **MSAA hardcoded to 4x.** No capability query or fallback.
+- **No toolbar/menu widget.** Last target widget type not started.
+- **widget.zig grew significantly (348→536).** Generational handle + removal
+  logic is substantial. Still manageable but watch for further growth.
+
+### Deferred (still waiting)
+
+- **Interaction result separation.** Still .clicked on widget data. Not yet
+  blocking.
