@@ -1,6 +1,7 @@
 const std = @import("std");
 const style = @import("style.zig");
 const widget = @import("widget.zig");
+const layout = @import("layout.zig");
 
 /// Axis-aligned rectangle.
 pub const Rect = struct {
@@ -43,13 +44,13 @@ pub const DrawList = struct {
 };
 
 /// Generate draw commands from a laid-out widget tree.
-pub fn generate(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator) !DrawList {
+pub fn generate(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !DrawList {
     var commands: std.ArrayListUnmanaged(DrawCommand) = .empty;
     errdefer commands.deinit(allocator);
 
     for (tree.nodes.items, 0..) |node, i| {
         if (node.parent == null) {
-            try emitNode(tree, @enumFromInt(@as(u32, @intCast(i))), theme, &commands, allocator);
+            try emitNode(tree, @enumFromInt(@as(u32, @intCast(i))), theme, &commands, allocator, text_ctx);
         }
     }
 
@@ -68,19 +69,20 @@ fn emitNode(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) std.mem.Allocator.Error!void {
     const node = tree.getConst(handle);
     const resolved = node.style_override.resolve(theme);
 
     switch (node.kind) {
-        .container => try emitContainer(tree, handle, node, resolved, theme, commands, allocator),
+        .container => try emitContainer(tree, handle, node, resolved, theme, commands, allocator, text_ctx),
         .text => |txt| try emitText(node, txt, resolved, commands, allocator),
-        .button => |btn| try emitButton(tree, handle, node, btn, resolved, theme, commands, allocator),
+        .button => |btn| try emitButton(tree, handle, node, btn, resolved, theme, commands, allocator, text_ctx),
         .checkbox => |cb| try emitCheckbox(node, cb, resolved, theme, commands, allocator),
         .radio_button => |rb| try emitRadioButton(node, rb, resolved, theme, commands, allocator),
         .slider => |sl| try emitSlider(node, sl, resolved, theme, commands, allocator),
-        .text_input => try emitTextInput(node, resolved, theme, commands, allocator),
-        .scroll_area => try emitScrollArea(tree, handle, node, resolved, theme, commands, allocator),
+        .text_input => try emitTextInput(node, resolved, theme, commands, allocator, text_ctx),
+        .scroll_area => try emitScrollArea(tree, handle, node, resolved, theme, commands, allocator, text_ctx),
     }
 }
 
@@ -92,6 +94,7 @@ fn emitContainer(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     // Background rect
     try commands.append(allocator, .{ .rect = .{
@@ -102,7 +105,7 @@ fn emitContainer(
         .corner_radius = resolved.border_radius,
     } });
 
-    try emitChildren(tree, handle, theme, commands, allocator);
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx);
 }
 
 fn emitText(
@@ -130,6 +133,7 @@ fn emitButton(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     // Background rect
     try commands.append(allocator, .{ .rect = .{
@@ -150,7 +154,7 @@ fn emitButton(
     } });
 
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
-    try emitChildren(tree, handle, theme, commands, allocator);
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx);
 }
 
 fn emitCheckbox(
@@ -305,6 +309,7 @@ fn emitTextInput(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const ti = &node.kind.text_input;
     const rect = node.layout_rect;
@@ -340,16 +345,15 @@ fn emitTextInput(
 
     // Selection highlight and cursor (when focused)
     if (node.interaction.focused) {
-        const char_width = resolved.font_size * 0.6;
         const text_y = rect.y + resolved.padding.top;
 
         // Selection highlight
         if (ti.hasSelection()) {
             const range = ti.selectionRange();
-            const sel_x = rect.x + resolved.padding.left + @as(f32, @floatFromInt(range.start)) * char_width;
-            const sel_w = @as(f32, @floatFromInt(range.end - range.start)) * char_width;
+            const sel_start_x = rect.x + resolved.padding.left + layout.textWidthUpTo(content, range.start, resolved.font_size, text_ctx);
+            const sel_end_x = rect.x + resolved.padding.left + layout.textWidthUpTo(content, range.end, resolved.font_size, text_ctx);
             try commands.append(allocator, .{ .rect = .{
-                .bounds = .{ .x = sel_x, .y = text_y, .w = sel_w, .h = resolved.font_size },
+                .bounds = .{ .x = sel_start_x, .y = text_y, .w = sel_end_x - sel_start_x, .h = resolved.font_size },
                 .color = theme.selection_bg,
                 .border_color = theme.selection_bg,
                 .border_width = 0,
@@ -358,7 +362,7 @@ fn emitTextInput(
         }
 
         // Cursor
-        const cursor_x = rect.x + resolved.padding.left + @as(f32, @floatFromInt(ti.cursor)) * char_width;
+        const cursor_x = rect.x + resolved.padding.left + layout.textWidthUpTo(content, ti.cursor, resolved.font_size, text_ctx);
         try commands.append(allocator, .{ .rect = .{
             .bounds = .{ .x = cursor_x, .y = text_y, .w = 1, .h = resolved.font_size },
             .color = resolved.fg,
@@ -379,6 +383,7 @@ fn emitScrollArea(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     // Background
     try commands.append(allocator, .{ .rect = .{
@@ -392,7 +397,7 @@ fn emitScrollArea(
     // Push clip
     try commands.append(allocator, .{ .clip = .{ .bounds = node.layout_rect } });
 
-    try emitChildren(tree, handle, theme, commands, allocator);
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx);
 
     // Pop clip
     try commands.append(allocator, .{ .clip = .{ .bounds = null } });
@@ -440,10 +445,11 @@ fn emitChildren(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     var iter = tree.children(parent);
     while (iter.next()) |child| {
-        try emitNode(tree, child, theme, commands, allocator);
+        try emitNode(tree, child, theme, commands, allocator, text_ctx);
     }
 }
 
@@ -461,7 +467,7 @@ test "generate draw commands from tree" {
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator);
+    var dl = try generate(&tree, theme, allocator, null);
     defer freeDrawList(&dl, allocator);
 
     // Container bg + button bg + button text + text label = 4 commands
@@ -482,7 +488,7 @@ test "checkbox emits box and label" {
     tree.get(cb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator);
+    var dl = try generate(&tree, theme, allocator, null);
     defer freeDrawList(&dl, allocator);
 
     // Unchecked: box rect + label text = 2 commands
@@ -501,7 +507,7 @@ test "checked checkbox emits indicator" {
     tree.get(cb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator);
+    var dl = try generate(&tree, theme, allocator, null);
     defer freeDrawList(&dl, allocator);
 
     // Checked: box rect + indicator rect + label text = 3 commands
@@ -521,7 +527,7 @@ test "radio button emits circle and label" {
     tree.get(rb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator);
+    var dl = try generate(&tree, theme, allocator, null);
     defer freeDrawList(&dl, allocator);
 
     // Unselected: circle rect + label text = 2 commands
@@ -544,7 +550,7 @@ test "selected radio button emits indicator dot" {
     tree.get(rb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator);
+    var dl = try generate(&tree, theme, allocator, null);
     defer freeDrawList(&dl, allocator);
 
     // Selected: circle rect + indicator dot + label text = 3 commands
@@ -564,7 +570,7 @@ test "slider emits track and thumb" {
     tree.get(sl).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 24 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator);
+    var dl = try generate(&tree, theme, allocator, null);
     defer freeDrawList(&dl, allocator);
 
     // Track + thumb = 2 rects
@@ -589,7 +595,7 @@ test "scroll area emits clip commands" {
     tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 200 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator);
+    var dl = try generate(&tree, theme, allocator, null);
     defer freeDrawList(&dl, allocator);
 
     // bg rect + clip push + text + clip pop = 4
@@ -612,7 +618,7 @@ test "text input emits bg and text" {
     tree.get(ti).layout_rect = .{ .x = 10, .y = 20, .w = 300, .h = 30 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator);
+    var dl = try generate(&tree, theme, allocator, null);
     defer freeDrawList(&dl, allocator);
 
     // Unfocused, empty, no placeholder: bg rect only = 1 command
@@ -631,7 +637,7 @@ test "focused text input emits cursor" {
     tree.get(ti).interaction.focused = true;
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator);
+    var dl = try generate(&tree, theme, allocator, null);
     defer freeDrawList(&dl, allocator);
 
     // Focused, empty, no placeholder: bg rect + cursor rect + focus ring = 3 commands
@@ -651,7 +657,7 @@ test "empty text input shows placeholder" {
     tree.get(ti).layout_rect = .{ .x = 10, .y = 20, .w = 300, .h = 30 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator);
+    var dl = try generate(&tree, theme, allocator, null);
     defer freeDrawList(&dl, allocator);
 
     // Empty with placeholder: bg rect + placeholder text = 2 commands
@@ -674,7 +680,7 @@ test "text input with content shows content not placeholder" {
     tree.get(ti).kind.text_input.insert('i');
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator);
+    var dl = try generate(&tree, theme, allocator, null);
     defer freeDrawList(&dl, allocator);
 
     // Has content: bg rect + content text = 2 commands
@@ -706,7 +712,7 @@ test "focused text input with selection emits highlight rect" {
     input.selection_anchor = 1;
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator);
+    var dl = try generate(&tree, theme, allocator, null);
     defer freeDrawList(&dl, allocator);
 
     // bg rect + text + selection highlight + cursor + focus ring = 5 commands

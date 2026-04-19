@@ -33,6 +33,7 @@ pub const Context = struct {
     events: std.ArrayListUnmanaged(Event),
     mouse: dispatch.MouseState = .{},
     clipboard: ?Clipboard = null,
+    text_measure_ctx: ?*const TextMeasureCtx = null,
     layout_dirty: bool = true,
     last_node_count: u32 = 0,
 
@@ -81,7 +82,7 @@ pub const Context = struct {
                 else => {},
             }
         }
-        dispatch.processWithClipboard(&self.tree, self.events.items, &self.mouse, self.theme, self.clipboard);
+        dispatch.processWithClipboard(&self.tree, self.events.items, &self.mouse, self.theme, self.clipboard, self.text_measure_ctx);
         self.events.clearRetainingCapacity();
     }
 
@@ -140,6 +141,7 @@ pub const Context = struct {
     /// Pass a TextMeasureCtx for accurate snail-based text measurement,
     /// or null to use a rough character-width approximation.
     pub fn doLayout(self: *Context, text_ctx: ?*const TextMeasureCtx) void {
+        self.text_measure_ctx = text_ctx;
         const current_count = self.tree.count();
         if (!self.layout_dirty and current_count == self.last_node_count) return;
         layout.run(&self.tree, self.theme, text_ctx);
@@ -150,7 +152,7 @@ pub const Context = struct {
     /// Generate draw commands from the laid-out widget tree.
     /// Caller must call freeDrawList when done.
     pub fn generateDrawList(self: *Context) !DrawList {
-        return draw.generate(&self.tree, self.theme, self.allocator);
+        return draw.generate(&self.tree, self.theme, self.allocator, self.text_measure_ctx);
     }
 
     /// Free a DrawList returned by generateDrawList.

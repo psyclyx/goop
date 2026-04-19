@@ -3,6 +3,7 @@ const widget = @import("widget.zig");
 const event = @import("event.zig");
 const focus = @import("focus.zig");
 const hittest = @import("hittest.zig");
+const layout = @import("layout.zig");
 
 /// Transient input state tracked across events.
 pub const MouseState = struct {
@@ -51,16 +52,16 @@ pub const Clipboard = struct {
 const style = @import("style.zig");
 
 pub fn process(tree: *widget.Tree, events: []const event.Event, mouse: *MouseState, theme: style.Theme) void {
-    processWithClipboard(tree, events, mouse, theme, null);
+    processWithClipboard(tree, events, mouse, theme, null, null);
 }
 
-pub fn processWithClipboard(tree: *widget.Tree, events: []const event.Event, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard) void {
+pub fn processWithClipboard(tree: *widget.Tree, events: []const event.Event, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard, text_ctx: ?*const layout.TextMeasureCtx) void {
     for (events) |ev| {
-        processOne(tree, ev, mouse, theme, clipboard);
+        processOne(tree, ev, mouse, theme, clipboard, text_ctx);
     }
 }
 
-fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard) void {
+fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard, text_ctx: ?*const layout.TextMeasureCtx) void {
     switch (ev) {
         .mouse_move => |mm| {
             mouse.x = mm.x;
@@ -75,13 +76,10 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                         const node = tree.get(pt);
                         const rect = node.layout_rect;
                         const resolved = node.style_override.resolve(theme);
-                        const char_width = resolved.font_size * 0.6;
                         const ti = &node.kind.text_input;
                         const text_x = rect.x + resolved.padding.left;
                         const rel_x = mm.x - text_x;
-                        const char_pos = if (char_width > 0) rel_x / char_width else 0;
-                        const rounded: u8 = @intFromFloat(std.math.clamp(@round(char_pos), 0, @as(f32, @floatFromInt(ti.len))));
-                        ti.cursor = rounded;
+                        ti.cursor = layout.charIndexAtX(ti.content(), ti.len, rel_x, resolved.font_size, text_ctx);
                     }
                 }
             }
@@ -109,12 +107,10 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                             const node = tree.get(t);
                             const rect = node.layout_rect;
                             const resolved = node.style_override.resolve(theme);
-                            const char_width = resolved.font_size * 0.6;
                             const ti = &node.kind.text_input;
                             const text_x = rect.x + resolved.padding.left;
                             const rel_x = mouse.x - text_x;
-                            const char_pos = if (char_width > 0) rel_x / char_width else 0;
-                            const rounded: u8 = @intFromFloat(std.math.clamp(@round(char_pos), 0, @as(f32, @floatFromInt(ti.len))));
+                            const rounded = layout.charIndexAtX(ti.content(), ti.len, rel_x, resolved.font_size, text_ctx);
 
                             // Double-click: select word under cursor
                             if (isDoubleClick(mouse, mb)) {

@@ -430,6 +430,40 @@ fn fixedSizing(px: f32) c.Clay_SizingAxis {
     };
 }
 
+/// Measure the pixel width of text[0..pos].
+/// Uses the provided text measurement context if available, otherwise
+/// falls back to the rough font_size * 0.6 approximation.
+pub fn textWidthUpTo(text: []const u8, pos: usize, font_size: f32, text_ctx: ?*const TextMeasureCtx) f32 {
+    const end = @min(pos, text.len);
+    if (end == 0) return 0;
+    if (text_ctx) |ctx| {
+        return ctx.measureFn(text[0..end], font_size, ctx.user_data).width;
+    }
+    return @as(f32, @floatFromInt(end)) * font_size * 0.6;
+}
+
+/// Find the character index in text closest to a given pixel x offset.
+/// Iterates through character positions measuring prefixes.
+pub fn charIndexAtX(text: []const u8, len: u8, rel_x: f32, font_size: f32, text_ctx: ?*const TextMeasureCtx) u8 {
+    if (len == 0 or rel_x <= 0) return 0;
+
+    if (text_ctx) |ctx| {
+        var prev_w: f32 = 0;
+        for (0..len) |i| {
+            const w = ctx.measureFn(text[0 .. i + 1], font_size, ctx.user_data).width;
+            const mid = (prev_w + w) / 2;
+            if (rel_x < mid) return @intCast(i);
+            prev_w = w;
+        }
+        return len;
+    }
+
+    // Fallback: uniform character width
+    const char_width = font_size * 0.6;
+    const char_pos = if (char_width > 0) rel_x / char_width else 0;
+    return @intFromFloat(std.math.clamp(@round(char_pos), 0, @as(f32, @floatFromInt(len))));
+}
+
 fn measureText(
     text: c.Clay_StringSlice,
     config: [*c]c.Clay_TextElementConfig,

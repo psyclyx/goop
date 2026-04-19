@@ -1143,12 +1143,12 @@ test "ctrl+c copies selected text to clipboard" {
     processWithClipboard(&s.tree, &.{
         .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
         .{ .key = .{ .scancode = 30, .keycode = .a, .state = .pressed } },
-    }, &mouse, style.Theme.default, cb.clipboard());
+    }, &mouse, style.Theme.default, cb.clipboard(), null);
 
     // Ctrl+C
     processWithClipboard(&s.tree, &.{
         .{ .key = .{ .scancode = 46, .keycode = .c, .state = .pressed } },
-    }, &mouse, style.Theme.default, cb.clipboard());
+    }, &mouse, style.Theme.default, cb.clipboard(), null);
 
     try std.testing.expectEqualStrings("hello", cb.buf[0..cb.len]);
     // Text should still be there (copy, not cut)
@@ -1169,12 +1169,12 @@ test "ctrl+x cuts selected text to clipboard" {
     processWithClipboard(&s.tree, &.{
         .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
         .{ .key = .{ .scancode = 30, .keycode = .a, .state = .pressed } },
-    }, &mouse, style.Theme.default, cb.clipboard());
+    }, &mouse, style.Theme.default, cb.clipboard(), null);
 
     // Ctrl+X
     processWithClipboard(&s.tree, &.{
         .{ .key = .{ .scancode = 45, .keycode = .x, .state = .pressed } },
-    }, &mouse, style.Theme.default, cb.clipboard());
+    }, &mouse, style.Theme.default, cb.clipboard(), null);
 
     try std.testing.expectEqualStrings("hello", cb.buf[0..cb.len]);
     // Text should be deleted
@@ -1196,7 +1196,7 @@ test "ctrl+v pastes text from clipboard" {
     processWithClipboard(&s.tree, &.{
         .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
         .{ .key = .{ .scancode = 47, .keycode = .v, .state = .pressed } },
-    }, &mouse, style.Theme.default, cb.clipboard());
+    }, &mouse, style.Theme.default, cb.clipboard(), null);
 
     try std.testing.expectEqualStrings("hello world", s.tree.get(s.ti).kind.text_input.content());
 }
@@ -1216,11 +1216,11 @@ test "ctrl+v replaces selection" {
     processWithClipboard(&s.tree, &.{
         .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
         .{ .key = .{ .scancode = 30, .keycode = .a, .state = .pressed } },
-    }, &mouse, style.Theme.default, cb.clipboard());
+    }, &mouse, style.Theme.default, cb.clipboard(), null);
 
     processWithClipboard(&s.tree, &.{
         .{ .key = .{ .scancode = 47, .keycode = .v, .state = .pressed } },
-    }, &mouse, style.Theme.default, cb.clipboard());
+    }, &mouse, style.Theme.default, cb.clipboard(), null);
 
     try std.testing.expectEqualStrings("goodbye", s.tree.get(s.ti).kind.text_input.content());
 }
@@ -1239,7 +1239,7 @@ test "ctrl+c without selection is no-op" {
     processWithClipboard(&s.tree, &.{
         .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
         .{ .key = .{ .scancode = 46, .keycode = .c, .state = .pressed } },
-    }, &mouse, style.Theme.default, cb.clipboard());
+    }, &mouse, style.Theme.default, cb.clipboard(), null);
 
     try std.testing.expectEqual(@as(usize, 0), cb.len);
 }
@@ -1258,7 +1258,7 @@ test "ctrl+v with empty clipboard is no-op" {
     processWithClipboard(&s.tree, &.{
         .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
         .{ .key = .{ .scancode = 47, .keycode = .v, .state = .pressed } },
-    }, &mouse, style.Theme.default, cb.clipboard());
+    }, &mouse, style.Theme.default, cb.clipboard(), null);
 
     try std.testing.expectEqualStrings("hello", s.tree.get(s.ti).kind.text_input.content());
 }
@@ -1300,14 +1300,14 @@ test "cut-paste round trip" {
         .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
         .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
         .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
-    }, &mouse, style.Theme.default, cb.clipboard());
+    }, &mouse, style.Theme.default, cb.clipboard(), null);
 
     // Cut
     processWithClipboard(&s.tree, &.{
         .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } },
         .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
         .{ .key = .{ .scancode = 45, .keycode = .x, .state = .pressed } },
-    }, &mouse, style.Theme.default, cb.clipboard());
+    }, &mouse, style.Theme.default, cb.clipboard(), null);
 
     try std.testing.expectEqualStrings("cd", cb.buf[0..cb.len]);
     try std.testing.expectEqualStrings("abef", s.tree.get(s.ti).kind.text_input.content());
@@ -1318,7 +1318,7 @@ test "cut-paste round trip" {
         .{ .key = .{ .scancode = 107, .keycode = .end, .state = .pressed } },
         .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
         .{ .key = .{ .scancode = 47, .keycode = .v, .state = .pressed } },
-    }, &mouse, style.Theme.default, cb.clipboard());
+    }, &mouse, style.Theme.default, cb.clipboard(), null);
 
     try std.testing.expectEqualStrings("abefcd", s.tree.get(s.ti).kind.text_input.content());
 }
