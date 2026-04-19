@@ -171,9 +171,3 @@ Near-term work is focused on:
 2. Improving text editing beyond the current ASCII-only path
 3. Hardening the new C-facing surface and examples
 4. Expanding embedder-level samples and validation
-
-## History
-
-The old iteration-based development loop is no longer the active workflow.
-Historical design reviews are preserved in `DESIGN_HISTORY.md`, and iteration
-summaries are preserved in `docs/archive/`.

@@ -217,4 +217,3 @@ nix-shell --run 'zig build demo'
 
 - [STATUS.md](STATUS.md): current snapshot, priorities, known issues
 - [docs/DESIGN.md](docs/DESIGN.md): architecture and constraints
-- `docs/archive/`: historical iteration summaries from the older workflow

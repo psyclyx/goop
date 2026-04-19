@@ -6,3 +6,5 @@ zig-pkg/
 result
 prompt.md
 .codex
+DESIGN_HISTORY.md
+docs/archive/

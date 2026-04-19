@@ -49,8 +49,3 @@ fallback locations.
 - No HiDPI scaling; the demo treats surface size as physical pixels
 - `freeDrawList` is a no-op for compatibility; `Context` owns draw-list memory
 - `widget.zig` grew significantly with removal logic and should be watched
-
-## Historical Notes
-
-The previous iteration-by-iteration workflow has been retired. Historical
-records from that loop live in `docs/archive/`.
