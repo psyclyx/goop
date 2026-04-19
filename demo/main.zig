@@ -570,6 +570,11 @@ fn buildWidgetTree(state: *State) !void {
         .editable = true,
         .rename_trigger = .selected_click,
     } });
+    const outline_tooltip = try ctx.tree.addChild(state.tree_parent.?, .{ .tooltip = .{
+        .placement = .below_start,
+        .y = 4,
+    } });
+    _ = try ctx.tree.addChild(outline_tooltip, .{ .text = .{ .content = "Click again while selected to rename." } });
 
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "List Box" } });
     state.list_box = try ctx.tree.addChild(root, .{ .list_box = .{} });
@@ -636,7 +641,6 @@ fn buildWidgetTree(state: *State) !void {
         .speed = 0.02,
         .precision = 2,
     } });
-
     const samples_row = try ctx.tree.addChild(root, .{ .container = .{ .direction = .row } });
     _ = try ctx.tree.addChild(samples_row, .{ .text = .{ .content = "Samples" } });
     state.spinbox = try ctx.tree.addChild(samples_row, .{ .spinbox = .{

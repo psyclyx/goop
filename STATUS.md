@@ -21,6 +21,7 @@ Current baseline: `zig build test` is clean. Use `nix-shell` before
 - Menu bars, menus, submenu popups, and splitters
 - List boxes and selectable rows for denser editor selections
 - Structural tables with aligned columns, header rows, and striping
+- Hover/focus-driven tooltips built on the floating layout path
 - Secondary-click reporting plus caller-managed context menu positioning
 
 ## Next Priorities

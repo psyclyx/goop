@@ -727,6 +727,35 @@ test "table layout keeps columns aligned across rows" {
     try std.testing.expectApproxEqAbs(header_type_rect.w, header_vis_rect.w, 0.01);
 }
 
+test "tooltip layout updates in the same frame as hover" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const owner = try ctx.tree.addChild(root, .{ .tree_item = .{ .label = "Hover me", .group = 1 } });
+    const tooltip = try ctx.tree.addChild(owner, .{ .tooltip = .{ .placement = .below_start, .y = 4 } });
+    _ = try ctx.tree.addChild(tooltip, .{ .text = .{ .content = "Tooltip body" } });
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+    try std.testing.expectEqual(draw.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(tooltip).layout_rect);
+
+    const owner_rect = ctx.tree.getConst(owner).layout_rect;
+    try ctx.pushEvent(.{ .mouse_move = .{
+        .x = owner_rect.x + 5,
+        .y = owner_rect.y + 5,
+    } });
+    ctx.processEvents();
+
+    const tooltip_rect = ctx.tree.getConst(tooltip).layout_rect;
+    try std.testing.expect(tooltip_rect.w > 0);
+    try std.testing.expect(tooltip_rect.h > 0);
+
+    try ctx.pushEvent(.{ .mouse_move = .{ .x = 390, .y = 290 } });
+    ctx.processEvents();
+    try std.testing.expectEqual(draw.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(tooltip).layout_rect);
+}
+
 test "menu popup layout updates in the same frame as activation" {
     var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
     defer ctx.deinit();

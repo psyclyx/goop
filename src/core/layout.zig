@@ -82,6 +82,7 @@ fn emitNode(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style_mo
         .menu_bar => emitMenuBar(tree, handle, resolved, theme),
         .menu => |menu| emitMenu(tree, handle, menu, resolved, theme),
         .popup => |popup| emitPopup(tree, handle, popup, resolved, theme),
+        .tooltip => |tooltip| emitTooltip(tree, handle, tooltip, resolved, theme),
         .menu_item => |menu_item| emitMenuItem(tree, handle, menu_item, resolved, theme),
         .drag_value => emitDragValue(handle, &node.kind.drag_value, resolved),
         .spinbox => emitSpinBox(handle, &node.kind.spinbox, resolved),
@@ -709,6 +710,39 @@ fn emitPopup(
     c.Clay__CloseElement();
 }
 
+fn emitTooltip(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    tooltip: widget.WidgetKind.Tooltip,
+    resolved: style_mod.ResolvedStyle,
+    theme: style_mod.Theme,
+) void {
+    if (!tooltipShouldRender(tree, handle)) return;
+
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = nodeId(handle),
+        .layout = .{
+            .sizing = .{},
+            .padding = clayPadding(resolved.padding),
+            .childGap = @intFromFloat(theme.spacing),
+            .childAlignment = .{},
+            .layoutDirection = c.CLAY_TOP_TO_BOTTOM,
+        },
+        .backgroundColor = clayColor(resolved.bg),
+        .cornerRadius = cornerRadiusAll(resolved.border_radius),
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = tooltipFloatingConfig(tree, handle, tooltip),
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
+    emitChildren(tree, handle, theme);
+    c.Clay__CloseElement();
+}
+
 fn emitMenuItem(
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
@@ -1181,7 +1215,7 @@ fn emitChildrenSkippingPopups(tree: *const widget.Tree, parent: widget.NodeHandl
 fn emitPopupChildren(tree: *const widget.Tree, parent: widget.NodeHandle, theme: style_mod.Theme) void {
     var iter = tree.children(parent);
     while (iter.next()) |child| {
-        if (tree.getConst(child).kind != .popup) continue;
+        if (tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) continue;
         emitNode(tree, child, theme);
     }
 }
@@ -1257,7 +1291,7 @@ fn emitTableRowCells(tree: *const widget.Tree, row: widget.NodeHandle, columns: 
 
     var iter = tree.children(row);
     while (iter.next()) |child| {
-        if (tree.getConst(child).kind == .popup) continue;
+        if (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip) continue;
 
         c.Clay__OpenElement();
         c.Clay__ConfigureOpenElement(.{
@@ -1301,7 +1335,7 @@ fn countNonPopupChildren(tree: *const widget.Tree, parent: widget.NodeHandle) u1
     var count: u16 = 0;
     var iter = tree.children(parent);
     while (iter.next()) |child| {
-        if (tree.getConst(child).kind == .popup) continue;
+        if (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip) continue;
         count += 1;
     }
     return count;
@@ -1369,7 +1403,7 @@ fn splitterPaneChildren(tree: *const widget.Tree, handle: widget.NodeHandle) str
 
     var iter = tree.children(handle);
     while (iter.next()) |child| {
-        if (tree.getConst(child).kind == .popup) continue;
+        if (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip) continue;
         if (first == null) {
             first = child;
         } else if (second == null) {
@@ -1480,18 +1514,26 @@ fn popupShouldRender(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     return true;
 }
 
+fn tooltipShouldRender(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    const node = tree.getConst(handle);
+    const owner_handle = node.parent orelse return false;
+    const owner = tree.getConst(owner_handle);
+    return owner.interaction.hovered or owner.interaction.focused;
+}
+
 fn nodeParticipatesInLayout(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     var current = handle;
     while (true) {
         const node = tree.getConst(current);
         if (node.kind == .popup and !popupShouldRender(tree, current)) return false;
+        if (node.kind == .tooltip and !tooltipShouldRender(tree, current)) return false;
 
         const parent_handle = node.parent orelse return true;
         const parent = tree.getConst(parent_handle);
 
         switch (parent.kind) {
             .tree_item => {
-                if (!parent.kind.tree_item.expanded and node.kind != .popup) return false;
+                if (!parent.kind.tree_item.expanded and node.kind != .popup and node.kind != .tooltip) return false;
             },
             .tab_item => {
                 if (!parent.kind.tab_item.selected) return false;
@@ -1507,13 +1549,40 @@ fn nodeParticipatesInLayout(tree: *const widget.Tree, handle: widget.NodeHandle)
 }
 
 fn popupFloatingConfig(tree: *const widget.Tree, handle: widget.NodeHandle, popup: widget.WidgetKind.Popup) c.Clay_FloatingElementConfig {
-    const attach_to_parent = tree.getConst(handle).parent != null and popup.placement != .absolute;
+    return floatingConfigForPlacement(
+        tree.getConst(handle).parent != null and popup.placement != .absolute,
+        popup.placement,
+        popup.x,
+        popup.y,
+        popup.z_index,
+        popup.pointer_passthrough,
+    );
+}
 
+fn tooltipFloatingConfig(tree: *const widget.Tree, handle: widget.NodeHandle, tooltip: widget.WidgetKind.Tooltip) c.Clay_FloatingElementConfig {
+    return floatingConfigForPlacement(
+        tree.getConst(handle).parent != null and tooltip.placement != .absolute,
+        tooltip.placement,
+        tooltip.x,
+        tooltip.y,
+        tooltip.z_index,
+        true,
+    );
+}
+
+fn floatingConfigForPlacement(
+    attach_to_parent: bool,
+    placement: widget.WidgetKind.Popup.Placement,
+    x: f32,
+    y: f32,
+    z_index: i16,
+    pointer_passthrough: bool,
+) c.Clay_FloatingElementConfig {
     var attach_points = c.Clay_FloatingAttachPoints{
         .element = c.CLAY_ATTACH_POINT_LEFT_TOP,
         .parent = c.CLAY_ATTACH_POINT_LEFT_TOP,
     };
-    switch (popup.placement) {
+    switch (placement) {
         .absolute => {},
         .below_start => {
             attach_points.parent = c.CLAY_ATTACH_POINT_LEFT_BOTTOM;
@@ -1528,12 +1597,12 @@ fn popupFloatingConfig(tree: *const widget.Tree, handle: widget.NodeHandle, popu
     }
 
     return .{
-        .offset = .{ .x = popup.x, .y = popup.y },
+        .offset = .{ .x = x, .y = y },
         .expand = .{},
         .parentId = 0,
-        .zIndex = popup.z_index,
+        .zIndex = z_index,
         .attachPoints = attach_points,
-        .pointerCaptureMode = if (popup.pointer_passthrough)
+        .pointerCaptureMode = if (pointer_passthrough)
             c.CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH
         else
             c.CLAY_POINTER_CAPTURE_MODE_CAPTURE,
@@ -1549,9 +1618,10 @@ fn clampPopupRects(tree: *widget.Tree) void {
     const viewport = popupViewport(tree) orelse return;
 
     for (tree.nodes.items, 0..) |node, i| {
-        if (!node.alive or node.kind != .popup) continue;
+        if (!node.alive or (node.kind != .popup and node.kind != .tooltip)) continue;
         const handle = tree.handleFromIndex(@intCast(i));
-        if (!popupShouldRender(tree, handle)) continue;
+        if (node.kind == .popup and !popupShouldRender(tree, handle)) continue;
+        if (node.kind == .tooltip and !tooltipShouldRender(tree, handle)) continue;
         clampPopupSubtree(tree, handle, viewport);
     }
 }
@@ -1560,7 +1630,7 @@ fn popupViewport(tree: *const widget.Tree) ?draw.Rect {
     var viewport: ?draw.Rect = null;
 
     for (tree.nodes.items, 0..) |node, i| {
-        if (!node.alive or node.parent != null or node.kind == .popup) continue;
+        if (!node.alive or node.parent != null or node.kind == .popup or node.kind == .tooltip) continue;
         const rect = tree.handleFromIndex(@intCast(i));
         viewport = unionRect(viewport, tree.getConst(rect).layout_rect);
     }

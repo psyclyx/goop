@@ -9,7 +9,7 @@ pub fn hitTest(tree: *const widget.Tree, x: f32, y: f32) ?widget.NodeHandle {
     var result: ?widget.NodeHandle = null;
 
     for (tree.nodes.items, 0..) |node, i| {
-        if (!node.alive or node.parent != null or node.kind == .popup) continue;
+        if (!node.alive or node.parent != null or node.kind == .popup or node.kind == .tooltip) continue;
         if (hitTestSubtree(tree, tree.handleFromIndex(@intCast(i)), x, y, null, false)) |found| {
             result = found;
         }
@@ -30,7 +30,7 @@ pub fn hitTestKind(tree: *const widget.Tree, x: f32, y: f32, kind_tag: std.meta.
     var result: ?widget.NodeHandle = null;
 
     for (tree.nodes.items, 0..) |node, i| {
-        if (!node.alive or node.parent != null or node.kind == .popup) continue;
+        if (!node.alive or node.parent != null or node.kind == .popup or node.kind == .tooltip) continue;
         if (hitTestSubtree(tree, tree.handleFromIndex(@intCast(i)), x, y, kind_tag, false)) |found| {
             result = found;
         }
@@ -66,7 +66,7 @@ pub fn isInteractive(kind: widget.WidgetKind) bool {
         .container,
         .text_input,
         => true,
-        .text, .list_box, .table, .table_row, .table_cell, .menu_bar, .tab_bar => false,
+        .text, .list_box, .table, .table_row, .table_cell, .menu_bar, .tooltip, .tab_bar => false,
     };
 }
 
@@ -87,11 +87,12 @@ fn hitTestFloatingSubtrees(
     if (node.kind == .popup) {
         return hitTestSubtree(tree, handle, x, y, kind_tag, true);
     }
+    if (node.kind == .tooltip) return null;
 
     var result: ?widget.NodeHandle = null;
     var iter = tree.children(handle);
     while (iter.next()) |child| {
-        if (node.kind == .tree_item and !node.kind.tree_item.expanded and tree.getConst(child).kind != .popup) continue;
+        if (node.kind == .tree_item and !node.kind.tree_item.expanded and tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) continue;
         if (node.kind == .tab_item and !node.kind.tab_item.selected) continue;
         if (hitTestFloatingSubtrees(tree, child, x, y, kind_tag)) |found| {
             result = found;
@@ -110,7 +111,7 @@ fn hitTestSubtree(
 ) ?widget.NodeHandle {
     if (!isVisible(tree, handle)) return null;
     const node = tree.getConst(handle);
-    if (!in_floating_subtree and node.kind == .popup) return null;
+    if (!in_floating_subtree and (node.kind == .popup or node.kind == .tooltip)) return null;
 
     var result: ?widget.NodeHandle = null;
     if ((kind_tag == null or node.kind == kind_tag.?) and isInteractive(node.kind) and pointHitsWidget(tree, handle, x, y)) {
@@ -119,8 +120,8 @@ fn hitTestSubtree(
 
     var iter = tree.children(handle);
     while (iter.next()) |child| {
-        if (!in_floating_subtree and tree.getConst(child).kind == .popup) continue;
-        if (node.kind == .tree_item and !node.kind.tree_item.expanded and tree.getConst(child).kind != .popup) continue;
+        if (!in_floating_subtree and (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip)) continue;
+        if (node.kind == .tree_item and !node.kind.tree_item.expanded and tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) continue;
         if (node.kind == .tab_item and !node.kind.tab_item.selected) continue;
         if (hitTestSubtree(tree, child, x, y, kind_tag, in_floating_subtree)) |found| {
             result = found;
@@ -133,6 +134,7 @@ fn isVisible(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     const node = tree.getConst(handle);
     return switch (node.kind) {
         .popup => popupVisible(tree, handle),
+        .tooltip => tooltipVisible(tree, handle),
         else => node.layout_rect.w > 0 and node.layout_rect.h > 0,
     };
 }
@@ -147,6 +149,13 @@ fn popupVisible(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
         }
     }
     return node.layout_rect.w > 0 and node.layout_rect.h > 0;
+}
+
+fn tooltipVisible(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    const node = tree.getConst(handle);
+    const owner_handle = node.parent orelse return false;
+    const owner = tree.getConst(owner_handle);
+    return (owner.interaction.hovered or owner.interaction.focused) and node.layout_rect.w > 0 and node.layout_rect.h > 0;
 }
 
 fn pointHitsWidget(tree: *const widget.Tree, handle: widget.NodeHandle, x: f32, y: f32) bool {

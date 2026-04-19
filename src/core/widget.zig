@@ -40,6 +40,7 @@ pub const WidgetKind = union(enum) {
     menu_bar: MenuBar,
     menu: Menu,
     popup: Popup,
+    tooltip: Tooltip,
     menu_item: MenuItem,
     drag_value: DragValue,
     spinbox: SpinBox,
@@ -177,6 +178,13 @@ pub const WidgetKind = union(enum) {
             below_end,
             right_start,
         };
+    };
+
+    pub const Tooltip = struct {
+        placement: Popup.Placement = .below_start,
+        x: f32 = 0,
+        y: f32 = 0,
+        z_index: i16 = 120,
     };
 
     pub const MenuItem = struct {

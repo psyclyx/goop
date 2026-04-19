@@ -28,6 +28,8 @@ pub const MouseState = struct {
     drag_origin_value: f32 = 0,
     /// The currently keyboard-focused widget, if any.
     focused: ?widget.NodeHandle = null,
+    /// The widget currently hovered by the pointer, if any.
+    hovered: ?widget.NodeHandle = null,
     /// Set when dispatch changes widget state that affects layout.
     layout_changed: bool = false,
     /// The most recent secondary click observed this frame.
@@ -97,6 +99,10 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                 }
             }
             const hovered = updateHover(tree, mouse);
+            if (hoverChanged(mouse, hovered) and treeHasTooltip(tree)) {
+                mouse.layout_changed = true;
+            }
+            mouse.hovered = hovered;
             if (!mouse.left_down) syncMenuHover(tree, hovered, mouse);
         },
         .mouse_button => |mb| {
@@ -592,6 +598,20 @@ fn updateHover(tree: *widget.Tree, mouse: *const MouseState) ?widget.NodeHandle 
     return top;
 }
 
+fn hoverChanged(mouse: *const MouseState, hovered: ?widget.NodeHandle) bool {
+    if (mouse.hovered) |previous| {
+        return hovered == null or !hovered.?.eql(previous);
+    }
+    return hovered != null;
+}
+
+fn treeHasTooltip(tree: *const widget.Tree) bool {
+    for (tree.nodes.items) |node| {
+        if (node.alive and node.kind == .tooltip) return true;
+    }
+    return false;
+}
+
 /// Update a slider's value based on mouse x position within its track.
 fn updateSliderValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32, theme: style.Theme) void {
     const node = tree.get(handle);
@@ -740,7 +760,7 @@ fn contentExtent(tree: *const widget.Tree, parent: widget.NodeHandle) struct { w
 
     var iter = tree.children(parent);
     while (iter.next()) |child| {
-        if (tree.getConst(child).kind == .popup) continue;
+        if (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip) continue;
         const r = tree.getConst(child).layout_rect;
         max_x = @max(max_x, r.x + r.w);
         max_y = @max(max_y, r.y + r.h);
@@ -1108,7 +1128,7 @@ fn clickInTreeLabel(tree: *const widget.Tree, handle: widget.NodeHandle, mouse_x
 fn hasTreeItemChildren(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     var iter = tree.children(handle);
     while (iter.next()) |child| {
-        if (tree.getConst(child).kind != .popup) return true;
+        if (tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) return true;
     }
     return false;
 }
@@ -1337,7 +1357,7 @@ fn collectVisibleTreeItemsFrom(
 
     var iter = tree.children(handle);
     while (iter.next()) |child| {
-        if (tree.getConst(child).kind == .popup) continue;
+        if (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip) continue;
         try collectVisibleTreeItemsFrom(tree, child, out, allocator);
     }
 }

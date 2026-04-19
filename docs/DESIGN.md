@@ -72,6 +72,7 @@ Current widget kinds:
 - menu bar
 - menu
 - popup
+- tooltip
 - menu item
 - drag value
 - spinbox

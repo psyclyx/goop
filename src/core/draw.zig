@@ -52,7 +52,7 @@ pub fn generate(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem
         if (!node.alive) continue;
         if (node.parent == null) {
             const handle = tree.handleFromIndex(@intCast(i));
-            if (node.kind != .popup) {
+            if (node.kind != .popup and node.kind != .tooltip) {
                 try emitNode(tree, handle, theme, &commands, allocator, text_ctx, false);
             }
         }
@@ -85,7 +85,7 @@ fn emitNode(
 ) std.mem.Allocator.Error!void {
     const node = tree.getConst(handle);
     if (!shouldDrawNode(tree, handle)) return;
-    if (!in_floating_subtree and node.kind == .popup) return;
+    if (!in_floating_subtree and (node.kind == .popup or node.kind == .tooltip)) return;
     const resolved = node.style_override.resolve(theme);
 
     switch (node.kind) {
@@ -104,6 +104,7 @@ fn emitNode(
         .menu_bar => try emitMenuBar(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .menu => |menu| try emitMenu(tree, handle, node, menu, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .popup => try emitPopup(tree, handle, node, resolved, theme, commands, allocator, text_ctx),
+        .tooltip => try emitTooltip(tree, handle, node, resolved, theme, commands, allocator, text_ctx),
         .menu_item => |item| try emitMenuItem(tree, handle, node, item, resolved, theme, commands, allocator),
         .drag_value => try emitDragValue(node, &node.kind.drag_value, resolved, theme, commands, allocator),
         .spinbox => try emitSpinBox(node, &node.kind.spinbox, resolved, theme, commands, allocator),
@@ -650,6 +651,26 @@ fn emitMenu(
 }
 
 fn emitPopup(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+) !void {
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = node.layout_rect,
+        .color = resolved.bg,
+        .border_color = resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = resolved.border_radius,
+    } });
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, true);
+}
+
+fn emitTooltip(
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1484,7 +1505,7 @@ fn hasNextTreeSibling(tree: *const widget.Tree, handle: widget.NodeHandle) bool 
     var sibling = tree.getConst(handle).next_sibling;
     while (sibling) |next_handle| {
         const next_node = tree.getConst(next_handle);
-        if (next_node.kind != .popup) return true;
+        if (next_node.kind != .popup and next_node.kind != .tooltip) return true;
         sibling = next_node.next_sibling;
     }
     return false;
@@ -1539,7 +1560,7 @@ fn emitChildren(
 ) !void {
     var iter = tree.children(parent);
     while (iter.next()) |child| {
-        if (!in_floating_subtree and tree.getConst(child).kind == .popup) continue;
+        if (!in_floating_subtree and (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip)) continue;
         try emitNode(tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
     }
 }
@@ -1554,7 +1575,7 @@ fn emitPopupChildren(
 ) !void {
     var iter = tree.children(parent);
     while (iter.next()) |child| {
-        if (tree.getConst(child).kind != .popup) continue;
+        if (tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) continue;
         try emitNode(tree, child, theme, commands, allocator, text_ctx, true);
     }
 }
@@ -1569,14 +1590,14 @@ fn emitFloatingSubtrees(
 ) !void {
     if (!shouldDrawNode(tree, handle)) return;
     const node = tree.getConst(handle);
-    if (node.kind == .popup) {
+    if (node.kind == .popup or node.kind == .tooltip) {
         try emitNode(tree, handle, theme, commands, allocator, text_ctx, true);
         return;
     }
 
     var iter = tree.children(handle);
     while (iter.next()) |child| {
-        if (node.kind == .tree_item and !node.kind.tree_item.expanded and tree.getConst(child).kind != .popup) continue;
+        if (node.kind == .tree_item and !node.kind.tree_item.expanded and tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) continue;
         if (node.kind == .tab_item and !node.kind.tab_item.selected) continue;
         try emitFloatingSubtrees(tree, child, theme, commands, allocator, text_ctx);
     }
@@ -1586,6 +1607,7 @@ fn shouldDrawNode(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     const node = tree.getConst(handle);
     return switch (node.kind) {
         .popup => popupShouldDraw(tree, handle),
+        .tooltip => tooltipShouldDraw(tree, handle),
         else => true,
     };
 }
@@ -1603,10 +1625,17 @@ fn popupShouldDraw(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     return true;
 }
 
+fn tooltipShouldDraw(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    const node = tree.getConst(handle);
+    const owner_handle = node.parent orelse return false;
+    const owner = tree.getConst(owner_handle);
+    return (owner.interaction.hovered or owner.interaction.focused) and node.layout_rect.w > 0 and node.layout_rect.h > 0;
+}
+
 fn hasNonPopupChildren(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     var iter = tree.children(handle);
     while (iter.next()) |child| {
-        if (tree.getConst(child).kind != .popup) return true;
+        if (tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) return true;
     }
     return false;
 }
