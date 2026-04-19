@@ -2,31 +2,30 @@
 
 ## Current
 
-Iteration 38.
-54 tests pass. Build clean. Demo runs.
+Iteration 39.
+56 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-38
+39
 
 ## Done This Iteration
 
-- Added mouse click-drag selection in text input
-- On press: set selection_anchor = cursor (instead of clearSelection)
-- On mouse move while dragging: update cursor position to create selection
-- Fixed insert() to clear selection after inserting — prevents phantom selections from stale anchor
-- Added 3 tests: drag forward, drag backward, click-after-drag clears selection
+- Added shift-click to extend selection in text input
+- When shift held: anchor stays (or sets from cursor if none), cursor moves to click position
+- When shift not held: existing behavior (both cursor and anchor set to click position)
+- Added 2 tests: shift-click from cursor, shift-click extending existing selection
 
 ## Next
 
 1. Text input clipboard (Ctrl+C/V/X) — needs platform clipboard integration
-2. dispatch.zig is ~1550 lines — consider extracting text input helpers or tests
+2. dispatch.zig is ~1650 lines — consider extracting text input helpers or tests
 3. More letter keys in Keycode enum (add as needed)
-4. Shift-click to extend selection (currently only drag)
+4. Double-click to select word
 
 ## What's Wrong
 
-- dispatch.zig is ~1550 lines — tests account for most of it
+- dispatch.zig is ~1650 lines — tests account for most of it
 - Widget tree is append-only — no removal/mutation API
 - No dirty tracking — full layout + full draw list every frame
 - Text baseline y-offset is approximate (y + font_size)
