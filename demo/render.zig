@@ -190,20 +190,17 @@ pub const Renderer = struct {
 
     fn addText(self: *Renderer, t: DrawCommand.DrawText) void {
         const color = colorToVec4(t.color);
-        // goop y is top of text box; snail y is baseline (Y-up in ortho).
-        // With ortho(0, w, h, 0), Y=0 is top, Y=h is bottom.
-        // snail draws glyphs relative to baseline going upward in its coord system.
-        // We use ortho(0, w, 0, h) so Y=0 is bottom — then baseline = viewport_h - (t.y + font_size * 0.8)
-        // Actually simpler: use ortho(0, w, h, 0) for Y-down, and pass y + ascent as baseline.
-        const baseline_y = t.y + t.font_size;
+        // goop y is top of text box (Y-down); snail positions glyphs in Y-up
+        // coordinates relative to the baseline. Convert by flipping to Y-up.
+        const baseline_y = self.viewport_h - (t.y + t.font_size);
         _ = self.text_batch.addString(self.atlas, self.font, t.text, t.x, baseline_y, t.font_size, color);
     }
 
     fn flushText(self: *Renderer) void {
         if (self.text_batch.glyphCount() == 0) return;
 
-        // Y-down orthographic projection matching goop's coordinate system
-        const mvp = snail.Mat4.ortho(0, self.viewport_w, self.viewport_h, 0, -1, 1);
+        // Y-up orthographic projection — snail's glyph quads use Y-up coords
+        const mvp = snail.Mat4.ortho(0, self.viewport_w, 0, self.viewport_h, -1, 1);
 
         self.text_renderer.beginFrame();
         self.text_renderer.draw(self.text_batch.slice(), mvp, self.viewport_w, self.viewport_h);
