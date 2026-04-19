@@ -2,33 +2,29 @@
 
 ## Current
 
-Iteration 53. Widget tree mutation/removal API.
-78 tests pass. Build clean. Demo runs.
+Iteration 54. Draw list caching.
+80 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-53
+54
 
 ## Done This Iteration
 
-- Changed NodeHandle from enum(u32) to struct { index, generation } for stale-handle detection
-- Added alive/generation fields to Node, free list to Tree for slot reuse
-- Implemented Tree.remove() — recursively removes subtrees, unlinks from siblings/parent, pushes to free list
-- Added Tree.isAlive(), Tree.handleFromIndex(), Tree.slotCount() helpers
-- Added Context.removeWidget() and Context.isAlive() to public API
-- Updated all modules (layout, draw, hittest, focus, dispatch) to skip dead nodes
-- 6 new tests: remove leaf, remove subtree, slot reuse, middle sibling removal
+- Added `draw_dirty` flag and `cached_draw_list` to Context
+- `generateDrawList()` returns cached list when no events, layout, or tree changes occurred
+- Context owns draw list memory — `freeDrawList()` is now a no-op (API preserved)
+- Cache invalidated on: layout run, event processing, widget removal
+- 2 new tests: caching returns same list, regeneration after events
 
 ## Next
 
-1. Draw list caching (draw-dirty flag, skip regeneration when unchanged)
-2. Toolbar/menu bar widget
-3. HiDPI/scale factor support (viewport assumes 1:1 logical:physical)
-4. C API bindings (c_api.zig not yet created)
+1. Toolbar/menu bar widget
+2. HiDPI/scale factor support (viewport assumes 1:1 logical:physical)
+3. C API bindings (c_api.zig not yet created)
 
 ## What's Wrong
 
-- No draw list caching — draw list regenerated every frame even when output unchanged
 - Font loading uses popen("fc-match") — fragile, Linux-only
 - MSAA sample count hardcoded to 4 — no fallback if GPU doesn't support it
 - Text input only handles printable ASCII — no UTF-8 multi-byte support
@@ -36,3 +32,4 @@ Iteration 53. Widget tree mutation/removal API.
 - No toolbar/menu widget — last item from target widget set
 - No HiDPI scaling — demo treats Wayland surface dimensions as 1:1 with physical pixels
 - No C API yet
+- `freeDrawList` is a no-op — technically a semver break if anyone relied on manual lifetime
