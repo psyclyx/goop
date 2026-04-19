@@ -580,10 +580,12 @@ fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
     if (mouse.press_target) |pt| {
         if (release_target) |rt| {
             if (rt.eql(pt) and !dragSuppressedClick(tree, dragged_target, pt)) {
-                if (tree.isAlive(pt) and tree.getConst(pt).kind == .table) {
-                    activateTable(tree, pt, mouse.x, mouse.y);
-                } else {
-                    fireClick(tree, pt);
+                if (tree.isAlive(pt)) {
+                    switch (tree.getConst(pt).kind) {
+                        .table => activateTable(tree, pt, mouse.x, mouse.y),
+                        .selectable => activateSelectable(tree, pt, mouse),
+                        else => fireClick(tree, pt),
+                    }
                 }
             }
         }
@@ -656,6 +658,25 @@ fn activateTable(tree: *widget.Tree, handle: widget.NodeHandle, x: f32, y: f32) 
     const node = tree.get(handle);
     node.interaction.primary_clicked = true;
     _ = node.kind.table.toggleSort(column);
+}
+
+fn activateSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*const MouseState) void {
+    const node = tree.get(handle);
+    if (node.kind != .selectable) return;
+
+    node.interaction.primary_clicked = true;
+    node.kind.selectable.clicked = true;
+
+    if (mouse) |state| {
+        if (selectableParentListBox(tree, handle)) |list_box| {
+            if (tree.getConst(list_box).kind.list_box.selection_mode == .multiple) {
+                _ = selectListBoxMulti(tree, list_box, handle, state);
+                return;
+            }
+        }
+    }
+
+    _ = selectSelectable(tree, handle);
 }
 
 /// Update a slider's value based on mouse x position within its track.
@@ -891,9 +912,7 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
             node.kind.dropdown.clicked = true;
         },
         .selectable => {
-            node.interaction.primary_clicked = true;
-            _ = selectSelectable(tree, handle);
-            node.kind.selectable.clicked = true;
+            activateSelectable(tree, handle, null);
         },
         .menu => {
             node.interaction.primary_clicked = true;
@@ -941,6 +960,8 @@ fn selectSelectable(tree: *widget.Tree, handle: widget.NodeHandle) bool {
 
     if (node.parent) |parent_handle| {
         var iter = tree.children(parent_handle);
+        var selected_index: ?u16 = null;
+        var index: u16 = 0;
         while (iter.next()) |child| {
             if (tree.getConst(child).kind != .selectable) continue;
             const should_select = child.eql(handle);
@@ -949,6 +970,11 @@ fn selectSelectable(tree: *widget.Tree, handle: widget.NodeHandle) bool {
                 changed = true;
                 markSelectableListBoxChanged(tree, child);
             }
+            if (should_select) selected_index = index;
+            index += 1;
+        }
+        if (tree.getConst(parent_handle).kind == .list_box) {
+            tree.get(parent_handle).kind.list_box.anchor_index = selected_index;
         }
         return changed;
     }
@@ -961,11 +987,86 @@ fn selectSelectable(tree: *widget.Tree, handle: widget.NodeHandle) bool {
     return changed;
 }
 
+fn selectListBoxMulti(
+    tree: *widget.Tree,
+    list_box: widget.NodeHandle,
+    handle: widget.NodeHandle,
+    mouse: *const MouseState,
+) bool {
+    const clicked_index = selectableIndexInParent(tree, handle) orelse return false;
+    const list_box_node = tree.get(list_box);
+    std.debug.assert(list_box_node.kind == .list_box);
+
+    if (mouse.shift_down) {
+        const anchor = list_box_node.kind.list_box.anchor_index orelse clicked_index;
+        const changed = selectListBoxRange(tree, list_box, @min(anchor, clicked_index), @max(anchor, clicked_index), mouse.ctrl_down);
+        list_box_node.kind.list_box.anchor_index = anchor;
+        return changed;
+    }
+
+    list_box_node.kind.list_box.anchor_index = clicked_index;
+    if (mouse.ctrl_down) {
+        return toggleListBoxSelectable(tree, list_box, handle);
+    }
+
+    return selectSelectable(tree, handle);
+}
+
+fn selectListBoxRange(
+    tree: *widget.Tree,
+    list_box: widget.NodeHandle,
+    start_index: u16,
+    end_index: u16,
+    additive: bool,
+) bool {
+    var changed = false;
+    var index: u16 = 0;
+    var iter = tree.children(list_box);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .selectable) continue;
+        const in_range = index >= start_index and index <= end_index;
+        const should_select = in_range or (additive and tree.getConst(child).kind.selectable.selected);
+        if (tree.getConst(child).kind.selectable.selected != should_select) {
+            tree.get(child).kind.selectable.selected = should_select;
+            changed = true;
+        }
+        index += 1;
+    }
+    if (changed) tree.get(list_box).kind.list_box.changed = true;
+    return changed;
+}
+
+fn toggleListBoxSelectable(tree: *widget.Tree, list_box: widget.NodeHandle, handle: widget.NodeHandle) bool {
+    const current = tree.getConst(handle).kind.selectable.selected;
+    tree.get(handle).kind.selectable.selected = !current;
+    if (current == tree.getConst(handle).kind.selectable.selected) return false;
+    tree.get(list_box).kind.list_box.changed = true;
+    return true;
+}
+
 fn markSelectableListBoxChanged(tree: *widget.Tree, handle: widget.NodeHandle) void {
     const parent_handle = tree.getConst(handle).parent orelse return;
     if (tree.getConst(parent_handle).kind == .list_box) {
         tree.get(parent_handle).kind.list_box.changed = true;
     }
+}
+
+fn selectableParentListBox(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    const parent_handle = tree.getConst(handle).parent orelse return null;
+    if (tree.getConst(parent_handle).kind != .list_box) return null;
+    return parent_handle;
+}
+
+fn selectableIndexInParent(tree: *const widget.Tree, handle: widget.NodeHandle) ?u16 {
+    const parent_handle = tree.getConst(handle).parent orelse return null;
+    var index: u16 = 0;
+    var iter = tree.children(parent_handle);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .selectable) continue;
+        if (child.eql(handle)) return index;
+        index += 1;
+    }
+    return null;
 }
 
 fn fireSecondaryClick(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
@@ -1932,6 +2033,56 @@ test "selectable rows update sibling selection and list box change state" {
     try std.testing.expect(tree.getConst(third).kind.selectable.selected);
     try std.testing.expect(tree.getConst(list_box).kind.list_box.changed);
     try std.testing.expect(mouse.focused.?.eql(third));
+}
+
+test "multi-select list box supports ctrl-toggle and additive shift range" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const list_box = try tree.addChild(root, .{ .list_box = .{ .selection_mode = .multiple } });
+    const first = try tree.addChild(list_box, .{ .selectable = .{
+        .label = "Scene",
+        .selected = true,
+    } });
+    const second = try tree.addChild(list_box, .{ .selectable = .{ .label = "Camera" } });
+    const third = try tree.addChild(list_box, .{ .selectable = .{ .label = "Light" } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    tree.get(list_box).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 90 };
+    tree.get(first).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 26 };
+    tree.get(second).layout_rect = .{ .x = 10, .y = 36, .w = 220, .h = 26 };
+    tree.get(third).layout_rect = .{ .x = 10, .y = 62, .w = 220, .h = 26 };
+
+    var mouse = MouseState{};
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 40, .y = 46 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 40, .y = 46 } },
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(tree.getConst(first).kind.selectable.selected);
+    try std.testing.expect(tree.getConst(second).kind.selectable.selected);
+    try std.testing.expect(!tree.getConst(third).kind.selectable.selected);
+    try std.testing.expectEqual(@as(?u16, 1), tree.getConst(list_box).kind.list_box.anchor_index);
+
+    tree.get(list_box).kind.list_box.changed = false;
+
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 40, .y = 72 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 40, .y = 72 } },
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } },
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(tree.getConst(first).kind.selectable.selected);
+    try std.testing.expect(tree.getConst(second).kind.selectable.selected);
+    try std.testing.expect(tree.getConst(third).kind.selectable.selected);
+    try std.testing.expect(tree.getConst(list_box).kind.list_box.changed);
 }
 
 test "tree item toggles and keyboard navigation follows visible items" {

@@ -285,6 +285,17 @@ pub const Context = struct {
         return self.tree.getConst(handle).kind.list_box.changed;
     }
 
+    /// Count selected direct child rows in a list box.
+    pub fn listBoxSelectionCount(self: *const Context, handle: NodeHandle) u16 {
+        var count: u16 = 0;
+        var iter = self.tree.children(handle);
+        while (iter.next()) |child| {
+            if (self.tree.getConst(child).kind != .selectable) continue;
+            if (self.tree.getConst(child).kind.selectable.selected) count += 1;
+        }
+        return count;
+    }
+
     /// Get the retained width fraction for a table column, if present.
     pub fn tableColumnFraction(self: *const Context, handle: NodeHandle, index: u8) ?f32 {
         return self.tree.getConst(handle).kind.table.columnWeight(index);
@@ -722,6 +733,71 @@ test "list box reports selected index and change across context frames" {
     try std.testing.expect(ctx.listBoxChanged(list_box));
     try std.testing.expectEqual(@as(?u16, 1), ctx.listBoxSelectedIndex(list_box));
     try std.testing.expect(ctx.isSelected(camera));
+}
+
+test "multi-select list box supports ctrl-toggle and shift-range selection" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const list_box = try ctx.tree.addChild(root, .{ .list_box = .{ .selection_mode = .multiple } });
+    const scene = try ctx.tree.addChild(list_box, .{ .selectable = .{
+        .label = "Scene",
+        .selected = true,
+    } });
+    const camera = try ctx.tree.addChild(list_box, .{ .selectable = .{ .label = "Camera" } });
+    const light = try ctx.tree.addChild(list_box, .{ .selectable = .{ .label = "Light" } });
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+
+    const camera_rect = ctx.tree.getConst(camera).layout_rect;
+    try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .pressed,
+        .x = camera_rect.x + 5,
+        .y = camera_rect.y + 5,
+    } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .released,
+        .x = camera_rect.x + 5,
+        .y = camera_rect.y + 5,
+    } });
+    try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
+    ctx.processEvents();
+
+    try std.testing.expect(ctx.listBoxChanged(list_box));
+    try std.testing.expect(ctx.isSelected(scene));
+    try std.testing.expect(ctx.isSelected(camera));
+    try std.testing.expectEqual(@as(u16, 2), ctx.listBoxSelectionCount(list_box));
+
+    ctx.clearClickedFlags();
+    const light_rect = ctx.tree.getConst(light).layout_rect;
+    try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } });
+    try ctx.pushEvent(.{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .pressed,
+        .x = light_rect.x + 5,
+        .y = light_rect.y + 5,
+    } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .released,
+        .x = light_rect.x + 5,
+        .y = light_rect.y + 5,
+    } });
+    try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
+    try ctx.pushEvent(.{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } });
+    ctx.processEvents();
+
+    try std.testing.expect(ctx.listBoxChanged(list_box));
+    try std.testing.expect(ctx.isSelected(scene));
+    try std.testing.expect(ctx.isSelected(camera));
+    try std.testing.expect(ctx.isSelected(light));
+    try std.testing.expectEqual(@as(u16, 3), ctx.listBoxSelectionCount(list_box));
 }
 
 test "table layout keeps columns aligned across rows" {

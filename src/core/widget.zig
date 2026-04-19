@@ -136,7 +136,14 @@ pub const WidgetKind = union(enum) {
     };
 
     pub const ListBox = struct {
+        selection_mode: SelectionMode = .single,
+        anchor_index: ?u16 = null,
         changed: bool = false,
+
+        pub const SelectionMode = enum {
+            single,
+            multiple,
+        };
     };
 
     pub const Selectable = struct {

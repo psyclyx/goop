@@ -584,7 +584,7 @@ fn buildWidgetTree(state: *State) !void {
     _ = try ctx.tree.addChild(outline_tooltip, .{ .text = .{ .content = "Click again while selected to rename." } });
 
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "List Box" } });
-    state.list_box = try ctx.tree.addChild(root, .{ .list_box = .{} });
+    state.list_box = try ctx.tree.addChild(root, .{ .list_box = .{ .selection_mode = .multiple } });
     state.selectable_scene = try ctx.tree.addChild(state.list_box.?, .{ .selectable = .{
         .label = "Scene Collection",
         .selected = true,
@@ -979,9 +979,7 @@ pub fn main() !void {
             if (ctx.treeItemRenameCommitted(h)) std.debug.print("Outline renamed: {s}\n", .{ctx.treeItemLabel(h)});
         }
         if (state.list_box) |h| if (ctx.listBoxChanged(h)) {
-            if (ctx.listBoxSelectedIndex(h)) |index| {
-                std.debug.print("List box selected index: {}\n", .{index});
-            }
+            std.debug.print("List box selection count: {}\n", .{ctx.listBoxSelectionCount(h)});
         };
         if (state.selectable_scene) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Scene Collection\n", .{});
         if (state.selectable_camera) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Camera Rig\n", .{});
