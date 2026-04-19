@@ -4,7 +4,34 @@ const event = @import("event.zig");
 const style = @import("style.zig");
 const dispatch = @import("dispatch.zig");
 const MouseState = dispatch.MouseState;
+const Clipboard = dispatch.Clipboard;
 const process = dispatch.process;
+const processWithClipboard = dispatch.processWithClipboard;
+
+/// Test clipboard that stores text in a static buffer.
+const TestClipboard = struct {
+    buf: [256]u8 = [_]u8{0} ** 256,
+    len: usize = 0,
+
+    fn clipboard(self: *TestClipboard) Clipboard {
+        return .{
+            .ptr = @ptrCast(self),
+            .getTextFn = @ptrCast(&getText),
+            .setTextFn = @ptrCast(&setText),
+        };
+    }
+
+    fn getText(self: *TestClipboard) ?[]const u8 {
+        if (self.len == 0) return null;
+        return self.buf[0..self.len];
+    }
+
+    fn setText(self: *TestClipboard, text: []const u8) void {
+        const count = @min(text.len, self.buf.len);
+        @memcpy(self.buf[0..count], text[0..count]);
+        self.len = count;
+    }
+};
 
 test "text input receives character events" {
     const allocator = std.testing.allocator;
@@ -1078,4 +1105,220 @@ test "slow double-click does not select word" {
 
     const input = &tree.get(ti).kind.text_input;
     try std.testing.expect(!input.hasSelection());
+}
+
+// --- Clipboard tests ---
+
+fn focusAndType(tree: *widget.Tree, mouse: *MouseState, ti: widget.NodeHandle, text: []const u8) void {
+    process(tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, mouse, style.Theme.default);
+    for (text) |ch| {
+        process(tree, &.{.{ .text = .{ .codepoint = ch } }}, mouse, style.Theme.default);
+    }
+    _ = ti;
+}
+
+fn setupTextInput(allocator: std.mem.Allocator) !struct { tree: widget.Tree, ti: widget.NodeHandle } {
+    var tree = widget.Tree.init(allocator);
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+    return .{ .tree = tree, .ti = ti };
+}
+
+test "ctrl+c copies selected text to clipboard" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    var cb = TestClipboard{};
+
+    focusAndType(&s.tree, &mouse, s.ti, "hello");
+
+    // Select all
+    processWithClipboard(&s.tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 30, .keycode = .a, .state = .pressed } },
+    }, &mouse, style.Theme.default, cb.clipboard());
+
+    // Ctrl+C
+    processWithClipboard(&s.tree, &.{
+        .{ .key = .{ .scancode = 46, .keycode = .c, .state = .pressed } },
+    }, &mouse, style.Theme.default, cb.clipboard());
+
+    try std.testing.expectEqualStrings("hello", cb.buf[0..cb.len]);
+    // Text should still be there (copy, not cut)
+    try std.testing.expectEqualStrings("hello", s.tree.get(s.ti).kind.text_input.content());
+}
+
+test "ctrl+x cuts selected text to clipboard" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    var cb = TestClipboard{};
+
+    focusAndType(&s.tree, &mouse, s.ti, "hello");
+
+    // Select all
+    processWithClipboard(&s.tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 30, .keycode = .a, .state = .pressed } },
+    }, &mouse, style.Theme.default, cb.clipboard());
+
+    // Ctrl+X
+    processWithClipboard(&s.tree, &.{
+        .{ .key = .{ .scancode = 45, .keycode = .x, .state = .pressed } },
+    }, &mouse, style.Theme.default, cb.clipboard());
+
+    try std.testing.expectEqualStrings("hello", cb.buf[0..cb.len]);
+    // Text should be deleted
+    try std.testing.expectEqualStrings("", s.tree.get(s.ti).kind.text_input.content());
+}
+
+test "ctrl+v pastes text from clipboard" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    var cb = TestClipboard{};
+    cb.setText("world");
+
+    focusAndType(&s.tree, &mouse, s.ti, "hello ");
+
+    // Ctrl+V
+    processWithClipboard(&s.tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 47, .keycode = .v, .state = .pressed } },
+    }, &mouse, style.Theme.default, cb.clipboard());
+
+    try std.testing.expectEqualStrings("hello world", s.tree.get(s.ti).kind.text_input.content());
+}
+
+test "ctrl+v replaces selection" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    var cb = TestClipboard{};
+    cb.setText("goodbye");
+
+    focusAndType(&s.tree, &mouse, s.ti, "hello");
+
+    // Select all, then paste
+    processWithClipboard(&s.tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 30, .keycode = .a, .state = .pressed } },
+    }, &mouse, style.Theme.default, cb.clipboard());
+
+    processWithClipboard(&s.tree, &.{
+        .{ .key = .{ .scancode = 47, .keycode = .v, .state = .pressed } },
+    }, &mouse, style.Theme.default, cb.clipboard());
+
+    try std.testing.expectEqualStrings("goodbye", s.tree.get(s.ti).kind.text_input.content());
+}
+
+test "ctrl+c without selection is no-op" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    var cb = TestClipboard{};
+
+    focusAndType(&s.tree, &mouse, s.ti, "hello");
+
+    // Ctrl+C with no selection
+    processWithClipboard(&s.tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 46, .keycode = .c, .state = .pressed } },
+    }, &mouse, style.Theme.default, cb.clipboard());
+
+    try std.testing.expectEqual(@as(usize, 0), cb.len);
+}
+
+test "ctrl+v with empty clipboard is no-op" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    var cb = TestClipboard{};
+
+    focusAndType(&s.tree, &mouse, s.ti, "hello");
+
+    // Ctrl+V with empty clipboard
+    processWithClipboard(&s.tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 47, .keycode = .v, .state = .pressed } },
+    }, &mouse, style.Theme.default, cb.clipboard());
+
+    try std.testing.expectEqualStrings("hello", s.tree.get(s.ti).kind.text_input.content());
+}
+
+test "clipboard operations without clipboard provider are no-ops" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+
+    focusAndType(&s.tree, &mouse, s.ti, "hello");
+
+    // Select all, Ctrl+C without clipboard — should not crash
+    process(&s.tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 30, .keycode = .a, .state = .pressed } },
+        .{ .key = .{ .scancode = 46, .keycode = .c, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expectEqualStrings("hello", s.tree.get(s.ti).kind.text_input.content());
+}
+
+test "cut-paste round trip" {
+    const allocator = std.testing.allocator;
+    var s = try setupTextInput(allocator);
+    defer s.tree.deinit();
+
+    var mouse = MouseState{};
+    var cb = TestClipboard{};
+
+    focusAndType(&s.tree, &mouse, s.ti, "abcdef");
+
+    // Select "cd" (positions 2-4): Home, Right, Right, Shift+Right, Shift+Right
+    processWithClipboard(&s.tree, &.{
+        .{ .key = .{ .scancode = 102, .keycode = .home, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+        .{ .key = .{ .scancode = 106, .keycode = .right, .state = .pressed } },
+    }, &mouse, style.Theme.default, cb.clipboard());
+
+    // Cut
+    processWithClipboard(&s.tree, &.{
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } },
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 45, .keycode = .x, .state = .pressed } },
+    }, &mouse, style.Theme.default, cb.clipboard());
+
+    try std.testing.expectEqualStrings("cd", cb.buf[0..cb.len]);
+    try std.testing.expectEqualStrings("abef", s.tree.get(s.ti).kind.text_input.content());
+
+    // Move to end, paste
+    processWithClipboard(&s.tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } },
+        .{ .key = .{ .scancode = 107, .keycode = .end, .state = .pressed } },
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 47, .keycode = .v, .state = .pressed } },
+    }, &mouse, style.Theme.default, cb.clipboard());
+
+    try std.testing.expectEqualStrings("abefcd", s.tree.get(s.ti).kind.text_input.content());
 }

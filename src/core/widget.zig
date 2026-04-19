@@ -128,6 +128,23 @@ pub const WidgetKind = union(enum) {
             self.clearSelection();
         }
 
+        pub fn insertSlice(self: *TextInput, text: []const u8) void {
+            if (self.hasSelection()) self.deleteSelection();
+            const available = self.buffer.len - self.len;
+            const count: u8 = @intCast(@min(text.len, available));
+            if (count == 0) return;
+            // Shift existing bytes right
+            var i: usize = self.len + count - 1;
+            while (i >= self.cursor + count) : (i -= 1) {
+                self.buffer[i] = self.buffer[i - count];
+            }
+            // Copy new text in
+            @memcpy(self.buffer[self.cursor .. self.cursor + count], text[0..count]);
+            self.len += count;
+            self.cursor += count;
+            self.clearSelection();
+        }
+
         pub fn deleteBack(self: *TextInput) void {
             if (self.hasSelection()) {
                 self.deleteSelection();

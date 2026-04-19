@@ -55,6 +55,9 @@ pub const Event = union(enum) {
         left_ctrl,
         right_ctrl,
         a,
+        c,
+        v,
+        x,
         unknown,
     };
 

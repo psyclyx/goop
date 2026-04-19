@@ -30,18 +30,37 @@ pub const MouseState = struct {
     const double_click_dist: f32 = 5;
 };
 
+/// Clipboard interface for copy/paste. Provided by the embedder.
+pub const Clipboard = struct {
+    ptr: *anyopaque,
+    getTextFn: *const fn (*anyopaque) ?[]const u8,
+    setTextFn: *const fn (*anyopaque, []const u8) void,
+
+    pub fn getText(self: Clipboard) ?[]const u8 {
+        return self.getTextFn(self.ptr);
+    }
+
+    pub fn setText(self: Clipboard, text: []const u8) void {
+        self.setTextFn(self.ptr, text);
+    }
+};
+
 /// Process a batch of events against the widget tree.
 /// Updates interaction state (hovered, pressed) and widget state (clicked).
 /// Call after doLayout so layout_rects are populated.
 const style = @import("style.zig");
 
 pub fn process(tree: *widget.Tree, events: []const event.Event, mouse: *MouseState, theme: style.Theme) void {
+    processWithClipboard(tree, events, mouse, theme, null);
+}
+
+pub fn processWithClipboard(tree: *widget.Tree, events: []const event.Event, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard) void {
     for (events) |ev| {
-        processOne(tree, ev, mouse, theme);
+        processOne(tree, ev, mouse, theme, clipboard);
     }
 }
 
-fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: style.Theme) void {
+fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard) void {
     switch (ev) {
         .mouse_move => |mm| {
             mouse.x = mm.x;
@@ -165,6 +184,51 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                     if (ti.len > 0) {
                                         ti.selection_anchor = 0;
                                         ti.cursor = ti.len;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                .c => {
+                    if (k.state == .pressed and mouse.ctrl_down) {
+                        if (clipboard) |cb| {
+                            if (mouse.focused) |f| {
+                                const node = tree.get(f);
+                                if (node.kind == .text_input) {
+                                    const ti = &node.kind.text_input;
+                                    if (ti.hasSelection()) {
+                                        cb.setText(ti.selectedContent());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                .x => {
+                    if (k.state == .pressed and mouse.ctrl_down) {
+                        if (clipboard) |cb| {
+                            if (mouse.focused) |f| {
+                                const node = tree.get(f);
+                                if (node.kind == .text_input) {
+                                    const ti = &node.kind.text_input;
+                                    if (ti.hasSelection()) {
+                                        cb.setText(ti.selectedContent());
+                                        ti.deleteSelection();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                .v => {
+                    if (k.state == .pressed and mouse.ctrl_down) {
+                        if (clipboard) |cb| {
+                            if (mouse.focused) |f| {
+                                const node = tree.get(f);
+                                if (node.kind == .text_input) {
+                                    if (cb.getText()) |text| {
+                                        node.kind.text_input.insertSlice(text);
                                     }
                                 }
                             }

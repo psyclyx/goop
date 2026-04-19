@@ -23,6 +23,8 @@ pub const TextMeasureCtx = layout.TextMeasureCtx;
 pub const MeasureTextFn = layout.MeasureTextFn;
 pub const TextDimensions = layout.TextDimensions;
 
+pub const Clipboard = dispatch.Clipboard;
+
 pub const Context = struct {
     allocator: std.mem.Allocator,
     clay_arena: []u8,
@@ -30,6 +32,7 @@ pub const Context = struct {
     theme: Theme,
     events: std.ArrayListUnmanaged(Event),
     mouse: dispatch.MouseState = .{},
+    clipboard: ?Clipboard = null,
 
     pub fn init(allocator: std.mem.Allocator, opts: InitOptions) !Context {
         const min_memory = c.Clay_MinMemorySize();
@@ -66,7 +69,7 @@ pub const Context = struct {
     /// Process all queued events: hit test, update interaction state,
     /// detect clicks. Call after doLayout.
     pub fn processEvents(self: *Context) void {
-        dispatch.process(&self.tree, self.events.items, &self.mouse, self.theme);
+        dispatch.processWithClipboard(&self.tree, self.events.items, &self.mouse, self.theme, self.clipboard);
         self.events.clearRetainingCapacity();
     }
 
