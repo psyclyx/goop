@@ -76,6 +76,9 @@ fn emitNode(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style_mo
         .dropdown => |dropdown| emitDropdown(tree, handle, dropdown, resolved, theme),
         .list_box => emitListBox(tree, handle, resolved, theme),
         .selectable => |selectable| emitSelectable(handle, selectable, resolved),
+        .table => |table| emitTable(tree, handle, table, resolved, theme),
+        .table_row => |row| emitTableRow(tree, handle, row, resolved, theme),
+        .table_cell => emitTableCell(tree, handle, resolved, theme),
         .menu_bar => emitMenuBar(tree, handle, resolved, theme),
         .menu => |menu| emitMenu(tree, handle, menu, resolved, theme),
         .popup => |popup| emitPopup(tree, handle, popup, resolved, theme),
@@ -485,6 +488,109 @@ fn emitSelectable(
             .textAlignment = c.CLAY_TEXT_ALIGN_LEFT,
         }),
     );
+    c.Clay__CloseElement();
+}
+
+fn emitTable(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    table: widget.WidgetKind.Table,
+    resolved: style_mod.ResolvedStyle,
+    theme: style_mod.Theme,
+) void {
+    _ = table;
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = nodeId(handle),
+        .layout = .{
+            .sizing = .{
+                .width = growSizing(),
+                .height = .{},
+            },
+            .padding = clayPadding(resolved.padding),
+            .childGap = 0,
+            .childAlignment = .{},
+            .layoutDirection = c.CLAY_TOP_TO_BOTTOM,
+        },
+        .backgroundColor = clayColor(resolved.bg),
+        .cornerRadius = cornerRadiusAll(resolved.border_radius),
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
+    emitChildrenSkippingPopups(tree, handle, theme);
+    c.Clay__CloseElement();
+}
+
+fn emitTableRow(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    row: widget.WidgetKind.TableRow,
+    _: style_mod.ResolvedStyle,
+    theme: style_mod.Theme,
+) void {
+    _ = row;
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = nodeId(handle),
+        .layout = .{
+            .sizing = .{
+                .width = growSizing(),
+                .height = .{},
+            },
+            .padding = .{},
+            .childGap = 0,
+            .childAlignment = .{},
+            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
+        },
+        .backgroundColor = .{},
+        .cornerRadius = .{},
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
+    emitTableRowCells(tree, handle, effectiveTableColumnCount(tree, handle), theme);
+    c.Clay__CloseElement();
+}
+
+fn emitTableCell(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    resolved: style_mod.ResolvedStyle,
+    theme: style_mod.Theme,
+) void {
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = nodeId(handle),
+        .layout = .{
+            .sizing = .{
+                .width = growSizing(),
+                .height = .{},
+            },
+            .padding = clayPadding(resolved.padding),
+            .childGap = @intFromFloat(theme.spacing),
+            .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
+            .layoutDirection = c.CLAY_TOP_TO_BOTTOM,
+        },
+        .backgroundColor = .{},
+        .cornerRadius = .{},
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
+    emitChildrenSkippingPopups(tree, handle, theme);
     c.Clay__CloseElement();
 }
 
@@ -1144,6 +1250,61 @@ fn percentSizing(percent: f32) c.Clay_SizingAxis {
         .size = .{ .percent = std.math.clamp(percent, 0, 1) },
         .type = c.CLAY__SIZING_TYPE_PERCENT,
     };
+}
+
+fn emitTableRowCells(tree: *const widget.Tree, row: widget.NodeHandle, columns: u16, theme: style_mod.Theme) void {
+    const slot_percent = 1.0 / @as(f32, @floatFromInt(@max(columns, 1)));
+
+    var iter = tree.children(row);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind == .popup) continue;
+
+        c.Clay__OpenElement();
+        c.Clay__ConfigureOpenElement(.{
+            .id = .{},
+            .layout = .{
+                .sizing = .{
+                    .width = percentSizing(slot_percent),
+                    .height = .{},
+                },
+                .padding = .{},
+                .childGap = 0,
+                .childAlignment = .{},
+                .layoutDirection = c.CLAY_TOP_TO_BOTTOM,
+            },
+            .backgroundColor = .{},
+            .cornerRadius = .{},
+            .aspectRatio = .{},
+            .image = .{},
+            .floating = .{},
+            .custom = .{},
+            .clip = .{},
+            .border = .{},
+            .userData = null,
+        });
+        emitNode(tree, child, theme);
+        c.Clay__CloseElement();
+    }
+}
+
+fn effectiveTableColumnCount(tree: *const widget.Tree, row: widget.NodeHandle) u16 {
+    const cells = countNonPopupChildren(tree, row);
+    const parent_handle = tree.getConst(row).parent orelse return @max(cells, 1);
+    const parent = tree.getConst(parent_handle);
+    if (parent.kind == .table and parent.kind.table.columns > 0) {
+        return @max(@as(u16, parent.kind.table.columns), cells);
+    }
+    return @max(cells, 1);
+}
+
+fn countNonPopupChildren(tree: *const widget.Tree, parent: widget.NodeHandle) u16 {
+    var count: u16 = 0;
+    var iter = tree.children(parent);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind == .popup) continue;
+        count += 1;
+    }
+    return count;
 }
 
 fn directPopupChild(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {

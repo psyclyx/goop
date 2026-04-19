@@ -584,6 +584,40 @@ fn buildWidgetTree(state: *State) !void {
         .label = "Lighting Set",
     } });
 
+    _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "Asset Table" } });
+    const asset_table = try ctx.tree.addChild(root, .{ .table = .{ .columns = 3 } });
+    const asset_header = try ctx.tree.addChild(asset_table, .{ .table_row = .{ .header = true } });
+    const asset_header_name = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
+    const asset_header_type = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
+    const asset_header_vis = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(asset_header_name, .{ .text = .{ .content = "Name" } });
+    _ = try ctx.tree.addChild(asset_header_type, .{ .text = .{ .content = "Type" } });
+    _ = try ctx.tree.addChild(asset_header_vis, .{ .text = .{ .content = "Visible" } });
+
+    const asset_row_a = try ctx.tree.addChild(asset_table, .{ .table_row = .{ .selected = true } });
+    const asset_row_a_name = try ctx.tree.addChild(asset_row_a, .{ .table_cell = .{} });
+    const asset_row_a_type = try ctx.tree.addChild(asset_row_a, .{ .table_cell = .{} });
+    const asset_row_a_vis = try ctx.tree.addChild(asset_row_a, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(asset_row_a_name, .{ .text = .{ .content = "SceneRoot" } });
+    _ = try ctx.tree.addChild(asset_row_a_type, .{ .text = .{ .content = "Collection" } });
+    _ = try ctx.tree.addChild(asset_row_a_vis, .{ .text = .{ .content = "Yes" } });
+
+    const asset_row_b = try ctx.tree.addChild(asset_table, .{ .table_row = .{} });
+    const asset_row_b_name = try ctx.tree.addChild(asset_row_b, .{ .table_cell = .{} });
+    const asset_row_b_type = try ctx.tree.addChild(asset_row_b, .{ .table_cell = .{} });
+    const asset_row_b_vis = try ctx.tree.addChild(asset_row_b, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(asset_row_b_name, .{ .text = .{ .content = "CameraRig" } });
+    _ = try ctx.tree.addChild(asset_row_b_type, .{ .text = .{ .content = "Object" } });
+    _ = try ctx.tree.addChild(asset_row_b_vis, .{ .text = .{ .content = "Yes" } });
+
+    const asset_row_c = try ctx.tree.addChild(asset_table, .{ .table_row = .{} });
+    const asset_row_c_name = try ctx.tree.addChild(asset_row_c, .{ .table_cell = .{} });
+    const asset_row_c_type = try ctx.tree.addChild(asset_row_c, .{ .table_cell = .{} });
+    const asset_row_c_vis = try ctx.tree.addChild(asset_row_c, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(asset_row_c_name, .{ .text = .{ .content = "KeyLight" } });
+    _ = try ctx.tree.addChild(asset_row_c_type, .{ .text = .{ .content = "Light" } });
+    _ = try ctx.tree.addChild(asset_row_c_vis, .{ .text = .{ .content = "No" } });
+
     // Dropdown composed from a header + popup menu
     state.dropdown = try ctx.tree.addChild(root, .{ .dropdown = .{ .placeholder = "Viewport mode" } });
     const dropdown_popup = try ctx.tree.addChild(state.dropdown.?, .{ .popup = .{ .placement = .below_start } });

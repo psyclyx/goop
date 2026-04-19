@@ -98,6 +98,9 @@ fn emitNode(
         .dropdown => |dropdown| try emitDropdown(tree, handle, node, dropdown, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .list_box => try emitListBox(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .selectable => |selectable| try emitSelectable(node, selectable, resolved, theme, commands, allocator),
+        .table => |table| try emitTable(tree, handle, node, table, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .table_row => |row| try emitTableRow(tree, handle, node, row, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .table_cell => try emitTableCell(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .menu_bar => try emitMenuBar(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .menu => |menu| try emitMenu(tree, handle, node, menu, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .popup => try emitPopup(tree, handle, node, resolved, theme, commands, allocator, text_ctx),
@@ -496,6 +499,99 @@ fn emitSelectable(
         .font_size = resolved.font_size,
     } });
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+}
+
+fn emitTable(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    table: widget.WidgetKind.Table,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    _ = table;
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = node.layout_rect,
+        .color = resolved.bg,
+        .border_color = resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = resolved.border_radius,
+    } });
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn emitTableRow(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    row: widget.WidgetKind.TableRow,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    const fill = tableRowFill(tree, handle, row, theme);
+    if (fill.a > 0) {
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = node.layout_rect,
+            .color = fill,
+            .border_color = fill,
+            .border_width = 0,
+            .corner_radius = 0,
+        } });
+    }
+
+    if (!tableRowIsLast(tree, handle)) {
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = .{
+                .x = node.layout_rect.x,
+                .y = node.layout_rect.y + node.layout_rect.h - 1,
+                .w = node.layout_rect.w,
+                .h = 1,
+            },
+            .color = resolved.border,
+            .border_color = resolved.border,
+            .border_width = 0,
+            .corner_radius = 0,
+        } });
+    }
+
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn emitTableCell(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    if (tableCellIndex(tree, handle) > 0) {
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = .{
+                .x = node.layout_rect.x,
+                .y = node.layout_rect.y,
+                .w = 1,
+                .h = node.layout_rect.h,
+            },
+            .color = resolved.border,
+            .border_color = resolved.border,
+            .border_width = 0,
+            .corner_radius = 0,
+        } });
+    }
+
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
 fn emitMenuBar(
@@ -1033,6 +1129,55 @@ fn selectableBg(node: *const widget.Node, selected: bool, theme: style.Theme) st
         theme.bg_hover
     else
         .{ .r = 0, .g = 0, .b = 0, .a = 0 };
+}
+
+fn tableRowFill(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    row: widget.WidgetKind.TableRow,
+    theme: style.Theme,
+) style.Color {
+    if (row.selected) return theme.selection_bg;
+    if (row.header) return theme.bg_active;
+    if (tableStriped(tree, handle) and (tableRowIndex(tree, handle) % 2 == 1)) {
+        return style.Color.rgba(theme.bg_hover.r, theme.bg_hover.g, theme.bg_hover.b, 96);
+    }
+    return style.Color.rgba(0, 0, 0, 0);
+}
+
+fn tableStriped(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    const parent_handle = tree.getConst(handle).parent orelse return false;
+    const parent = tree.getConst(parent_handle);
+    return parent.kind == .table and parent.kind.table.striped;
+}
+
+fn tableRowIndex(tree: *const widget.Tree, handle: widget.NodeHandle) usize {
+    var index: usize = 0;
+    var current = tree.getConst(handle).prev_sibling;
+    while (current) |candidate| {
+        if (tree.getConst(candidate).kind == .table_row) index += 1;
+        current = tree.getConst(candidate).prev_sibling;
+    }
+    return index;
+}
+
+fn tableRowIsLast(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    var current = tree.getConst(handle).next_sibling;
+    while (current) |candidate| {
+        if (tree.getConst(candidate).kind == .table_row) return false;
+        current = tree.getConst(candidate).next_sibling;
+    }
+    return true;
+}
+
+fn tableCellIndex(tree: *const widget.Tree, handle: widget.NodeHandle) usize {
+    var index: usize = 0;
+    var current = tree.getConst(handle).prev_sibling;
+    while (current) |candidate| {
+        if (tree.getConst(candidate).kind == .table_cell) index += 1;
+        current = tree.getConst(candidate).prev_sibling;
+    }
+    return index;
 }
 
 fn directPopupChild(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
@@ -1745,6 +1890,55 @@ test "tab bar emits selected tab header and active panel only" {
     try std.testing.expect(dl.commands[5] == .text); // inactive tab label
     try std.testing.expect(dl.commands[6] == .text); // selected panel content
     try std.testing.expectEqualStrings("Active panel", dl.commands[6].text.text);
+}
+
+test "table emits header fill, stripes, and column dividers" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const table = try tree.addRoot(.{ .table = .{ .columns = 2 } });
+    const header = try tree.addChild(table, .{ .table_row = .{ .header = true } });
+    const header_name = try tree.addChild(header, .{ .table_cell = .{} });
+    const header_type = try tree.addChild(header, .{ .table_cell = .{} });
+    const row = try tree.addChild(table, .{ .table_row = .{} });
+    const row_name = try tree.addChild(row, .{ .table_cell = .{} });
+    const row_type = try tree.addChild(row, .{ .table_cell = .{} });
+    const header_name_text = try tree.addChild(header_name, .{ .text = .{ .content = "Name" } });
+    const header_type_text = try tree.addChild(header_type, .{ .text = .{ .content = "Type" } });
+    const row_name_text = try tree.addChild(row_name, .{ .text = .{ .content = "Cube" } });
+    const row_type_text = try tree.addChild(row_type, .{ .text = .{ .content = "Mesh" } });
+
+    tree.get(table).layout_rect = .{ .x = 0, .y = 0, .w = 280, .h = 56 };
+    tree.get(header).layout_rect = .{ .x = 0, .y = 0, .w = 280, .h = 28 };
+    tree.get(header_name).layout_rect = .{ .x = 0, .y = 0, .w = 140, .h = 28 };
+    tree.get(header_type).layout_rect = .{ .x = 140, .y = 0, .w = 140, .h = 28 };
+    tree.get(row).layout_rect = .{ .x = 0, .y = 28, .w = 280, .h = 28 };
+    tree.get(row_name).layout_rect = .{ .x = 0, .y = 28, .w = 140, .h = 28 };
+    tree.get(row_type).layout_rect = .{ .x = 140, .y = 28, .w = 140, .h = 28 };
+    tree.get(header_name_text).layout_rect = .{ .x = 8, .y = 6, .w = 40, .h = 14 };
+    tree.get(header_type_text).layout_rect = .{ .x = 148, .y = 6, .w = 40, .h = 14 };
+    tree.get(row_name_text).layout_rect = .{ .x = 8, .y = 34, .w = 40, .h = 14 };
+    tree.get(row_type_text).layout_rect = .{ .x = 148, .y = 34, .w = 40, .h = 14 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 10), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect); // table bg
+    try std.testing.expect(dl.commands[1] == .rect); // header fill
+    try std.testing.expect(dl.commands[2] == .rect); // header bottom line
+    try std.testing.expect(dl.commands[3] == .text); // header name
+    try std.testing.expect(dl.commands[4] == .rect); // header divider
+    try std.testing.expect(dl.commands[5] == .text); // header type
+    try std.testing.expect(dl.commands[6] == .rect); // striped row fill
+    try std.testing.expect(dl.commands[7] == .text); // row name
+    try std.testing.expect(dl.commands[8] == .rect); // row divider
+    try std.testing.expect(dl.commands[9] == .text); // row type
+    try std.testing.expectEqualStrings("Cube", dl.commands[7].text.text);
+    try std.testing.expectEqualStrings("Mesh", dl.commands[9].text.text);
 }
 
 test "slider emits track and thumb" {

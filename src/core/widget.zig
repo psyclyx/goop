@@ -34,6 +34,9 @@ pub const WidgetKind = union(enum) {
     dropdown: Dropdown,
     list_box: ListBox,
     selectable: Selectable,
+    table: Table,
+    table_row: TableRow,
+    table_cell: TableCell,
     menu_bar: MenuBar,
     menu: Menu,
     popup: Popup,
@@ -139,6 +142,18 @@ pub const WidgetKind = union(enum) {
         selected: bool = false,
         clicked: bool = false,
     };
+
+    pub const Table = struct {
+        columns: u8 = 0,
+        striped: bool = true,
+    };
+
+    pub const TableRow = struct {
+        header: bool = false,
+        selected: bool = false,
+    };
+
+    pub const TableCell = struct {};
 
     pub const MenuBar = struct {};
 

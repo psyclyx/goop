@@ -687,6 +687,46 @@ test "list box reports selected index and change across context frames" {
     try std.testing.expect(ctx.isSelected(camera));
 }
 
+test "table layout keeps columns aligned across rows" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 480, .height = 320 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const table = try ctx.tree.addChild(root, .{ .table = .{ .columns = 3 } });
+    const header = try ctx.tree.addChild(table, .{ .table_row = .{ .header = true } });
+    const header_name = try ctx.tree.addChild(header, .{ .table_cell = .{} });
+    const header_type = try ctx.tree.addChild(header, .{ .table_cell = .{} });
+    const header_vis = try ctx.tree.addChild(header, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(header_name, .{ .text = .{ .content = "Name" } });
+    _ = try ctx.tree.addChild(header_type, .{ .text = .{ .content = "Type" } });
+    _ = try ctx.tree.addChild(header_vis, .{ .text = .{ .content = "Visible" } });
+
+    const row = try ctx.tree.addChild(table, .{ .table_row = .{} });
+    const row_name = try ctx.tree.addChild(row, .{ .table_cell = .{} });
+    const row_type = try ctx.tree.addChild(row, .{ .table_cell = .{} });
+    const row_vis = try ctx.tree.addChild(row, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(row_name, .{ .text = .{ .content = "Cube" } });
+    _ = try ctx.tree.addChild(row_type, .{ .text = .{ .content = "Mesh" } });
+    _ = try ctx.tree.addChild(row_vis, .{ .text = .{ .content = "Yes" } });
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+
+    const header_name_rect = ctx.tree.getConst(header_name).layout_rect;
+    const header_type_rect = ctx.tree.getConst(header_type).layout_rect;
+    const header_vis_rect = ctx.tree.getConst(header_vis).layout_rect;
+    const row_name_rect = ctx.tree.getConst(row_name).layout_rect;
+    const row_type_rect = ctx.tree.getConst(row_type).layout_rect;
+    const row_vis_rect = ctx.tree.getConst(row_vis).layout_rect;
+
+    try std.testing.expect(header_name_rect.w > 0);
+    try std.testing.expectApproxEqAbs(header_name_rect.x, row_name_rect.x, 0.01);
+    try std.testing.expectApproxEqAbs(header_type_rect.x, row_type_rect.x, 0.01);
+    try std.testing.expectApproxEqAbs(header_vis_rect.x, row_vis_rect.x, 0.01);
+    try std.testing.expectApproxEqAbs(header_name_rect.w, header_type_rect.w, 0.01);
+    try std.testing.expectApproxEqAbs(header_type_rect.w, header_vis_rect.w, 0.01);
+}
+
 test "menu popup layout updates in the same frame as activation" {
     var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
     defer ctx.deinit();

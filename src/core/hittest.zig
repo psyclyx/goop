@@ -66,7 +66,7 @@ pub fn isInteractive(kind: widget.WidgetKind) bool {
         .container,
         .text_input,
         => true,
-        .text, .list_box, .menu_bar, .tab_bar => false,
+        .text, .list_box, .table, .table_row, .table_cell, .menu_bar, .tab_bar => false,
     };
 }
 
