@@ -50,7 +50,7 @@ Widgets currently implemented:
 Still actively in progress:
 
 - API cleanup and broader documentation
-- HiDPI/runtime scaling behavior
+- fractional scaling and broader runtime portability
 - UTF-8 text editing and richer text input behavior
 - more embedder examples and validation beyond the current demo
 

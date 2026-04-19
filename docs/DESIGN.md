@@ -159,7 +159,6 @@ core API.
 ## Current Constraints
 
 - Text input editing is ASCII-only
-- The demo assumes 1:1 surface size to physical pixels
 - UTF-8 text editing and clipboard-backed text input are still incomplete
 - MSAA configuration is fixed at 4x with no fallback path
 
@@ -167,7 +166,6 @@ core API.
 
 Near-term work is focused on:
 
-1. Improving runtime portability and display scaling behavior
-2. Improving text editing beyond the current ASCII-only path
-3. Hardening the new C-facing surface and examples
-4. Expanding embedder-level samples and validation
+1. Improving text editing beyond the current ASCII-only path
+2. Hardening the new C-facing surface and examples
+3. Expanding embedder-level samples and validation

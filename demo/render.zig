@@ -18,6 +18,7 @@ const VECTOR_BUF_LEN = MAX_VECTOR_PRIMITIVES * snail.VECTOR_FLOATS_PER_PRIMITIVE
 pub const Renderer = struct {
     viewport_w: f32,
     viewport_h: f32,
+    scale: f32,
     scissor_stack: [16]Scissor = undefined,
     scissor_depth: u32 = 0,
 
@@ -42,6 +43,7 @@ pub const Renderer = struct {
         return .{
             .viewport_w = @floatFromInt(w),
             .viewport_h = @floatFromInt(h),
+            .scale = 1,
             .text_renderer = text_renderer,
             .text_batch = snail.Batch.init(vertex_buf),
             .vertex_buf = vertex_buf,
@@ -58,9 +60,10 @@ pub const Renderer = struct {
         std.heap.page_allocator.free(self.vector_buf);
     }
 
-    pub fn beginFrame(self: *Renderer, w: u32, h: u32) void {
+    pub fn beginFrame(self: *Renderer, w: u32, h: u32, scale: f32) void {
         self.viewport_w = @floatFromInt(w);
         self.viewport_h = @floatFromInt(h);
+        self.scale = scale;
         self.scissor_depth = 0;
         gl.glViewport(0, 0, @intCast(w), @intCast(h));
         gl.glClearColor(0.12, 0.12, 0.12, 1.0);
@@ -101,8 +104,11 @@ pub const Renderer = struct {
         // coordinates relative to the baseline. Convert by flipping to Y-up.
         // Snap to pixel grid — fractional positions cause jagged glyph edges
         // because coverage straddles pixel boundaries.
-        const baseline_y = @round(self.viewport_h - (t.y + t.font_size));
-        _ = self.text_batch.addString(self.atlas, self.font, t.text, @round(t.x), baseline_y, t.font_size, color);
+        const scaled_x = snapToDevicePixels(t.x, self.scale);
+        const scaled_top = snapToDevicePixels(t.y, self.scale);
+        const scaled_font_size = t.font_size * self.scale;
+        const baseline_y = @round(self.viewport_h - (scaled_top + scaled_font_size));
+        _ = self.text_batch.addString(self.atlas, self.font, t.text, scaled_x, baseline_y, scaled_font_size, color);
     }
 
     fn flushText(self: *Renderer) void {
@@ -118,16 +124,16 @@ pub const Renderer = struct {
 
     fn addRect(self: *Renderer, r: DrawCommand.DrawRect) void {
         const rect: snail.VectorRect = .{
-            .x = r.bounds.x,
-            .y = r.bounds.y,
-            .w = r.bounds.w,
-            .h = r.bounds.h,
+            .x = r.bounds.x * self.scale,
+            .y = r.bounds.y * self.scale,
+            .w = r.bounds.w * self.scale,
+            .h = r.bounds.h * self.scale,
         };
         const fill = colorToVec4(r.color);
         const border = colorToVec4(r.border_color);
-        if (!self.vector_batch.addRoundedRect(rect, fill, border, r.border_width, r.corner_radius)) {
+        if (!self.vector_batch.addRoundedRect(rect, fill, border, r.border_width * self.scale, r.corner_radius * self.scale)) {
             self.flushVector();
-            _ = self.vector_batch.addRoundedRect(rect, fill, border, r.border_width, r.corner_radius);
+            _ = self.vector_batch.addRoundedRect(rect, fill, border, r.border_width * self.scale, r.corner_radius * self.scale);
         }
     }
 
@@ -141,12 +147,16 @@ pub const Renderer = struct {
     fn applyClip(self: *Renderer, c_cmd: DrawCommand.ClipRect) void {
         if (c_cmd.bounds) |bounds| {
             if (self.scissor_depth < self.scissor_stack.len) {
+                const x0: i32 = @intFromFloat(@floor(bounds.x * self.scale));
+                const y0: i32 = @intFromFloat(@floor(bounds.y * self.scale));
+                const x1: i32 = @intFromFloat(@ceil((bounds.x + bounds.w) * self.scale));
+                const y1: i32 = @intFromFloat(@ceil((bounds.y + bounds.h) * self.scale));
                 const vh: i32 = @intFromFloat(self.viewport_h);
                 self.scissor_stack[self.scissor_depth] = .{
-                    .x = @intFromFloat(bounds.x),
-                    .y = vh - @as(i32, @intFromFloat(bounds.y + bounds.h)),
-                    .w = @intFromFloat(bounds.w),
-                    .h = @intFromFloat(bounds.h),
+                    .x = @max(0, x0),
+                    .y = @max(0, vh - y1),
+                    .w = @max(0, x1 - x0),
+                    .h = @max(0, y1 - y0),
                 };
                 const s = self.scissor_stack[self.scissor_depth];
                 self.scissor_depth += 1;
@@ -173,5 +183,9 @@ pub const Renderer = struct {
             @as(f32, @floatFromInt(c.b)) / 255.0,
             @as(f32, @floatFromInt(c.a)) / 255.0,
         };
+    }
+
+    fn snapToDevicePixels(value: f32, scale: f32) f32 {
+        return @round(value * scale);
     }
 };

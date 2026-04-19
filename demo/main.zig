@@ -35,6 +35,14 @@ const SnailTextCtx = struct {
     atlas: *const snail.Atlas,
 };
 
+const OutputState = struct {
+    global_name: u32,
+    output: *wl.wl_output,
+    scale: u32 = 1,
+    entered: bool = false,
+    next: ?*OutputState = null,
+};
+
 fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) goop.TextDimensions {
     const ctx: *const SnailTextCtx = @ptrCast(@alignCast(user_data));
     const scale = font_size / @as(f32, @floatFromInt(ctx.font.unitsPerEm()));
@@ -67,8 +75,13 @@ fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) go
 const State = struct {
     running: bool = true,
     configured: bool = false,
-    width: u32 = 800,
-    height: u32 = 600,
+    logical_width: u32 = 800,
+    logical_height: u32 = 600,
+    buffer_width: u32 = 800,
+    buffer_height: u32 = 600,
+    buffer_scale: u32 = 1,
+    compositor_version: u32 = 0,
+    surface_preferred_scale: ?u32 = null,
     needs_redraw: bool = true,
     frame_pending: bool = false,
     timeout_ns: ?u64 = null,
@@ -80,6 +93,7 @@ const State = struct {
     wm_base: ?*wl.xdg_wm_base = null,
     seat: ?*wl.wl_seat = null,
     data_device_manager: ?*wl.wl_data_device_manager = null,
+    outputs: ?*OutputState = null,
 
     // Wayland surface chain
     surface: ?*wl.wl_surface = null,
@@ -101,7 +115,7 @@ const State = struct {
     egl_context: egl.EGLContext = egl.EGL_NO_CONTEXT,
 
     // goop
-    ctx: *goop.Context = undefined,
+    ctx: ?*goop.Context = null,
 
     // Widget handles for querying state
     btn_a: ?goop.NodeHandle = null,
@@ -272,6 +286,100 @@ const State = struct {
             self.clipboard_source = null;
         }
     }
+
+    fn addOutput(self: *State, global_name: u32, output: *wl.wl_output) !void {
+        const entry = try allocator.create(OutputState);
+        entry.* = .{
+            .global_name = global_name,
+            .output = output,
+            .next = self.outputs,
+        };
+        self.outputs = entry;
+        _ = wl.wl_output_add_listener(output, &output_listener, self);
+    }
+
+    fn findOutput(self: *State, output: *wl.wl_output) ?*OutputState {
+        var it = self.outputs;
+        while (it) |entry| : (it = entry.next) {
+            if (entry.output == output) return entry;
+        }
+        return null;
+    }
+
+    fn destroyOutputEntry(self: *State, target: *OutputState) void {
+        if (self.outputs == target) {
+            self.outputs = target.next;
+        } else {
+            var it = self.outputs;
+            while (it) |entry| : (it = entry.next) {
+                if (entry.next == target) {
+                    entry.next = target.next;
+                    break;
+                }
+            }
+        }
+        wl.wl_output_destroy(target.output);
+        allocator.destroy(target);
+    }
+
+    fn removeOutputByGlobalName(self: *State, global_name: u32) void {
+        var it = self.outputs;
+        while (it) |entry| : (it = entry.next) {
+            if (entry.global_name == global_name) {
+                const was_entered = entry.entered;
+                self.destroyOutputEntry(entry);
+                if (was_entered and self.surface_preferred_scale == null) self.updateBufferMetrics();
+                return;
+            }
+        }
+    }
+
+    fn destroyAllOutputs(self: *State) void {
+        while (self.outputs) |entry| {
+            self.destroyOutputEntry(entry);
+        }
+    }
+
+    fn effectiveBufferScale(self: *const State) u32 {
+        if (self.surface_preferred_scale) |preferred| return @max(preferred, 1);
+
+        var scale: u32 = 1;
+        var it = self.outputs;
+        while (it) |entry| : (it = entry.next) {
+            if (entry.entered) scale = @max(scale, entry.scale);
+        }
+        return scale;
+    }
+
+    fn setLogicalSize(self: *State, width: u32, height: u32) void {
+        self.logical_width = @max(width, 1);
+        self.logical_height = @max(height, 1);
+        if (self.ctx) |ctx| ctx.setDimensions(self.logical_width, self.logical_height);
+        self.updateBufferMetrics();
+    }
+
+    fn updateBufferMetrics(self: *State) void {
+        const next_scale = self.effectiveBufferScale();
+        const next_width = self.logical_width * next_scale;
+        const next_height = self.logical_height * next_scale;
+        const changed = self.buffer_scale != next_scale or self.buffer_width != next_width or self.buffer_height != next_height;
+
+        self.buffer_scale = next_scale;
+        self.buffer_width = next_width;
+        self.buffer_height = next_height;
+
+        if (self.surface) |surface| {
+            if (self.compositor_version >= 3) {
+                wl.wl_surface_set_buffer_scale(surface, @intCast(self.buffer_scale));
+            }
+        }
+        if (changed) {
+            if (self.egl_window) |window| {
+                wl.wl_egl_window_resize(window, @intCast(self.buffer_width), @intCast(self.buffer_height), 0, 0);
+            }
+        }
+        if (changed) self.needs_redraw = true;
+    }
 };
 
 const DataOfferState = struct {
@@ -315,7 +423,8 @@ fn registryGlobal(data: ?*anyopaque, registry: ?*wl.wl_registry, name: u32, inte
     const iface = std.mem.span(@as([*:0]const u8, @ptrCast(interface)));
 
     if (std.mem.eql(u8, iface, "wl_compositor")) {
-        state.compositor = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_compositor_interface, @min(version, 4)));
+        state.compositor_version = @min(version, 6);
+        state.compositor = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_compositor_interface, state.compositor_version));
     } else if (std.mem.eql(u8, iface, "xdg_wm_base")) {
         state.wm_base = @ptrCast(wl.wl_registry_bind(registry, name, &wl.xdg_wm_base_interface, @min(version, 2)));
         _ = wl.xdg_wm_base_add_listener(state.wm_base, &wm_base_listener, data);
@@ -326,10 +435,16 @@ fn registryGlobal(data: ?*anyopaque, registry: ?*wl.wl_registry, name: u32, inte
     } else if (std.mem.eql(u8, iface, "wl_data_device_manager")) {
         state.data_device_manager = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_data_device_manager_interface, @min(version, 3)));
         ensureDataDevice(state, data);
+    } else if (std.mem.eql(u8, iface, "wl_output")) {
+        const output = @as(?*wl.wl_output, @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_output_interface, @min(version, 4)))) orelse return;
+        state.addOutput(name, output) catch wl.wl_output_destroy(output);
     }
 }
 
-fn registryGlobalRemove(_: ?*anyopaque, _: ?*wl.wl_registry, _: u32) callconv(.c) void {}
+fn registryGlobalRemove(data: ?*anyopaque, _: ?*wl.wl_registry, name: u32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    state.removeOutputByGlobalName(name);
+}
 
 const wm_base_listener = wl.xdg_wm_base_listener{
     .ping = &wmBasePing,
@@ -363,12 +478,7 @@ fn noopWmCapabilities(_: ?*anyopaque, _: ?*wl.xdg_toplevel, _: ?*wl.wl_array) ca
 fn xdgToplevelConfigure(data: ?*anyopaque, _: ?*wl.xdg_toplevel, width: i32, height: i32, _: ?[*]wl.wl_array) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
     if (width > 0 and height > 0) {
-        state.width = @intCast(width);
-        state.height = @intCast(height);
-        if (state.egl_window != null) {
-            wl.wl_egl_window_resize(state.egl_window, width, height, 0, 0);
-        }
-        state.ctx.setDimensions(state.width, state.height);
+        state.setLogicalSize(@intCast(width), @intCast(height));
     }
     state.needs_redraw = true;
 }
@@ -386,6 +496,66 @@ fn ensureDataDevice(state: *State, data: ?*anyopaque) void {
         _ = wl.wl_data_device_add_listener(device, &data_device_listener, data);
     }
 }
+
+const output_listener = wl.wl_output_listener{
+    .geometry = &noopOutputGeometry,
+    .mode = &noopOutputMode,
+    .done = &noopOutputDone,
+    .scale = &outputScale,
+    .name = &noopOutputName,
+    .description = &noopOutputDescription,
+};
+
+fn noopOutputGeometry(_: ?*anyopaque, _: ?*wl.wl_output, _: i32, _: i32, _: i32, _: i32, _: i32, _: [*c]const u8, _: [*c]const u8, _: i32) callconv(.c) void {}
+fn noopOutputMode(_: ?*anyopaque, _: ?*wl.wl_output, _: u32, _: i32, _: i32, _: i32) callconv(.c) void {}
+fn noopOutputDone(_: ?*anyopaque, _: ?*wl.wl_output) callconv(.c) void {}
+fn noopOutputName(_: ?*anyopaque, _: ?*wl.wl_output, _: [*c]const u8) callconv(.c) void {}
+fn noopOutputDescription(_: ?*anyopaque, _: ?*wl.wl_output, _: [*c]const u8) callconv(.c) void {}
+
+fn outputScale(data: ?*anyopaque, output: ?*wl.wl_output, factor: i32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const wl_output = output orelse return;
+    const entry = state.findOutput(wl_output) orelse return;
+    entry.scale = @intCast(@max(factor, 1));
+    if (entry.entered and state.surface_preferred_scale == null) state.updateBufferMetrics();
+}
+
+const surface_listener = wl.wl_surface_listener{
+    .enter = &surfaceEnter,
+    .leave = &surfaceLeave,
+    .preferred_buffer_scale = &surfacePreferredBufferScale,
+    .preferred_buffer_transform = &noopSurfacePreferredBufferTransform,
+};
+
+fn surfaceEnter(data: ?*anyopaque, _: ?*wl.wl_surface, output: ?*wl.wl_output) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const wl_output = output orelse return;
+    if (state.findOutput(wl_output)) |entry| {
+        if (!entry.entered) {
+            entry.entered = true;
+            if (state.surface_preferred_scale == null) state.updateBufferMetrics();
+        }
+    }
+}
+
+fn surfaceLeave(data: ?*anyopaque, _: ?*wl.wl_surface, output: ?*wl.wl_output) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const wl_output = output orelse return;
+    if (state.findOutput(wl_output)) |entry| {
+        if (entry.entered) {
+            entry.entered = false;
+            if (state.surface_preferred_scale == null) state.updateBufferMetrics();
+        }
+    }
+}
+
+fn surfacePreferredBufferScale(data: ?*anyopaque, _: ?*wl.wl_surface, factor: i32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    state.surface_preferred_scale = @intCast(@max(factor, 1));
+    state.updateBufferMetrics();
+}
+
+fn noopSurfacePreferredBufferTransform(_: ?*anyopaque, _: ?*wl.wl_surface, _: u32) callconv(.c) void {}
 
 const seat_listener = wl.wl_seat_listener{
     .capabilities = &seatCapabilities,
@@ -610,12 +780,13 @@ fn evdevToKeycode(scancode: u32) goop.Event.Keycode {
 
 fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, serial: u32, _: u32, key: u32, key_state: u32) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
+    const ctx = state.ctx orelse return;
     state.last_input_serial = serial;
     // Wayland delivers Linux evdev codes here. xkbcommon needs an extra +8,
     // but goop's logical-key mapping table is keyed by the raw evdev values.
     const scancode = key;
     const goop_state: goop.Event.Key.KeyState = if (key_state == 1) .pressed else .released;
-    state.ctx.pushEvent(.{ .key = .{
+    ctx.pushEvent(.{ .key = .{
         .scancode = scancode,
         .keycode = evdevToKeycode(scancode),
         .state = goop_state,
@@ -627,7 +798,7 @@ fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, serial: u32, _: u32, key:
             // xkb uses evdev keycodes (key + 8)
             const codepoint = xkb.xkb_state_key_get_utf32(xkb_st, key + 8);
             if (codepoint >= 0x20 and codepoint < 0x7F) {
-                state.ctx.pushEvent(.{ .text = .{
+                ctx.pushEvent(.{ .text = .{
                     .codepoint = @intCast(codepoint),
                 } }) catch {};
             }
@@ -650,12 +821,13 @@ fn pointerMotion(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, sx: wl.wl_fixed_
     const y = fixedToF32(sy);
     state.mouse_x = x;
     state.mouse_y = y;
-    state.ctx.pushEvent(.{ .mouse_move = .{ .x = x, .y = y } }) catch {};
+    if (state.ctx) |ctx| ctx.pushEvent(.{ .mouse_move = .{ .x = x, .y = y } }) catch {};
     state.needs_redraw = true;
 }
 
 fn pointerButton(data: ?*anyopaque, _: ?*wl.wl_pointer, serial: u32, time_ms: u32, button: u32, btn_state: u32) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
+    const ctx = state.ctx orelse return;
     state.last_input_serial = serial;
     const goop_button: goop.Event.MouseButton.Button = switch (button) {
         0x110 => .left, // BTN_LEFT
@@ -668,7 +840,7 @@ fn pointerButton(data: ?*anyopaque, _: ?*wl.wl_pointer, serial: u32, time_ms: u3
     // Use last known mouse position from Wayland pointer events
     const mx = state.mouse_x;
     const my = state.mouse_y;
-    state.ctx.pushEvent(.{ .mouse_button = .{
+    ctx.pushEvent(.{ .mouse_button = .{
         .button = goop_button,
         .state = goop_state,
         .x = mx,
@@ -683,7 +855,7 @@ fn pointerAxis(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, axis: u32, value: 
     const v = fixedToF32(value);
     const dx: f32 = if (axis == 1) v else 0; // WL_POINTER_AXIS_HORIZONTAL_SCROLL
     const dy: f32 = if (axis == 0) v else 0; // WL_POINTER_AXIS_VERTICAL_SCROLL
-    state.ctx.pushEvent(.{ .mouse_scroll = .{ .dx = dx, .dy = dy } }) catch {};
+    if (state.ctx) |ctx| ctx.pushEvent(.{ .mouse_scroll = .{ .dx = dx, .dy = dy } }) catch {};
     state.needs_redraw = true;
 }
 
@@ -744,7 +916,7 @@ fn initEgl(state: *State, display: *wl.wl_display) !void {
     };
     state.egl_context = egl.eglCreateContext(state.egl_display, config, egl.EGL_NO_CONTEXT, &ctx_attribs) orelse return error.EglCreateContextFailed;
 
-    state.egl_window = wl.wl_egl_window_create(state.surface, @intCast(state.width), @intCast(state.height)) orelse return error.EglWindowCreateFailed;
+    state.egl_window = wl.wl_egl_window_create(state.surface, @intCast(state.buffer_width), @intCast(state.buffer_height)) orelse return error.EglWindowCreateFailed;
 
     state.egl_surface = egl.eglCreateWindowSurface(state.egl_display, config, @intFromPtr(state.egl_window), null) orelse return error.EglCreateSurfaceFailed;
 
@@ -762,7 +934,7 @@ fn deinitEgl(state: *State) void {
 // ── Widget tree ──
 
 fn buildWidgetTree(state: *State) !void {
-    const ctx = state.ctx;
+    const ctx = state.ctx.?;
 
     const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
 
@@ -1089,6 +1261,7 @@ pub fn main() !void {
 
     // Create surface
     state.surface = wl.wl_compositor_create_surface(state.compositor) orelse return error.NoSurface;
+    _ = wl.wl_surface_add_listener(state.surface, &surface_listener, &state);
     state.xdg_surface = wl.xdg_wm_base_get_xdg_surface(state.wm_base, state.surface) orelse return error.NoXdgSurface;
     _ = wl.xdg_surface_add_listener(state.xdg_surface, &xdg_surface_listener, &state);
     state.xdg_toplevel = wl.xdg_surface_get_toplevel(state.xdg_surface) orelse return error.NoToplevel;
@@ -1124,17 +1297,23 @@ pub fn main() !void {
     };
 
     // goop context + widget tree
-    var ctx = try goop.Context.init(allocator, .{ .width = state.width, .height = state.height });
+    var ctx = try goop.Context.init(allocator, .{ .width = state.logical_width, .height = state.logical_height });
     defer ctx.deinit();
     state.ctx = &ctx;
     ctx.clipboard = state.clipboard();
     try buildWidgetTree(&state);
 
     // GL renderer (with snail text support)
-    var renderer = try render.Renderer.init(state.width, state.height, &font, &atlas);
+    var renderer = try render.Renderer.init(state.buffer_width, state.buffer_height, &font, &atlas);
     defer renderer.deinit();
 
-    std.debug.print("goop demo running ({}x{})\n", .{ state.width, state.height });
+    std.debug.print("goop demo running (logical {}x{}, scale {}, buffer {}x{})\n", .{
+        state.logical_width,
+        state.logical_height,
+        state.buffer_scale,
+        state.buffer_width,
+        state.buffer_height,
+    });
 
     // Wayland dispatch/render loop. Redraws are paced by frame callbacks.
     while (state.running) {
@@ -1301,7 +1480,7 @@ pub fn main() !void {
         var dl = try ctx.generateDrawList();
         defer ctx.freeDrawList(&dl);
 
-        renderer.beginFrame(state.width, state.height);
+        renderer.beginFrame(state.buffer_width, state.buffer_height, @floatFromInt(state.buffer_scale));
         renderer.render(dl);
 
         // Request frame callback BEFORE swap — the callback must be
@@ -1312,6 +1491,7 @@ pub fn main() !void {
 
     // Clean up xkb state
     state.destroyAllDataOffers();
+    state.destroyAllOutputs();
     state.destroyClipboardSource();
     state.clipboard_buf.deinit(allocator);
     if (state.data_device) |data_device| wl.wl_data_device_release(data_device);

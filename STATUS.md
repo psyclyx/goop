@@ -13,6 +13,7 @@ fallback locations.
 
 ## Recent Progress
 
+- HiDPI-aware Wayland demo sizing with logical-vs-buffer dimensions
 - Generational widget handles with subtree removal
 - Draw-list caching behind `draw_dirty`
 - Pixel-snapped text positioning in the demo renderer
@@ -37,15 +38,13 @@ fallback locations.
 
 ## Next Priorities
 
-1. HiDPI scaling
-2. UTF-8 text editing in inputs
-3. Demo/runtime portability polish around the new C surface
-4. Header/examples coverage for the C API
+1. UTF-8 text editing in inputs
+2. Demo/runtime portability polish around the new C surface
+3. Header/examples coverage for the C API
 
 ## Known Issues
 
 - MSAA sample count is hardcoded to `4` with no capability fallback
 - Text input only handles printable ASCII; UTF-8 editing is not implemented
-- No HiDPI scaling; the demo treats surface size as physical pixels
 - `freeDrawList` is a no-op for compatibility; `Context` owns draw-list memory
 - `widget.zig` grew significantly with removal logic and should be watched
