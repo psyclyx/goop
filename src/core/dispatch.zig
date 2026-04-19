@@ -19,6 +19,15 @@ pub const MouseState = struct {
     shift_down: bool = false,
     /// Whether a ctrl key is currently held.
     ctrl_down: bool = false,
+    /// Double-click detection state.
+    last_click_time_ms: u64 = 0,
+    last_click_x: f32 = 0,
+    last_click_y: f32 = 0,
+
+    /// Maximum time between clicks for a double-click (milliseconds).
+    const double_click_time_ms: u64 = 400;
+    /// Maximum distance between clicks for a double-click (pixels).
+    const double_click_dist: f32 = 5;
 };
 
 /// Process a batch of events against the widget tree.
@@ -87,12 +96,19 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                             const rel_x = mouse.x - text_x;
                             const char_pos = if (char_width > 0) rel_x / char_width else 0;
                             const rounded: u8 = @intFromFloat(std.math.clamp(@round(char_pos), 0, @as(f32, @floatFromInt(ti.len))));
-                            if (mouse.shift_down) {
+
+                            // Double-click: select word under cursor
+                            if (isDoubleClick(mouse, mb)) {
+                                const bounds = ti.wordBounds(rounded);
+                                ti.selection_anchor = bounds.start;
+                                ti.cursor = bounds.end;
+                            } else if (mouse.shift_down) {
                                 if (ti.selection_anchor == null) ti.selection_anchor = ti.cursor;
+                                ti.cursor = rounded;
                             } else {
                                 ti.selection_anchor = rounded;
+                                ti.cursor = rounded;
                             }
-                            ti.cursor = rounded;
                         }
                         // Start slider drag
                         if (tree.getConst(t).kind == .slider) {
@@ -100,6 +116,9 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                             updateSliderValue(tree, t, mouse.x, theme);
                         }
                     }
+                    mouse.last_click_time_ms = mb.timestamp_ms;
+                    mouse.last_click_x = mb.x;
+                    mouse.last_click_y = mb.y;
                 } else {
                     // Released
                     mouse.left_down = false;
@@ -332,6 +351,16 @@ fn contentExtent(tree: *const widget.Tree, parent: widget.NodeHandle) struct { w
         .w = max_x - parent_rect.x,
         .h = max_y - parent_rect.y,
     };
+}
+
+/// Check if a mouse press constitutes a double-click based on timing and position.
+fn isDoubleClick(mouse: *const MouseState, mb: event.Event.MouseButton) bool {
+    if (mouse.last_click_time_ms == 0 or mb.timestamp_ms == 0) return false;
+    const dt = mb.timestamp_ms -| mouse.last_click_time_ms;
+    if (dt > MouseState.double_click_time_ms) return false;
+    const dx = @abs(mb.x - mouse.last_click_x);
+    const dy = @abs(mb.y - mouse.last_click_y);
+    return dx <= MouseState.double_click_dist and dy <= MouseState.double_click_dist;
 }
 
 /// Fire a click on a widget.
@@ -1642,4 +1671,160 @@ test "shift+click extends existing selection" {
     try std.testing.expectEqual(@as(?u8, 3), input.selection_anchor);
     try std.testing.expectEqual(@as(u8, 0), input.cursor);
     try std.testing.expectEqualStrings("abc", input.selectedContent());
+}
+
+test "double-click selects word in text input" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Focus and type "hello world"
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 20, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    for ("hello world") |c| {
+        process(&tree, &.{.{ .text = .{ .codepoint = c } }}, &mouse, style.Theme.default);
+    }
+
+    // Default theme: font_size=14, padding.left=6, char_width=8.4
+    // text_x = 10 + 6 = 16
+    // Double-click on "world" at char 7 ('o'): x = 16 + 7*8.4 = 74.8
+    const click_x: f32 = 74.8;
+
+    // First click at t=1000
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = 20, .timestamp_ms = 1000 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = click_x, .y = 20, .timestamp_ms = 1000 } },
+    }, &mouse, style.Theme.default);
+
+    // Second click at t=1200 (within 400ms threshold)
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = 20, .timestamp_ms = 1200 } },
+    }, &mouse, style.Theme.default);
+
+    const input = &tree.get(ti).kind.text_input;
+    try std.testing.expect(input.hasSelection());
+    try std.testing.expectEqualStrings("world", input.selectedContent());
+}
+
+test "double-click selects first word" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Focus and type "hello world"
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 20, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    for ("hello world") |c| {
+        process(&tree, &.{.{ .text = .{ .codepoint = c } }}, &mouse, style.Theme.default);
+    }
+
+    // Double-click on "hello" at char 2 ('l'): x = 16 + 2*8.4 = 32.8
+    const click_x: f32 = 32.8;
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = 20, .timestamp_ms = 100 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = click_x, .y = 20, .timestamp_ms = 100 } },
+    }, &mouse, style.Theme.default);
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = 20, .timestamp_ms = 300 } },
+    }, &mouse, style.Theme.default);
+
+    const input = &tree.get(ti).kind.text_input;
+    try std.testing.expect(input.hasSelection());
+    try std.testing.expectEqualStrings("hello", input.selectedContent());
+}
+
+test "double-click on space selects space run" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Focus and type "a  b" (two spaces)
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 20, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    for ("a  b") |c| {
+        process(&tree, &.{.{ .text = .{ .codepoint = c } }}, &mouse, style.Theme.default);
+    }
+
+    // Double-click on first space at char 1: x = 16 + 1*8.4 = 24.4
+    const click_x: f32 = 24.4;
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = 20, .timestamp_ms = 100 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = click_x, .y = 20, .timestamp_ms = 100 } },
+    }, &mouse, style.Theme.default);
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = 20, .timestamp_ms = 300 } },
+    }, &mouse, style.Theme.default);
+
+    const input = &tree.get(ti).kind.text_input;
+    try std.testing.expect(input.hasSelection());
+    try std.testing.expectEqualStrings("  ", input.selectedContent());
+}
+
+test "slow double-click does not select word" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const ti = try tree.addChild(root, .{ .text_input = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(ti).layout_rect = .{ .x = 10, .y = 10, .w = 300, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Focus and type "hello"
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 20, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    for ("hello") |c| {
+        process(&tree, &.{.{ .text = .{ .codepoint = c } }}, &mouse, style.Theme.default);
+    }
+
+    const click_x: f32 = 32.8;
+    // First click at t=1000
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = 20, .timestamp_ms = 1000 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = click_x, .y = 20, .timestamp_ms = 1000 } },
+    }, &mouse, style.Theme.default);
+
+    // Second click at t=2000 (too slow — 1000ms > 400ms threshold)
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = 20, .timestamp_ms = 2000 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = click_x, .y = 20, .timestamp_ms = 2000 } },
+    }, &mouse, style.Theme.default);
+
+    const input = &tree.get(ti).kind.text_input;
+    try std.testing.expect(!input.hasSelection());
 }

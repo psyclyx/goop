@@ -18,6 +18,7 @@ pub const Event = union(enum) {
         state: ButtonState,
         x: f32,
         y: f32,
+        timestamp_ms: u64 = 0,
 
         pub const Button = enum { left, right, middle };
         pub const ButtonState = enum { pressed, released };

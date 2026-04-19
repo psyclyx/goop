@@ -144,6 +144,26 @@ pub const WidgetKind = union(enum) {
             self.cursor -= 1;
         }
 
+        /// Find the word boundaries around the given position.
+        /// Words are runs of alphanumeric/underscore characters.
+        pub fn wordBounds(self: *const TextInput, pos: u8) struct { start: u8, end: u8 } {
+            if (self.len == 0) return .{ .start = 0, .end = 0 };
+            const p: usize = if (pos >= self.len) self.len - 1 else pos;
+            const text = self.buffer[0..self.len];
+            const is_word = isWordChar(text[p]);
+            // Scan left
+            var start: usize = p;
+            while (start > 0 and isWordChar(text[start - 1]) == is_word) start -= 1;
+            // Scan right
+            var end: usize = p;
+            while (end < self.len and isWordChar(text[end]) == is_word) end += 1;
+            return .{ .start = @intCast(start), .end = @intCast(end) };
+        }
+
+        fn isWordChar(c: u8) bool {
+            return std.ascii.isAlphanumeric(c) or c == '_';
+        }
+
         pub fn deleteForward(self: *TextInput) void {
             if (self.hasSelection()) {
                 self.deleteSelection();
@@ -271,4 +291,41 @@ test "build and traverse widget tree" {
     try std.testing.expectEqual(@as(?NodeHandle, btn), iter.next());
     try std.testing.expectEqual(@as(?NodeHandle, txt), iter.next());
     try std.testing.expectEqual(@as(?NodeHandle, null), iter.next());
+}
+
+test "wordBounds finds word boundaries" {
+    var ti = WidgetKind.TextInput{};
+    for ("hello world") |c| ti.insert(c);
+
+    // In middle of "hello"
+    const b1 = ti.wordBounds(2);
+    try std.testing.expectEqual(@as(u8, 0), b1.start);
+    try std.testing.expectEqual(@as(u8, 5), b1.end);
+
+    // On the space
+    const b2 = ti.wordBounds(5);
+    try std.testing.expectEqual(@as(u8, 5), b2.start);
+    try std.testing.expectEqual(@as(u8, 6), b2.end);
+
+    // In "world"
+    const b3 = ti.wordBounds(8);
+    try std.testing.expectEqual(@as(u8, 6), b3.start);
+    try std.testing.expectEqual(@as(u8, 11), b3.end);
+
+    // At start
+    const b4 = ti.wordBounds(0);
+    try std.testing.expectEqual(@as(u8, 0), b4.start);
+    try std.testing.expectEqual(@as(u8, 5), b4.end);
+
+    // Past end (clamped)
+    const b5 = ti.wordBounds(20);
+    try std.testing.expectEqual(@as(u8, 6), b5.start);
+    try std.testing.expectEqual(@as(u8, 11), b5.end);
+}
+
+test "wordBounds on empty input" {
+    const ti = WidgetKind.TextInput{};
+    const b = ti.wordBounds(0);
+    try std.testing.expectEqual(@as(u8, 0), b.start);
+    try std.testing.expectEqual(@as(u8, 0), b.end);
 }
