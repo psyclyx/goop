@@ -193,8 +193,10 @@ pub const Renderer = struct {
         const color = colorToVec4(t.color);
         // goop y is top of text box (Y-down); snail positions glyphs in Y-up
         // coordinates relative to the baseline. Convert by flipping to Y-up.
-        const baseline_y = self.viewport_h - (t.y + t.font_size);
-        _ = self.text_batch.addString(self.atlas, self.font, t.text, t.x, baseline_y, t.font_size, color);
+        // Snap to pixel grid — fractional positions cause jagged glyph edges
+        // because coverage straddles pixel boundaries.
+        const baseline_y = @round(self.viewport_h - (t.y + t.font_size));
+        _ = self.text_batch.addString(self.atlas, self.font, t.text, @round(t.x), baseline_y, t.font_size, color);
     }
 
     fn flushText(self: *Renderer) void {
