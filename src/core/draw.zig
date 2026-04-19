@@ -180,15 +180,18 @@ fn appendTextCommand(
         .x = x,
         .y = bounds.y,
         .bounds = bounds,
-        .baseline_y = textBaselineY(bounds, font_size, text_ctx),
+        .baseline_y = textBaselineY(bounds, text, font_size, text_ctx),
         .text = text,
         .color = color,
         .font_size = font_size,
     } });
 }
 
-fn textBaselineY(bounds: Rect, font_size: f32, text_ctx: ?*const layout.TextMeasureCtx) f32 {
-    const metrics = layout.textMetrics(font_size, text_ctx);
+fn textBaselineY(bounds: Rect, text: []const u8, font_size: f32, text_ctx: ?*const layout.TextMeasureCtx) f32 {
+    const metrics = if (text.len > 0)
+        layout.measureTextDimensions(text, font_size, text_ctx)
+    else
+        layout.textMetrics(font_size, text_ctx);
     const extra_vertical = @max(bounds.h - metrics.height, 0);
     return bounds.y + extra_vertical * 0.5 + metrics.ascent;
 }
@@ -1733,6 +1736,23 @@ fn testMeasureText(text: []const u8, font_size: f32, _: ?*anyopaque) layout.Text
     };
 }
 
+fn testMeasureTextWithStringBounds(text: []const u8, font_size: f32, _: ?*anyopaque) layout.TextDimensions {
+    if (std.mem.eql(u8, text, "Mg")) {
+        return .{
+            .width = font_size,
+            .height = 20,
+            .ascent = 14,
+            .descent = 6,
+        };
+    }
+    return .{
+        .width = @as(f32, @floatFromInt(text.len)) * font_size * 0.5,
+        .height = 10,
+        .ascent = 8,
+        .descent = 2,
+    };
+}
+
 test "generate draw commands from tree" {
     const allocator = std.testing.allocator;
 
@@ -2002,6 +2022,34 @@ test "spinbox emits buttons and value" {
     try std.testing.expect(dl.commands[4] == .text);
     try std.testing.expect(dl.commands[5] == .text);
     try std.testing.expectEqualStrings("4", dl.commands[5].text.text);
+}
+
+test "numeric controls baseline uses string metrics when available" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const drag_value = try tree.addRoot(.{ .drag_value = .{
+        .value = 12.5,
+        .precision = 1,
+    } });
+    const spinbox = try tree.addRoot(.{ .spinbox = .{
+        .value = 64,
+        .precision = 0,
+    } });
+    tree.get(drag_value).layout_rect = .{ .x = 10, .y = 20, .w = 120, .h = 28 };
+    tree.get(spinbox).layout_rect = .{ .x = 10, .y = 60, .w = 120, .h = 28 };
+
+    const text_ctx = layout.TextMeasureCtx{
+        .measureFn = &testMeasureTextWithStringBounds,
+    };
+
+    var dl = try generate(&tree, style.Theme.default, allocator, &text_ctx);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 37), dl.commands[1].text.baseline_y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 77), dl.commands[7].text.baseline_y, 0.01);
 }
 
 test "tab bar emits selected tab header and active panel only" {

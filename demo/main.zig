@@ -31,8 +31,10 @@ const clipboard_mime_text = "text/plain";
 
 /// Snail-based text measurement adapter for goop.
 const SnailTextCtx = struct {
+    allocator: std.mem.Allocator,
     font: *const snail.Font,
     atlas: *const snail.Atlas,
+    glyph_cache: snail.ttf.GlyphCache,
     ascent_units: f32,
     descent_units: f32,
 };
@@ -46,10 +48,17 @@ const OutputState = struct {
 };
 
 fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) goop.TextDimensions {
-    const ctx: *const SnailTextCtx = @ptrCast(@alignCast(user_data));
+    const ctx: *SnailTextCtx = @ptrCast(@alignCast(user_data));
+    const MeasuredGlyph = struct {
+        advance_width: u16,
+        bbox: snail.bezier.BBox,
+    };
     const scale = font_size / @as(f32, @floatFromInt(ctx.font.unitsPerEm()));
     var width: f32 = 0;
     var prev_gid: u16 = 0;
+    var min_y = std.math.inf(f32);
+    var max_y = -std.math.inf(f32);
+    var have_vertical_bounds = false;
     const view = std.unicode.Utf8View.initUnchecked(text);
     var it = view.iterator();
     while (it.nextCodepoint()) |cp| {
@@ -63,14 +72,38 @@ fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) go
             const kern = ctx.font.getKerning(prev_gid, gid) catch 0;
             width += @as(f32, @floatFromInt(kern)) * scale;
         }
-        const info = ctx.atlas.getGlyph(gid) orelse {
-            width += scale * 500;
-            prev_gid = gid;
-            continue;
+        const glyph_metrics: MeasuredGlyph = if (ctx.atlas.getGlyph(gid)) |info|
+            .{ .advance_width = info.advance_width, .bbox = info.bbox }
+        else blk: {
+            const glyph = ctx.font.inner.parseGlyph(ctx.allocator, &ctx.glyph_cache, gid) catch {
+                width += scale * 500;
+                prev_gid = gid;
+                continue;
+            };
+            break :blk .{ .advance_width = glyph.metrics.advance_width, .bbox = glyph.metrics.bbox };
         };
-        width += @as(f32, @floatFromInt(info.advance_width)) * scale;
+
+        if (glyph_metrics.bbox.max.y > glyph_metrics.bbox.min.y) {
+            min_y = @min(min_y, glyph_metrics.bbox.min.y);
+            max_y = @max(max_y, glyph_metrics.bbox.max.y);
+            have_vertical_bounds = true;
+        }
+
+        width += @as(f32, @floatFromInt(glyph_metrics.advance_width)) * scale;
         prev_gid = gid;
     }
+
+    if (have_vertical_bounds) {
+        const ascent = @max(max_y, 0) * font_size;
+        const descent = @max(-min_y, 0) * font_size;
+        return .{
+            .width = width,
+            .height = ascent + descent,
+            .ascent = ascent,
+            .descent = descent,
+        };
+    }
+
     return .{
         .width = width,
         .height = (ctx.ascent_units + ctx.descent_units) * scale,
@@ -1360,11 +1393,14 @@ pub fn main() !void {
 
     const line_metrics = fontLineMetrics(&font);
     var text_measure = SnailTextCtx{
+        .allocator = allocator,
         .font = &font,
         .atlas = &atlas,
+        .glyph_cache = snail.ttf.GlyphCache.init(allocator),
         .ascent_units = line_metrics.ascent,
         .descent_units = line_metrics.descent,
     };
+    defer text_measure.glyph_cache.deinit();
     const text_measure_ctx = goop.TextMeasureCtx{
         .measureFn = &snailMeasureText,
         .user_data = @ptrCast(&text_measure),

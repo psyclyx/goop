@@ -55,6 +55,16 @@ pub fn textMetrics(font_size: f32, text_ctx: ?*const TextMeasureCtx) TextDimensi
     return normalizeTextDimensions(.{ .width = 0, .height = font_size }, font_size);
 }
 
+pub fn measureTextDimensions(text: []const u8, font_size: f32, text_ctx: ?*const TextMeasureCtx) TextDimensions {
+    if (text_ctx) |ctx| {
+        return normalizeTextDimensions(ctx.measureFn(text, font_size, ctx.user_data), font_size);
+    }
+    return normalizeTextDimensions(.{
+        .width = @as(f32, @floatFromInt(text.len)) * font_size * 0.6,
+        .height = font_size,
+    }, font_size);
+}
+
 fn controlTextHeight(resolved: style_mod.ResolvedStyle) f32 {
     return textMetrics(resolved.font_size, active_text_ctx).height + resolved.padding.top + resolved.padding.bottom;
 }
