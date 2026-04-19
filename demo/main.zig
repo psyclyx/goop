@@ -338,7 +338,6 @@ fn frameDone(data: ?*anyopaque, callback: ?*wl.wl_callback, _: u32) callconv(.c)
     const state: *State = @ptrCast(@alignCast(data));
     wl.wl_callback_destroy(callback);
     state.frame_pending = false;
-    state.needs_redraw = true;
 }
 
 fn requestFrame(state: *State) void {
@@ -619,6 +618,7 @@ pub fn main() !void {
         // Process frame
         ctx.clearClickedFlags();
         ctx.doLayout(&text_measure_ctx);
+
         ctx.processEvents();
 
         // Check clicks
@@ -651,10 +651,11 @@ pub fn main() !void {
 
         renderer.beginFrame(state.width, state.height);
         renderer.render(dl);
-        _ = egl.eglSwapBuffers(state.egl_display, state.egl_surface);
 
-        // Request compositor pacing — next draw waits for frame callback
+        // Request frame callback BEFORE swap — the callback must be
+        // registered before the surface commit that eglSwapBuffers triggers.
         requestFrame(&state);
+        _ = egl.eglSwapBuffers(state.egl_display, state.egl_surface);
     }
 
     std.debug.print("goop demo exiting\n", .{});

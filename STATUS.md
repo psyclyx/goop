@@ -2,28 +2,29 @@
 
 ## Current
 
-Iteration 46.
+Iteration 47.
 72 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-46
+47
 
 ## Done This Iteration
 
-- Layout dirty tracking: `doLayout()` skips full clay pass when nothing layout-affecting changed
-- Mouse-only frames (hover, click) no longer trigger layout recomputation
-- Dirty triggers: tree mutations (node count change), `setDimensions`, key/text/scroll events
-- 3 new tests for dirty tracking behavior
+- Fixed demo frame callback ordering: register `wl_surface_frame` BEFORE `eglSwapBuffers` so the compositor fires callbacks
+- Without this fix, only 1 frame ever rendered — all events accumulated but were never processed
+- Changed `frameDone` to not force `needs_redraw` — demo now renders event-driven instead of continuously
 
 ## Next
 
-1. Real text measurement instead of approximate char_width
-2. Widget tree mutation/removal API
-3. Draw list caching (skip draw generation when only layout skipped and no interaction changed)
+1. Antialiased rendering (inbox: "jagged af")
+2. Real text measurement instead of approximate char_width
+3. Widget tree mutation/removal API
+4. Draw list caching (skip draw generation when only layout skipped and no interaction changed)
 
 ## What's Wrong
 
+- Rendering is jagged — no antialiasing (inbox note)
 - Approximate char_width (font_size * 0.6) — wrong for proportional fonts, needs real text measurement
 - Widget tree is append-only — no removal/mutation API
 - No draw list caching — draw list regenerated every frame even when output unchanged
