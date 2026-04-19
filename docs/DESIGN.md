@@ -152,17 +152,17 @@ core API.
 - Clipboard support in the demo is not wired to the real Wayland clipboard
 - The demo assumes 1:1 surface size to physical pixels
 - There is no C API yet
-- Table/data-view selection policies beyond list-box multi-select are still missing
+- Table/data-view keyboard selection and navigation are still missing
 - MSAA configuration is fixed at 4x with no fallback path
 
 ## Current Direction
 
 Near-term work is focused on:
 
-1. Polishing denser data-view widgets with broader selection behavior
-2. Removing the `fc-match` dependency from font loading
-3. Adding a C-facing API layer
-4. Improving runtime portability and display scaling behavior
+1. Removing the `fc-match` dependency from font loading
+2. Adding a C-facing API layer
+3. Improving runtime portability and display scaling behavior
+4. Polishing denser data-view widgets with keyboard selection behavior
 
 ## History
 

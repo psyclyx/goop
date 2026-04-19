@@ -163,12 +163,15 @@ pub const WidgetKind = union(enum) {
         striped: bool = true,
         resizable: bool = false,
         sortable: bool = false,
+        selection_mode: SelectionMode = .none,
         min_column_width: f32 = 96,
         changed: bool = false,
         resized_column: ?u8 = null,
         sort_changed: bool = false,
         sorted_column: ?u8 = null,
         sort_direction: SortDirection = .ascending,
+        selection_changed: bool = false,
+        anchor_row: ?u16 = null,
         active_columns: u8 = 0,
         column_weights: [max_columns]f32 = [_]f32{0} ** max_columns,
 
@@ -177,11 +180,18 @@ pub const WidgetKind = union(enum) {
             descending,
         };
 
+        pub const SelectionMode = enum {
+            none,
+            single,
+            multiple,
+        };
+
         pub fn syncColumns(self: *Table, columns: u8) void {
             const clamped: u8 = @intCast(@min(@as(usize, columns), max_columns));
             if (clamped == 0) {
                 self.active_columns = 0;
                 self.sorted_column = null;
+                self.anchor_row = null;
                 @memset(&self.column_weights, 0);
                 return;
             }
@@ -890,6 +900,30 @@ pub fn tableHeaderCellIndexAtPoint(tree: *const Tree, table: NodeHandle, x: f32,
         const cell = tableCellAt(tree, row, index) orelse continue;
         const rect = tree.getConst(cell).layout_rect;
         if (x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h) return index;
+    }
+    return null;
+}
+
+pub fn tableRowSelectable(tree: *const Tree, row: NodeHandle) bool {
+    const node = tree.getConst(row);
+    if (node.kind != .table_row or node.kind.table_row.header) return false;
+    const table_handle = node.parent orelse return false;
+    const table = tree.getConst(table_handle);
+    return table.kind == .table and table.kind.table.selection_mode != .none;
+}
+
+pub fn tableDataRowIndex(tree: *const Tree, row: NodeHandle) ?u16 {
+    const node = tree.getConst(row);
+    if (node.kind != .table_row or node.kind.table_row.header) return null;
+
+    const table_handle = node.parent orelse return null;
+    var index: u16 = 0;
+    var iter = tree.children(table_handle);
+    while (iter.next()) |child| {
+        const child_node = tree.getConst(child);
+        if (child_node.kind != .table_row or child_node.kind.table_row.header) continue;
+        if (child.eql(row)) return index;
+        index += 1;
     }
     return null;
 }

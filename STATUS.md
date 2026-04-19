@@ -24,16 +24,17 @@ Current baseline: `zig build test` is clean. Use `nix-shell` before
 - Resizable table columns with retained width fractions
 - Sortable table headers with retained sort state
 - Multi-select list boxes with Ctrl-toggle and Shift-range behavior
+- Table row selection policies with single/multi-select behavior
 - Toolbar and status-bar structural widgets for editor chrome
 - Hover/focus-driven tooltips built on the floating layout path
 - Secondary-click reporting plus caller-managed context menu positioning
 
 ## Next Priorities
 
-1. Selection policies for tables and denser data views
-2. Embedder-provided font path instead of `popen("fc-match")`
-3. C API bindings
-4. HiDPI scaling
+1. Embedder-provided font path instead of `popen("fc-match")`
+2. C API bindings
+3. HiDPI scaling
+4. Keyboard navigation for tables and denser data views
 
 ## Known Issues
 

@@ -137,6 +137,7 @@ pub const Context = struct {
                     table.changed = false;
                     table.resized_column = null;
                     table.sort_changed = false;
+                    table.selection_changed = false;
                 },
                 .menu => |*menu| {
                     menu.clicked = false;
@@ -183,6 +184,7 @@ pub const Context = struct {
             .radio_button => node.kind.radio_button.selected,
             .tree_item => node.kind.tree_item.selected,
             .selectable => node.kind.selectable.selected,
+            .table_row => node.kind.table_row.selected,
             .tab_item => node.kind.tab_item.selected,
             else => false,
         };
@@ -326,6 +328,36 @@ pub const Context = struct {
     /// Check whether table sorting changed this frame.
     pub fn tableSortChanged(self: *const Context, handle: NodeHandle) bool {
         return self.tree.getConst(handle).kind.table.sort_changed;
+    }
+
+    /// Check whether table row selection changed this frame.
+    pub fn tableSelectionChanged(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.table.selection_changed;
+    }
+
+    /// Count selected non-header rows in a table.
+    pub fn tableSelectionCount(self: *const Context, handle: NodeHandle) u16 {
+        var count: u16 = 0;
+        var iter = self.tree.children(handle);
+        while (iter.next()) |child| {
+            const node = self.tree.getConst(child);
+            if (node.kind != .table_row or node.kind.table_row.header) continue;
+            if (node.kind.table_row.selected) count += 1;
+        }
+        return count;
+    }
+
+    /// Get the first selected non-header row index in a table, if any.
+    pub fn tableSelectedRowIndex(self: *const Context, handle: NodeHandle) ?u16 {
+        var index: u16 = 0;
+        var iter = self.tree.children(handle);
+        while (iter.next()) |child| {
+            const node = self.tree.getConst(child);
+            if (node.kind != .table_row or node.kind.table_row.header) continue;
+            if (node.kind.table_row.selected) return index;
+            index += 1;
+        }
+        return null;
     }
 
     /// Get the most recent secondary click that occurred this frame, if any.
@@ -798,6 +830,91 @@ test "multi-select list box supports ctrl-toggle and shift-range selection" {
     try std.testing.expect(ctx.isSelected(camera));
     try std.testing.expect(ctx.isSelected(light));
     try std.testing.expectEqual(@as(u16, 3), ctx.listBoxSelectionCount(list_box));
+}
+
+test "table row selection reports count and first selected row" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 640, .height = 360 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const table = try ctx.tree.addChild(root, .{ .table = .{
+        .columns = 2,
+        .selection_mode = .multiple,
+    } });
+    const header = try ctx.tree.addChild(table, .{ .table_row = .{ .header = true } });
+    const header_name = try ctx.tree.addChild(header, .{ .table_cell = .{} });
+    const header_type = try ctx.tree.addChild(header, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(header_name, .{ .text = .{ .content = "Name" } });
+    _ = try ctx.tree.addChild(header_type, .{ .text = .{ .content = "Type" } });
+
+    const first = try ctx.tree.addChild(table, .{ .table_row = .{ .selected = true } });
+    const first_name = try ctx.tree.addChild(first, .{ .table_cell = .{} });
+    const first_type = try ctx.tree.addChild(first, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(first_name, .{ .text = .{ .content = "SceneRoot" } });
+    _ = try ctx.tree.addChild(first_type, .{ .text = .{ .content = "Collection" } });
+
+    const second = try ctx.tree.addChild(table, .{ .table_row = .{} });
+    const second_name = try ctx.tree.addChild(second, .{ .table_cell = .{} });
+    const second_type = try ctx.tree.addChild(second, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(second_name, .{ .text = .{ .content = "CameraRig" } });
+    _ = try ctx.tree.addChild(second_type, .{ .text = .{ .content = "Object" } });
+
+    const third = try ctx.tree.addChild(table, .{ .table_row = .{} });
+    const third_name = try ctx.tree.addChild(third, .{ .table_cell = .{} });
+    const third_type = try ctx.tree.addChild(third, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(third_name, .{ .text = .{ .content = "KeyLight" } });
+    _ = try ctx.tree.addChild(third_type, .{ .text = .{ .content = "Light" } });
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+
+    const second_rect = ctx.tree.getConst(second).layout_rect;
+    try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .pressed,
+        .x = second_rect.x + 5,
+        .y = second_rect.y + 5,
+    } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .released,
+        .x = second_rect.x + 5,
+        .y = second_rect.y + 5,
+    } });
+    try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
+    ctx.processEvents();
+
+    try std.testing.expect(ctx.tableSelectionChanged(table));
+    try std.testing.expectEqual(@as(u16, 2), ctx.tableSelectionCount(table));
+    try std.testing.expectEqual(@as(?u16, 0), ctx.tableSelectedRowIndex(table));
+    try std.testing.expect(ctx.isSelected(first));
+    try std.testing.expect(ctx.isSelected(second));
+
+    ctx.clearClickedFlags();
+    const third_rect = ctx.tree.getConst(third).layout_rect;
+    try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } });
+    try ctx.pushEvent(.{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .pressed,
+        .x = third_rect.x + 5,
+        .y = third_rect.y + 5,
+    } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .released,
+        .x = third_rect.x + 5,
+        .y = third_rect.y + 5,
+    } });
+    try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
+    try ctx.pushEvent(.{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } });
+    ctx.processEvents();
+
+    try std.testing.expect(ctx.tableSelectionChanged(table));
+    try std.testing.expectEqual(@as(u16, 3), ctx.tableSelectionCount(table));
+    try std.testing.expectEqual(@as(?u16, 0), ctx.tableSelectedRowIndex(table));
+    try std.testing.expect(ctx.isSelected(third));
 }
 
 test "table layout keeps columns aligned across rows" {

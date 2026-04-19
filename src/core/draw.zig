@@ -560,7 +560,7 @@ fn emitTableRow(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const fill = tableRowFill(tree, handle, row, theme);
+    const fill = tableRowFill(tree, handle, node, row, theme);
     if (fill.a > 0) {
         try commands.append(allocator, .{ .rect = .{
             .bounds = node.layout_rect,
@@ -1230,11 +1230,15 @@ fn selectableBg(node: *const widget.Node, selected: bool, theme: style.Theme) st
 fn tableRowFill(
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
+    node: *const widget.Node,
     row: widget.WidgetKind.TableRow,
     theme: style.Theme,
 ) style.Color {
     if (row.selected) return theme.selection_bg;
     if (row.header) return theme.bg_active;
+    if (widget.tableRowSelectable(tree, handle) and node.interaction.hovered) {
+        return style.Color.rgba(theme.bg_hover.r, theme.bg_hover.g, theme.bg_hover.b, 160);
+    }
     if (tableStriped(tree, handle) and (tableRowIndex(tree, handle) % 2 == 1)) {
         return style.Color.rgba(theme.bg_hover.r, theme.bg_hover.g, theme.bg_hover.b, 96);
     }

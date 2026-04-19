@@ -55,6 +55,7 @@ pub fn isInteractive(kind: widget.WidgetKind) bool {
         .dropdown,
         .selectable,
         .table,
+        .table_row,
         .menu,
         .popup,
         .menu_item,
@@ -67,7 +68,7 @@ pub fn isInteractive(kind: widget.WidgetKind) bool {
         .container,
         .text_input,
         => true,
-        .text, .list_box, .table_row, .table_cell, .toolbar, .status_bar, .menu_bar, .tooltip, .tab_bar => false,
+        .text, .list_box, .table_cell, .toolbar, .status_bar, .menu_bar, .tooltip, .tab_bar => false,
     };
 }
 
@@ -164,6 +165,7 @@ fn pointHitsWidget(tree: *const widget.Tree, handle: widget.NodeHandle, x: f32, 
     return switch (node.kind) {
         .table => widget.tableResizeHandleIndexAtPoint(tree, handle, x, y) != null or
             widget.tableHeaderCellIndexAtPoint(tree, handle, x, y) != null,
+        .table_row => widget.tableRowSelectable(tree, handle) and pointInRect(x, y, node.layout_rect),
         .splitter => pointInRect(x, y, splitterDividerRect(node.layout_rect, node.kind.splitter, node.style_override.resolve(style.Theme.default))),
         else => pointInRect(x, y, node.layout_rect),
     };

@@ -584,6 +584,7 @@ fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
                     switch (tree.getConst(pt).kind) {
                         .table => activateTable(tree, pt, mouse.x, mouse.y),
                         .selectable => activateSelectable(tree, pt, mouse),
+                        .table_row => activateTableRow(tree, pt, mouse),
                         else => fireClick(tree, pt),
                     }
                 }
@@ -677,6 +678,23 @@ fn activateSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*co
     }
 
     _ = selectSelectable(tree, handle);
+}
+
+fn activateTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*const MouseState) void {
+    if (!widget.tableRowSelectable(tree, handle)) return;
+
+    const node = tree.get(handle);
+    node.interaction.primary_clicked = true;
+
+    if (mouse) |state| {
+        const table_handle = node.parent orelse return;
+        if (tree.getConst(table_handle).kind.table.selection_mode == .multiple) {
+            _ = selectTableRowsMulti(tree, table_handle, handle, state);
+            return;
+        }
+    }
+
+    _ = selectTableRow(tree, handle);
 }
 
 /// Update a slider's value based on mouse x position within its track.
@@ -914,6 +932,9 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
         .selectable => {
             activateSelectable(tree, handle, null);
         },
+        .table_row => {
+            activateTableRow(tree, handle, null);
+        },
         .menu => {
             node.interaction.primary_clicked = true;
             node.kind.menu.clicked = true;
@@ -985,6 +1006,87 @@ fn selectSelectable(tree: *widget.Tree, handle: widget.NodeHandle) bool {
         markSelectableListBoxChanged(tree, handle);
     }
     return changed;
+}
+
+fn selectTableRow(tree: *widget.Tree, handle: widget.NodeHandle) bool {
+    if (!widget.tableRowSelectable(tree, handle)) return false;
+
+    const table_handle = tree.getConst(handle).parent orelse return false;
+    var changed = false;
+    const selected_index = widget.tableDataRowIndex(tree, handle);
+
+    var iter = tree.children(table_handle);
+    while (iter.next()) |child| {
+        const child_node = tree.getConst(child);
+        if (child_node.kind != .table_row or child_node.kind.table_row.header) continue;
+        const should_select = child.eql(handle);
+        if (child_node.kind.table_row.selected != should_select) {
+            tree.get(child).kind.table_row.selected = should_select;
+            changed = true;
+        }
+    }
+
+    const table = &tree.get(table_handle).kind.table;
+    table.anchor_row = selected_index;
+    if (changed) table.selection_changed = true;
+    return changed;
+}
+
+fn selectTableRowsMulti(
+    tree: *widget.Tree,
+    table_handle: widget.NodeHandle,
+    row_handle: widget.NodeHandle,
+    mouse: *const MouseState,
+) bool {
+    const row_index = widget.tableDataRowIndex(tree, row_handle) orelse return false;
+    const table = &tree.get(table_handle).kind.table;
+
+    if (mouse.shift_down) {
+        const anchor = table.anchor_row orelse row_index;
+        const changed = selectTableRowRange(tree, table_handle, @min(anchor, row_index), @max(anchor, row_index), mouse.ctrl_down);
+        table.anchor_row = anchor;
+        return changed;
+    }
+
+    table.anchor_row = row_index;
+    if (mouse.ctrl_down) {
+        return toggleTableRow(tree, table_handle, row_handle);
+    }
+
+    return selectTableRow(tree, row_handle);
+}
+
+fn selectTableRowRange(
+    tree: *widget.Tree,
+    table_handle: widget.NodeHandle,
+    start_index: u16,
+    end_index: u16,
+    additive: bool,
+) bool {
+    var changed = false;
+    var index: u16 = 0;
+    var iter = tree.children(table_handle);
+    while (iter.next()) |child| {
+        const child_node = tree.getConst(child);
+        if (child_node.kind != .table_row or child_node.kind.table_row.header) continue;
+        const in_range = index >= start_index and index <= end_index;
+        const should_select = in_range or (additive and child_node.kind.table_row.selected);
+        if (child_node.kind.table_row.selected != should_select) {
+            tree.get(child).kind.table_row.selected = should_select;
+            changed = true;
+        }
+        index += 1;
+    }
+    if (changed) tree.get(table_handle).kind.table.selection_changed = true;
+    return changed;
+}
+
+fn toggleTableRow(tree: *widget.Tree, table_handle: widget.NodeHandle, row_handle: widget.NodeHandle) bool {
+    const current = tree.getConst(row_handle).kind.table_row.selected;
+    tree.get(row_handle).kind.table_row.selected = !current;
+    if (current == tree.getConst(row_handle).kind.table_row.selected) return false;
+    tree.get(table_handle).kind.table.selection_changed = true;
+    return true;
 }
 
 fn selectListBoxMulti(
@@ -2083,6 +2185,60 @@ test "multi-select list box supports ctrl-toggle and additive shift range" {
     try std.testing.expect(tree.getConst(second).kind.selectable.selected);
     try std.testing.expect(tree.getConst(third).kind.selectable.selected);
     try std.testing.expect(tree.getConst(list_box).kind.list_box.changed);
+}
+
+test "table rows support multi-select and additive shift range" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const table = try tree.addChild(root, .{ .table = .{ .selection_mode = .multiple } });
+    const header = try tree.addChild(table, .{ .table_row = .{ .header = true } });
+    _ = try tree.addChild(header, .{ .table_cell = .{} });
+    const first = try tree.addChild(table, .{ .table_row = .{ .selected = true } });
+    _ = try tree.addChild(first, .{ .table_cell = .{} });
+    const second = try tree.addChild(table, .{ .table_row = .{} });
+    _ = try tree.addChild(second, .{ .table_cell = .{} });
+    const third = try tree.addChild(table, .{ .table_row = .{} });
+    _ = try tree.addChild(third, .{ .table_cell = .{} });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    tree.get(table).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 116 };
+    tree.get(header).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 28 };
+    tree.get(first).layout_rect = .{ .x = 10, .y = 38, .w = 220, .h = 28 };
+    tree.get(second).layout_rect = .{ .x = 10, .y = 66, .w = 220, .h = 28 };
+    tree.get(third).layout_rect = .{ .x = 10, .y = 94, .w = 220, .h = 28 };
+
+    var mouse = MouseState{};
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 40, .y = 80 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 40, .y = 80 } },
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(tree.getConst(first).kind.table_row.selected);
+    try std.testing.expect(tree.getConst(second).kind.table_row.selected);
+    try std.testing.expect(!tree.getConst(third).kind.table_row.selected);
+    try std.testing.expectEqual(@as(?u16, 1), tree.getConst(table).kind.table.anchor_row);
+    try std.testing.expect(tree.getConst(table).kind.table.selection_changed);
+
+    tree.get(table).kind.table.selection_changed = false;
+
+    process(&tree, &.{
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 40, .y = 108 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 40, .y = 108 } },
+        .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } },
+        .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(tree.getConst(first).kind.table_row.selected);
+    try std.testing.expect(tree.getConst(second).kind.table_row.selected);
+    try std.testing.expect(tree.getConst(third).kind.table_row.selected);
+    try std.testing.expect(tree.getConst(table).kind.table.selection_changed);
 }
 
 test "tree item toggles and keyboard navigation follows visible items" {
