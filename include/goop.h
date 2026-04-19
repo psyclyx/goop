@@ -453,6 +453,8 @@ typedef struct {
 typedef struct {
     float x;
     float y;
+    goop_rect_t bounds;
+    float baseline_y;
     goop_string_t text;
     goop_color_t color;
     float font_size;
@@ -480,6 +482,8 @@ typedef struct {
 typedef struct {
     float width;
     float height;
+    float ascent;
+    float descent;
 } goop_text_dimensions_t;
 
 typedef goop_text_dimensions_t (*goop_measure_text_fn)(goop_string_t text, float font_size, void *user_data);

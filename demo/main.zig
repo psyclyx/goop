@@ -33,6 +33,8 @@ const clipboard_mime_text = "text/plain";
 const SnailTextCtx = struct {
     font: *const snail.Font,
     atlas: *const snail.Atlas,
+    ascent_units: f32,
+    descent_units: f32,
 };
 
 const OutputState = struct {
@@ -69,7 +71,33 @@ fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) go
         width += @as(f32, @floatFromInt(info.advance_width)) * scale;
         prev_gid = gid;
     }
-    return .{ .width = width, .height = font_size };
+    return .{
+        .width = width,
+        .height = (ctx.ascent_units + ctx.descent_units) * scale,
+        .ascent = ctx.ascent_units * scale,
+        .descent = ctx.descent_units * scale,
+    };
+}
+
+fn readBigI16(data: []const u8, offset: usize) ?i16 {
+    if (offset + 2 > data.len) return null;
+    return std.mem.readInt(i16, data[offset..][0..2], .big);
+}
+
+fn fontLineMetrics(font: *const snail.Font) struct { ascent: f32, descent: f32 } {
+    const inner = font.inner;
+    if (inner.hhea_offset != 0) {
+        const ascent = readBigI16(inner.data, inner.hhea_offset + 4) orelse @as(i16, @intCast(inner.units_per_em));
+        const descent = readBigI16(inner.data, inner.hhea_offset + 6) orelse 0;
+        return .{
+            .ascent = @floatFromInt(ascent),
+            .descent = @floatFromInt(@abs(descent)),
+        };
+    }
+    return .{
+        .ascent = @floatFromInt(inner.units_per_em),
+        .descent = 0,
+    };
 }
 
 fn isPrintableTextCodepoint(codepoint: u32) bool {
@@ -1330,7 +1358,13 @@ pub fn main() !void {
     var atlas = try snail.Atlas.init(allocator, &font, &codepoints);
     defer atlas.deinit();
 
-    var text_measure = SnailTextCtx{ .font = &font, .atlas = &atlas };
+    const line_metrics = fontLineMetrics(&font);
+    var text_measure = SnailTextCtx{
+        .font = &font,
+        .atlas = &atlas,
+        .ascent_units = line_metrics.ascent,
+        .descent_units = line_metrics.descent,
+    };
     const text_measure_ctx = goop.TextMeasureCtx{
         .measureFn = &snailMeasureText,
         .user_data = @ptrCast(&text_measure),

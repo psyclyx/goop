@@ -116,7 +116,9 @@ if (ctx.wasClicked(button)) {
 If you want accurate text sizing, pass a `TextMeasureCtx` into `doLayout()`.
 If you pass `null`, `goop` falls back to a rough width estimate. For
 single-frame click/change flags, call `clearClickedFlags()` at the start of
-each frame before queuing new input.
+each frame before queuing new input. For best text alignment, your measure
+callback should return real line metrics in `TextDimensions.height`,
+`TextDimensions.ascent`, and `TextDimensions.descent`.
 
 ## C API
 
@@ -210,6 +212,9 @@ It exercises:
 - `snail`-backed text measurement
 - real Wayland clipboard selection handling
 - the current editor-oriented widget set
+
+Text draw commands now carry both a content box and an explicit baseline, so a
+renderer does not need to guess vertical alignment from `font_size`.
 
 Run it with:
 

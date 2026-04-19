@@ -105,14 +105,12 @@ pub const Renderer = struct {
 
     fn addText(self: *Renderer, t: DrawCommand.DrawText) void {
         const color = colorToVec4(t.color);
-        // goop y is top of text box (Y-down); snail positions glyphs in Y-up
-        // coordinates relative to the baseline. Convert by flipping to Y-up.
-        // Snap to pixel grid — fractional positions cause jagged glyph edges
-        // because coverage straddles pixel boundaries.
+        // goop emits text x plus an explicit baseline in Y-down coordinates.
+        // Convert that baseline to snail's Y-up space and snap to device pixels.
         const scaled_x = snapToDevicePixels(t.x, self.scale);
-        const scaled_top = snapToDevicePixels(t.y, self.scale);
+        const scaled_baseline = snapToDevicePixels(t.baseline_y, self.scale);
         const scaled_font_size = t.font_size * self.scale;
-        const baseline_y = @round(self.viewport_h - (scaled_top + scaled_font_size));
+        const baseline_y = @round(self.viewport_h - scaled_baseline);
         _ = self.text_batch.addString(self.atlas, self.font, t.text, scaled_x, baseline_y, scaled_font_size, color);
     }
 

@@ -16,6 +16,7 @@ fallback locations.
 - HiDPI-aware Wayland demo sizing with logical-vs-buffer dimensions
 - UTF-8-safe text input editing, cursor movement, deletion, and clipboard paste
 - Demo-side UTF-8 text event delivery and on-demand font atlas growth
+- Explicit text draw baselines/content bounds plus better line-height handling
 - Generational widget handles with subtree removal
 - Draw-list caching behind `draw_dirty`
 - Pixel-snapped text positioning in the demo renderer

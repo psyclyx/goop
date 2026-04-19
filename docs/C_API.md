@@ -48,6 +48,16 @@ state.
 - `GOOP_DRAW_TEXT`
 - `GOOP_DRAW_CLIP`
 
+`GOOP_DRAW_TEXT` carries:
+
+- `x`: the intended text start position
+- `y`: the top of the text content box
+- `bounds`: the full content box used for alignment
+- `baseline_y`: the baseline in Y-down coordinates
+
+If your renderer has baseline-aware text APIs, prefer `baseline_y` over
+guessing from `font_size`.
+
 The current C API matches the Zig runtime: `goop_context_free_draw_list()` is
 kept for API compatibility, but the `goop_context_t` still owns the memory.
 Call it anyway so your embedder stays compatible if that changes later.
@@ -57,6 +67,12 @@ Call it anyway so your embedder stays compatible if that changes later.
 For accurate text sizing, pass a `goop_text_measure_ctx_t` into
 `goop_context_do_layout`. If you pass `NULL`, `goop` falls back to a rough
 character-width estimate.
+
+For best alignment, return real line metrics in:
+
+- `height`: total line height
+- `ascent`: distance from baseline to top of the line box
+- `descent`: distance from baseline to bottom of the line box
 
 Clipboard support is optional. Install callbacks with
 `goop_context_set_clipboard` and `Ctrl+C` / `Ctrl+V` behavior in text inputs

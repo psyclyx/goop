@@ -443,6 +443,8 @@ const CDrawRect = extern struct {
 const CDrawText = extern struct {
     x: f32 = 0,
     y: f32 = 0,
+    bounds: CRect = .{},
+    baseline_y: f32 = 0,
     text: CStr = .{},
     color: CColor = .{},
     font_size: f32 = 0,
@@ -470,6 +472,8 @@ const CDrawList = extern struct {
 const CTextDimensions = extern struct {
     width: f32 = 0,
     height: f32 = 0,
+    ascent: f32 = 0,
+    descent: f32 = 0,
 };
 
 const CMeasureTextFn = *const fn (text: CStr, font_size: f32, user_data: ?*anyopaque) callconv(.c) CTextDimensions;
@@ -1053,6 +1057,8 @@ fn convertDrawCommand(cmd: draw.DrawCommand) CDrawCommand {
             .data = .{ .text = .{
                 .x = text_cmd.x,
                 .y = text_cmd.y,
+                .bounds = rectToC(text_cmd.bounds),
+                .baseline_y = text_cmd.baseline_y,
                 .text = toCStr(text_cmd.text),
                 .color = colorToC(text_cmd.color),
                 .font_size = text_cmd.font_size,
@@ -1086,7 +1092,12 @@ fn measureTextBridge(text: []const u8, font_size: f32, user_data: ?*anyopaque) l
     const raw: *const CTextMeasureCtx = @ptrCast(@alignCast(user_data));
     if (raw.measure_fn == null) return .{ .width = 0, .height = font_size };
     const dims = raw.measure_fn.?(toCStr(text), font_size, raw.user_data);
-    return .{ .width = dims.width, .height = dims.height };
+    return .{
+        .width = dims.width,
+        .height = dims.height,
+        .ascent = dims.ascent,
+        .descent = dims.descent,
+    };
 }
 
 fn textMeasurePtr(ctx: *CContext, measure: ?*const CTextMeasureCtx) ?*const layout.TextMeasureCtx {

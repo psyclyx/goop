@@ -28,6 +28,8 @@ pub const DrawCommand = union(enum) {
     pub const DrawText = struct {
         x: f32,
         y: f32,
+        bounds: Rect,
+        baseline_y: f32,
         text: []const u8,
         color: style.Color,
         font_size: f32,
@@ -90,14 +92,14 @@ fn emitNode(
 
     switch (node.kind) {
         .container => try emitContainer(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .text => |txt| try emitText(node, txt, resolved, commands, allocator),
+        .text => |txt| try emitText(node, txt, resolved, commands, allocator, text_ctx),
         .button => |btn| try emitButton(tree, handle, node, btn, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .checkbox => |cb| try emitCheckbox(node, cb, resolved, theme, commands, allocator),
-        .radio_button => |rb| try emitRadioButton(node, rb, resolved, theme, commands, allocator),
+        .checkbox => |cb| try emitCheckbox(node, cb, resolved, theme, commands, allocator, text_ctx),
+        .radio_button => |rb| try emitRadioButton(node, rb, resolved, theme, commands, allocator, text_ctx),
         .tree_item => |tree_item| try emitTreeItem(tree, handle, node, tree_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .dropdown => |dropdown| try emitDropdown(tree, handle, node, dropdown, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .list_box => try emitListBox(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .selectable => |selectable| try emitSelectable(node, selectable, resolved, theme, commands, allocator),
+        .selectable => |selectable| try emitSelectable(node, selectable, resolved, theme, commands, allocator, text_ctx),
         .table => |table| try emitTable(tree, handle, node, table, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .table_row => |row| try emitTableRow(tree, handle, node, row, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .table_cell => try emitTableCell(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
@@ -107,9 +109,9 @@ fn emitNode(
         .menu => |menu| try emitMenu(tree, handle, node, menu, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .popup => try emitPopup(tree, handle, node, resolved, theme, commands, allocator, text_ctx),
         .tooltip => try emitTooltip(tree, handle, node, resolved, theme, commands, allocator, text_ctx),
-        .menu_item => |item| try emitMenuItem(tree, handle, node, item, resolved, theme, commands, allocator),
-        .drag_value => try emitDragValue(node, &node.kind.drag_value, resolved, theme, commands, allocator),
-        .spinbox => try emitSpinBox(node, &node.kind.spinbox, resolved, theme, commands, allocator),
+        .menu_item => |item| try emitMenuItem(tree, handle, node, item, resolved, theme, commands, allocator, text_ctx),
+        .drag_value => try emitDragValue(node, &node.kind.drag_value, resolved, theme, commands, allocator, text_ctx),
+        .spinbox => try emitSpinBox(node, &node.kind.spinbox, resolved, theme, commands, allocator, text_ctx),
         .tab_bar => |tab_bar| try emitTabBar(tree, handle, node, tab_bar, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .tab_item => |tab_item| try emitTabItem(tree, handle, node, tab_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .splitter => |splitter| try emitSplitter(tree, handle, node, splitter, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
@@ -142,20 +144,64 @@ fn emitContainer(
     try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
+fn defaultTextBounds(rect: Rect, resolved: style.ResolvedStyle) Rect {
+    return .{
+        .x = rect.x + resolved.padding.left,
+        .y = rect.y + resolved.padding.top,
+        .w = @max(rect.w - resolved.padding.left - resolved.padding.right, 0),
+        .h = @max(rect.h - resolved.padding.top - resolved.padding.bottom, 0),
+    };
+}
+
+fn customTextBounds(rect: Rect, resolved: style.ResolvedStyle, x: f32, w: f32) Rect {
+    return .{
+        .x = x,
+        .y = rect.y + resolved.padding.top,
+        .w = @max(w, 0),
+        .h = @max(rect.h - resolved.padding.top - resolved.padding.bottom, 0),
+    };
+}
+
+fn rectRight(rect: Rect) f32 {
+    return rect.x + rect.w;
+}
+
+fn appendTextCommand(
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    bounds: Rect,
+    x: f32,
+    text: []const u8,
+    color: style.Color,
+    font_size: f32,
+    text_ctx: ?*const layout.TextMeasureCtx,
+) !void {
+    try commands.append(allocator, .{ .text = .{
+        .x = x,
+        .y = bounds.y,
+        .bounds = bounds,
+        .baseline_y = textBaselineY(bounds, font_size, text_ctx),
+        .text = text,
+        .color = color,
+        .font_size = font_size,
+    } });
+}
+
+fn textBaselineY(bounds: Rect, font_size: f32, text_ctx: ?*const layout.TextMeasureCtx) f32 {
+    const metrics = layout.textMetrics(font_size, text_ctx);
+    const extra_vertical = @max(bounds.h - metrics.height, 0);
+    return bounds.y + extra_vertical * 0.5 + metrics.ascent;
+}
+
 fn emitText(
     node: *const widget.Node,
     txt: widget.WidgetKind.Text,
     resolved: style.ResolvedStyle,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    try commands.append(allocator, .{ .text = .{
-        .x = node.layout_rect.x,
-        .y = node.layout_rect.y,
-        .text = txt.content,
-        .color = resolved.fg,
-        .font_size = resolved.font_size,
-    } });
+    try appendTextCommand(commands, allocator, node.layout_rect, node.layout_rect.x, txt.content, resolved.fg, resolved.font_size, text_ctx);
 }
 
 fn emitButton(
@@ -179,14 +225,8 @@ fn emitButton(
         .corner_radius = resolved.border_radius,
     } });
 
-    // Label text — centered within the button rect
-    try commands.append(allocator, .{ .text = .{
-        .x = node.layout_rect.x + resolved.padding.left,
-        .y = node.layout_rect.y + resolved.padding.top,
-        .text = btn.label,
-        .color = resolved.fg,
-        .font_size = resolved.font_size,
-    } });
+    const label_bounds = defaultTextBounds(node.layout_rect, resolved);
+    try appendTextCommand(commands, allocator, label_bounds, label_bounds.x, btn.label, resolved.fg, resolved.font_size, text_ctx);
 
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
     try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
@@ -199,6 +239,7 @@ fn emitCheckbox(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const rect = node.layout_rect;
     const box_size = resolved.font_size;
@@ -234,14 +275,9 @@ fn emitCheckbox(
         } });
     }
 
-    // Label text
-    try commands.append(allocator, .{ .text = .{
-        .x = rect.x + resolved.padding.left + box_size + resolved.padding.left,
-        .y = rect.y + resolved.padding.top,
-        .text = cb.label,
-        .color = resolved.fg,
-        .font_size = resolved.font_size,
-    } });
+    const label_x = rect.x + resolved.padding.left + box_size + resolved.padding.left;
+    const label_bounds = customTextBounds(rect, resolved, label_x, rect.x + rect.w - resolved.padding.right - label_x);
+    try appendTextCommand(commands, allocator, label_bounds, label_x, cb.label, resolved.fg, resolved.font_size, text_ctx);
 
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
@@ -253,6 +289,7 @@ fn emitRadioButton(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const rect = node.layout_rect;
     const box_size = resolved.font_size;
@@ -289,14 +326,9 @@ fn emitRadioButton(
         } });
     }
 
-    // Label text
-    try commands.append(allocator, .{ .text = .{
-        .x = rect.x + resolved.padding.left + box_size + resolved.padding.left,
-        .y = rect.y + resolved.padding.top,
-        .text = rb.label,
-        .color = resolved.fg,
-        .font_size = resolved.font_size,
-    } });
+    const label_x = rect.x + resolved.padding.left + box_size + resolved.padding.left;
+    const label_bounds = customTextBounds(rect, resolved, label_x, rect.x + rect.w - resolved.padding.right - label_x);
+    try appendTextCommand(commands, allocator, label_bounds, label_x, rb.label, resolved.fg, resolved.font_size, text_ctx);
 
     try emitFocusRing(node, theme, circle_radius, commands, allocator);
 }
@@ -320,7 +352,7 @@ fn emitTreeItem(
     const disclosure_x = rect.x + resolved.padding.left + indent;
     const disclosure_center_x = disclosure_x + slot_width * 0.5;
     const label_x = disclosure_x + slot_width;
-    const label_y = rect.y + resolved.padding.top;
+    const label_bounds = customTextBounds(rect, resolved, label_x, rect.x + rect.w - resolved.padding.right - label_x);
     const label = if (item.editing) node.kind.tree_item.editor.content() else item.label;
     const has_parent = findTreeParent(tree, handle) != null;
     const has_children = hasNonPopupChildren(tree, handle);
@@ -364,7 +396,7 @@ fn emitTreeItem(
             const sel_start_x = label_x + layout.textWidthUpTo(label, range.start, resolved.font_size, text_ctx);
             const sel_end_x = label_x + layout.textWidthUpTo(label, range.end, resolved.font_size, text_ctx);
             try commands.append(allocator, .{ .rect = .{
-                .bounds = .{ .x = sel_start_x, .y = label_y, .w = sel_end_x - sel_start_x, .h = resolved.font_size },
+                .bounds = .{ .x = sel_start_x, .y = label_bounds.y, .w = sel_end_x - sel_start_x, .h = label_bounds.h },
                 .color = theme.selection_bg,
                 .border_color = theme.selection_bg,
                 .border_width = 0,
@@ -373,31 +405,19 @@ fn emitTreeItem(
         }
 
         if (label.len > 0) {
-            try commands.append(allocator, .{ .text = .{
-                .x = label_x,
-                .y = label_y,
-                .text = label,
-                .color = resolved.fg,
-                .font_size = resolved.font_size,
-            } });
+            try appendTextCommand(commands, allocator, label_bounds, label_x, label, resolved.fg, resolved.font_size, text_ctx);
         }
 
         const cursor_x = label_x + layout.textWidthUpTo(label, editor.cursor, resolved.font_size, text_ctx);
         try commands.append(allocator, .{ .rect = .{
-            .bounds = .{ .x = cursor_x, .y = label_y, .w = 1, .h = resolved.font_size },
+            .bounds = .{ .x = cursor_x, .y = label_bounds.y, .w = 1, .h = label_bounds.h },
             .color = resolved.fg,
             .border_color = resolved.fg,
             .border_width = 0,
             .corner_radius = 0,
         } });
     } else {
-        try commands.append(allocator, .{ .text = .{
-            .x = label_x,
-            .y = label_y,
-            .text = label,
-            .color = resolved.fg,
-            .font_size = resolved.font_size,
-        } });
+        try appendTextCommand(commands, allocator, label_bounds, label_x, label, resolved.fg, resolved.font_size, text_ctx);
     }
 
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
@@ -428,6 +448,8 @@ fn emitDropdown(
     const rect = node.layout_rect;
     const chevron = if (dropdown.open) dropdownChevronUp() else dropdownChevronDown();
     const chevron_x = rect.x + rect.w - resolved.padding.right - resolved.font_size * 0.6;
+    const label_bounds = customTextBounds(rect, resolved, rect.x + resolved.padding.left, chevron_x - theme.spacing - (rect.x + resolved.padding.left));
+    const chevron_bounds = customTextBounds(rect, resolved, chevron_x, rect.x + rect.w - resolved.padding.right - chevron_x);
 
     try commands.append(allocator, .{ .rect = .{
         .bounds = rect,
@@ -436,20 +458,8 @@ fn emitDropdown(
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
-    try commands.append(allocator, .{ .text = .{
-        .x = rect.x + resolved.padding.left,
-        .y = rect.y + resolved.padding.top,
-        .text = label,
-        .color = if (dropdown.selected_text.len > 0) resolved.fg else theme.placeholder_fg,
-        .font_size = resolved.font_size,
-    } });
-    try commands.append(allocator, .{ .text = .{
-        .x = chevron_x,
-        .y = rect.y + resolved.padding.top,
-        .text = chevron,
-        .color = resolved.fg,
-        .font_size = resolved.font_size,
-    } });
+    try appendTextCommand(commands, allocator, label_bounds, label_bounds.x, label, if (dropdown.selected_text.len > 0) resolved.fg else theme.placeholder_fg, resolved.font_size, text_ctx);
+    try appendTextCommand(commands, allocator, chevron_bounds, chevron_x, chevron, resolved.fg, resolved.font_size, text_ctx);
 
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
     if (dropdown.open) {
@@ -485,6 +495,7 @@ fn emitSelectable(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const fill = selectableBg(node, selectable.selected, theme);
     try commands.append(allocator, .{ .rect = .{
@@ -494,13 +505,8 @@ fn emitSelectable(
         .border_width = if (selectable.selected) 1 else 0,
         .corner_radius = resolved.border_radius,
     } });
-    try commands.append(allocator, .{ .text = .{
-        .x = node.layout_rect.x + resolved.padding.left,
-        .y = node.layout_rect.y + resolved.padding.top,
-        .text = selectable.label,
-        .color = resolved.fg,
-        .font_size = resolved.font_size,
-    } });
+    const selectable_bounds = defaultTextBounds(node.layout_rect, resolved);
+    try appendTextCommand(commands, allocator, selectable_bounds, selectable_bounds.x, selectable.label, resolved.fg, resolved.font_size, text_ctx);
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
 
@@ -618,13 +624,9 @@ fn emitTableCell(
     try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     if (tableSortIndicator(tree, handle)) |direction| {
-        try commands.append(allocator, .{ .text = .{
-            .x = node.layout_rect.x + node.layout_rect.w - resolved.padding.right - resolved.font_size * 0.8,
-            .y = node.layout_rect.y + resolved.padding.top,
-            .text = tableSortChevron(direction),
-            .color = theme.accent,
-            .font_size = resolved.font_size,
-        } });
+        const chevron_x = node.layout_rect.x + node.layout_rect.w - resolved.padding.right - resolved.font_size * 0.8;
+        const chevron_bounds = customTextBounds(node.layout_rect, resolved, chevron_x, rectRight(node.layout_rect) - resolved.padding.right - chevron_x);
+        try appendTextCommand(commands, allocator, chevron_bounds, chevron_x, tableSortChevron(direction), theme.accent, resolved.font_size, text_ctx);
     }
 }
 
@@ -714,15 +716,9 @@ fn emitMenu(
         .border_width = 0,
         .corner_radius = resolved.border_radius,
     } });
-    try commands.append(allocator, .{ .text = .{
-        .x = node.layout_rect.x + resolved.padding.left,
-        .y = node.layout_rect.y + resolved.padding.top,
-        .text = menu.label,
-        .color = resolved.fg,
-        .font_size = resolved.font_size,
-    } });
+    const menu_bounds = defaultTextBounds(node.layout_rect, resolved);
+    try appendTextCommand(commands, allocator, menu_bounds, menu_bounds.x, menu.label, resolved.fg, resolved.font_size, text_ctx);
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
-    _ = text_ctx;
 }
 
 fn emitPopup(
@@ -774,6 +770,7 @@ fn emitMenuItem(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const has_popup = directPopupChild(tree, handle) != null;
     try commands.append(allocator, .{ .rect = .{
@@ -786,13 +783,8 @@ fn emitMenuItem(
         .border_width = 0,
         .corner_radius = resolved.border_radius,
     } });
-    try commands.append(allocator, .{ .text = .{
-        .x = node.layout_rect.x + resolved.padding.left,
-        .y = node.layout_rect.y + resolved.padding.top,
-        .text = item.label,
-        .color = resolved.fg,
-        .font_size = resolved.font_size,
-    } });
+    const item_bounds = defaultTextBounds(node.layout_rect, resolved);
+    try appendTextCommand(commands, allocator, item_bounds, item_bounds.x, item.label, resolved.fg, resolved.font_size, text_ctx);
     if (has_popup) {
         try emitMenuArrow(node.layout_rect, resolved, commands, allocator, resolved.fg);
     }
@@ -806,6 +798,7 @@ fn emitDragValue(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const rect = node.layout_rect;
 
@@ -816,13 +809,8 @@ fn emitDragValue(
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
-    try commands.append(allocator, .{ .text = .{
-        .x = rect.x + resolved.padding.left,
-        .y = rect.y + resolved.padding.top,
-        .text = drag_value.displayValue(),
-        .color = resolved.fg,
-        .font_size = resolved.font_size,
-    } });
+    const value_bounds = defaultTextBounds(rect, resolved);
+    try appendTextCommand(commands, allocator, value_bounds, value_bounds.x, drag_value.displayValue(), resolved.fg, resolved.font_size, text_ctx);
 
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
@@ -834,6 +822,7 @@ fn emitSpinBox(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const rect = node.layout_rect;
     const buttons = spinBoxButtons(rect);
@@ -864,27 +853,12 @@ fn emitSpinBox(
         .border_width = 0,
         .corner_radius = resolved.border_radius,
     } });
-    try commands.append(allocator, .{ .text = .{
-        .x = buttons.dec.x + buttons.dec.w * 0.5 - resolved.font_size * 0.2,
-        .y = buttons.dec.y + resolved.padding.top,
-        .text = "-",
-        .color = resolved.fg,
-        .font_size = resolved.font_size,
-    } });
-    try commands.append(allocator, .{ .text = .{
-        .x = buttons.inc.x + buttons.inc.w * 0.5 - resolved.font_size * 0.2,
-        .y = buttons.inc.y + resolved.padding.top,
-        .text = "+",
-        .color = resolved.fg,
-        .font_size = resolved.font_size,
-    } });
-    try commands.append(allocator, .{ .text = .{
-        .x = field_rect.x + resolved.padding.left,
-        .y = field_rect.y + resolved.padding.top,
-        .text = spinbox.displayValue(),
-        .color = resolved.fg,
-        .font_size = resolved.font_size,
-    } });
+    const dec_text_bounds = customTextBounds(buttons.dec, resolved, buttons.dec.x, buttons.dec.w);
+    const inc_text_bounds = customTextBounds(buttons.inc, resolved, buttons.inc.x, buttons.inc.w);
+    const field_text_bounds = defaultTextBounds(field_rect, resolved);
+    try appendTextCommand(commands, allocator, dec_text_bounds, buttons.dec.x + buttons.dec.w * 0.5 - resolved.font_size * 0.2, "-", resolved.fg, resolved.font_size, text_ctx);
+    try appendTextCommand(commands, allocator, inc_text_bounds, buttons.inc.x + buttons.inc.w * 0.5 - resolved.font_size * 0.2, "+", resolved.fg, resolved.font_size, text_ctx);
+    try appendTextCommand(commands, allocator, field_text_bounds, field_text_bounds.x, spinbox.displayValue(), resolved.fg, resolved.font_size, text_ctx);
 
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
@@ -913,7 +887,7 @@ fn emitTabBar(
     while (iter.next()) |child| {
         const child_node = tree.getConst(child);
         if (child_node.kind != .tab_item) continue;
-        try emitTabItemHeader(child_node, child_node.kind.tab_item, child_node.style_override.resolve(theme), theme, commands, allocator);
+        try emitTabItemHeader(child_node, child_node.kind.tab_item, child_node.style_override.resolve(theme), theme, commands, allocator, text_ctx);
     }
 
     if (selectedTabItem(tree, handle)) |selected| {
@@ -933,7 +907,7 @@ fn emitTabItem(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    try emitTabItemHeader(node, item, resolved, theme, commands, allocator);
+    try emitTabItemHeader(node, item, resolved, theme, commands, allocator, text_ctx);
     if (item.selected) {
         try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
     } else {
@@ -948,6 +922,7 @@ fn emitTabItemHeader(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(DrawCommand),
     allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const chrome = tabItemChrome(node, item, resolved, theme);
     try commands.append(allocator, .{ .rect = .{
@@ -971,13 +946,8 @@ fn emitTabItemHeader(
             .corner_radius = 0,
         } });
     }
-    try commands.append(allocator, .{ .text = .{
-        .x = node.layout_rect.x + resolved.padding.left,
-        .y = node.layout_rect.y + resolved.padding.top,
-        .text = item.label,
-        .color = resolved.fg,
-        .font_size = resolved.font_size,
-    } });
+    const tab_bounds = defaultTextBounds(node.layout_rect, resolved);
+    try appendTextCommand(commands, allocator, tab_bounds, tab_bounds.x, item.label, resolved.fg, resolved.font_size, text_ctx);
 
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
@@ -1090,35 +1060,22 @@ fn emitTextInput(
 
     // Text content or placeholder
     const content = ti.content();
+    const text_bounds = defaultTextBounds(rect, resolved);
     if (content.len > 0) {
-        try commands.append(allocator, .{ .text = .{
-            .x = rect.x + resolved.padding.left,
-            .y = rect.y + resolved.padding.top,
-            .text = content,
-            .color = resolved.fg,
-            .font_size = resolved.font_size,
-        } });
+        try appendTextCommand(commands, allocator, text_bounds, text_bounds.x, content, resolved.fg, resolved.font_size, text_ctx);
     } else if (ti.placeholder.len > 0) {
-        try commands.append(allocator, .{ .text = .{
-            .x = rect.x + resolved.padding.left,
-            .y = rect.y + resolved.padding.top,
-            .text = ti.placeholder,
-            .color = theme.placeholder_fg,
-            .font_size = resolved.font_size,
-        } });
+        try appendTextCommand(commands, allocator, text_bounds, text_bounds.x, ti.placeholder, theme.placeholder_fg, resolved.font_size, text_ctx);
     }
 
     // Selection highlight and cursor (when focused)
     if (node.interaction.focused) {
-        const text_y = rect.y + resolved.padding.top;
-
         // Selection highlight
         if (ti.hasSelection()) {
             const range = ti.selectionRange();
             const sel_start_x = rect.x + resolved.padding.left + layout.textWidthUpTo(content, range.start, resolved.font_size, text_ctx);
             const sel_end_x = rect.x + resolved.padding.left + layout.textWidthUpTo(content, range.end, resolved.font_size, text_ctx);
             try commands.append(allocator, .{ .rect = .{
-                .bounds = .{ .x = sel_start_x, .y = text_y, .w = sel_end_x - sel_start_x, .h = resolved.font_size },
+                .bounds = .{ .x = sel_start_x, .y = text_bounds.y, .w = sel_end_x - sel_start_x, .h = text_bounds.h },
                 .color = theme.selection_bg,
                 .border_color = theme.selection_bg,
                 .border_width = 0,
@@ -1129,7 +1086,7 @@ fn emitTextInput(
         // Cursor
         const cursor_x = rect.x + resolved.padding.left + layout.textWidthUpTo(content, ti.cursor, resolved.font_size, text_ctx);
         try commands.append(allocator, .{ .rect = .{
-            .bounds = .{ .x = cursor_x, .y = text_y, .w = 1, .h = resolved.font_size },
+            .bounds = .{ .x = cursor_x, .y = text_bounds.y, .w = 1, .h = text_bounds.h },
             .color = resolved.fg,
             .border_color = resolved.fg,
             .border_width = 0,
@@ -1767,6 +1724,15 @@ fn dropdownChevronUp() []const u8 {
     return "▴";
 }
 
+fn testMeasureText(text: []const u8, font_size: f32, _: ?*anyopaque) layout.TextDimensions {
+    return .{
+        .width = @as(f32, @floatFromInt(text.len)) * font_size * 0.5,
+        .height = 20,
+        .ascent = 14,
+        .descent = 6,
+    };
+}
+
 test "generate draw commands from tree" {
     const allocator = std.testing.allocator;
 
@@ -1790,6 +1756,33 @@ test "generate draw commands from tree" {
     try std.testing.expect(dl.commands[1] == .rect); // button bg
     try std.testing.expect(dl.commands[2] == .text); // button label
     try std.testing.expect(dl.commands[3] == .text); // text widget
+}
+
+test "text draw commands carry bounds and baseline" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const button = try tree.addRoot(.{ .button = .{ .label = "OK" } });
+    tree.get(button).layout_rect = .{ .x = 10, .y = 20, .w = 120, .h = 40 };
+
+    const text_ctx = layout.TextMeasureCtx{
+        .measureFn = &testMeasureText,
+    };
+
+    var dl = try generate(&tree, style.Theme.default, allocator, &text_ctx);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
+    try std.testing.expect(dl.commands[1] == .text);
+
+    const text = dl.commands[1].text;
+    try std.testing.expectApproxEqAbs(@as(f32, 16), text.bounds.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 26), text.bounds.y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 108), text.bounds.w, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 28), text.bounds.h, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 44), text.baseline_y, 0.01);
 }
 
 test "toolbar and status bar emit chrome and children" {

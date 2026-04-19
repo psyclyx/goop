@@ -13,6 +13,8 @@ pub const MeasureTextFn = *const fn (text: []const u8, font_size: f32, user_data
 pub const TextDimensions = struct {
     width: f32,
     height: f32,
+    ascent: f32 = 0,
+    descent: f32 = 0,
 };
 
 /// Text measurement context: a function pointer + opaque user data.
@@ -22,9 +24,13 @@ pub const TextMeasureCtx = struct {
     user_data: ?*anyopaque = null,
 };
 
+var active_text_ctx: ?*const TextMeasureCtx = null;
+
 /// Run the layout pass: walk the widget tree, feed elements to clay,
 /// compute layout, and write computed rects back to each node.
 pub fn run(tree: *widget.Tree, theme: style_mod.Theme, text_ctx: ?*const TextMeasureCtx) void {
+    active_text_ctx = text_ctx;
+    defer active_text_ctx = null;
     syncTableState(tree);
     c.Clay_SetMeasureTextFunction(&measureText, @ptrCast(@constCast(text_ctx)));
     c.Clay_BeginLayout();
@@ -40,6 +46,42 @@ pub fn run(tree: *widget.Tree, theme: style_mod.Theme, text_ctx: ?*const TextMea
 
     writeBackRects(tree);
     clampPopupRects(tree);
+}
+
+pub fn textMetrics(font_size: f32, text_ctx: ?*const TextMeasureCtx) TextDimensions {
+    if (text_ctx) |ctx| {
+        return normalizeTextDimensions(ctx.measureFn("Mg", font_size, ctx.user_data), font_size);
+    }
+    return normalizeTextDimensions(.{ .width = 0, .height = font_size }, font_size);
+}
+
+fn controlTextHeight(resolved: style_mod.ResolvedStyle) f32 {
+    return textMetrics(resolved.font_size, active_text_ctx).height + resolved.padding.top + resolved.padding.bottom;
+}
+
+fn normalizeTextDimensions(raw: TextDimensions, font_size: f32) TextDimensions {
+    const fallback_ascent = font_size * 0.8;
+    const fallback_descent = font_size * 0.2;
+
+    var dims = raw;
+    if (dims.ascent <= 0 and dims.descent <= 0) {
+        if (dims.height > 0) {
+            dims.ascent = dims.height * 0.8;
+            dims.descent = dims.height - dims.ascent;
+        } else {
+            dims.ascent = fallback_ascent;
+            dims.descent = fallback_descent;
+            dims.height = font_size;
+        }
+    } else {
+        if (dims.ascent <= 0) dims.ascent = @max(dims.height - dims.descent, fallback_ascent);
+        if (dims.descent < 0) dims.descent = 0;
+        if (dims.height <= 0) dims.height = dims.ascent + dims.descent;
+    }
+
+    if (dims.height <= 0) dims.height = dims.ascent + dims.descent;
+    if (dims.height <= 0) dims.height = font_size;
+    return dims;
 }
 
 fn writeBackRects(tree: *widget.Tree) void {
@@ -304,7 +346,7 @@ fn emitTreeItem(
         .layout = .{
             .sizing = .{
                 .width = growSizing(),
-                .height = fixedSizing(resolved.font_size + resolved.padding.top + resolved.padding.bottom),
+                .height = fixedSizing(controlTextHeight(resolved)),
             },
             .padding = clayPadding(header_padding),
             .childGap = 0,
@@ -382,7 +424,7 @@ fn emitDropdown(
         .layout = .{
             .sizing = .{
                 .width = growSizing(),
-                .height = fixedSizing(resolved.font_size + resolved.padding.top + resolved.padding.bottom),
+                .height = fixedSizing(controlTextHeight(resolved)),
             },
             .padding = clayPadding(resolved.padding),
             .childGap = 0,
@@ -462,7 +504,7 @@ fn emitSelectable(
         .layout = .{
             .sizing = .{
                 .width = growSizing(),
-                .height = fixedSizing(resolved.font_size + resolved.padding.top + resolved.padding.bottom),
+                .height = fixedSizing(controlTextHeight(resolved)),
             },
             .padding = clayPadding(resolved.padding),
             .childGap = 0,
@@ -711,7 +753,7 @@ fn emitMenu(
         .layout = .{
             .sizing = .{
                 .width = .{},
-                .height = fixedSizing(resolved.font_size + resolved.padding.top + resolved.padding.bottom),
+                .height = fixedSizing(controlTextHeight(resolved)),
             },
             .padding = clayPadding(resolved.padding),
             .childGap = 0,
@@ -829,7 +871,7 @@ fn emitMenuItem(
         .layout = .{
             .sizing = .{
                 .width = growSizing(),
-                .height = fixedSizing(resolved.font_size + resolved.padding.top + resolved.padding.bottom),
+                .height = fixedSizing(controlTextHeight(resolved)),
             },
             .padding = clayPadding(padding),
             .childGap = 0,
@@ -871,7 +913,7 @@ fn emitDragValue(handle: widget.NodeHandle, drag_value: *const widget.WidgetKind
         .layout = .{
             .sizing = .{
                 .width = growSizing(),
-                .height = fixedSizing(resolved.font_size + resolved.padding.top + resolved.padding.bottom),
+                .height = fixedSizing(controlTextHeight(resolved)),
             },
             .padding = clayPadding(resolved.padding),
             .childGap = 0,
@@ -911,7 +953,7 @@ fn emitSpinBox(handle: widget.NodeHandle, spinbox: *const widget.WidgetKind.Spin
         .layout = .{
             .sizing = .{
                 .width = growSizing(),
-                .height = fixedSizing(resolved.font_size + resolved.padding.top + resolved.padding.bottom),
+                .height = fixedSizing(controlTextHeight(resolved)),
             },
             .padding = clayPadding(resolved.padding),
             .childGap = 0,
@@ -1191,7 +1233,7 @@ fn emitTextInput(handle: widget.NodeHandle, ti: widget.WidgetKind.TextInput, res
         .layout = .{
             .sizing = .{
                 .width = growSizing(),
-                .height = fixedSizing(resolved.font_size + resolved.padding.top + resolved.padding.bottom),
+                .height = fixedSizing(controlTextHeight(resolved)),
             },
             .padding = clayPadding(resolved.padding),
             .childGap = 0,
@@ -1849,7 +1891,8 @@ fn measureText(
     if (user_data) |ptr| {
         const ctx: *const TextMeasureCtx = @ptrCast(@alignCast(ptr));
         const dims = ctx.measureFn(str, font_size, ctx.user_data);
-        return .{ .width = dims.width, .height = dims.height };
+        const normalized = normalizeTextDimensions(dims, font_size);
+        return .{ .width = normalized.width, .height = normalized.height };
     }
 
     // Fallback: rough approximation when no measurement function is provided
