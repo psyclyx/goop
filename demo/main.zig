@@ -110,6 +110,31 @@ const State = struct {
     xkb_ctx: ?*xkb.xkb_context = null,
     xkb_keymap: ?*xkb.xkb_keymap = null,
     xkb_state: ?*xkb.xkb_state = null,
+
+    // Demo-local clipboard backing store for copy/cut/paste shortcuts.
+    clipboard_buf: [1024]u8 = [_]u8{0} ** 1024,
+    clipboard_len: usize = 0,
+
+    fn clipboard(self: *State) goop.Clipboard {
+        return .{
+            .ptr = @ptrCast(self),
+            .getTextFn = @ptrCast(&clipboardGetText),
+            .setTextFn = @ptrCast(&clipboardSetText),
+        };
+    }
+
+    fn clipboardGetText(ptr: *anyopaque) ?[]const u8 {
+        const self: *State = @ptrCast(@alignCast(ptr));
+        if (self.clipboard_len == 0) return null;
+        return self.clipboard_buf[0..self.clipboard_len];
+    }
+
+    fn clipboardSetText(ptr: *anyopaque, text: []const u8) void {
+        const self: *State = @ptrCast(@alignCast(ptr));
+        const count = @min(text.len, self.clipboard_buf.len);
+        @memcpy(self.clipboard_buf[0..count], text[0..count]);
+        self.clipboard_len = count;
+    }
 };
 
 // ── Wayland listeners ──
@@ -258,7 +283,7 @@ fn keymapHandler(data: ?*anyopaque, _: ?*wl.wl_keyboard, format: u32, fd: i32, s
     const ptr = posix.mmap(null, size, posix.PROT_READ, posix.MAP_SHARED, fd, 0);
     if (ptr == posix.MAP_FAILED) return;
     const map_str: [*]const u8 = @ptrCast(ptr);
-    defer _ = posix.munmap(@constCast(@ptrCast(map_str)), size);
+    defer _ = posix.munmap(@ptrCast(@constCast(map_str)), size);
 
     if (state.xkb_state) |s| xkb.xkb_state_unref(s);
     if (state.xkb_keymap) |k| xkb.xkb_keymap_unref(k);
@@ -311,8 +336,9 @@ fn evdevToKeycode(scancode: u32) goop.Event.Keycode {
 
 fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: u32, key: u32, key_state: u32) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
-    // Wayland key codes are evdev codes minus 8
-    const scancode = key + 8;
+    // Wayland delivers Linux evdev codes here. xkbcommon needs an extra +8,
+    // but goop's logical-key mapping table is keyed by the raw evdev values.
+    const scancode = key;
     const goop_state: goop.Event.Key.KeyState = if (key_state == 1) .pressed else .released;
     state.ctx.pushEvent(.{ .key = .{
         .scancode = scancode,
@@ -335,9 +361,10 @@ fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: u32, key: u32,
     state.needs_redraw = true;
 }
 
-fn pointerEnter(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: ?*wl.wl_surface, sx: wl.wl_fixed_t, sy: wl.wl_fixed_t) callconv(.c) void {
-    _ = sx;
-    _ = sy;
+fn pointerEnter(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: ?*wl.wl_surface, sx: wl.wl_fixed_t, sy: wl.wl_fixed_t) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    state.mouse_x = fixedToF32(sx);
+    state.mouse_y = fixedToF32(sy);
 }
 
 fn pointerLeave(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: ?*wl.wl_surface) callconv(.c) void {}
@@ -352,7 +379,7 @@ fn pointerMotion(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, sx: wl.wl_fixed_
     state.needs_redraw = true;
 }
 
-fn pointerButton(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: u32, button: u32, btn_state: u32) callconv(.c) void {
+fn pointerButton(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, time_ms: u32, button: u32, btn_state: u32) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
     const goop_button: goop.Event.MouseButton.Button = switch (button) {
         0x110 => .left, // BTN_LEFT
@@ -370,6 +397,7 @@ fn pointerButton(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: u32, button: 
         .state = goop_state,
         .x = mx,
         .y = my,
+        .timestamp_ms = time_ms,
     } }) catch {};
     state.needs_redraw = true;
 }
@@ -433,8 +461,8 @@ fn initEgl(state: *State, display: *wl.wl_display) !void {
     if (egl.eglBindAPI(egl.EGL_OPENGL_API) == 0) return error.EglBindApiFailed;
 
     const ctx_attribs = [_]egl.EGLint{
-        egl.EGL_CONTEXT_MAJOR_VERSION, 3,
-        egl.EGL_CONTEXT_MINOR_VERSION, 3,
+        egl.EGL_CONTEXT_MAJOR_VERSION,       3,
+        egl.EGL_CONTEXT_MINOR_VERSION,       3,
         egl.EGL_CONTEXT_OPENGL_PROFILE_MASK, egl.EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
         egl.EGL_NONE,
     };
@@ -627,6 +655,7 @@ pub fn main() !void {
     var ctx = try goop.Context.init(allocator, .{ .width = state.width, .height = state.height });
     defer ctx.deinit();
     state.ctx = &ctx;
+    ctx.clipboard = state.clipboard();
     try buildWidgetTree(&state);
 
     // GL renderer (with snail text support)
