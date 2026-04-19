@@ -18,7 +18,7 @@ the embedder owns the window, input delivery, and final rendering.
 - Secondary-click reporting for caller-owned context menu handling, with
   optional in-canvas popup/menu composition
 - Wayland demo with EGL/OpenGL rendering, `xkbcommon` key handling, and
-  `snail` text measurement/rendering
+  `snail` text measurement/rendering, plus real Wayland clipboard selection
 
 ## Repo Layout
 
@@ -66,7 +66,7 @@ zig build demo
 
 ## Near-Term Priorities
 
-1. C API bindings
-2. HiDPI scaling in the demo/runtime model
-3. Real Wayland clipboard integration in the demo
-4. UTF-8 text editing in text inputs
+1. HiDPI scaling in the demo/runtime model
+2. UTF-8 text editing in text inputs
+3. Demo/runtime portability polish around the C API
+4. Richer embedder examples

@@ -25,6 +25,9 @@ const posix = @cImport({
 });
 
 const allocator = std.heap.page_allocator;
+const clipboard_mime_utf8 = "text/plain;charset=utf-8";
+const clipboard_mime_utf8_string = "UTF8_STRING";
+const clipboard_mime_text = "text/plain";
 
 /// Snail-based text measurement adapter for goop.
 const SnailTextCtx = struct {
@@ -72,9 +75,11 @@ const State = struct {
     start_time: posix.struct_timespec = .{ .tv_sec = 0, .tv_nsec = 0 },
 
     // Wayland globals
+    display: ?*wl.wl_display = null,
     compositor: ?*wl.wl_compositor = null,
     wm_base: ?*wl.xdg_wm_base = null,
     seat: ?*wl.wl_seat = null,
+    data_device_manager: ?*wl.wl_data_device_manager = null,
 
     // Wayland surface chain
     surface: ?*wl.wl_surface = null,
@@ -83,6 +88,12 @@ const State = struct {
     egl_window: ?*wl.wl_egl_window = null,
     pointer: ?*wl.wl_pointer = null,
     keyboard: ?*wl.wl_keyboard = null,
+    data_device: ?*wl.wl_data_device = null,
+    clipboard_source: ?*wl.wl_data_source = null,
+    selection_offer: ?*DataOfferState = null,
+    drag_offer: ?*DataOfferState = null,
+    data_offers: ?*DataOfferState = null,
+    last_input_serial: u32 = 0,
 
     // EGL
     egl_display: egl.EGLDisplay = egl.EGL_NO_DISPLAY,
@@ -139,9 +150,8 @@ const State = struct {
     xkb_keymap: ?*xkb.xkb_keymap = null,
     xkb_state: ?*xkb.xkb_state = null,
 
-    // Demo-local clipboard backing store for copy/cut/paste shortcuts.
-    clipboard_buf: [1024]u8 = [_]u8{0} ** 1024,
-    clipboard_len: usize = 0,
+    // Clipboard text for self-owned selections and the most recent external paste.
+    clipboard_buf: std.ArrayListUnmanaged(u8) = .empty,
 
     fn clipboard(self: *State) goop.Clipboard {
         return .{
@@ -153,17 +163,145 @@ const State = struct {
 
     fn clipboardGetText(ptr: *anyopaque) ?[]const u8 {
         const self: *State = @ptrCast(@alignCast(ptr));
-        if (self.clipboard_len == 0) return null;
-        return self.clipboard_buf[0..self.clipboard_len];
+        if (self.clipboard_source != null) {
+            if (self.clipboard_buf.items.len == 0) return null;
+            return self.clipboard_buf.items;
+        }
+        self.fetchClipboardSelection() catch return null;
+        if (self.clipboard_buf.items.len == 0) return null;
+        return self.clipboard_buf.items;
     }
 
     fn clipboardSetText(ptr: *anyopaque, text: []const u8) void {
         const self: *State = @ptrCast(@alignCast(ptr));
-        const count = @min(text.len, self.clipboard_buf.len);
-        @memcpy(self.clipboard_buf[0..count], text[0..count]);
-        self.clipboard_len = count;
+        self.setClipboardSelection(text) catch {};
+    }
+
+    fn setClipboardSelection(self: *State, text: []const u8) !void {
+        try self.setClipboardBuffer(text);
+        if (self.data_device_manager == null or self.data_device == null or self.last_input_serial == 0) return;
+
+        self.destroyClipboardSource();
+
+        const source = wl.wl_data_device_manager_create_data_source(self.data_device_manager) orelse return;
+        self.clipboard_source = source;
+        _ = wl.wl_data_source_add_listener(source, &data_source_listener, self);
+        wl.wl_data_source_offer(source, clipboard_mime_utf8);
+        wl.wl_data_source_offer(source, clipboard_mime_utf8_string);
+        wl.wl_data_source_offer(source, clipboard_mime_text);
+        wl.wl_data_device_set_selection(self.data_device, source, self.last_input_serial);
+        if (self.display) |display| _ = wl.wl_display_flush(display);
+    }
+
+    fn fetchClipboardSelection(self: *State) !void {
+        const offer = self.selection_offer orelse return;
+        const mime = preferredOfferMime(offer) orelse return;
+
+        var fds: [2]i32 = undefined;
+        if (posix.pipe(&fds) != 0) return error.PipeFailed;
+        errdefer _ = posix.close(fds[0]);
+        errdefer _ = posix.close(fds[1]);
+
+        wl.wl_data_offer_receive(offer.offer, mime, fds[1]);
+        _ = posix.close(fds[1]);
+        if (self.display) |display| _ = wl.wl_display_flush(display);
+
+        self.clipboard_buf.clearRetainingCapacity();
+        var chunk: [4096]u8 = undefined;
+        while (true) {
+            const read_count = posix.read(fds[0], &chunk, chunk.len);
+            if (read_count <= 0) break;
+            try self.clipboard_buf.appendSlice(allocator, chunk[0..@intCast(read_count)]);
+        }
+        _ = posix.close(fds[0]);
+    }
+
+    fn setClipboardBuffer(self: *State, text: []const u8) !void {
+        self.clipboard_buf.clearRetainingCapacity();
+        try self.clipboard_buf.appendSlice(allocator, text);
+    }
+
+    fn addDataOffer(self: *State, offer: *wl.wl_data_offer) !void {
+        const entry = try allocator.create(DataOfferState);
+        entry.* = .{
+            .owner = self,
+            .offer = offer,
+            .next = self.data_offers,
+        };
+        self.data_offers = entry;
+        _ = wl.wl_data_offer_add_listener(offer, &data_offer_listener, entry);
+    }
+
+    fn findDataOffer(self: *State, offer: *wl.wl_data_offer) ?*DataOfferState {
+        var it = self.data_offers;
+        while (it) |entry| : (it = entry.next) {
+            if (entry.offer == offer) return entry;
+        }
+        return null;
+    }
+
+    fn destroyDataOffer(self: *State, target: *DataOfferState) void {
+        if (self.selection_offer == target) self.selection_offer = null;
+        if (self.drag_offer == target) self.drag_offer = null;
+
+        if (self.data_offers == target) {
+            self.data_offers = target.next;
+        } else {
+            var it = self.data_offers;
+            while (it) |entry| : (it = entry.next) {
+                if (entry.next == target) {
+                    entry.next = target.next;
+                    break;
+                }
+            }
+        }
+
+        wl.wl_data_offer_destroy(target.offer);
+        allocator.destroy(target);
+    }
+
+    fn destroyAllDataOffers(self: *State) void {
+        while (self.data_offers) |entry| {
+            self.destroyDataOffer(entry);
+        }
+    }
+
+    fn destroyClipboardSource(self: *State) void {
+        if (self.clipboard_source) |source| {
+            wl.wl_data_source_destroy(source);
+            self.clipboard_source = null;
+        }
     }
 };
+
+const DataOfferState = struct {
+    owner: *State,
+    offer: *wl.wl_data_offer,
+    next: ?*DataOfferState = null,
+    offers_text_utf8: bool = false,
+    offers_utf8_string: bool = false,
+    offers_text_plain: bool = false,
+};
+
+fn offerSupportsMime(mime: []const u8, expected: []const u8) bool {
+    return std.mem.eql(u8, mime, expected);
+}
+
+fn preferredOfferMime(offer: *const DataOfferState) ?[*:0]const u8 {
+    if (offer.offers_text_utf8) return clipboard_mime_utf8;
+    if (offer.offers_utf8_string) return clipboard_mime_utf8_string;
+    if (offer.offers_text_plain) return clipboard_mime_text;
+    return null;
+}
+
+fn writeAll(fd: i32, bytes: []const u8) void {
+    var written: usize = 0;
+    while (written < bytes.len) {
+        const chunk = posix.write(fd, bytes.ptr + written, bytes.len - written);
+        if (chunk <= 0) return;
+        written += @intCast(chunk);
+    }
+}
 
 // ── Wayland listeners ──
 
@@ -184,6 +322,10 @@ fn registryGlobal(data: ?*anyopaque, registry: ?*wl.wl_registry, name: u32, inte
     } else if (std.mem.eql(u8, iface, "wl_seat")) {
         state.seat = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_seat_interface, @min(version, 5)));
         _ = wl.wl_seat_add_listener(state.seat, &seat_listener, data);
+        ensureDataDevice(state, data);
+    } else if (std.mem.eql(u8, iface, "wl_data_device_manager")) {
+        state.data_device_manager = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_data_device_manager_interface, @min(version, 3)));
+        ensureDataDevice(state, data);
     }
 }
 
@@ -236,6 +378,15 @@ fn xdgToplevelClose(data: ?*anyopaque, _: ?*wl.xdg_toplevel) callconv(.c) void {
     state.running = false;
 }
 
+fn ensureDataDevice(state: *State, data: ?*anyopaque) void {
+    if (state.data_device != null) return;
+    if (state.data_device_manager == null or state.seat == null) return;
+    state.data_device = wl.wl_data_device_manager_get_data_device(state.data_device_manager, state.seat);
+    if (state.data_device) |device| {
+        _ = wl.wl_data_device_add_listener(device, &data_device_listener, data);
+    }
+}
+
 const seat_listener = wl.wl_seat_listener{
     .capabilities = &seatCapabilities,
     .name = &seatName,
@@ -262,6 +413,99 @@ fn seatCapabilities(data: ?*anyopaque, seat: ?*wl.wl_seat, caps: u32) callconv(.
     } else if (!has_keyboard and state.keyboard != null) {
         wl.wl_keyboard_destroy(state.keyboard);
         state.keyboard = null;
+    }
+
+    ensureDataDevice(state, data);
+}
+
+const data_offer_listener = wl.wl_data_offer_listener{
+    .offer = &dataOfferOffer,
+    .source_actions = &noopDataOfferSourceActions,
+    .action = &noopDataOfferAction,
+};
+
+fn dataOfferOffer(data: ?*anyopaque, _: ?*wl.wl_data_offer, mime_type: [*c]const u8) callconv(.c) void {
+    const offer: *DataOfferState = @ptrCast(@alignCast(data));
+    const mime = std.mem.span(@as([*:0]const u8, @ptrCast(mime_type)));
+    if (offerSupportsMime(mime, clipboard_mime_utf8)) {
+        offer.offers_text_utf8 = true;
+    } else if (offerSupportsMime(mime, clipboard_mime_utf8_string)) {
+        offer.offers_utf8_string = true;
+    } else if (offerSupportsMime(mime, clipboard_mime_text)) {
+        offer.offers_text_plain = true;
+    }
+}
+
+fn noopDataOfferSourceActions(_: ?*anyopaque, _: ?*wl.wl_data_offer, _: u32) callconv(.c) void {}
+fn noopDataOfferAction(_: ?*anyopaque, _: ?*wl.wl_data_offer, _: u32) callconv(.c) void {}
+
+const data_source_listener = wl.wl_data_source_listener{
+    .target = &noopDataSourceTarget,
+    .send = &dataSourceSend,
+    .cancelled = &dataSourceCancelled,
+    .dnd_drop_performed = &noopDataSourceDropPerformed,
+    .dnd_finished = &noopDataSourceFinished,
+    .action = &noopDataSourceAction,
+};
+
+fn noopDataSourceTarget(_: ?*anyopaque, _: ?*wl.wl_data_source, _: [*c]const u8) callconv(.c) void {}
+fn noopDataSourceDropPerformed(_: ?*anyopaque, _: ?*wl.wl_data_source) callconv(.c) void {}
+fn noopDataSourceFinished(_: ?*anyopaque, _: ?*wl.wl_data_source) callconv(.c) void {}
+fn noopDataSourceAction(_: ?*anyopaque, _: ?*wl.wl_data_source, _: u32) callconv(.c) void {}
+
+fn dataSourceSend(data: ?*anyopaque, _: ?*wl.wl_data_source, _: [*c]const u8, fd: i32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    defer _ = posix.close(fd);
+    if (state.clipboard_buf.items.len == 0) return;
+    writeAll(fd, state.clipboard_buf.items);
+}
+
+fn dataSourceCancelled(data: ?*anyopaque, source: ?*wl.wl_data_source) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    if (state.clipboard_source == source) state.clipboard_source = null;
+    if (source) |clipboard_source| wl.wl_data_source_destroy(clipboard_source);
+}
+
+const data_device_listener = wl.wl_data_device_listener{
+    .data_offer = &dataDeviceDataOffer,
+    .enter = &dataDeviceEnter,
+    .leave = &dataDeviceLeave,
+    .motion = &noopDataDeviceMotion,
+    .drop = &noopDataDeviceDrop,
+    .selection = &dataDeviceSelection,
+};
+
+fn dataDeviceDataOffer(data: ?*anyopaque, _: ?*wl.wl_data_device, offer: ?*wl.wl_data_offer) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const data_offer = offer orelse return;
+    state.addDataOffer(data_offer) catch wl.wl_data_offer_destroy(data_offer);
+}
+
+fn dataDeviceEnter(data: ?*anyopaque, _: ?*wl.wl_data_device, _: u32, _: ?*wl.wl_surface, _: wl.wl_fixed_t, _: wl.wl_fixed_t, offer: ?*wl.wl_data_offer) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    if (state.drag_offer) |drag_offer| state.destroyDataOffer(drag_offer);
+    if (offer) |drag_offer| {
+        state.drag_offer = state.findDataOffer(drag_offer);
+    }
+}
+
+fn dataDeviceLeave(data: ?*anyopaque, _: ?*wl.wl_data_device) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    if (state.drag_offer) |drag_offer| state.destroyDataOffer(drag_offer);
+}
+
+fn noopDataDeviceMotion(_: ?*anyopaque, _: ?*wl.wl_data_device, _: u32, _: wl.wl_fixed_t, _: wl.wl_fixed_t) callconv(.c) void {}
+fn noopDataDeviceDrop(_: ?*anyopaque, _: ?*wl.wl_data_device) callconv(.c) void {}
+
+fn dataDeviceSelection(data: ?*anyopaque, _: ?*wl.wl_data_device, offer: ?*wl.wl_data_offer) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    if (state.selection_offer) |selection_offer| {
+        if (offer == null or selection_offer.offer != offer) {
+            state.destroyDataOffer(selection_offer);
+        }
+    }
+    if (offer) |selection_offer| {
+        state.selection_offer = state.findDataOffer(selection_offer);
     }
 }
 
@@ -364,8 +608,9 @@ fn evdevToKeycode(scancode: u32) goop.Event.Keycode {
     };
 }
 
-fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: u32, key: u32, key_state: u32) callconv(.c) void {
+fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, serial: u32, _: u32, key: u32, key_state: u32) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
+    state.last_input_serial = serial;
     // Wayland delivers Linux evdev codes here. xkbcommon needs an extra +8,
     // but goop's logical-key mapping table is keyed by the raw evdev values.
     const scancode = key;
@@ -409,8 +654,9 @@ fn pointerMotion(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, sx: wl.wl_fixed_
     state.needs_redraw = true;
 }
 
-fn pointerButton(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, time_ms: u32, button: u32, btn_state: u32) callconv(.c) void {
+fn pointerButton(data: ?*anyopaque, _: ?*wl.wl_pointer, serial: u32, time_ms: u32, button: u32, btn_state: u32) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
+    state.last_input_serial = serial;
     const goop_button: goop.Event.MouseButton.Button = switch (button) {
         0x110 => .left, // BTN_LEFT
         0x111 => .right, // BTN_RIGHT
@@ -824,6 +1070,7 @@ pub fn main() !void {
     defer wl.wl_display_disconnect(display);
 
     var state = State{};
+    state.display = display;
     state.timeout_ns = parseTimeout();
     if (state.timeout_ns) |t| {
         std.debug.print("demo will exit after {d:.1}s\n", .{@as(f64, @floatFromInt(t)) / std.time.ns_per_s});
@@ -1064,6 +1311,11 @@ pub fn main() !void {
     }
 
     // Clean up xkb state
+    state.destroyAllDataOffers();
+    state.destroyClipboardSource();
+    state.clipboard_buf.deinit(allocator);
+    if (state.data_device) |data_device| wl.wl_data_device_release(data_device);
+    if (state.data_device_manager) |manager| wl.wl_data_device_manager_destroy(manager);
     if (state.xkb_state) |s| xkb.xkb_state_unref(s);
     if (state.xkb_keymap) |k| xkb.xkb_keymap_unref(k);
     if (state.xkb_ctx) |c| xkb.xkb_context_unref(c);

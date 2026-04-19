@@ -33,19 +33,19 @@ fallback locations.
 - Secondary-click reporting plus caller-managed context menu positioning
 - Demo font loading no longer shells out through `fc-match`
 - Installable C API header plus retained-tree/event/draw wrappers for C
+- Real Wayland clipboard selection in the demo via `wl_data_device_manager`
 
 ## Next Priorities
 
 1. HiDPI scaling
-2. Real Wayland clipboard integration
-3. UTF-8 text editing in inputs
-4. Demo/runtime portability polish around the new C surface
+2. UTF-8 text editing in inputs
+3. Demo/runtime portability polish around the new C surface
+4. Header/examples coverage for the C API
 
 ## Known Issues
 
 - MSAA sample count is hardcoded to `4` with no capability fallback
 - Text input only handles printable ASCII; UTF-8 editing is not implemented
-- The demo clipboard path does not yet use the real Wayland clipboard
 - No HiDPI scaling; the demo treats surface size as physical pixels
 - `freeDrawList` is a no-op for compatibility; `Context` owns draw-list memory
 - `widget.zig` grew significantly with removal logic and should be watched

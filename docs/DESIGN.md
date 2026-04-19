@@ -149,6 +149,7 @@ because the `Context` owns cached draw memory.
 - Wayland surface and event handling
 - EGL/OpenGL setup
 - `xkbcommon` keyboard translation
+- `wl_data_device_manager` clipboard integration
 - `snail` font atlas/text measurement integration
 - frame-callback-paced redraw scheduling
 
@@ -167,9 +168,9 @@ core API.
 Near-term work is focused on:
 
 1. Improving runtime portability and display scaling behavior
-2. Replacing the demo clipboard stub with real Wayland clipboard support
-3. Improving text editing beyond the current ASCII-only path
-4. Hardening the new C-facing surface and examples
+2. Improving text editing beyond the current ASCII-only path
+3. Hardening the new C-facing surface and examples
+4. Expanding embedder-level samples and validation
 
 ## History
 
