@@ -98,43 +98,48 @@ Retained-mode GUI library. Zig 0.16. Embeddable. No window ownership.
 - Core-demo decoupling: core has zero demo dependencies.
 - Keyboard event model (Keycode enum + scancode mapping in demo).
 
-## Chore Review — Iteration 40
+## Chore Review — Iteration 45
 
 ### Codebase snapshot
 
-4476 LOC total. 56 tests pass. 8 widget types (incl. text input).
+5186 LOC total. 69 tests pass. 8 widget types (incl. text input).
 
 | File | Lines | Role |
 |------|-------|------|
-| dispatch.zig | 1645 | Event processing, hit testing, focus |
+| dispatch_text_input_test.zig | 1324 | Text input tests (extracted) |
+| dispatch.zig | 824 | Event processing, hit testing, focus |
 | draw.zig | 722 | Draw command generation |
+| demo/main.zig | 661 | Wayland demo |
 | layout.zig | 454 | Clay integration |
-| goop.zig | 282 | Public API |
-| widget.zig | 274 | Widget tree data |
-| style.zig | 101 | Theme/style |
-| event.zig | 72 | Event types |
-| demo/main.zig | 652 | Wayland demo |
+| widget.zig | 348 | Widget tree data |
+| goop.zig | 285 | Public API |
 | demo/render.zig | 274 | GL33 renderer |
+| style.zig | 101 | Theme/style |
+| focus.zig | 77 | Focus navigation |
+| event.zig | 76 | Event types |
+| hittest.zig | 40 | Hit testing |
 
-### Review of iterations 35–39
+### Review of iterations 40–44
 
-All 5 iterations focused on text input mouse interaction. Text input now
-has: keyboard editing, selection (shift+arrows, shift+home/end, ctrl+a),
-click-to-position, drag-select, shift-click extend. Solid for basic use.
+Text input feature now mature: double-click word select, clipboard
+(copy/cut/paste via embedder callbacks), mouse interaction complete.
+Test extraction cleaned up dispatch.zig (1645→824 lines). Demo mouse
+coordinate bug fixed.
+
+### Resolved since iteration 40
+
+- **dispatch.zig size**: text input tests extracted to separate file
+  (iteration 42). dispatch.zig now 824 lines — manageable.
 
 ### Observations
 
-- **dispatch.zig still large (1645 lines).** Most growth is tests. Consider
-  extracting text input tests to a separate test file, or extracting text
-  input dispatch logic to its own module.
-- **Approximate char_width (font_size * 0.6)** used for cursor positioning
-  and click-to-position. Will break for proportional fonts. Proper fix
-  needs text measurement integration (MeasureTextFn from layout).
-
-### Resolved since iteration 25
-
-- **dispatch.zig extraction**: focus.zig and hittest.zig extracted (iteration 31).
-- **interactionBg helper**: extracted in draw.zig (iteration 28).
+- **Approximate char_width (font_size * 0.6)** still used for cursor
+  positioning and click-to-position. Proper fix needs text measurement
+  integration (MeasureTextFn from layout). Blocking for proportional fonts.
+- **No dirty tracking.** Full layout + draw list every frame. Not a
+  problem at current scale but will be for real apps.
+- **Text input test file is large (1324 lines, 34 tests).** Acceptable
+  for now since it's isolated, but watch for further growth.
 
 ### Deferred (still waiting)
 
