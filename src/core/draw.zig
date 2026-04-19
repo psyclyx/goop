@@ -101,6 +101,8 @@ fn emitNode(
         .table => |table| try emitTable(tree, handle, node, table, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .table_row => |row| try emitTableRow(tree, handle, node, row, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .table_cell => try emitTableCell(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .toolbar => try emitToolbar(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .status_bar => try emitStatusBar(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .menu_bar => try emitMenuBar(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .menu => |menu| try emitMenu(tree, handle, node, menu, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .popup => try emitPopup(tree, handle, node, resolved, theme, commands, allocator, text_ctx),
@@ -633,6 +635,48 @@ fn emitMenuBar(
         .border_color = resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
+    } });
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn emitToolbar(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = node.layout_rect,
+        .color = resolved.bg,
+        .border_color = resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = 0,
+    } });
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn emitStatusBar(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = node.layout_rect,
+        .color = resolved.bg,
+        .border_color = resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = 0,
     } });
     try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
@@ -1711,6 +1755,34 @@ test "generate draw commands from tree" {
     try std.testing.expect(dl.commands[1] == .rect); // button bg
     try std.testing.expect(dl.commands[2] == .text); // button label
     try std.testing.expect(dl.commands[3] == .text); // text widget
+}
+
+test "toolbar and status bar emit chrome and children" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const toolbar = try tree.addRoot(.{ .toolbar = .{} });
+    const tool_button = try tree.addChild(toolbar, .{ .button = .{ .label = "Move" } });
+    const status = try tree.addRoot(.{ .status_bar = .{} });
+    const status_text = try tree.addChild(status, .{ .text = .{ .content = "Ready" } });
+
+    tree.get(toolbar).layout_rect = .{ .x = 0, .y = 0, .w = 320, .h = 34 };
+    tree.get(tool_button).layout_rect = .{ .x = 8, .y = 6, .w = 64, .h = 22 };
+    tree.get(status).layout_rect = .{ .x = 0, .y = 40, .w = 320, .h = 24 };
+    tree.get(status_text).layout_rect = .{ .x = 8, .y = 45, .w = 40, .h = 14 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 5), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect); // toolbar chrome
+    try std.testing.expect(dl.commands[1] == .rect); // toolbar button
+    try std.testing.expect(dl.commands[2] == .text); // toolbar button label
+    try std.testing.expect(dl.commands[3] == .rect); // status bar chrome
+    try std.testing.expect(dl.commands[4] == .text); // status text
 }
 
 test "checkbox emits box and label" {

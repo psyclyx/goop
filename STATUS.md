@@ -22,6 +22,7 @@ Current baseline: `zig build test` is clean. Use `nix-shell` before
 - List boxes and selectable rows for denser editor selections
 - Structural tables with aligned columns, header rows, and striping
 - Resizable table columns with retained width fractions
+- Toolbar and status-bar structural widgets for editor chrome
 - Hover/focus-driven tooltips built on the floating layout path
 - Secondary-click reporting plus caller-managed context menu positioning
 

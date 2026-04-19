@@ -10,9 +10,9 @@ the embedder owns the window, input delivery, and final rendering.
 - Layout via vendored `clay`
 - Draw command generation with cached draw lists when nothing changed
 - Widgets: container, text, button, checkbox, radio button, tree item,
-  dropdown, list box, selectable, table, table row, table cell, menu bar,
-  menu, popup, tooltip, menu item, drag value, spinbox, tab bar, tab item, splitter,
-  slider, scroll area, text input
+  dropdown, list box, selectable, table, table row, table cell, toolbar,
+  status bar, menu bar, menu, popup, tooltip, menu item, drag value,
+  spinbox, tab bar, tab item, splitter, slider, scroll area, text input
 - Secondary-click reporting for caller-owned context menu handling, with
   optional in-canvas popup/menu composition
 - Wayland demo with EGL/OpenGL rendering, `xkbcommon` key handling, and

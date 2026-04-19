@@ -80,6 +80,8 @@ fn emitNode(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style_mo
         .table => |table| emitTable(tree, handle, table, resolved, theme),
         .table_row => |row| emitTableRow(tree, handle, row, resolved, theme),
         .table_cell => emitTableCell(tree, handle, resolved, theme),
+        .toolbar => emitToolbar(tree, handle, resolved, theme),
+        .status_bar => emitStatusBar(tree, handle, resolved, theme),
         .menu_bar => emitMenuBar(tree, handle, resolved, theme),
         .menu => |menu| emitMenu(tree, handle, menu, resolved, theme),
         .popup => |popup| emitPopup(tree, handle, popup, resolved, theme),
@@ -627,6 +629,72 @@ fn emitMenuBar(
     });
     emitChildrenSkippingPopups(tree, handle, theme);
     emitPopupChildren(tree, handle, theme);
+    c.Clay__CloseElement();
+}
+
+fn emitToolbar(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    resolved: style_mod.ResolvedStyle,
+    theme: style_mod.Theme,
+) void {
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = nodeId(handle),
+        .layout = .{
+            .sizing = .{
+                .width = growSizing(),
+                .height = .{},
+            },
+            .padding = clayPadding(resolved.padding),
+            .childGap = @intFromFloat(theme.spacing),
+            .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
+            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
+        },
+        .backgroundColor = clayColor(resolved.bg),
+        .cornerRadius = cornerRadiusAll(0),
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
+    emitChildrenSkippingPopups(tree, handle, theme);
+    c.Clay__CloseElement();
+}
+
+fn emitStatusBar(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    resolved: style_mod.ResolvedStyle,
+    theme: style_mod.Theme,
+) void {
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = nodeId(handle),
+        .layout = .{
+            .sizing = .{
+                .width = growSizing(),
+                .height = .{},
+            },
+            .padding = clayPadding(resolved.padding),
+            .childGap = @intFromFloat(theme.spacing * 2),
+            .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
+            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
+        },
+        .backgroundColor = clayColor(resolved.bg),
+        .cornerRadius = cornerRadiusAll(0),
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
+    emitChildrenSkippingPopups(tree, handle, theme);
     c.Clay__CloseElement();
 }
 

@@ -69,6 +69,8 @@ Current widget kinds:
 - table
 - table row
 - table cell
+- toolbar
+- status bar
 - menu bar
 - menu
 - popup

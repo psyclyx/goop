@@ -18,7 +18,7 @@ pub fn isFocusable(kind: widget.WidgetKind) bool {
         .slider,
         .text_input,
         => true,
-        .text, .container, .list_box, .table, .table_row, .table_cell, .menu_bar, .popup, .tooltip, .tab_bar, .scroll_area => false,
+        .text, .container, .list_box, .table, .table_row, .table_cell, .toolbar, .status_bar, .menu_bar, .popup, .tooltip, .tab_bar, .scroll_area => false,
     };
 }
 

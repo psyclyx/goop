@@ -37,6 +37,8 @@ pub const WidgetKind = union(enum) {
     table: Table,
     table_row: TableRow,
     table_cell: TableCell,
+    toolbar: Toolbar,
+    status_bar: StatusBar,
     menu_bar: MenuBar,
     menu: Menu,
     popup: Popup,
@@ -231,6 +233,10 @@ pub const WidgetKind = union(enum) {
     };
 
     pub const TableCell = struct {};
+
+    pub const Toolbar = struct {};
+
+    pub const StatusBar = struct {};
 
     pub const MenuBar = struct {};
 

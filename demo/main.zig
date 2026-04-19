@@ -541,11 +541,17 @@ fn buildWidgetTree(state: *State) !void {
     state.menu_copy = try ctx.tree.addChild(edit_popup, .{ .menu_item = .{ .label = "Copy" } });
     state.menu_paste = try ctx.tree.addChild(edit_popup, .{ .menu_item = .{ .label = "Paste" } });
 
-    // Row of buttons
-    const button_row = try ctx.tree.addChild(root, .{ .container = .{ .direction = .row } });
-    state.btn_a = try ctx.tree.addChild(button_row, .{ .button = .{ .label = "Button A" } });
-    state.btn_b = try ctx.tree.addChild(button_row, .{ .button = .{ .label = "Button B" } });
-    state.btn_c = try ctx.tree.addChild(button_row, .{ .button = .{ .label = "Button C" } });
+    // Toolbar chrome with common actions.
+    const toolbar = try ctx.tree.addChild(root, .{ .toolbar = .{} });
+    ctx.tree.get(toolbar).style_override = .{
+        .bg = .{ .r = 36, .g = 36, .b = 36, .a = 255 },
+        .border = .{ .r = 68, .g = 68, .b = 68, .a = 255 },
+        .padding = goop.style.Edges.symmetric(8, 6),
+        .border_radius = 0,
+    };
+    state.btn_a = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Translate" } });
+    state.btn_b = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Rotate" } });
+    state.btn_c = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Scale" } });
 
     // Text label
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "goop demo - click the buttons" } });
@@ -716,6 +722,17 @@ fn buildWidgetTree(state: *State) !void {
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 6" } });
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 7" } });
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 8" } });
+
+    const status_bar = try ctx.tree.addChild(root, .{ .status_bar = .{} });
+    ctx.tree.get(status_bar).style_override = .{
+        .bg = .{ .r = 34, .g = 34, .b = 34, .a = 255 },
+        .border = .{ .r = 68, .g = 68, .b = 68, .a = 255 },
+        .padding = goop.style.Edges.symmetric(8, 5),
+        .border_radius = 0,
+    };
+    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "Scene: 3 items" } });
+    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "Render: Preview" } });
+    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "Status: Ready" } });
 
     // Context menu popup. The demo opens it on secondary click, but callers
     // can instead use ctx.lastSecondaryClick() to trigger a native popup.
@@ -927,15 +944,15 @@ pub fn main() !void {
         // Check clicks
         if (state.btn_a) |h| if (ctx.wasClicked(h)) {
             state.click_count += 1;
-            std.debug.print("Button A clicked! (total: {})\n", .{state.click_count});
+            std.debug.print("Toolbar action: Translate (total: {})\n", .{state.click_count});
         };
         if (state.btn_b) |h| if (ctx.wasClicked(h)) {
             state.click_count += 1;
-            std.debug.print("Button B clicked! (total: {})\n", .{state.click_count});
+            std.debug.print("Toolbar action: Rotate (total: {})\n", .{state.click_count});
         };
         if (state.btn_c) |h| if (ctx.wasClicked(h)) {
             state.click_count += 1;
-            std.debug.print("Button C clicked! (total: {})\n", .{state.click_count});
+            std.debug.print("Toolbar action: Scale (total: {})\n", .{state.click_count});
         };
 
         // Log checkbox state changes (checkbox toggles itself on click)
