@@ -2,20 +2,18 @@
 
 ## Current
 
-Iteration 36.
+Iteration 37.
 51 tests pass. Build clean. Demo runs.
 
 ## Iteration Count
 
-36
+37
 
 ## Done This Iteration
 
-- Added mouse click-to-position cursor for text input widgets
-- Click computes character index from x-coordinate using char_width (font_size * 0.6)
-- Clicks before text clamp to 0, past end clamp to len
-- Clicking clears any active selection
-- Added 4 tests: click positions cursor, click before text, click past end, click clears selection
+- Fixed flipped text rendering: snail positions glyph quads in Y-up font coordinates, but the renderer was using a Y-down ortho projection, rendering all text upside-down
+- Changed ortho from (0, w, h, 0) to (0, w, 0, h) for Y-up projection
+- Converted baseline calculation to flip from goop's Y-down to snail's Y-up coords
 
 ## Next
 
