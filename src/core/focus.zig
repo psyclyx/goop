@@ -9,6 +9,7 @@ pub fn isFocusable(kind: widget.WidgetKind) bool {
         .tree_item,
         .dropdown,
         .selectable,
+        .grid_item,
         .table_row,
         .menu,
         .menu_item,
@@ -19,7 +20,7 @@ pub fn isFocusable(kind: widget.WidgetKind) bool {
         .slider,
         .text_input,
         => true,
-        .text, .container, .list_box, .table, .table_cell, .toolbar, .status_bar, .menu_bar, .popup, .tooltip, .tab_bar, .scroll_area => false,
+        .text, .container, .list_box, .grid_selector, .table, .table_cell, .toolbar, .status_bar, .menu_bar, .popup, .tooltip, .tab_bar, .scroll_area => false,
     };
 }
 

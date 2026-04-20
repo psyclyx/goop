@@ -34,6 +34,8 @@ pub const WidgetKind = union(enum) {
     dropdown: Dropdown,
     list_box: ListBox,
     selectable: Selectable,
+    grid_selector: GridSelector,
+    grid_item: GridItem,
     table: Table,
     table_row: TableRow,
     table_cell: TableCell,
@@ -91,6 +93,12 @@ pub const WidgetKind = union(enum) {
         editing: bool = false,
         clicked: bool = false,
         toggled: bool = false,
+        dragging: bool = false,
+        drag_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+        drag_offset_x: f32 = 0,
+        drag_offset_y: f32 = 0,
+        drop_preview: ?DropPosition = null,
+        drop_received: bool = false,
         rename_committed: bool = false,
         editor: TextInput = .{},
 
@@ -98,6 +106,12 @@ pub const WidgetKind = union(enum) {
             none,
             selected_click,
             double_click,
+        };
+
+        pub const DropPosition = enum {
+            before,
+            into,
+            after,
         };
 
         pub fn displayLabel(self: *const TreeItem) []const u8 {
@@ -151,6 +165,38 @@ pub const WidgetKind = union(enum) {
         group: u32 = 0,
         selected: bool = false,
         clicked: bool = false,
+    };
+
+    pub const GridSelector = struct {
+        selection_mode: ListBox.SelectionMode = .single,
+        item_width: f32 = 96,
+        item_height: f32 = 96,
+        column_gap: f32 = 8,
+        row_gap: f32 = 8,
+        anchor_index: ?u16 = null,
+        changed: bool = false,
+        computed_columns: u16 = 1,
+        content_height: f32 = 0,
+        marquee_active: bool = false,
+        marquee_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+        drop_preview_background: bool = false,
+
+        pub fn layoutHeight(self: *const GridSelector, padding: style.Edges) f32 {
+            if (self.content_height > 0) return self.content_height;
+            return padding.top + padding.bottom + @max(self.item_height, 1);
+        }
+    };
+
+    pub const GridItem = struct {
+        label: []const u8,
+        selected: bool = false,
+        clicked: bool = false,
+        marquee_base_selected: bool = false,
+        dragging: bool = false,
+        drag_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+        drag_offset_x: f32 = 0,
+        drag_offset_y: f32 = 0,
+        drop_preview: bool = false,
     };
 
     pub const Table = struct {
@@ -331,8 +377,10 @@ pub const WidgetKind = union(enum) {
         speed: f32 = 0.1,
         precision: u8 = 2,
         changed: bool = false,
+        editing: bool = false,
         label_buf: [64]u8 = [_]u8{0} ** 64,
         label_len: u8 = 0,
+        editor: TextInput = .{},
 
         pub fn displayValue(self: *const DragValue) []const u8 {
             return self.label_buf[0..self.label_len];
@@ -341,6 +389,31 @@ pub const WidgetKind = union(enum) {
         pub fn syncLabel(self: *DragValue) void {
             const label = formatScalarLabel(&self.label_buf, self.value, self.precision);
             self.label_len = @intCast(label.len);
+        }
+
+        pub fn beginEdit(self: *DragValue) void {
+            self.editor = .{};
+            self.editor.insertSlice(self.displayValue());
+            self.editor.selection_anchor = 0;
+            self.editor.cursor = self.editor.len;
+            self.editing = true;
+        }
+
+        pub fn cancelEdit(self: *DragValue) void {
+            self.editor = .{};
+            self.editing = false;
+        }
+
+        pub fn commitEdit(self: *DragValue) bool {
+            const next_value = std.fmt.parseFloat(f32, self.editor.content()) catch return false;
+            const clamped = std.math.clamp(next_value, self.min, self.max);
+            if (clamped != self.value) {
+                self.value = clamped;
+                self.changed = true;
+            }
+            self.syncLabel();
+            self.editing = false;
+            return true;
         }
     };
 
@@ -351,8 +424,10 @@ pub const WidgetKind = union(enum) {
         step: f32 = 1,
         precision: u8 = 2,
         changed: bool = false,
+        editing: bool = false,
         label_buf: [64]u8 = [_]u8{0} ** 64,
         label_len: u8 = 0,
+        editor: TextInput = .{},
 
         pub fn displayValue(self: *const SpinBox) []const u8 {
             return self.label_buf[0..self.label_len];
@@ -361,6 +436,31 @@ pub const WidgetKind = union(enum) {
         pub fn syncLabel(self: *SpinBox) void {
             const label = formatScalarLabel(&self.label_buf, self.value, self.precision);
             self.label_len = @intCast(label.len);
+        }
+
+        pub fn beginEdit(self: *SpinBox) void {
+            self.editor = .{};
+            self.editor.insertSlice(self.displayValue());
+            self.editor.selection_anchor = 0;
+            self.editor.cursor = self.editor.len;
+            self.editing = true;
+        }
+
+        pub fn cancelEdit(self: *SpinBox) void {
+            self.editor = .{};
+            self.editing = false;
+        }
+
+        pub fn commitEdit(self: *SpinBox) bool {
+            const next_value = std.fmt.parseFloat(f32, self.editor.content()) catch return false;
+            const clamped = std.math.clamp(next_value, self.min, self.max);
+            if (clamped != self.value) {
+                self.value = clamped;
+                self.changed = true;
+            }
+            self.syncLabel();
+            self.editing = false;
+            return true;
         }
     };
 
@@ -842,6 +942,44 @@ pub fn tableEffectiveColumnCount(tree: *const Tree, table: NodeHandle) u16 {
         count = @max(count, tableRowCellCount(tree, child));
     }
     return @max(count, 1);
+}
+
+pub fn gridSelectorItemCount(tree: *const Tree, selector: NodeHandle) u16 {
+    var count: u16 = 0;
+    var iter = tree.children(selector);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind == .grid_item) count += 1;
+    }
+    return count;
+}
+
+pub fn gridItemAt(tree: *const Tree, selector: NodeHandle, index: u16) ?NodeHandle {
+    var current_index: u16 = 0;
+    var iter = tree.children(selector);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .grid_item) continue;
+        if (current_index == index) return child;
+        current_index += 1;
+    }
+    return null;
+}
+
+pub fn gridItemParentSelector(tree: *const Tree, item: NodeHandle) ?NodeHandle {
+    const parent_handle = tree.getConst(item).parent orelse return null;
+    if (tree.getConst(parent_handle).kind != .grid_selector) return null;
+    return parent_handle;
+}
+
+pub fn gridItemIndex(tree: *const Tree, item: NodeHandle) ?u16 {
+    const selector = gridItemParentSelector(tree, item) orelse return null;
+    var index: u16 = 0;
+    var iter = tree.children(selector);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .grid_item) continue;
+        if (child.eql(item)) return index;
+        index += 1;
+    }
+    return null;
 }
 
 pub fn tableRowCellCount(tree: *const Tree, row: NodeHandle) u16 {

@@ -123,6 +123,17 @@ typedef enum {
 } goop_sort_direction_t;
 
 typedef enum {
+    GOOP_TREE_DROP_BEFORE = 0,
+    GOOP_TREE_DROP_INTO = 1,
+    GOOP_TREE_DROP_AFTER = 2,
+} goop_tree_drop_position_t;
+
+typedef enum {
+    GOOP_GRID_DROP_ITEM = 0,
+    GOOP_GRID_DROP_BACKGROUND = 1,
+} goop_grid_drop_position_t;
+
+typedef enum {
     GOOP_WIDGET_CONTAINER = 0,
     GOOP_WIDGET_TEXT = 1,
     GOOP_WIDGET_BUTTON = 2,
@@ -132,24 +143,26 @@ typedef enum {
     GOOP_WIDGET_DROPDOWN = 6,
     GOOP_WIDGET_LIST_BOX = 7,
     GOOP_WIDGET_SELECTABLE = 8,
-    GOOP_WIDGET_TABLE = 9,
-    GOOP_WIDGET_TABLE_ROW = 10,
-    GOOP_WIDGET_TABLE_CELL = 11,
-    GOOP_WIDGET_TOOLBAR = 12,
-    GOOP_WIDGET_STATUS_BAR = 13,
-    GOOP_WIDGET_MENU_BAR = 14,
-    GOOP_WIDGET_MENU = 15,
-    GOOP_WIDGET_POPUP = 16,
-    GOOP_WIDGET_TOOLTIP = 17,
-    GOOP_WIDGET_MENU_ITEM = 18,
-    GOOP_WIDGET_DRAG_VALUE = 19,
-    GOOP_WIDGET_SPINBOX = 20,
-    GOOP_WIDGET_TAB_BAR = 21,
-    GOOP_WIDGET_TAB_ITEM = 22,
-    GOOP_WIDGET_SPLITTER = 23,
-    GOOP_WIDGET_SLIDER = 24,
-    GOOP_WIDGET_SCROLL_AREA = 25,
-    GOOP_WIDGET_TEXT_INPUT = 26,
+    GOOP_WIDGET_GRID_SELECTOR = 9,
+    GOOP_WIDGET_GRID_ITEM = 10,
+    GOOP_WIDGET_TABLE = 11,
+    GOOP_WIDGET_TABLE_ROW = 12,
+    GOOP_WIDGET_TABLE_CELL = 13,
+    GOOP_WIDGET_TOOLBAR = 14,
+    GOOP_WIDGET_STATUS_BAR = 15,
+    GOOP_WIDGET_MENU_BAR = 16,
+    GOOP_WIDGET_MENU = 17,
+    GOOP_WIDGET_POPUP = 18,
+    GOOP_WIDGET_TOOLTIP = 19,
+    GOOP_WIDGET_MENU_ITEM = 20,
+    GOOP_WIDGET_DRAG_VALUE = 21,
+    GOOP_WIDGET_SPINBOX = 22,
+    GOOP_WIDGET_TAB_BAR = 23,
+    GOOP_WIDGET_TAB_ITEM = 24,
+    GOOP_WIDGET_SPLITTER = 25,
+    GOOP_WIDGET_SLIDER = 26,
+    GOOP_WIDGET_SCROLL_AREA = 27,
+    GOOP_WIDGET_TEXT_INPUT = 28,
 } goop_widget_kind_t;
 
 typedef struct {
@@ -210,6 +223,19 @@ typedef struct {
     uint32_t group;
     bool selected;
 } goop_selectable_widget_t;
+
+typedef struct {
+    goop_list_selection_mode_t selection_mode;
+    float item_width;
+    float item_height;
+    float column_gap;
+    float row_gap;
+} goop_grid_selector_widget_t;
+
+typedef struct {
+    goop_string_t label;
+    bool selected;
+} goop_grid_item_widget_t;
 
 typedef struct {
     uint8_t columns;
@@ -314,6 +340,8 @@ typedef struct {
         goop_dropdown_widget_t dropdown;
         goop_list_box_widget_t list_box;
         goop_selectable_widget_t selectable;
+        goop_grid_selector_widget_t grid_selector;
+        goop_grid_item_widget_t grid_item;
         goop_table_widget_t table;
         goop_table_row_widget_t table_row;
         goop_unit_widget_t table_cell;
@@ -515,6 +543,18 @@ typedef struct {
     float y;
 } goop_secondary_click_t;
 
+typedef struct {
+    goop_node_handle_t source;
+    goop_node_handle_t target;
+    goop_tree_drop_position_t position;
+} goop_tree_drop_t;
+
+typedef struct {
+    goop_node_handle_t source;
+    goop_node_handle_t target;
+    goop_grid_drop_position_t position;
+} goop_grid_drop_t;
+
 goop_theme_t goop_default_theme(void);
 
 goop_context_t *goop_context_create(const goop_context_options_t *opts);
@@ -561,6 +601,9 @@ bool goop_context_dropdown_changed(const goop_context_t *ctx, goop_node_handle_t
 bool goop_context_list_box_selected_index(const goop_context_t *ctx, goop_node_handle_t handle, uint16_t *out_index);
 bool goop_context_list_box_changed(const goop_context_t *ctx, goop_node_handle_t handle);
 uint16_t goop_context_list_box_selection_count(const goop_context_t *ctx, goop_node_handle_t handle);
+bool goop_context_grid_selector_selected_index(const goop_context_t *ctx, goop_node_handle_t handle, uint16_t *out_index);
+bool goop_context_grid_selector_changed(const goop_context_t *ctx, goop_node_handle_t handle);
+uint16_t goop_context_grid_selector_selection_count(const goop_context_t *ctx, goop_node_handle_t handle);
 bool goop_context_table_column_fraction(const goop_context_t *ctx, goop_node_handle_t handle, uint8_t index, float *out_fraction);
 bool goop_context_table_changed(const goop_context_t *ctx, goop_node_handle_t handle);
 bool goop_context_table_resized_column(const goop_context_t *ctx, goop_node_handle_t handle, uint8_t *out_index);
@@ -571,6 +614,8 @@ bool goop_context_table_selection_changed(const goop_context_t *ctx, goop_node_h
 uint16_t goop_context_table_selection_count(const goop_context_t *ctx, goop_node_handle_t handle);
 bool goop_context_table_selected_row_index(const goop_context_t *ctx, goop_node_handle_t handle, uint16_t *out_index);
 bool goop_context_last_secondary_click(const goop_context_t *ctx, goop_secondary_click_t *out_click);
+bool goop_context_last_tree_drop(const goop_context_t *ctx, goop_tree_drop_t *out_drop);
+bool goop_context_last_grid_drop(const goop_context_t *ctx, goop_grid_drop_t *out_drop);
 
 #ifdef __cplusplus
 }

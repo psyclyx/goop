@@ -54,6 +54,8 @@ pub fn isInteractive(kind: widget.WidgetKind) bool {
         .tree_item,
         .dropdown,
         .selectable,
+        .grid_selector,
+        .grid_item,
         .table,
         .table_row,
         .menu,

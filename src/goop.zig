@@ -25,6 +25,8 @@ pub const TextDimensions = layout.TextDimensions;
 
 pub const Clipboard = dispatch.Clipboard;
 pub const SecondaryClick = dispatch.SecondaryClick;
+pub const TreeDrop = dispatch.TreeDrop;
+pub const GridDrop = dispatch.GridDrop;
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
@@ -104,6 +106,8 @@ pub const Context = struct {
     /// for one frame.
     pub fn clearClickedFlags(self: *Context) void {
         self.mouse.last_secondary_click = null;
+        self.mouse.last_tree_drop = null;
+        self.mouse.last_grid_drop = null;
         for (self.tree.nodes.items) |*node| {
             if (!node.alive) continue;
             node.interaction.primary_clicked = false;
@@ -121,6 +125,7 @@ pub const Context = struct {
                 .tree_item => |*tree_item| {
                     tree_item.clicked = false;
                     tree_item.toggled = false;
+                    tree_item.drop_received = false;
                     tree_item.rename_committed = false;
                 },
                 .dropdown => |*dropdown| {
@@ -132,6 +137,12 @@ pub const Context = struct {
                 },
                 .selectable => |*selectable| {
                     selectable.clicked = false;
+                },
+                .grid_selector => |*grid_selector| {
+                    grid_selector.changed = false;
+                },
+                .grid_item => |*grid_item| {
+                    grid_item.clicked = false;
                 },
                 .table => |*table| {
                     table.changed = false;
@@ -184,6 +195,7 @@ pub const Context = struct {
             .radio_button => node.kind.radio_button.selected,
             .tree_item => node.kind.tree_item.selected,
             .selectable => node.kind.selectable.selected,
+            .grid_item => node.kind.grid_item.selected,
             .table_row => node.kind.table_row.selected,
             .tab_item => node.kind.tab_item.selected,
             else => false,
@@ -298,6 +310,34 @@ pub const Context = struct {
         return count;
     }
 
+    /// Get the selected direct child index of a grid selector, if any.
+    pub fn gridSelectorSelectedIndex(self: *const Context, handle: NodeHandle) ?u16 {
+        var index: u16 = 0;
+        var iter = self.tree.children(handle);
+        while (iter.next()) |child| {
+            if (self.tree.getConst(child).kind != .grid_item) continue;
+            if (self.tree.getConst(child).kind.grid_item.selected) return index;
+            index += 1;
+        }
+        return null;
+    }
+
+    /// Check whether a grid selector selection changed this frame.
+    pub fn gridSelectorChanged(self: *const Context, handle: NodeHandle) bool {
+        return self.tree.getConst(handle).kind.grid_selector.changed;
+    }
+
+    /// Count selected direct child tiles in a grid selector.
+    pub fn gridSelectorSelectionCount(self: *const Context, handle: NodeHandle) u16 {
+        var count: u16 = 0;
+        var iter = self.tree.children(handle);
+        while (iter.next()) |child| {
+            if (self.tree.getConst(child).kind != .grid_item) continue;
+            if (self.tree.getConst(child).kind.grid_item.selected) count += 1;
+        }
+        return count;
+    }
+
     /// Get the retained width fraction for a table column, if present.
     pub fn tableColumnFraction(self: *const Context, handle: NodeHandle, index: u8) ?f32 {
         return self.tree.getConst(handle).kind.table.columnWeight(index);
@@ -363,6 +403,16 @@ pub const Context = struct {
     /// Get the most recent secondary click that occurred this frame, if any.
     pub fn lastSecondaryClick(self: *const Context) ?SecondaryClick {
         return self.mouse.last_secondary_click;
+    }
+
+    /// Get the most recent completed tree-item drop that occurred this frame, if any.
+    pub fn lastTreeDrop(self: *const Context) ?TreeDrop {
+        return self.mouse.last_tree_drop;
+    }
+
+    /// Get the most recent completed grid-item drop that occurred this frame, if any.
+    pub fn lastGridDrop(self: *const Context) ?GridDrop {
+        return self.mouse.last_grid_drop;
     }
 
     /// Remove a widget and its entire subtree from the tree.
@@ -692,6 +742,40 @@ test "collapsed tree item can be reopened across context frames" {
     try std.testing.expect(ctx.isExpanded(parent));
 }
 
+test "tree item drop is reported across context frames" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const first = try ctx.tree.addChild(root, .{ .tree_item = .{
+        .label = "Scene",
+        .group = 2,
+    } });
+    const second = try ctx.tree.addChild(root, .{ .tree_item = .{
+        .label = "Camera",
+        .group = 2,
+    } });
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+
+    const first_rect = ctx.tree.getConst(first).layout_rect;
+    const second_rect = ctx.tree.getConst(second).layout_rect;
+
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = first_rect.x + 12, .y = first_rect.y + first_rect.h * 0.5 } });
+    try ctx.pushEvent(.{ .mouse_move = .{ .x = second_rect.x + 12, .y = second_rect.y + second_rect.h * 0.5 } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = second_rect.x + 12, .y = second_rect.y + second_rect.h * 0.5 } });
+    ctx.processEvents();
+
+    const drop = ctx.lastTreeDrop().?;
+    try std.testing.expect(drop.source.eql(first));
+    try std.testing.expect(drop.target.eql(second));
+    try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, drop.position);
+
+    ctx.clearClickedFlags();
+    try std.testing.expect(ctx.lastTreeDrop() == null);
+}
+
 test "tab panels switch visibility across context frames" {
     var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
     defer ctx.deinit();
@@ -765,6 +849,97 @@ test "list box reports selected index and change across context frames" {
     try std.testing.expect(ctx.listBoxChanged(list_box));
     try std.testing.expectEqual(@as(?u16, 1), ctx.listBoxSelectedIndex(list_box));
     try std.testing.expect(ctx.isSelected(camera));
+}
+
+test "grid selector reports selection count and change across context frames" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const grid = try ctx.tree.addChild(root, .{ .grid_selector = .{
+        .selection_mode = .multiple,
+        .item_width = 96,
+        .item_height = 72,
+        .column_gap = 8,
+        .row_gap = 8,
+    } });
+    _ = try ctx.tree.addChild(grid, .{ .grid_item = .{
+        .label = "Brick",
+        .selected = true,
+    } });
+    const metal = try ctx.tree.addChild(grid, .{ .grid_item = .{ .label = "Metal" } });
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+    try std.testing.expectEqual(@as(?u16, 0), ctx.gridSelectorSelectedIndex(grid));
+
+    const metal_rect = ctx.tree.getConst(metal).layout_rect;
+    try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .pressed,
+        .x = metal_rect.x + 5,
+        .y = metal_rect.y + 5,
+    } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .released,
+        .x = metal_rect.x + 5,
+        .y = metal_rect.y + 5,
+    } });
+    try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
+    ctx.processEvents();
+
+    try std.testing.expect(ctx.gridSelectorChanged(grid));
+    try std.testing.expectEqual(@as(u16, 2), ctx.gridSelectorSelectionCount(grid));
+    try std.testing.expect(ctx.isSelected(metal));
+}
+
+test "grid item drop is reported across context frames" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const grid = try ctx.tree.addChild(root, .{ .grid_selector = .{
+        .item_width = 96,
+        .item_height = 72,
+        .column_gap = 8,
+        .row_gap = 8,
+    } });
+    const first = try ctx.tree.addChild(grid, .{ .grid_item = .{ .label = "Brick" } });
+    const second = try ctx.tree.addChild(grid, .{ .grid_item = .{ .label = "Metal" } });
+
+    ctx.clearClickedFlags();
+    ctx.doLayout(null);
+
+    const first_rect = ctx.tree.getConst(first).layout_rect;
+    const second_rect = ctx.tree.getConst(second).layout_rect;
+
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .pressed,
+        .x = first_rect.x + first_rect.w * 0.5,
+        .y = first_rect.y + first_rect.h * 0.5,
+    } });
+    try ctx.pushEvent(.{ .mouse_move = .{
+        .x = second_rect.x + second_rect.w * 0.5,
+        .y = second_rect.y + second_rect.h * 0.5,
+    } });
+    try ctx.pushEvent(.{ .mouse_button = .{
+        .button = .left,
+        .state = .released,
+        .x = second_rect.x + second_rect.w * 0.5,
+        .y = second_rect.y + second_rect.h * 0.5,
+    } });
+    ctx.processEvents();
+
+    const drop = ctx.lastGridDrop().?;
+    try std.testing.expect(drop.source.eql(first));
+    try std.testing.expect(drop.target.eql(second));
+    try std.testing.expectEqual(dispatch.GridDrop.Position.item, drop.position);
+
+    ctx.clearClickedFlags();
+    try std.testing.expect(ctx.lastGridDrop() == null);
 }
 
 test "multi-select list box supports ctrl-toggle and shift-range selection" {

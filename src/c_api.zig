@@ -112,6 +112,17 @@ const CSortDirection = enum(c_int) {
     descending = 1,
 };
 
+const CTreeDropPosition = enum(c_int) {
+    before = 0,
+    into = 1,
+    after = 2,
+};
+
+const CGridDropPosition = enum(c_int) {
+    item = 0,
+    background = 1,
+};
+
 const CWidgetKind = enum(c_int) {
     container = 0,
     text = 1,
@@ -122,24 +133,26 @@ const CWidgetKind = enum(c_int) {
     dropdown = 6,
     list_box = 7,
     selectable = 8,
-    table = 9,
-    table_row = 10,
-    table_cell = 11,
-    toolbar = 12,
-    status_bar = 13,
-    menu_bar = 14,
-    menu = 15,
-    popup = 16,
-    tooltip = 17,
-    menu_item = 18,
-    drag_value = 19,
-    spinbox = 20,
-    tab_bar = 21,
-    tab_item = 22,
-    splitter = 23,
-    slider = 24,
-    scroll_area = 25,
-    text_input = 26,
+    grid_selector = 9,
+    grid_item = 10,
+    table = 11,
+    table_row = 12,
+    table_cell = 13,
+    toolbar = 14,
+    status_bar = 15,
+    menu_bar = 16,
+    menu = 17,
+    popup = 18,
+    tooltip = 19,
+    menu_item = 20,
+    drag_value = 21,
+    spinbox = 22,
+    tab_bar = 23,
+    tab_item = 24,
+    splitter = 25,
+    slider = 26,
+    scroll_area = 27,
+    text_input = 28,
 };
 
 const COptionalU16 = extern struct {
@@ -198,6 +211,19 @@ const CListBoxWidget = extern struct {
 const CSelectableWidget = extern struct {
     label: CStr = .{},
     group: u32 = 0,
+    selected: bool = false,
+};
+
+const CGridSelectorWidget = extern struct {
+    selection_mode: CListSelectionMode = .single,
+    item_width: f32 = 96,
+    item_height: f32 = 96,
+    column_gap: f32 = 8,
+    row_gap: f32 = 8,
+};
+
+const CGridItemWidget = extern struct {
+    label: CStr = .{},
     selected: bool = false,
 };
 
@@ -304,6 +330,8 @@ const CWidget = extern struct {
         dropdown: CDropdownWidget,
         list_box: CListBoxWidget,
         selectable: CSelectableWidget,
+        grid_selector: CGridSelectorWidget,
+        grid_item: CGridItemWidget,
         table: CTableWidget,
         table_row: CTableRowWidget,
         table_cell: CUnitWidget,
@@ -505,6 +533,18 @@ const CSecondaryClick = extern struct {
     y: f32 = 0,
 };
 
+const CTreeDrop = extern struct {
+    source: CHandle = .{},
+    target: CHandle = .{},
+    position: CTreeDropPosition = .into,
+};
+
+const CGridDrop = extern struct {
+    source: CHandle = .{},
+    target: CHandle = .{},
+    position: CGridDropPosition = .item,
+};
+
 const CContext = struct {
     ctx: api.Context,
     draw_commands: std.ArrayListUnmanaged(CDrawCommand) = .empty,
@@ -675,6 +715,21 @@ fn sortDirectionToC(direction: widget.WidgetKind.Table.SortDirection) CSortDirec
     };
 }
 
+fn treeDropPositionToC(position: widget.WidgetKind.TreeItem.DropPosition) CTreeDropPosition {
+    return switch (position) {
+        .before => .before,
+        .into => .into,
+        .after => .after,
+    };
+}
+
+fn gridDropPositionToC(position: dispatch.GridDrop.Position) CGridDropPosition {
+    return switch (position) {
+        .item => .item,
+        .background => .background,
+    };
+}
+
 fn keycodeFromC(keycode: CKeycode) event.Event.Keycode {
     return switch (keycode) {
         .tab => .tab,
@@ -750,6 +805,17 @@ fn buildWidgetKind(desc: CWidget) widget.WidgetKind {
             .label = fromCStr(desc.data.selectable.label),
             .group = desc.data.selectable.group,
             .selected = desc.data.selectable.selected,
+        } },
+        .grid_selector => .{ .grid_selector = .{
+            .selection_mode = listSelectionModeFromC(desc.data.grid_selector.selection_mode),
+            .item_width = desc.data.grid_selector.item_width,
+            .item_height = desc.data.grid_selector.item_height,
+            .column_gap = desc.data.grid_selector.column_gap,
+            .row_gap = desc.data.grid_selector.row_gap,
+        } },
+        .grid_item => .{ .grid_item = .{
+            .label = fromCStr(desc.data.grid_item.label),
+            .selected = desc.data.grid_item.selected,
         } },
         .table => .{ .table = .{
             .columns = desc.data.table.columns,
@@ -876,6 +942,19 @@ fn updateWidgetKind(kind: *widget.WidgetKind, desc: CWidget) bool {
             selectable.label = fromCStr(desc.data.selectable.label);
             selectable.group = desc.data.selectable.group;
             selectable.selected = desc.data.selectable.selected;
+        },
+        .grid_selector => |*grid_selector| {
+            if (desc.kind != .grid_selector) return false;
+            grid_selector.selection_mode = listSelectionModeFromC(desc.data.grid_selector.selection_mode);
+            grid_selector.item_width = desc.data.grid_selector.item_width;
+            grid_selector.item_height = desc.data.grid_selector.item_height;
+            grid_selector.column_gap = desc.data.grid_selector.column_gap;
+            grid_selector.row_gap = desc.data.grid_selector.row_gap;
+        },
+        .grid_item => |*grid_item| {
+            if (desc.kind != .grid_item) return false;
+            grid_item.label = fromCStr(desc.data.grid_item.label);
+            grid_item.selected = desc.data.grid_item.selected;
         },
         .table => |*table| {
             if (desc.kind != .table) return false;
@@ -1432,6 +1511,27 @@ export fn goop_context_list_box_selection_count(ctx: ?*const CContext, handle: C
     return context.ctx.listBoxSelectionCount(handleFromC(handle));
 }
 
+export fn goop_context_grid_selector_selected_index(ctx: ?*const CContext, handle: CHandle, out_index: ?*u16) bool {
+    const context = ctx orelse return false;
+    const index_ptr = out_index orelse return false;
+    if (!validHandle(context, handle)) return false;
+    const index = context.ctx.gridSelectorSelectedIndex(handleFromC(handle)) orelse return false;
+    index_ptr.* = index;
+    return true;
+}
+
+export fn goop_context_grid_selector_changed(ctx: ?*const CContext, handle: CHandle) bool {
+    const context = ctx orelse return false;
+    if (!validHandle(context, handle)) return false;
+    return context.ctx.gridSelectorChanged(handleFromC(handle));
+}
+
+export fn goop_context_grid_selector_selection_count(ctx: ?*const CContext, handle: CHandle) u16 {
+    const context = ctx orelse return 0;
+    if (!validHandle(context, handle)) return 0;
+    return context.ctx.gridSelectorSelectionCount(handleFromC(handle));
+}
+
 export fn goop_context_table_column_fraction(ctx: ?*const CContext, handle: CHandle, index: u8, out_fraction: ?*f32) bool {
     const context = ctx orelse return false;
     const fraction_ptr = out_fraction orelse return false;
@@ -1509,6 +1609,30 @@ export fn goop_context_last_secondary_click(ctx: ?*const CContext, out_click: ?*
         .target = handleToC(click.target),
         .x = click.x,
         .y = click.y,
+    };
+    return true;
+}
+
+export fn goop_context_last_tree_drop(ctx: ?*const CContext, out_drop: ?*CTreeDrop) bool {
+    const context = ctx orelse return false;
+    const drop_ptr = out_drop orelse return false;
+    const drop = context.ctx.lastTreeDrop() orelse return false;
+    drop_ptr.* = .{
+        .source = handleToC(drop.source),
+        .target = handleToC(drop.target),
+        .position = treeDropPositionToC(drop.position),
+    };
+    return true;
+}
+
+export fn goop_context_last_grid_drop(ctx: ?*const CContext, out_drop: ?*CGridDrop) bool {
+    const context = ctx orelse return false;
+    const drop_ptr = out_drop orelse return false;
+    const drop = context.ctx.lastGridDrop() orelse return false;
+    drop_ptr.* = .{
+        .source = handleToC(drop.source),
+        .target = handleToC(drop.target),
+        .position = gridDropPositionToC(drop.position),
     };
     return true;
 }

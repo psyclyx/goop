@@ -45,6 +45,22 @@ pub fn run(tree: *widget.Tree, theme: style_mod.Theme, text_ctx: ?*const TextMea
     _ = c.Clay_EndLayout();
 
     writeBackRects(tree);
+    if (syncGridSelectorLayout(tree, theme)) {
+        c.Clay_BeginLayout();
+
+        for (tree.nodes.items, 0..) |node, i| {
+            if (!node.alive) continue;
+            if (node.parent == null) {
+                emitNode(tree, tree.handleFromIndex(@intCast(i)), theme);
+            }
+        }
+
+        _ = c.Clay_EndLayout();
+        writeBackRects(tree);
+        _ = syncGridSelectorLayout(tree, theme);
+    } else {
+        _ = syncGridSelectorLayout(tree, theme);
+    }
     clampPopupRects(tree);
 }
 
@@ -129,6 +145,8 @@ fn emitNode(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style_mo
         .dropdown => |dropdown| emitDropdown(tree, handle, dropdown, resolved, theme),
         .list_box => emitListBox(tree, handle, resolved, theme),
         .selectable => |selectable| emitSelectable(handle, selectable, resolved),
+        .grid_selector => |grid_selector| emitGridSelector(tree, handle, grid_selector, resolved, theme),
+        .grid_item => |grid_item| emitGridItem(tree, handle, grid_item, resolved),
         .table => |table| emitTable(tree, handle, table, resolved, theme),
         .table_row => |row| emitTableRow(tree, handle, row, resolved, theme),
         .table_cell => emitTableCell(tree, handle, resolved, theme),
@@ -547,6 +565,73 @@ fn emitSelectable(
             .textAlignment = c.CLAY_TEXT_ALIGN_LEFT,
         }),
     );
+    c.Clay__CloseElement();
+}
+
+fn emitGridSelector(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    grid_selector: widget.WidgetKind.GridSelector,
+    resolved: style_mod.ResolvedStyle,
+    theme: style_mod.Theme,
+) void {
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = nodeId(handle),
+        .layout = .{
+            .sizing = .{
+                .width = growSizing(),
+                .height = fixedSizing(grid_selector.layoutHeight(resolved.padding)),
+            },
+            .padding = clayPadding(resolved.padding),
+            .childGap = 0,
+            .childAlignment = .{},
+            .layoutDirection = c.CLAY_TOP_TO_BOTTOM,
+        },
+        .backgroundColor = clayColor(resolved.bg),
+        .cornerRadius = cornerRadiusAll(resolved.border_radius),
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
+    emitChildren(tree, handle, theme);
+    c.Clay__CloseElement();
+}
+
+fn emitGridItem(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    _: widget.WidgetKind.GridItem,
+    resolved: style_mod.ResolvedStyle,
+) void {
+    const size = gridItemSizing(tree, handle);
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = nodeId(handle),
+        .layout = .{
+            .sizing = .{
+                .width = fixedSizing(size.w),
+                .height = fixedSizing(size.h),
+            },
+            .padding = clayPadding(resolved.padding),
+            .childGap = 0,
+            .childAlignment = .{},
+            .layoutDirection = c.CLAY_TOP_TO_BOTTOM,
+        },
+        .backgroundColor = clayColor(resolved.bg),
+        .cornerRadius = cornerRadiusAll(resolved.border_radius),
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
     c.Clay__CloseElement();
 }
 
@@ -1467,6 +1552,92 @@ fn syncTableState(tree: *widget.Tree) void {
         const handle = tree.handleFromIndex(@intCast(i));
         node.kind.table.syncColumns(@intCast(widget.tableEffectiveColumnCount(tree, handle)));
     }
+}
+
+fn syncGridSelectorLayout(tree: *widget.Tree, theme: style_mod.Theme) bool {
+    var changed = false;
+    for (tree.nodes.items, 0..) |node, i| {
+        if (!node.alive or node.kind != .grid_selector) continue;
+        const handle = tree.handleFromIndex(@intCast(i));
+        const selector_node = tree.get(handle);
+        const rect = selector_node.layout_rect;
+        if (rect.w <= 0 or rect.h <= 0) continue;
+
+        const resolved = selector_node.style_override.resolve(theme);
+        const grid_selector = &selector_node.kind.grid_selector;
+        const item_width = @max(grid_selector.item_width, 1);
+        const item_height = @max(grid_selector.item_height, 1);
+        const column_gap = @max(grid_selector.column_gap, 0);
+        const row_gap = @max(grid_selector.row_gap, 0);
+        const inner_width = @max(rect.w - resolved.padding.left - resolved.padding.right, item_width);
+        const columns = gridSelectorColumns(inner_width, item_width, column_gap);
+        const item_count = widget.gridSelectorItemCount(tree, handle);
+        const rows = @max(gridSelectorRows(item_count, columns), 1);
+        const content_height = resolved.padding.top +
+            resolved.padding.bottom +
+            @as(f32, @floatFromInt(rows)) * item_height +
+            @as(f32, @floatFromInt(rows - 1)) * row_gap;
+
+        if (grid_selector.computed_columns != columns or @abs(grid_selector.content_height - content_height) > 0.01) {
+            grid_selector.computed_columns = columns;
+            grid_selector.content_height = content_height;
+            changed = true;
+        }
+
+        layoutGridSelectorItems(tree, handle, resolved, columns, item_width, item_height, column_gap, row_gap);
+    }
+    return changed;
+}
+
+fn gridSelectorColumns(inner_width: f32, item_width: f32, column_gap: f32) u16 {
+    if (item_width <= 0) return 1;
+    const slot_width = item_width + column_gap;
+    if (slot_width <= 0) return 1;
+    const columns = @as(u16, @intFromFloat(@floor((inner_width + column_gap) / slot_width)));
+    return @max(columns, 1);
+}
+
+fn gridSelectorRows(item_count: u16, columns: u16) u16 {
+    if (item_count == 0) return 0;
+    return @intCast((@as(u32, item_count) + columns - 1) / columns);
+}
+
+fn layoutGridSelectorItems(
+    tree: *widget.Tree,
+    selector: widget.NodeHandle,
+    resolved: style_mod.ResolvedStyle,
+    columns: u16,
+    item_width: f32,
+    item_height: f32,
+    column_gap: f32,
+    row_gap: f32,
+) void {
+    const rect = tree.getConst(selector).layout_rect;
+    var index: u16 = 0;
+    var iter = tree.children(selector);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .grid_item) continue;
+        const column = index % columns;
+        const row = index / columns;
+        tree.get(child).layout_rect = .{
+            .x = rect.x + resolved.padding.left + @as(f32, @floatFromInt(column)) * (item_width + column_gap),
+            .y = rect.y + resolved.padding.top + @as(f32, @floatFromInt(row)) * (item_height + row_gap),
+            .w = item_width,
+            .h = item_height,
+        };
+        index += 1;
+    }
+}
+
+fn gridItemSizing(tree: *const widget.Tree, handle: widget.NodeHandle) struct { w: f32, h: f32 } {
+    if (widget.gridItemParentSelector(tree, handle)) |selector| {
+        const grid_selector = tree.getConst(selector).kind.grid_selector;
+        return .{
+            .w = @max(grid_selector.item_width, 1),
+            .h = @max(grid_selector.item_height, 1),
+        };
+    }
+    return .{ .w = 96, .h = 96 };
 }
 
 fn directPopupChild(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {

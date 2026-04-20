@@ -67,6 +67,8 @@ pub fn generate(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem
         }
     }
 
+    try emitDragGhosts(tree, theme, &commands, allocator, text_ctx);
+
     return .{ .commands = try commands.toOwnedSlice(allocator) };
 }
 
@@ -100,6 +102,8 @@ fn emitNode(
         .dropdown => |dropdown| try emitDropdown(tree, handle, node, dropdown, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .list_box => try emitListBox(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .selectable => |selectable| try emitSelectable(node, selectable, resolved, theme, commands, allocator, text_ctx),
+        .grid_selector => |grid_selector| try emitGridSelector(tree, handle, node, grid_selector, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .grid_item => |grid_item| try emitGridItem(node, grid_item, resolved, theme, commands, allocator, text_ctx),
         .table => |table| try emitTable(tree, handle, node, table, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .table_row => |row| try emitTableRow(tree, handle, node, row, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .table_cell => try emitTableCell(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
@@ -372,6 +376,7 @@ fn emitTreeItem(
             .corner_radius = resolved.border_radius,
         } });
     }
+    try emitTreeItemDropIndicator(rect, item, resolved, theme, commands, allocator);
 
     if (has_children) {
         try emitTreeDisclosure(disclosure_x, rect, resolved, theme, item.expanded, commands, allocator);
@@ -510,6 +515,98 @@ fn emitSelectable(
     } });
     const selectable_bounds = defaultTextBounds(node.layout_rect, resolved);
     try appendTextCommand(commands, allocator, selectable_bounds, selectable_bounds.x, selectable.label, resolved.fg, resolved.font_size, text_ctx);
+    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+}
+
+fn emitGridSelector(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    grid_selector: widget.WidgetKind.GridSelector,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = node.layout_rect,
+        .color = if (grid_selector.drop_preview_background)
+            style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
+        else
+            resolved.bg,
+        .border_color = if (grid_selector.drop_preview_background) theme.accent else resolved.border,
+        .border_width = resolved.border_width,
+        .corner_radius = resolved.border_radius,
+    } });
+    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+
+    if (grid_selector.marquee_active and grid_selector.marquee_rect.w > 0 and grid_selector.marquee_rect.h > 0) {
+        const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = grid_selector.marquee_rect,
+            .color = fill,
+            .border_color = theme.accent,
+            .border_width = 1,
+            .corner_radius = 0,
+        } });
+    }
+}
+
+fn emitGridItem(
+    node: *const widget.Node,
+    grid_item: widget.WidgetKind.GridItem,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+) !void {
+    const rect = node.layout_rect;
+    const fill = if (grid_item.dragging)
+        style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
+    else
+        selectableBg(node, grid_item.selected, theme);
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = rect,
+        .color = fill,
+        .border_color = if (grid_item.drop_preview or grid_item.selected) theme.accent else resolved.border,
+        .border_width = if (grid_item.selected) 1 else resolved.border_width,
+        .corner_radius = resolved.border_radius,
+    } });
+
+    const inner = defaultTextBounds(rect, resolved);
+    const icon_size = @max(@min(inner.w, inner.h - resolved.font_size - theme.spacing), 0);
+    if (icon_size > 8) {
+        const icon_rect = Rect{
+            .x = inner.x + (inner.w - icon_size) * 0.5,
+            .y = inner.y,
+            .w = icon_size,
+            .h = @min(icon_size, inner.h - resolved.font_size - theme.spacing),
+        };
+        const icon_fill = if (grid_item.selected)
+            style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 96)
+        else
+            style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 72);
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = icon_rect,
+            .color = icon_fill,
+            .border_color = if (grid_item.selected) theme.accent else resolved.border,
+            .border_width = 1,
+            .corner_radius = @min(resolved.border_radius, 8),
+        } });
+    }
+
+    const label_bounds = Rect{
+        .x = inner.x,
+        .y = rect.y + rect.h - resolved.padding.bottom - resolved.font_size * 1.4,
+        .w = inner.w,
+        .h = resolved.font_size * 1.4,
+    };
+    const label_width = layout.measureTextDimensions(grid_item.label, resolved.font_size, text_ctx).width;
+    const label_x = @max(label_bounds.x, label_bounds.x + (label_bounds.w - label_width) * 0.5);
+    try appendTextCommand(commands, allocator, label_bounds, label_x, grid_item.label, resolved.fg, resolved.font_size, text_ctx);
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
 
@@ -808,12 +905,16 @@ fn emitDragValue(
     try commands.append(allocator, .{ .rect = .{
         .bounds = rect,
         .color = interactionBg(node, resolved, theme),
-        .border_color = if (node.interaction.pressed) theme.accent else resolved.border,
+        .border_color = if (node.interaction.pressed or drag_value.editing) theme.accent else resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
     const value_bounds = defaultTextBounds(rect, resolved);
-    try appendTextCommand(commands, allocator, value_bounds, value_bounds.x, drag_value.displayValue(), resolved.fg, resolved.font_size, text_ctx);
+    if (drag_value.editing) {
+        try emitInlineEditorContents(value_bounds, &drag_value.editor, resolved, theme, commands, allocator, text_ctx, true);
+    } else {
+        try appendTextCommand(commands, allocator, value_bounds, value_bounds.x, drag_value.displayValue(), resolved.fg, resolved.font_size, text_ctx);
+    }
 
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
@@ -838,7 +939,7 @@ fn emitSpinBox(
     try commands.append(allocator, .{ .rect = .{
         .bounds = rect,
         .color = interactionBg(node, resolved, theme),
-        .border_color = resolved.border,
+        .border_color = if (spinbox.editing) theme.accent else resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
@@ -861,7 +962,11 @@ fn emitSpinBox(
     const field_text_bounds = defaultTextBounds(field_rect, resolved);
     try appendTextCommand(commands, allocator, dec_text_bounds, buttons.dec.x + buttons.dec.w * 0.5 - resolved.font_size * 0.2, "-", resolved.fg, resolved.font_size, text_ctx);
     try appendTextCommand(commands, allocator, inc_text_bounds, buttons.inc.x + buttons.inc.w * 0.5 - resolved.font_size * 0.2, "+", resolved.fg, resolved.font_size, text_ctx);
-    try appendTextCommand(commands, allocator, field_text_bounds, field_text_bounds.x, spinbox.displayValue(), resolved.fg, resolved.font_size, text_ctx);
+    if (spinbox.editing) {
+        try emitInlineEditorContents(field_text_bounds, &spinbox.editor, resolved, theme, commands, allocator, text_ctx, true);
+    } else {
+        try appendTextCommand(commands, allocator, field_text_bounds, field_text_bounds.x, spinbox.displayValue(), resolved.fg, resolved.font_size, text_ctx);
+    }
 
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
@@ -1061,33 +1166,48 @@ fn emitTextInput(
         .corner_radius = resolved.border_radius,
     } });
 
+    const text_bounds = defaultTextBounds(rect, resolved);
     // Text content or placeholder
     const content = ti.content();
-    const text_bounds = defaultTextBounds(rect, resolved);
-    if (content.len > 0) {
-        try appendTextCommand(commands, allocator, text_bounds, text_bounds.x, content, resolved.fg, resolved.font_size, text_ctx);
+    if (content.len > 0 or node.interaction.focused) {
+        try emitInlineEditorContents(text_bounds, ti, resolved, theme, commands, allocator, text_ctx, node.interaction.focused);
     } else if (ti.placeholder.len > 0) {
         try appendTextCommand(commands, allocator, text_bounds, text_bounds.x, ti.placeholder, theme.placeholder_fg, resolved.font_size, text_ctx);
     }
 
-    // Selection highlight and cursor (when focused)
-    if (node.interaction.focused) {
-        // Selection highlight
-        if (ti.hasSelection()) {
-            const range = ti.selectionRange();
-            const sel_start_x = rect.x + resolved.padding.left + layout.textWidthUpTo(content, range.start, resolved.font_size, text_ctx);
-            const sel_end_x = rect.x + resolved.padding.left + layout.textWidthUpTo(content, range.end, resolved.font_size, text_ctx);
-            try commands.append(allocator, .{ .rect = .{
-                .bounds = .{ .x = sel_start_x, .y = text_bounds.y, .w = sel_end_x - sel_start_x, .h = text_bounds.h },
-                .color = theme.selection_bg,
-                .border_color = theme.selection_bg,
-                .border_width = 0,
-                .corner_radius = 0,
-            } });
-        }
+    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+}
 
-        // Cursor
-        const cursor_x = rect.x + resolved.padding.left + layout.textWidthUpTo(content, ti.cursor, resolved.font_size, text_ctx);
+fn emitInlineEditorContents(
+    text_bounds: Rect,
+    ti: *const widget.WidgetKind.TextInput,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    show_cursor: bool,
+) !void {
+    const content = ti.content();
+    if (show_cursor and ti.hasSelection()) {
+        const range = ti.selectionRange();
+        const sel_start_x = text_bounds.x + layout.textWidthUpTo(content, range.start, resolved.font_size, text_ctx);
+        const sel_end_x = text_bounds.x + layout.textWidthUpTo(content, range.end, resolved.font_size, text_ctx);
+        try commands.append(allocator, .{ .rect = .{
+            .bounds = .{ .x = sel_start_x, .y = text_bounds.y, .w = sel_end_x - sel_start_x, .h = text_bounds.h },
+            .color = theme.selection_bg,
+            .border_color = theme.selection_bg,
+            .border_width = 0,
+            .corner_radius = 0,
+        } });
+    }
+
+    if (content.len > 0) {
+        try appendTextCommand(commands, allocator, text_bounds, text_bounds.x, content, resolved.fg, resolved.font_size, text_ctx);
+    }
+
+    if (show_cursor) {
+        const cursor_x = text_bounds.x + layout.textWidthUpTo(content, ti.cursor, resolved.font_size, text_ctx);
         try commands.append(allocator, .{ .rect = .{
             .bounds = .{ .x = cursor_x, .y = text_bounds.y, .w = 1, .h = text_bounds.h },
             .color = resolved.fg,
@@ -1096,8 +1216,6 @@ fn emitTextInput(
             .corner_radius = 0,
         } });
     }
-
-    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitScrollArea(
@@ -1416,7 +1534,11 @@ fn treeItemChrome(
     const has_custom_border = node.style_override.border != null or node.style_override.border_width != null;
 
     return .{
-        .color = if (has_custom_bg)
+        .color = if (item.dragging)
+            style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
+        else if (item.drop_preview == .into)
+            style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
+        else if (has_custom_bg)
             interactionBg(node, resolved, theme)
         else if (item.selected)
             theme.selection_bg
@@ -1426,15 +1548,52 @@ fn treeItemChrome(
             theme.bg_hover
         else
             .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-        .border_color = if (has_custom_border)
+        .border_color = if (item.drop_preview == .into)
+            theme.accent
+        else if (has_custom_border)
             resolved.border
         else
             .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-        .border_width = if (has_custom_border)
+        .border_width = if (item.drop_preview == .into)
+            @max(resolved.border_width, 1)
+        else if (has_custom_border)
             resolved.border_width
         else
             0,
     };
+}
+
+fn emitTreeItemDropIndicator(
+    rect: Rect,
+    item: widget.WidgetKind.TreeItem,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    const preview = item.drop_preview orelse return;
+    const indicator_bounds = switch (preview) {
+        .before => Rect{
+            .x = rect.x + resolved.padding.left,
+            .y = rect.y,
+            .w = @max(rect.w - resolved.padding.left - resolved.padding.right, 0),
+            .h = 2,
+        },
+        .after => Rect{
+            .x = rect.x + resolved.padding.left,
+            .y = rect.y + rect.h - 2,
+            .w = @max(rect.w - resolved.padding.left - resolved.padding.right, 0),
+            .h = 2,
+        },
+        .into => return,
+    };
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = indicator_bounds,
+        .color = theme.accent,
+        .border_color = theme.accent,
+        .border_width = 0,
+        .corner_radius = 0,
+    } });
 }
 
 fn emitTreeGuides(
@@ -1661,6 +1820,76 @@ fn emitFloatingSubtrees(
         if (node.kind == .tab_item and !node.kind.tab_item.selected) continue;
         try emitFloatingSubtrees(tree, child, theme, commands, allocator, text_ctx);
     }
+}
+
+fn emitDragGhosts(
+    tree: *const widget.Tree,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+) !void {
+    for (tree.nodes.items) |node| {
+        if (!node.alive) continue;
+        switch (node.kind) {
+            .tree_item => |item| {
+                if (!item.dragging or item.drag_rect.w <= 0 or item.drag_rect.h <= 0) continue;
+                const resolved = node.style_override.resolve(theme);
+                try emitDragGhostRect(item.drag_rect, resolved, theme, commands, allocator);
+                const label_x = item.drag_rect.x + resolved.padding.left;
+                const label_bounds = customTextBounds(item.drag_rect, resolved, label_x, rectRight(item.drag_rect) - resolved.padding.right - label_x);
+                try appendTextCommand(commands, allocator, label_bounds, label_x, item.label, resolved.fg, resolved.font_size, text_ctx);
+            },
+            .grid_item => |item| {
+                if (!item.dragging or item.drag_rect.w <= 0 or item.drag_rect.h <= 0) continue;
+                const resolved = node.style_override.resolve(theme);
+                try emitDragGhostRect(item.drag_rect, resolved, theme, commands, allocator);
+                const inner = defaultTextBounds(item.drag_rect, resolved);
+                const icon_size = @max(@min(inner.w, inner.h - resolved.font_size - theme.spacing), 0);
+                if (icon_size > 8) {
+                    const icon_rect = Rect{
+                        .x = inner.x + (inner.w - icon_size) * 0.5,
+                        .y = inner.y,
+                        .w = icon_size,
+                        .h = @min(icon_size, inner.h - resolved.font_size - theme.spacing),
+                    };
+                    try commands.append(allocator, .{ .rect = .{
+                        .bounds = icon_rect,
+                        .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 96),
+                        .border_color = theme.accent,
+                        .border_width = 1,
+                        .corner_radius = @min(resolved.border_radius, 8),
+                    } });
+                }
+                const label_bounds = Rect{
+                    .x = inner.x,
+                    .y = item.drag_rect.y + item.drag_rect.h - resolved.padding.bottom - resolved.font_size * 1.4,
+                    .w = inner.w,
+                    .h = resolved.font_size * 1.4,
+                };
+                const label_width = layout.measureTextDimensions(item.label, resolved.font_size, text_ctx).width;
+                const label_x = @max(label_bounds.x, label_bounds.x + (label_bounds.w - label_width) * 0.5);
+                try appendTextCommand(commands, allocator, label_bounds, label_x, item.label, resolved.fg, resolved.font_size, text_ctx);
+            },
+            else => {},
+        }
+    }
+}
+
+fn emitDragGhostRect(
+    rect: Rect,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(DrawCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    try commands.append(allocator, .{ .rect = .{
+        .bounds = rect,
+        .color = style.Color.rgba(theme.bg_active.r, theme.bg_active.g, theme.bg_active.b, 216),
+        .border_color = theme.accent,
+        .border_width = @max(resolved.border_width, 1),
+        .corner_radius = resolved.border_radius,
+    } });
 }
 
 fn shouldDrawNode(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
@@ -2370,14 +2599,14 @@ test "focused text input with selection emits highlight rect" {
     var dl = try generate(&tree, theme, allocator, null);
     defer freeDrawList(&dl, allocator);
 
-    // bg rect + text + selection highlight + cursor + focus ring = 5 commands
+    // bg rect + selection highlight + text + cursor + focus ring = 5 commands
     try std.testing.expectEqual(@as(usize, 5), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .rect); // bg
-    try std.testing.expect(dl.commands[1] == .text); // content
-    try std.testing.expect(dl.commands[2] == .rect); // selection highlight
+    try std.testing.expect(dl.commands[1] == .rect); // selection highlight
+    try std.testing.expect(dl.commands[2] == .text); // content
     try std.testing.expect(dl.commands[3] == .rect); // cursor
     try std.testing.expect(dl.commands[4] == .rect); // focus ring
 
     // Verify selection highlight color
-    try std.testing.expectEqual(theme.selection_bg, dl.commands[2].rect.color);
+    try std.testing.expectEqual(theme.selection_bg, dl.commands[1].rect.color);
 }

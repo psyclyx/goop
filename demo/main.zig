@@ -232,6 +232,11 @@ const State = struct {
     selectable_scene: ?goop.NodeHandle = null,
     selectable_camera: ?goop.NodeHandle = null,
     selectable_light: ?goop.NodeHandle = null,
+    grid_selector: ?goop.NodeHandle = null,
+    grid_item_a: ?goop.NodeHandle = null,
+    grid_item_b: ?goop.NodeHandle = null,
+    grid_item_c: ?goop.NodeHandle = null,
+    grid_item_d: ?goop.NodeHandle = null,
     asset_table: ?goop.NodeHandle = null,
     asset_row_a: ?goop.NodeHandle = null,
     asset_row_b: ?goop.NodeHandle = null,
@@ -1117,6 +1122,28 @@ fn buildWidgetTree(state: *State) !void {
         .label = "Lighting Set",
     } });
 
+    _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "Grid Selector" } });
+    state.grid_selector = try ctx.tree.addChild(root, .{ .grid_selector = .{
+        .selection_mode = .multiple,
+        .item_width = 104,
+        .item_height = 96,
+        .column_gap = 8,
+        .row_gap = 8,
+    } });
+    state.grid_item_a = try ctx.tree.addChild(state.grid_selector.?, .{ .grid_item = .{
+        .label = "Brick",
+        .selected = true,
+    } });
+    state.grid_item_b = try ctx.tree.addChild(state.grid_selector.?, .{ .grid_item = .{
+        .label = "Metal",
+    } });
+    state.grid_item_c = try ctx.tree.addChild(state.grid_selector.?, .{ .grid_item = .{
+        .label = "Leaves",
+    } });
+    state.grid_item_d = try ctx.tree.addChild(state.grid_selector.?, .{ .grid_item = .{
+        .label = "UI Icons",
+    } });
+
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "Asset Table" } });
     state.asset_table = try ctx.tree.addChild(root, .{ .table = .{
         .columns = 3,
@@ -1522,12 +1549,42 @@ pub fn main() !void {
             if (ctx.wasClicked(h)) std.debug.print("Outline selected: Directional Light\n", .{});
             if (ctx.treeItemRenameCommitted(h)) std.debug.print("Outline renamed: {s}\n", .{ctx.treeItemLabel(h)});
         }
+        if (ctx.lastTreeDrop()) |drop| {
+            const position_name = switch (drop.position) {
+                .before => "before",
+                .into => "into",
+                .after => "after",
+            };
+            std.debug.print("Outline drop: {s} -> {s} ({s})\n", .{
+                ctx.treeItemLabel(drop.source),
+                ctx.treeItemLabel(drop.target),
+                position_name,
+            });
+        }
         if (state.list_box) |h| if (ctx.listBoxChanged(h)) {
             std.debug.print("List box selection count: {}\n", .{ctx.listBoxSelectionCount(h)});
         };
         if (state.selectable_scene) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Scene Collection\n", .{});
         if (state.selectable_camera) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Camera Rig\n", .{});
         if (state.selectable_light) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Lighting Set\n", .{});
+        if (state.grid_selector) |h| if (ctx.gridSelectorChanged(h)) {
+            std.debug.print("Grid selection count: {}\n", .{ctx.gridSelectorSelectionCount(h)});
+        };
+        if (state.grid_item_a) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: Brick\n", .{});
+        if (state.grid_item_b) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: Metal\n", .{});
+        if (state.grid_item_c) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: Leaves\n", .{});
+        if (state.grid_item_d) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: UI Icons\n", .{});
+        if (ctx.lastGridDrop()) |drop| {
+            switch (drop.position) {
+                .item => std.debug.print("Grid drop: {s} -> {s} (item)\n", .{
+                    ctx.tree.getConst(drop.source).kind.grid_item.label,
+                    ctx.tree.getConst(drop.target).kind.grid_item.label,
+                }),
+                .background => std.debug.print("Grid drop: {s} -> background\n", .{
+                    ctx.tree.getConst(drop.source).kind.grid_item.label,
+                }),
+            }
+        }
         if (state.asset_table) |h| if (ctx.tableChanged(h)) {
             std.debug.print("Asset table divider {} resized: [{d:.2}, {d:.2}, {d:.2}]\n", .{
                 ctx.tableResizedColumn(h).?,

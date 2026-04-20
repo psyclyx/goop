@@ -13,6 +13,23 @@ pub const SecondaryClick = struct {
     y: f32,
 };
 
+pub const TreeDrop = struct {
+    source: widget.NodeHandle,
+    target: widget.NodeHandle,
+    position: widget.WidgetKind.TreeItem.DropPosition,
+};
+
+pub const GridDrop = struct {
+    source: widget.NodeHandle,
+    target: widget.NodeHandle,
+    position: Position,
+
+    pub const Position = enum {
+        item,
+        background,
+    };
+};
+
 pub const MouseState = struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -21,6 +38,9 @@ pub const MouseState = struct {
     /// The widget that the left button went down on (for click detection).
     press_target: ?widget.NodeHandle = null,
     right_press_target: ?widget.NodeHandle = null,
+    press_origin_x: f32 = 0,
+    press_origin_y: f32 = 0,
+    press_can_defer_drag: bool = false,
     /// The widget currently being dragged, if any.
     drag_target: ?widget.NodeHandle = null,
     drag_origin_x: f32 = 0,
@@ -37,6 +57,14 @@ pub const MouseState = struct {
     layout_changed: bool = false,
     /// The most recent secondary click observed this frame.
     last_secondary_click: ?SecondaryClick = null,
+    /// Active tree drop preview while dragging an outline row.
+    tree_drop_preview: ?TreeDrop = null,
+    /// The most recent tree drop committed this frame.
+    last_tree_drop: ?TreeDrop = null,
+    /// Active grid drop preview while dragging a grid item.
+    grid_drop_preview: ?GridDrop = null,
+    /// The most recent grid drop committed this frame.
+    last_grid_drop: ?GridDrop = null,
     /// Whether a shift key is currently held.
     shift_down: bool = false,
     /// Whether a ctrl key is currently held.
@@ -50,6 +78,8 @@ pub const MouseState = struct {
     const double_click_time_ms: u64 = 400;
     /// Maximum distance between clicks for a double-click (pixels).
     const double_click_dist: f32 = 5;
+    /// Minimum drag distance before deferred drags activate (pixels).
+    const drag_threshold: f32 = 4;
 };
 
 /// Clipboard interface for copy/paste. Provided by the embedder.
@@ -87,6 +117,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
         .mouse_move => |mm| {
             mouse.x = mm.x;
             mouse.y = mm.y;
+            maybeBeginDeferredDrag(tree, mouse);
             if (mouse.drag_target) |dt| {
                 switch (tree.getConst(dt).kind) {
                     .slider => updateSliderValue(tree, dt, mouse.x, theme),
@@ -95,6 +126,9 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                     .table => {
                         if (updateTableColumns(tree, dt, mouse)) mouse.layout_changed = true;
                     },
+                    .tree_item => updateTreeDragPreview(tree, dt, mouse),
+                    .grid_item => updateGridItemDragPreview(tree, dt, mouse),
+                    .grid_selector => updateGridSelectorMarquee(tree, dt, mouse),
                     else => {},
                 }
             }
@@ -158,6 +192,12 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                         editor.selection_anchor = 0;
                                         editor.cursor = editor.len;
                                     }
+                                } else if (tree.getConst(f).kind == .grid_item) {
+                                    if (widget.gridItemParentSelector(tree, f)) |selector| {
+                                        if (tree.getConst(selector).kind.grid_selector.selection_mode == .multiple) {
+                                            _ = selectAllGridSelector(tree, selector);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -205,6 +245,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                 },
                 .tab => {
                     if (k.state == .pressed or k.state == .repeat) {
+                        if (mouse.focused) |f| commitOrCancelNumericEditorOnBlur(tree, f);
                         if (mouse.shift_down) {
                             mouse.focused = focus.focusPrev(tree, mouse.focused);
                         } else {
@@ -270,6 +311,12 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                     mouse.focused = prev;
                                     focus.syncFocusFlags(tree, mouse.focused);
                                 }
+                            } else if (tree.getConst(f).kind == .grid_item) {
+                                if (prevGridItem(tree, f)) |prev| {
+                                    applyGridItemKeyboardNavigation(tree, prev, mouse);
+                                    mouse.focused = prev;
+                                    focus.syncFocusFlags(tree, mouse.focused);
+                                }
                             } else if (tree.getConst(f).kind == .tree_item) {
                                 const node = tree.get(f);
                                 if (node.kind.tree_item.expanded and hasTreeItemChildren(tree, f)) {
@@ -313,6 +360,12 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                     mouse.focused = next;
                                     focus.syncFocusFlags(tree, mouse.focused);
                                 }
+                            } else if (tree.getConst(f).kind == .grid_item) {
+                                if (nextGridItem(tree, f)) |next| {
+                                    applyGridItemKeyboardNavigation(tree, next, mouse);
+                                    mouse.focused = next;
+                                    focus.syncFocusFlags(tree, mouse.focused);
+                                }
                             } else if (tree.getConst(f).kind == .tree_item) {
                                 const node = tree.get(f);
                                 if (!node.kind.tree_item.expanded and hasTreeItemChildren(tree, f)) {
@@ -337,6 +390,12 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                             } else if (tree.getConst(f).kind == .selectable) {
                                 if (prevSelectableSibling(tree, f)) |prev| {
                                     applySelectableKeyboardNavigation(tree, prev, mouse);
+                                    mouse.focused = prev;
+                                    focus.syncFocusFlags(tree, mouse.focused);
+                                }
+                            } else if (tree.getConst(f).kind == .grid_item) {
+                                if (gridItemAbove(tree, f)) |prev| {
+                                    applyGridItemKeyboardNavigation(tree, prev, mouse);
                                     mouse.focused = prev;
                                     focus.syncFocusFlags(tree, mouse.focused);
                                 }
@@ -365,6 +424,12 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                             } else if (tree.getConst(f).kind == .selectable) {
                                 if (nextSelectableSibling(tree, f)) |next| {
                                     applySelectableKeyboardNavigation(tree, next, mouse);
+                                    mouse.focused = next;
+                                    focus.syncFocusFlags(tree, mouse.focused);
+                                }
+                            } else if (tree.getConst(f).kind == .grid_item) {
+                                if (gridItemBelow(tree, f)) |next| {
+                                    applyGridItemKeyboardNavigation(tree, next, mouse);
                                     mouse.focused = next;
                                     focus.syncFocusFlags(tree, mouse.focused);
                                 }
@@ -397,6 +462,12 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                     mouse.focused = first;
                                     focus.syncFocusFlags(tree, mouse.focused);
                                 }
+                            } else if (tree.getConst(f).kind == .grid_item) {
+                                if (firstGridItemSibling(tree, f)) |first| {
+                                    applyGridItemKeyboardNavigation(tree, first, mouse);
+                                    mouse.focused = first;
+                                    focus.syncFocusFlags(tree, mouse.focused);
+                                }
                             } else if (tree.getConst(f).kind == .table_row) {
                                 if (firstTableDataRow(tree, f)) |first| {
                                     applyTableRowKeyboardNavigation(tree, first, mouse);
@@ -423,6 +494,12 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                                     mouse.focused = last;
                                     focus.syncFocusFlags(tree, mouse.focused);
                                 }
+                            } else if (tree.getConst(f).kind == .grid_item) {
+                                if (lastGridItemSibling(tree, f)) |last| {
+                                    applyGridItemKeyboardNavigation(tree, last, mouse);
+                                    mouse.focused = last;
+                                    focus.syncFocusFlags(tree, mouse.focused);
+                                }
                             } else if (tree.getConst(f).kind == .table_row) {
                                 if (lastTableDataRow(tree, f)) |last| {
                                     applyTableRowKeyboardNavigation(tree, last, mouse);
@@ -438,6 +515,10 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                         if (mouse.focused) |f| {
                             if (treeItemEditing(tree, f)) {
                                 if (k.keycode == .enter) commitTreeItemRename(tree, f);
+                            } else if (numericEditorEditing(tree, f)) {
+                                if (k.keycode == .enter) {
+                                    _ = commitNumericEditor(tree, f);
+                                }
                             } else if (focusedTextEditor(tree, f) == null) {
                                 fireClick(tree, f);
                             }
@@ -449,6 +530,8 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                         if (mouse.focused) |f| {
                             if (treeItemEditing(tree, f)) {
                                 cancelTreeItemRename(tree, f);
+                            } else if (numericEditorEditing(tree, f)) {
+                                cancelNumericEditor(tree, f);
                             } else {
                                 closeAllPopups(tree);
                             }
@@ -463,9 +546,13 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
         .text => |t| {
             if (mouse.focused) |f| {
                 if (focusedTextEditor(tree, f)) |editor| {
-                    if (isPrintableTextCodepoint(t.codepoint)) {
+                    if (isPrintableTextCodepoint(t.codepoint) and
+                        (!numericEditorEditing(tree, f) or isNumericEditorCodepoint(t.codepoint)))
+                    {
                         editor.insertCodepoint(t.codepoint);
                     }
+                } else if (isPrintableTextCodepoint(t.codepoint)) {
+                    beginNumericEditorTextInput(tree, f, t.codepoint);
                 }
             }
         },
@@ -481,11 +568,20 @@ fn isPrintableTextCodepoint(codepoint: u21) bool {
     };
 }
 
+fn isNumericEditorCodepoint(codepoint: u21) bool {
+    return switch (codepoint) {
+        '+', '-', '.', 'e', 'E', '0'...'9' => true,
+        else => false,
+    };
+}
+
 fn focusedTextEditor(tree: *widget.Tree, handle: widget.NodeHandle) ?*widget.WidgetKind.TextInput {
     const node = tree.get(handle);
     return switch (node.kind) {
         .text_input => &node.kind.text_input,
         .tree_item => if (node.kind.tree_item.editing) &node.kind.tree_item.editor else null,
+        .drag_value => if (node.kind.drag_value.editing) &node.kind.drag_value.editor else null,
+        .spinbox => if (node.kind.spinbox.editing) &node.kind.spinbox.editor else null,
         else => null,
     };
 }
@@ -493,6 +589,91 @@ fn focusedTextEditor(tree: *widget.Tree, handle: widget.NodeHandle) ?*widget.Wid
 fn treeItemEditing(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     const node = tree.getConst(handle);
     return node.kind == .tree_item and node.kind.tree_item.editing;
+}
+
+fn numericEditorEditing(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    const node = tree.getConst(handle);
+    return switch (node.kind) {
+        .drag_value => node.kind.drag_value.editing,
+        .spinbox => node.kind.spinbox.editing,
+        else => false,
+    };
+}
+
+fn handleInlineTextEditorPress(
+    editor: *widget.WidgetKind.TextInput,
+    content: []const u8,
+    mouse_x: f32,
+    text_x: f32,
+    font_size: f32,
+    mouse: *const MouseState,
+    mb: event.Event.MouseButton,
+    text_ctx: ?*const layout.TextMeasureCtx,
+) void {
+    const rel_x = mouse_x - text_x;
+    const rounded = layout.charIndexAtX(content, editor.len, rel_x, font_size, text_ctx);
+
+    if (isDoubleClick(mouse, mb)) {
+        const bounds = editor.wordBounds(rounded);
+        editor.selection_anchor = bounds.start;
+        editor.cursor = bounds.end;
+    } else if (mouse.shift_down) {
+        if (editor.selection_anchor == null) editor.selection_anchor = editor.cursor;
+        editor.cursor = rounded;
+    } else {
+        editor.selection_anchor = rounded;
+        editor.cursor = rounded;
+    }
+}
+
+fn beginDragValueEdit(tree: *widget.Tree, handle: widget.NodeHandle) void {
+    const drag_value = &tree.get(handle).kind.drag_value;
+    if (!drag_value.editing) drag_value.beginEdit();
+}
+
+fn beginSpinBoxEdit(tree: *widget.Tree, handle: widget.NodeHandle) void {
+    const spinbox = &tree.get(handle).kind.spinbox;
+    if (!spinbox.editing) spinbox.beginEdit();
+}
+
+fn beginNumericEditorTextInput(tree: *widget.Tree, handle: widget.NodeHandle, codepoint: u21) void {
+    if (!tree.isAlive(handle) or !isNumericEditorCodepoint(codepoint)) return;
+    switch (tree.getConst(handle).kind) {
+        .drag_value => {
+            beginDragValueEdit(tree, handle);
+            tree.get(handle).kind.drag_value.editor.insertCodepoint(codepoint);
+        },
+        .spinbox => {
+            beginSpinBoxEdit(tree, handle);
+            tree.get(handle).kind.spinbox.editor.insertCodepoint(codepoint);
+        },
+        else => {},
+    }
+}
+
+fn commitNumericEditor(tree: *widget.Tree, handle: widget.NodeHandle) bool {
+    if (!tree.isAlive(handle)) return false;
+    const node = tree.get(handle);
+    return switch (node.kind) {
+        .drag_value => node.kind.drag_value.commitEdit(),
+        .spinbox => node.kind.spinbox.commitEdit(),
+        else => false,
+    };
+}
+
+fn cancelNumericEditor(tree: *widget.Tree, handle: widget.NodeHandle) void {
+    if (!tree.isAlive(handle)) return;
+    const node = tree.get(handle);
+    switch (node.kind) {
+        .drag_value => node.kind.drag_value.cancelEdit(),
+        .spinbox => node.kind.spinbox.cancelEdit(),
+        else => {},
+    }
+}
+
+fn commitOrCancelNumericEditorOnBlur(tree: *widget.Tree, handle: widget.NodeHandle) void {
+    if (!numericEditorEditing(tree, handle)) return;
+    if (!commitNumericEditor(tree, handle)) cancelNumericEditor(tree, handle);
 }
 
 fn dragTextEditorSelection(
@@ -511,12 +692,287 @@ fn dragTextEditorSelection(
     }
 }
 
+fn maybeBeginDeferredDrag(tree: *widget.Tree, mouse: *MouseState) void {
+    if (!mouse.left_down or mouse.drag_target != null or !mouse.press_can_defer_drag) return;
+    const target = mouse.press_target orelse return;
+    if (!tree.isAlive(target)) return;
+
+    const dx = mouse.x - mouse.press_origin_x;
+    const dy = mouse.y - mouse.press_origin_y;
+    if (dx * dx + dy * dy < MouseState.drag_threshold * MouseState.drag_threshold) return;
+
+    switch (tree.getConst(target).kind) {
+        .tree_item => beginTreeDrag(tree, target, mouse),
+        .grid_item => beginGridItemDrag(tree, target, mouse),
+        .drag_value => beginDragValueScrub(tree, target, mouse),
+        .grid_selector => beginGridSelectorMarquee(tree, target, mouse),
+        else => {},
+    }
+}
+
+fn beginTreeDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
+    if (!tree.isAlive(source) or tree.getConst(source).kind != .tree_item) return;
+    mouse.press_can_defer_drag = false;
+    clearTreeDragPreview(tree);
+    mouse.drag_target = source;
+    {
+        const item = &tree.get(source).kind.tree_item;
+        item.dragging = true;
+        item.drag_offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
+        item.drag_offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
+    }
+    updateTreeDragPreview(tree, source, mouse);
+}
+
+fn updateTreeDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
+    clearTreeDragPreview(tree);
+    mouse.tree_drop_preview = null;
+
+    if (!tree.isAlive(source) or tree.getConst(source).kind != .tree_item) return;
+    updateTreeDragGhostRect(tree, source, mouse);
+    const source_item = tree.getConst(source).kind.tree_item;
+    const target = hittest.hitTestKind(tree, mouse.x, mouse.y, .tree_item) orelse return;
+    if (!tree.isAlive(target) or target.eql(source) or isDescendantOf(tree, target, source)) return;
+
+    const target_item = tree.getConst(target).kind.tree_item;
+    if (target_item.group != source_item.group) return;
+
+    const position = treeDropPositionAtY(tree.getConst(target).layout_rect, mouse.y);
+    tree.get(target).kind.tree_item.drop_preview = position;
+    mouse.tree_drop_preview = .{
+        .source = source,
+        .target = target,
+        .position = position,
+    };
+}
+
+fn finalizeTreeDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
+    if (tree.isAlive(source) and tree.getConst(source).kind == .tree_item) {
+        const item = &tree.get(source).kind.tree_item;
+        item.dragging = false;
+        item.drag_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    }
+    if (mouse.tree_drop_preview) |preview| {
+        mouse.last_tree_drop = preview;
+        if (tree.isAlive(preview.target) and tree.getConst(preview.target).kind == .tree_item) {
+            tree.get(preview.target).kind.tree_item.drop_received = true;
+        }
+    }
+    clearTreeDragPreview(tree);
+    mouse.tree_drop_preview = null;
+}
+
+fn clearTreeDragPreview(tree: *widget.Tree) void {
+    for (tree.nodes.items) |*node| {
+        if (!node.alive or node.kind != .tree_item) continue;
+        node.kind.tree_item.drop_preview = null;
+    }
+}
+
+fn updateTreeDragGhostRect(tree: *widget.Tree, source: widget.NodeHandle, mouse: *const MouseState) void {
+    const source_rect = tree.getConst(source).layout_rect;
+    const item = &tree.get(source).kind.tree_item;
+    item.drag_rect = .{
+        .x = mouse.x - item.drag_offset_x,
+        .y = mouse.y - item.drag_offset_y,
+        .w = source_rect.w,
+        .h = source_rect.h,
+    };
+}
+
+fn beginGridItemDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
+    if (!tree.isAlive(source) or tree.getConst(source).kind != .grid_item) return;
+    mouse.press_can_defer_drag = false;
+    clearGridDragPreview(tree);
+    mouse.drag_target = source;
+    {
+        const item = &tree.get(source).kind.grid_item;
+        item.dragging = true;
+        item.drag_offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
+        item.drag_offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
+    }
+    updateGridItemDragPreview(tree, source, mouse);
+}
+
+fn updateGridItemDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
+    clearGridDragPreview(tree);
+    mouse.grid_drop_preview = null;
+    if (!tree.isAlive(source) or tree.getConst(source).kind != .grid_item) return;
+    updateGridItemDragGhostRect(tree, source, mouse);
+
+    const selector = widget.gridItemParentSelector(tree, source) orelse return;
+    const hovered_item = hittest.hitTestKind(tree, mouse.x, mouse.y, .grid_item);
+    if (hovered_item) |target| {
+        if (target.eql(source)) return;
+        if (widget.gridItemParentSelector(tree, target)) |target_selector| {
+            if (target_selector.eql(selector)) {
+                tree.get(target).kind.grid_item.drop_preview = true;
+                mouse.grid_drop_preview = .{
+                    .source = source,
+                    .target = target,
+                    .position = .item,
+                };
+                return;
+            }
+        }
+    }
+
+    if (hittest.pointInRect(mouse.x, mouse.y, tree.getConst(selector).layout_rect)) {
+        tree.get(selector).kind.grid_selector.drop_preview_background = true;
+        mouse.grid_drop_preview = .{
+            .source = source,
+            .target = selector,
+            .position = .background,
+        };
+    }
+}
+
+fn finalizeGridItemDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
+    if (tree.isAlive(source) and tree.getConst(source).kind == .grid_item) {
+        const item = &tree.get(source).kind.grid_item;
+        item.dragging = false;
+        item.drag_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    }
+    if (mouse.grid_drop_preview) |preview| {
+        mouse.last_grid_drop = preview;
+    }
+    clearGridDragPreview(tree);
+    mouse.grid_drop_preview = null;
+}
+
+fn clearGridDragPreview(tree: *widget.Tree) void {
+    for (tree.nodes.items) |*node| {
+        if (!node.alive) continue;
+        switch (node.kind) {
+            .grid_selector => node.kind.grid_selector.drop_preview_background = false,
+            .grid_item => node.kind.grid_item.drop_preview = false,
+            else => {},
+        }
+    }
+}
+
+fn updateGridItemDragGhostRect(tree: *widget.Tree, source: widget.NodeHandle, mouse: *const MouseState) void {
+    const source_rect = tree.getConst(source).layout_rect;
+    const item = &tree.get(source).kind.grid_item;
+    item.drag_rect = .{
+        .x = mouse.x - item.drag_offset_x,
+        .y = mouse.y - item.drag_offset_y,
+        .w = source_rect.w,
+        .h = source_rect.h,
+    };
+}
+
+fn beginDragValueScrub(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    if (!tree.isAlive(handle) or tree.getConst(handle).kind != .drag_value) return;
+    mouse.press_can_defer_drag = false;
+    mouse.drag_target = handle;
+    mouse.drag_origin_x = mouse.press_origin_x;
+    mouse.drag_origin_y = mouse.press_origin_y;
+    mouse.drag_origin_value = tree.getConst(handle).kind.drag_value.value;
+}
+
+fn beginGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle, mouse: *MouseState) void {
+    if (!tree.isAlive(selector) or tree.getConst(selector).kind != .grid_selector) return;
+    mouse.press_can_defer_drag = false;
+    mouse.drag_target = selector;
+    mouse.drag_origin_x = mouse.press_origin_x;
+    mouse.drag_origin_y = mouse.press_origin_y;
+    snapshotGridSelectorSelection(tree, selector);
+    tree.get(selector).kind.grid_selector.marquee_active = true;
+    updateGridSelectorMarquee(tree, selector, mouse);
+}
+
+fn updateGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle, mouse: *const MouseState) void {
+    if (!tree.isAlive(selector) or tree.getConst(selector).kind != .grid_selector) return;
+
+    const selector_rect = tree.getConst(selector).layout_rect;
+    const marquee_rect = clampRectToBounds(normalizedRect(mouse.drag_origin_x, mouse.drag_origin_y, mouse.x, mouse.y), selector_rect);
+    tree.get(selector).kind.grid_selector.marquee_rect = marquee_rect;
+
+    var changed = false;
+    var iter = tree.children(selector);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .grid_item) continue;
+        const child_node = tree.getConst(child);
+        const should_select = rectsIntersect(marquee_rect, child_node.layout_rect) or
+            (mouse.ctrl_down and child_node.kind.grid_item.marquee_base_selected);
+        if (child_node.kind.grid_item.selected != should_select) {
+            tree.get(child).kind.grid_item.selected = should_select;
+            changed = true;
+        }
+    }
+    if (changed) tree.get(selector).kind.grid_selector.changed = true;
+}
+
+fn finalizeGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle) void {
+    if (!tree.isAlive(selector) or tree.getConst(selector).kind != .grid_selector) return;
+    const grid_selector = &tree.get(selector).kind.grid_selector;
+    grid_selector.marquee_active = false;
+    grid_selector.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+
+    var iter = tree.children(selector);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .grid_item) continue;
+        tree.get(child).kind.grid_item.marquee_base_selected = false;
+    }
+}
+
+fn snapshotGridSelectorSelection(tree: *widget.Tree, selector: widget.NodeHandle) void {
+    var iter = tree.children(selector);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .grid_item) continue;
+        tree.get(child).kind.grid_item.marquee_base_selected = tree.getConst(child).kind.grid_item.selected;
+    }
+}
+
+fn treeDropPositionAtY(rect: draw.Rect, y: f32) widget.WidgetKind.TreeItem.DropPosition {
+    if (rect.h <= 0) return .into;
+    const rel = (y - rect.y) / rect.h;
+    if (rel <= 0.25) return .before;
+    if (rel >= 0.75) return .after;
+    return .into;
+}
+
+fn normalizedRect(x0: f32, y0: f32, x1: f32, y1: f32) draw.Rect {
+    return .{
+        .x = @min(x0, x1),
+        .y = @min(y0, y1),
+        .w = @abs(x1 - x0),
+        .h = @abs(y1 - y0),
+    };
+}
+
+fn clampRectToBounds(rect: draw.Rect, bounds: draw.Rect) draw.Rect {
+    const left = std.math.clamp(rect.x, bounds.x, bounds.x + bounds.w);
+    const top = std.math.clamp(rect.y, bounds.y, bounds.y + bounds.h);
+    const right = std.math.clamp(rect.x + rect.w, bounds.x, bounds.x + bounds.w);
+    const bottom = std.math.clamp(rect.y + rect.h, bounds.y, bounds.y + bounds.h);
+    return .{
+        .x = left,
+        .y = top,
+        .w = @max(right - left, 0),
+        .h = @max(bottom - top, 0),
+    };
+}
+
+fn rectsIntersect(a: draw.Rect, b: draw.Rect) bool {
+    return a.x < b.x + b.w and a.x + a.w > b.x and a.y < b.y + b.h and a.y + a.h > b.y;
+}
+
 fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
     mouse.left_down = true;
+    mouse.press_origin_x = mouse.x;
+    mouse.press_origin_y = mouse.y;
+    mouse.press_can_defer_drag = false;
     _ = updateHover(tree, mouse);
 
     const target = hittest.hitTest(tree, mouse.x, mouse.y);
     closePopupsForPress(tree, target);
+    if (mouse.focused) |previous_focus| {
+        if (target == null or !target.?.eql(previous_focus)) {
+            commitOrCancelNumericEditorOnBlur(tree, previous_focus);
+        }
+    }
     mouse.press_target = target;
     if (target) |t| {
         tree.get(t).interaction.pressed = true;
@@ -532,21 +988,7 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
                 const rect = node.layout_rect;
                 const resolved = node.style_override.resolve(theme);
                 const ti = &node.kind.text_input;
-                const text_x = rect.x + resolved.padding.left;
-                const rel_x = mouse.x - text_x;
-                const rounded = layout.charIndexAtX(ti.content(), ti.len, rel_x, resolved.font_size, text_ctx);
-
-                if (isDoubleClick(mouse, mb)) {
-                    const bounds = ti.wordBounds(rounded);
-                    ti.selection_anchor = bounds.start;
-                    ti.cursor = bounds.end;
-                } else if (mouse.shift_down) {
-                    if (ti.selection_anchor == null) ti.selection_anchor = ti.cursor;
-                    ti.cursor = rounded;
-                } else {
-                    ti.selection_anchor = rounded;
-                    ti.cursor = rounded;
-                }
+                handleInlineTextEditorPress(ti, ti.content(), mouse.x, rect.x + resolved.padding.left, resolved.font_size, mouse, mb, text_ctx);
             },
             .slider => {
                 mouse.drag_target = t;
@@ -556,10 +998,16 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
                 updateSliderValue(tree, t, mouse.x, theme);
             },
             .drag_value => {
-                mouse.drag_target = t;
-                mouse.drag_origin_x = mouse.x;
-                mouse.drag_origin_y = mouse.y;
-                mouse.drag_origin_value = tree.getConst(t).kind.drag_value.value;
+                if (tree.getConst(t).kind.drag_value.editing) {
+                    if (textEditorTextX(tree, t, theme)) |text_x| {
+                        const resolved = tree.getConst(t).style_override.resolve(theme);
+                        const editor = &tree.get(t).kind.drag_value.editor;
+                        handleInlineTextEditorPress(editor, editor.content(), mouse.x, text_x, resolved.font_size, mouse, mb, text_ctx);
+                    }
+                } else {
+                    mouse.drag_origin_value = tree.getConst(t).kind.drag_value.value;
+                    mouse.press_can_defer_drag = true;
+                }
             },
             .splitter => {
                 mouse.drag_target = t;
@@ -590,6 +1038,12 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
                     stepSpinBox(tree, t, 1, true);
                     tree.get(t).interaction.pressed = false;
                     mouse.press_target = null;
+                } else if (tree.getConst(t).kind.spinbox.editing) {
+                    if (textEditorTextX(tree, t, theme)) |text_x| {
+                        const resolved = tree.getConst(t).style_override.resolve(theme);
+                        const editor = &tree.get(t).kind.spinbox.editor;
+                        handleInlineTextEditorPress(editor, editor.content(), mouse.x, text_x, resolved.font_size, mouse, mb, text_ctx);
+                    }
                 }
             },
             .tree_item => {
@@ -603,8 +1057,16 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
                         item.beginRename();
                         tree.get(t).interaction.pressed = false;
                         mouse.press_target = null;
+                    } else {
+                        mouse.press_can_defer_drag = true;
                     }
                 }
+            },
+            .grid_item => {
+                mouse.press_can_defer_drag = true;
+            },
+            .grid_selector => {
+                mouse.press_can_defer_drag = tree.getConst(t).kind.grid_selector.selection_mode == .multiple;
             },
             else => {},
         }
@@ -614,6 +1076,15 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
 fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
     mouse.left_down = false;
     const dragged_target = mouse.drag_target;
+    if (dragged_target) |dt| {
+        switch (tree.getConst(dt).kind) {
+            .tree_item => finalizeTreeDrag(tree, dt, mouse),
+            .grid_item => finalizeGridItemDrag(tree, dt, mouse),
+            .drag_value => {},
+            .grid_selector => finalizeGridSelectorMarquee(tree, dt),
+            else => {},
+        }
+    }
     mouse.drag_target = null;
     mouse.drag_column_index = null;
     mouse.drag_origin_secondary_value = 0;
@@ -627,6 +1098,8 @@ fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
                     switch (tree.getConst(pt).kind) {
                         .table => activateTable(tree, pt, mouse.x, mouse.y),
                         .selectable => activateSelectable(tree, pt, mouse),
+                        .grid_selector => activateGridSelector(tree, pt, mouse),
+                        .grid_item => activateGridItem(tree, pt, mouse),
                         .table_row => activateTableRow(tree, pt, mouse),
                         else => fireClick(tree, pt),
                     }
@@ -638,6 +1111,7 @@ fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
         }
     }
     mouse.press_target = null;
+    mouse.press_can_defer_drag = false;
     _ = updateHover(tree, mouse);
 }
 
@@ -686,6 +1160,10 @@ fn dragSuppressedClick(tree: *const widget.Tree, dragged_target: ?widget.NodeHan
     if (!dragged.eql(pressed_target) or !tree.isAlive(pressed_target)) return false;
     return switch (tree.getConst(pressed_target).kind) {
         .table => true,
+        .tree_item => true,
+        .grid_item => true,
+        .grid_selector => true,
+        .drag_value => true,
         else => false,
     };
 }
@@ -721,6 +1199,36 @@ fn activateSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*co
     }
 
     _ = selectSelectable(tree, handle);
+}
+
+fn activateGridSelector(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*const MouseState) void {
+    const node = tree.get(handle);
+    if (node.kind != .grid_selector) return;
+
+    node.interaction.primary_clicked = true;
+    if (mouse) |state| {
+        if (state.ctrl_down or state.shift_down) return;
+    }
+    _ = clearGridSelectorSelection(tree, handle);
+}
+
+fn activateGridItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*const MouseState) void {
+    const node = tree.get(handle);
+    if (node.kind != .grid_item) return;
+
+    node.interaction.primary_clicked = true;
+    node.kind.grid_item.clicked = true;
+
+    if (mouse) |state| {
+        if (widget.gridItemParentSelector(tree, handle)) |selector| {
+            if (tree.getConst(selector).kind.grid_selector.selection_mode == .multiple) {
+                _ = selectGridItemsMulti(tree, selector, handle, state);
+                return;
+            }
+        }
+    }
+
+    _ = selectGridItem(tree, handle);
 }
 
 fn activateTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*const MouseState) void {
@@ -975,6 +1483,15 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
         .selectable => {
             activateSelectable(tree, handle, null);
         },
+        .grid_item => {
+            activateGridItem(tree, handle, null);
+        },
+        .drag_value => {
+            if (!node.kind.drag_value.editing) node.kind.drag_value.beginEdit();
+        },
+        .spinbox => {
+            if (!node.kind.spinbox.editing) node.kind.spinbox.beginEdit();
+        },
         .table_row => {
             activateTableRow(tree, handle, null);
         },
@@ -1047,6 +1564,135 @@ fn selectSelectable(tree: *widget.Tree, handle: widget.NodeHandle) bool {
         node.kind.selectable.selected = true;
         changed = true;
         markSelectableListBoxChanged(tree, handle);
+    }
+    return changed;
+}
+
+fn selectGridItem(tree: *widget.Tree, handle: widget.NodeHandle) bool {
+    const node = tree.get(handle);
+    if (node.kind != .grid_item) return false;
+
+    const selector = widget.gridItemParentSelector(tree, handle) orelse {
+        if (!node.kind.grid_item.selected) {
+            node.kind.grid_item.selected = true;
+            return true;
+        }
+        return false;
+    };
+
+    var changed = false;
+    var selected_index: ?u16 = null;
+    var index: u16 = 0;
+    var iter = tree.children(selector);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .grid_item) continue;
+        const should_select = child.eql(handle);
+        if (tree.getConst(child).kind.grid_item.selected != should_select) {
+            tree.get(child).kind.grid_item.selected = should_select;
+            changed = true;
+        }
+        if (should_select) selected_index = index;
+        index += 1;
+    }
+
+    const grid_selector = &tree.get(selector).kind.grid_selector;
+    grid_selector.anchor_index = selected_index;
+    if (changed) grid_selector.changed = true;
+    return changed;
+}
+
+fn selectGridItemsMulti(
+    tree: *widget.Tree,
+    selector: widget.NodeHandle,
+    handle: widget.NodeHandle,
+    mouse: *const MouseState,
+) bool {
+    const clicked_index = widget.gridItemIndex(tree, handle) orelse return false;
+    const grid_selector = &tree.get(selector).kind.grid_selector;
+
+    if (mouse.shift_down) {
+        const anchor = grid_selector.anchor_index orelse clicked_index;
+        const changed = selectGridRange(tree, selector, @min(anchor, clicked_index), @max(anchor, clicked_index), mouse.ctrl_down);
+        grid_selector.anchor_index = anchor;
+        return changed;
+    }
+
+    grid_selector.anchor_index = clicked_index;
+    if (mouse.ctrl_down) {
+        return toggleGridItem(tree, selector, handle);
+    }
+
+    return selectGridItem(tree, handle);
+}
+
+fn selectGridRange(
+    tree: *widget.Tree,
+    selector: widget.NodeHandle,
+    start_index: u16,
+    end_index: u16,
+    additive: bool,
+) bool {
+    var changed = false;
+    var index: u16 = 0;
+    var iter = tree.children(selector);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .grid_item) continue;
+        const in_range = index >= start_index and index <= end_index;
+        const should_select = in_range or (additive and tree.getConst(child).kind.grid_item.selected);
+        if (tree.getConst(child).kind.grid_item.selected != should_select) {
+            tree.get(child).kind.grid_item.selected = should_select;
+            changed = true;
+        }
+        index += 1;
+    }
+    if (changed) tree.get(selector).kind.grid_selector.changed = true;
+    return changed;
+}
+
+fn toggleGridItem(tree: *widget.Tree, selector: widget.NodeHandle, handle: widget.NodeHandle) bool {
+    const current = tree.getConst(handle).kind.grid_item.selected;
+    tree.get(handle).kind.grid_item.selected = !current;
+    if (current == tree.getConst(handle).kind.grid_item.selected) return false;
+    tree.get(selector).kind.grid_selector.changed = true;
+    return true;
+}
+
+fn clearGridSelectorSelection(tree: *widget.Tree, selector: widget.NodeHandle) bool {
+    const node = tree.get(selector);
+    if (node.kind != .grid_selector) return false;
+
+    var changed = false;
+    var iter = tree.children(selector);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .grid_item) continue;
+        if (tree.getConst(child).kind.grid_item.selected) {
+            tree.get(child).kind.grid_item.selected = false;
+            changed = true;
+        }
+    }
+
+    node.kind.grid_selector.anchor_index = null;
+    if (changed) node.kind.grid_selector.changed = true;
+    return changed;
+}
+
+fn selectAllGridSelector(tree: *widget.Tree, selector: widget.NodeHandle) bool {
+    var changed = false;
+    var last_index: ?u16 = null;
+    var index: u16 = 0;
+    var iter = tree.children(selector);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind != .grid_item) continue;
+        if (!tree.getConst(child).kind.grid_item.selected) {
+            tree.get(child).kind.grid_item.selected = true;
+            changed = true;
+        }
+        last_index = index;
+        index += 1;
+    }
+    if (changed) {
+        tree.get(selector).kind.grid_selector.anchor_index = last_index;
+        tree.get(selector).kind.grid_selector.changed = true;
     }
     return changed;
 }
@@ -1453,6 +2099,10 @@ fn clickInSpinBoxIncrement(tree: *const widget.Tree, handle: widget.NodeHandle, 
     return mouse_x > spinBoxMiddleEnd(tree, handle);
 }
 
+fn clickInSpinBoxField(tree: *const widget.Tree, handle: widget.NodeHandle, mouse_x: f32) bool {
+    return mouse_x >= spinBoxMiddleStart(tree, handle) and mouse_x <= spinBoxMiddleEnd(tree, handle);
+}
+
 fn menuItemIndex(tree: *const widget.Tree, popup: widget.NodeHandle, handle: widget.NodeHandle) ?u16 {
     var idx: u16 = 0;
     var iter = tree.children(popup);
@@ -1547,6 +2197,8 @@ fn textEditorTextX(tree: *const widget.Tree, handle: widget.NodeHandle, theme: s
     return switch (node.kind) {
         .text_input => node.layout_rect.x + resolved.padding.left,
         .tree_item => if (node.kind.tree_item.editing) treeLabelX(tree, handle, theme) else null,
+        .drag_value => if (node.kind.drag_value.editing) node.layout_rect.x + resolved.padding.left else null,
+        .spinbox => if (node.kind.spinbox.editing) spinBoxMiddleStart(tree, handle) + resolved.padding.left else null,
         else => null,
     };
 }
@@ -1629,6 +2281,46 @@ fn lastSelectableSibling(tree: *const widget.Tree, handle: widget.NodeHandle) ?w
     return last;
 }
 
+fn prevGridItem(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    const index = widget.gridItemIndex(tree, handle) orelse return null;
+    const selector = widget.gridItemParentSelector(tree, handle) orelse return null;
+    if (index == 0) return null;
+    return widget.gridItemAt(tree, selector, index - 1);
+}
+
+fn nextGridItem(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    const index = widget.gridItemIndex(tree, handle) orelse return null;
+    const selector = widget.gridItemParentSelector(tree, handle) orelse return null;
+    return widget.gridItemAt(tree, selector, index + 1);
+}
+
+fn firstGridItemSibling(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    const selector = widget.gridItemParentSelector(tree, handle) orelse return null;
+    return widget.gridItemAt(tree, selector, 0);
+}
+
+fn lastGridItemSibling(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    const selector = widget.gridItemParentSelector(tree, handle) orelse return null;
+    const count = widget.gridSelectorItemCount(tree, selector);
+    if (count == 0) return null;
+    return widget.gridItemAt(tree, selector, count - 1);
+}
+
+fn gridItemAbove(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    const index = widget.gridItemIndex(tree, handle) orelse return null;
+    const selector = widget.gridItemParentSelector(tree, handle) orelse return null;
+    const columns = @max(tree.getConst(selector).kind.grid_selector.computed_columns, 1);
+    if (index < columns) return null;
+    return widget.gridItemAt(tree, selector, index - columns);
+}
+
+fn gridItemBelow(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    const index = widget.gridItemIndex(tree, handle) orelse return null;
+    const selector = widget.gridItemParentSelector(tree, handle) orelse return null;
+    const columns = @max(tree.getConst(selector).kind.grid_selector.computed_columns, 1);
+    return widget.gridItemAt(tree, selector, index + columns);
+}
+
 fn prevTableRowSibling(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
     var current = tree.getConst(handle).prev_sibling;
     while (current) |candidate| {
@@ -1678,6 +2370,16 @@ fn applySelectableKeyboardNavigation(tree: *widget.Tree, target: widget.NodeHand
         }
     }
     _ = selectSelectable(tree, target);
+}
+
+fn applyGridItemKeyboardNavigation(tree: *widget.Tree, target: widget.NodeHandle, mouse: *const MouseState) void {
+    if (widget.gridItemParentSelector(tree, target)) |selector| {
+        if (tree.getConst(selector).kind.grid_selector.selection_mode == .multiple and mouse.shift_down) {
+            _ = selectGridItemsMulti(tree, selector, target, mouse);
+            return;
+        }
+    }
+    _ = selectGridItem(tree, target);
 }
 
 fn applyTableRowKeyboardNavigation(tree: *widget.Tree, target: widget.NodeHandle, mouse: *const MouseState) void {
@@ -1894,12 +2596,78 @@ test "drag value drag updates value" {
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 20 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(mouse.drag_target != null);
+    try std.testing.expect(mouse.drag_target == null);
     process(&tree, &.{
         .{ .mouse_move = .{ .x = 40, .y = 20 } },
     }, &mouse, style.Theme.default);
 
+    try std.testing.expect(mouse.drag_target != null);
     try std.testing.expectApproxEqAbs(@as(f32, 20), tree.getConst(drag_value).kind.drag_value.value, 0.01);
+    try std.testing.expect(tree.getConst(drag_value).kind.drag_value.changed);
+}
+
+test "drag value accepts typed edits" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const drag_value = try tree.addChild(root, .{ .drag_value = .{
+        .value = 10,
+        .min = 0,
+        .max = 100,
+        .precision = 0,
+    } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    tree.get(drag_value).layout_rect = .{ .x = 10, .y = 10, .w = 120, .h = 28 };
+
+    var mouse = MouseState{};
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 20, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(tree.getConst(drag_value).kind.drag_value.editing);
+    try std.testing.expect(mouse.focused.?.eql(drag_value));
+
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = '4' } },
+        .{ .text = .{ .codepoint = '2' } },
+        .{ .key = .{ .scancode = 28, .keycode = .enter, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(!tree.getConst(drag_value).kind.drag_value.editing);
+    try std.testing.expectApproxEqAbs(@as(f32, 42), tree.getConst(drag_value).kind.drag_value.value, 0.01);
+    try std.testing.expect(tree.getConst(drag_value).kind.drag_value.changed);
+}
+
+test "focused drag value begins editing on numeric text input" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const drag_value = try tree.addChild(root, .{ .drag_value = .{
+        .value = 10,
+        .min = 0,
+        .max = 100,
+        .precision = 0,
+    } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    tree.get(drag_value).layout_rect = .{ .x = 10, .y = 10, .w = 120, .h = 28 };
+
+    var mouse = MouseState{ .focused = drag_value };
+    focus.syncFocusFlags(&tree, mouse.focused);
+
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = '7' } },
+        .{ .key = .{ .scancode = 28, .keycode = .enter, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(!tree.getConst(drag_value).kind.drag_value.editing);
+    try std.testing.expectApproxEqAbs(@as(f32, 7), tree.getConst(drag_value).kind.drag_value.value, 0.01);
     try std.testing.expect(tree.getConst(drag_value).kind.drag_value.changed);
 }
 
@@ -1933,6 +2701,41 @@ test "spinbox click steps value" {
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 20, .y = 20 } },
     }, &mouse, style.Theme.default);
     try std.testing.expectApproxEqAbs(@as(f32, 5), tree.getConst(spinbox).kind.spinbox.value, 0.01);
+}
+
+test "spinbox accepts typed edits in the value field" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const spinbox = try tree.addChild(root, .{ .spinbox = .{
+        .value = 5,
+        .min = 0,
+        .max = 10,
+        .precision = 0,
+    } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    tree.get(spinbox).layout_rect = .{ .x = 10, .y = 10, .w = 120, .h = 28 };
+
+    var mouse = MouseState{};
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 60, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 60, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(tree.getConst(spinbox).kind.spinbox.editing);
+    try std.testing.expect(mouse.focused.?.eql(spinbox));
+
+    process(&tree, &.{
+        .{ .text = .{ .codepoint = '9' } },
+        .{ .key = .{ .scancode = 28, .keycode = .enter, .state = .pressed } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(!tree.getConst(spinbox).kind.spinbox.editing);
+    try std.testing.expectApproxEqAbs(@as(f32, 9), tree.getConst(spinbox).kind.spinbox.value, 0.01);
+    try std.testing.expect(tree.getConst(spinbox).kind.spinbox.changed);
 }
 
 test "checkbox toggles on click" {
@@ -2310,6 +3113,88 @@ test "multi-select list box supports ctrl-toggle and additive shift range" {
     try std.testing.expect(tree.getConst(list_box).kind.list_box.changed);
 }
 
+test "grid selector marquee selects intersecting tiles" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const grid = try tree.addChild(root, .{ .grid_selector = .{
+        .selection_mode = .multiple,
+    } });
+    const first = try tree.addChild(grid, .{ .grid_item = .{ .label = "Brick" } });
+    const second = try tree.addChild(grid, .{ .grid_item = .{ .label = "Metal" } });
+    const third = try tree.addChild(grid, .{ .grid_item = .{ .label = "Leaves" } });
+    const fourth = try tree.addChild(grid, .{ .grid_item = .{ .label = "Icons" } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    tree.get(grid).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 130 };
+    tree.get(grid).kind.grid_selector.computed_columns = 2;
+    tree.get(first).layout_rect = .{ .x = 18, .y = 18, .w = 80, .h = 44 };
+    tree.get(second).layout_rect = .{ .x = 106, .y = 18, .w = 80, .h = 44 };
+    tree.get(third).layout_rect = .{ .x = 18, .y = 74, .w = 80, .h = 44 };
+    tree.get(fourth).layout_rect = .{ .x = 106, .y = 74, .w = 80, .h = 44 };
+
+    var mouse = MouseState{};
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 14, .y = 14 } },
+        .{ .mouse_move = .{ .x = 170, .y = 64 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 170, .y = 64 } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(tree.getConst(first).kind.grid_item.selected);
+    try std.testing.expect(tree.getConst(second).kind.grid_item.selected);
+    try std.testing.expect(!tree.getConst(third).kind.grid_item.selected);
+    try std.testing.expect(!tree.getConst(fourth).kind.grid_item.selected);
+    try std.testing.expect(tree.getConst(grid).kind.grid_selector.changed);
+    try std.testing.expect(!tree.getConst(grid).kind.grid_selector.marquee_active);
+}
+
+test "grid item drag reports drop target" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const grid = try tree.addChild(root, .{ .grid_selector = .{
+        .selection_mode = .multiple,
+    } });
+    const first = try tree.addChild(grid, .{ .grid_item = .{ .label = "Brick" } });
+    const second = try tree.addChild(grid, .{ .grid_item = .{ .label = "Metal" } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    tree.get(grid).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 130 };
+    tree.get(grid).kind.grid_selector.computed_columns = 2;
+    tree.get(first).layout_rect = .{ .x = 18, .y = 18, .w = 80, .h = 44 };
+    tree.get(second).layout_rect = .{ .x = 106, .y = 18, .w = 80, .h = 44 };
+
+    var mouse = MouseState{};
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 58, .y = 40 } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(mouse.drag_target == null);
+
+    process(&tree, &.{
+        .{ .mouse_move = .{ .x = 146, .y = 40 } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(mouse.drag_target != null);
+    try std.testing.expect(tree.getConst(first).kind.grid_item.dragging);
+    try std.testing.expect(tree.getConst(second).kind.grid_item.drop_preview);
+
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 146, .y = 40 } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(!tree.getConst(first).kind.grid_item.dragging);
+    try std.testing.expect(!tree.getConst(second).kind.grid_item.drop_preview);
+    try std.testing.expect(mouse.last_grid_drop != null);
+    try std.testing.expect(mouse.last_grid_drop.?.source.eql(first));
+    try std.testing.expect(mouse.last_grid_drop.?.target.eql(second));
+    try std.testing.expectEqual(GridDrop.Position.item, mouse.last_grid_drop.?.position);
+}
+
 test "table rows support multi-select and additive shift range" {
     const allocator = std.testing.allocator;
     var tree = widget.Tree.init(allocator);
@@ -2536,6 +3421,41 @@ test "editable tree item can rename on double click" {
     }, &mouse, style.Theme.default);
 
     try std.testing.expect(tree.getConst(item).kind.tree_item.editing);
+}
+
+test "tree item drag reports drop target and position" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const first = try tree.addChild(root, .{ .tree_item = .{ .label = "Scene", .group = 14 } });
+    const second = try tree.addChild(root, .{ .tree_item = .{ .label = "Camera", .group = 14 } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    tree.get(first).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 26 };
+    tree.get(second).layout_rect = .{ .x = 10, .y = 44, .w = 220, .h = 26 };
+
+    var mouse = MouseState{};
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 40, .y = 20 } },
+        .{ .mouse_move = .{ .x = 40, .y = 56 } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(tree.getConst(first).kind.tree_item.dragging);
+    try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, tree.getConst(second).kind.tree_item.drop_preview.?);
+
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 40, .y = 56 } },
+    }, &mouse, style.Theme.default);
+
+    const drop = mouse.last_tree_drop.?;
+    try std.testing.expect(drop.source.eql(first));
+    try std.testing.expect(drop.target.eql(second));
+    try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, drop.position);
+    try std.testing.expect(tree.getConst(second).kind.tree_item.drop_received);
+    try std.testing.expect(!tree.getConst(first).kind.tree_item.dragging);
+    try std.testing.expect(tree.getConst(second).kind.tree_item.drop_preview == null);
 }
 
 test "dropdown menu item selection updates dropdown state" {

@@ -11,9 +11,9 @@ measurement, and final rendering backend.
 
 ![Current WIP Wayland demo screenshot](docs/assets/goop-demo-wip.png)
 
-Current WIP demo on Wayland: outline rows, menus, tables, tabs, splitters,
-numeric controls, and the editor-style chrome that the library is being built
-around.
+Current WIP demo on Wayland: outline rows with drag/drop previews, list and
+grid selection widgets, menus, tables, tabs, splitters, numeric controls, and
+the editor-style chrome that the library is being built around.
 
 ## What it is
 
@@ -40,7 +40,7 @@ Widgets currently implemented:
 
 - container, text, button, checkbox, radio button, tree item
 - dropdown, popup, tooltip, menu bar, menu, menu item
-- list box, selectable
+- list box, selectable, grid selector, grid item
 - table, table row, table cell
 - drag value, spinbox, slider, text input
 - tab bar, tab item
