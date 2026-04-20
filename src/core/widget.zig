@@ -742,6 +742,7 @@ pub const Node = struct {
     style_override: style.Style = .{},
     interaction: InteractionState = .{},
     layout_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    custom_draw: bool = false,
 
     parent: ?NodeHandle = null,
     first_child: ?NodeHandle = null,

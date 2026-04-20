@@ -458,6 +458,7 @@ const CDrawCommandKind = enum(c_int) {
     rect = 0,
     text = 1,
     clip = 2,
+    custom = 3,
 };
 
 const CDrawRect = extern struct {
@@ -483,12 +484,18 @@ const CClipRect = extern struct {
     bounds: CRect = .{},
 };
 
+const CDrawCustom = extern struct {
+    handle: CHandle = .{},
+    bounds: CRect = .{},
+};
+
 const CDrawCommand = extern struct {
     kind: CDrawCommandKind = .rect,
     data: extern union {
         rect: CDrawRect,
         text: CDrawText,
         clip: CClipRect,
+        custom: CDrawCustom,
     } = .{ .rect = .{} },
 };
 
@@ -1148,6 +1155,13 @@ fn convertDrawCommand(cmd: draw.DrawCommand) CDrawCommand {
             .data = .{ .clip = .{
                 .has_bounds = clip_cmd.bounds != null,
                 .bounds = if (clip_cmd.bounds) |bounds| rectToC(bounds) else .{},
+            } },
+        },
+        .custom => |custom_cmd| .{
+            .kind = .custom,
+            .data = .{ .custom = .{
+                .handle = handleToC(custom_cmd.handle),
+                .bounds = rectToC(custom_cmd.bounds),
             } },
         },
     };

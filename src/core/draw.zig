@@ -16,6 +16,7 @@ pub const DrawCommand = union(enum) {
     rect: DrawRect,
     text: DrawText,
     clip: ClipRect,
+    custom: DrawCustom,
 
     pub const DrawRect = struct {
         bounds: Rect,
@@ -37,6 +38,11 @@ pub const DrawCommand = union(enum) {
 
     pub const ClipRect = struct {
         bounds: ?Rect,
+    };
+
+    pub const DrawCustom = struct {
+        handle: widget.NodeHandle,
+        bounds: Rect,
     };
 };
 
@@ -122,6 +128,13 @@ fn emitNode(
         .slider => |sl| try emitSlider(node, sl, resolved, theme, commands, allocator),
         .text_input => try emitTextInput(node, resolved, theme, commands, allocator, text_ctx),
         .scroll_area => try emitScrollArea(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+    }
+
+    if (node.custom_draw and node.layout_rect.w > 0 and node.layout_rect.h > 0) {
+        try commands.append(allocator, .{ .custom = .{
+            .handle = handle,
+            .bounds = node.layout_rect,
+        } });
     }
 }
 
@@ -2032,6 +2045,39 @@ test "text draw commands carry bounds and baseline" {
     try std.testing.expectApproxEqAbs(@as(f32, 108), text.bounds.w, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 28), text.bounds.h, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 44), text.baseline_y, 0.01);
+}
+
+test "custom draw commands are emitted before floating popups" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const button = try tree.addChild(root, .{ .button = .{ .label = "Preview" } });
+    const menu = try tree.addChild(root, .{ .menu = .{ .label = "File" } });
+    const popup = try tree.addChild(menu, .{ .popup = .{
+        .placement = .below_start,
+        .visible = true,
+    } });
+    _ = try tree.addChild(popup, .{ .menu_item = .{ .label = "Open" } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    tree.get(button).layout_rect = .{ .x = 10, .y = 10, .w = 96, .h = 32 };
+    tree.get(button).custom_draw = true;
+    tree.get(menu).layout_rect = .{ .x = 118, .y = 10, .w = 64, .h = 32 };
+    tree.get(popup).layout_rect = .{ .x = 118, .y = 42, .w = 140, .h = 28 };
+    const item = tree.getConst(popup).first_child.?;
+    tree.get(item).layout_rect = .{ .x = 118, .y = 42, .w = 140, .h = 28 };
+
+    var dl = try generate(&tree, style.Theme.default, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 9), dl.commands.len);
+    try std.testing.expect(dl.commands[3] == .custom);
+    try std.testing.expect(dl.commands[6] == .rect);
+    try std.testing.expect(dl.commands[6].rect.bounds.x == tree.getConst(popup).layout_rect.x);
+    try std.testing.expect(dl.commands[6].rect.bounds.y == tree.getConst(popup).layout_rect.y);
 }
 
 test "toolbar and status bar emit chrome and children" {

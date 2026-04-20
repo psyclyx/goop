@@ -468,6 +468,7 @@ typedef enum {
     GOOP_DRAW_RECT = 0,
     GOOP_DRAW_TEXT = 1,
     GOOP_DRAW_CLIP = 2,
+    GOOP_DRAW_CUSTOM = 3,
 } goop_draw_command_kind_t;
 
 typedef struct {
@@ -494,11 +495,17 @@ typedef struct {
 } goop_clip_rect_t;
 
 typedef struct {
+    goop_node_handle_t handle;
+    goop_rect_t bounds;
+} goop_draw_custom_t;
+
+typedef struct {
     goop_draw_command_kind_t kind;
     union {
         goop_draw_rect_t rect;
         goop_draw_text_t text;
         goop_clip_rect_t clip;
+        goop_draw_custom_t custom;
     } data;
 } goop_draw_command_t;
 
