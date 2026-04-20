@@ -112,6 +112,18 @@ pub fn processWithClipboard(tree: *widget.Tree, events: []const event.Event, mou
     }
 }
 
+fn setFocusedWidget(tree: *widget.Tree, mouse: *MouseState, target: ?widget.NodeHandle) void {
+    if (mouse.focused) |previous_focus| {
+        if (target == null or !target.?.eql(previous_focus)) {
+            if (tree.isAlive(previous_focus)) {
+                commitOrCancelNumericEditorOnBlur(tree, previous_focus);
+            }
+        }
+    }
+    mouse.focused = target;
+    focus.syncFocusFlags(tree, mouse.focused);
+}
+
 fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard, text_ctx: ?*const layout.TextMeasureCtx) void {
     switch (ev) {
         .mouse_move => |mm| {
@@ -173,6 +185,11 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                 node.kind.scroll_area.scroll_x += ms.dx;
                 node.kind.scroll_area.scroll_y += ms.dy;
                 clampScroll(tree, t);
+            }
+        },
+        .focus => |f| {
+            if (!f.focused) {
+                setFocusedWidget(tree, mouse, null);
             }
         },
         .key => |k| {
@@ -968,19 +985,18 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
 
     const target = hittest.hitTest(tree, mouse.x, mouse.y);
     closePopupsForPress(tree, target);
-    if (mouse.focused) |previous_focus| {
-        if (target == null or !target.?.eql(previous_focus)) {
-            commitOrCancelNumericEditorOnBlur(tree, previous_focus);
+    if (target) |t| {
+        if (focus.isFocusable(tree.getConst(t).kind)) {
+            setFocusedWidget(tree, mouse, t);
+        } else {
+            setFocusedWidget(tree, mouse, null);
         }
+    } else {
+        setFocusedWidget(tree, mouse, null);
     }
     mouse.press_target = target;
     if (target) |t| {
         tree.get(t).interaction.pressed = true;
-
-        if (focus.isFocusable(tree.getConst(t).kind)) {
-            mouse.focused = t;
-            focus.syncFocusFlags(tree, mouse.focused);
-        }
 
         switch (tree.getConst(t).kind) {
             .text_input => {
@@ -2983,6 +2999,51 @@ test "click sets focus" {
 
     try std.testing.expect(mouse.focused.?.eql(btn));
     try std.testing.expect(tree.getConst(btn).interaction.focused);
+}
+
+test "click on non-focusable surface clears focus" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const btn = try tree.addChild(root, .{ .button = .{ .label = "A" } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
+
+    var mouse = MouseState{};
+
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 250, .y = 200 } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(mouse.focused == null);
+    try std.testing.expect(!tree.getConst(btn).interaction.focused);
+}
+
+test "window blur clears widget focus" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const btn = try tree.addChild(root, .{ .button = .{ .label = "A" } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
+
+    var mouse = MouseState{};
+
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+        .{ .focus = .{ .focused = false } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(mouse.focused == null);
+    try std.testing.expect(!tree.getConst(btn).interaction.focused);
 }
 
 test "tab item click selects sibling tab" {
