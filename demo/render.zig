@@ -95,6 +95,10 @@ pub const Renderer = struct {
                     self.flushText();
                     self.applyClip(c);
                 },
+                .custom => {
+                    self.flushVector();
+                    self.flushText();
+                },
             }
         }
         self.flushVector();

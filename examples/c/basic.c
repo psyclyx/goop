@@ -43,6 +43,33 @@ static bool push_text(goop_context_t *ctx, uint32_t codepoint) {
     return goop_context_push_event(ctx, &text);
 }
 
+static void summarize_draw_list(const goop_draw_list_t *draw_list) {
+    size_t rect_count = 0;
+    size_t text_count = 0;
+    size_t clip_count = 0;
+    size_t custom_count = 0;
+
+    for (size_t i = 0; i < draw_list->len; ++i) {
+        switch (draw_list->commands[i].kind) {
+            case GOOP_DRAW_RECT:
+                ++rect_count;
+                break;
+            case GOOP_DRAW_TEXT:
+                ++text_count;
+                break;
+            case GOOP_DRAW_CLIP:
+                ++clip_count;
+                break;
+            case GOOP_DRAW_CUSTOM:
+                ++custom_count;
+                break;
+        }
+    }
+
+    printf("draw summary: rect=%zu text=%zu clip=%zu custom=%zu\n",
+           rect_count, text_count, clip_count, custom_count);
+}
+
 int main(void) {
     goop_context_t *ctx = goop_context_create(&(goop_context_options_t){
         .width = 480,
@@ -134,6 +161,7 @@ int main(void) {
 
     printf("goop c example: text=%.*s clicked=%d draw_commands=%zu\n",
            (int)value.len, value.ptr, clicked ? 1 : 0, draw_list.len);
+    summarize_draw_list(&draw_list);
 
     goop_context_free_draw_list(ctx, &draw_list);
     goop_context_destroy(ctx);

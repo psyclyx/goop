@@ -47,6 +47,11 @@ state.
 - `GOOP_DRAW_RECT`
 - `GOOP_DRAW_TEXT`
 - `GOOP_DRAW_CLIP`
+- `GOOP_DRAW_CUSTOM`
+
+`GOOP_DRAW_CUSTOM` marks a widget that the embedder should render itself. It
+carries the widget handle plus the resolved `bounds`, so custom rendering can
+be inserted at the exact point `goop` emitted it in draw order.
 
 `GOOP_DRAW_TEXT` carries:
 
