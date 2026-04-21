@@ -24,6 +24,16 @@ const posix = @cImport({
     @cInclude("sys/mman.h");
 });
 
+const c_io = @cImport({
+    @cInclude("stdio.h");
+    @cInclude("stdlib.h");
+});
+
+const c_fs = @cImport({
+    @cInclude("dirent.h");
+    @cInclude("sys/stat.h");
+});
+
 const allocator = std.heap.page_allocator;
 const clipboard_mime_utf8 = "text/plain;charset=utf-8";
 const clipboard_mime_utf8_string = "UTF8_STRING";
@@ -158,6 +168,63 @@ fn ensureAtlasForDrawList(atlas: *snail.Atlas, renderer: *render.Renderer, draw_
     return changed;
 }
 
+const BrowserSortColumn = enum(u8) {
+    name = 0,
+    modified = 1,
+    kind = 2,
+    size = 3,
+};
+
+const BrowserSortDirection = enum {
+    ascending,
+    descending,
+};
+
+const BrowserEntryKind = enum {
+    directory,
+    file,
+    symlink,
+    other,
+};
+
+const BrowserPlace = struct {
+    label: []const u8,
+    path: []u8,
+};
+
+const BrowserEntry = struct {
+    name: []u8,
+    path: []u8,
+    kind: BrowserEntryKind,
+    size_bytes: u64,
+    modified_unix: i64,
+    modified_buf: [24]u8 = [_]u8{0} ** 24,
+    modified_len: u8 = 0,
+    size_buf: [24]u8 = [_]u8{0} ** 24,
+    size_len: u8 = 0,
+
+    fn modifiedText(self: *const BrowserEntry) []const u8 {
+        return self.modified_buf[0..self.modified_len];
+    }
+
+    fn sizeText(self: *const BrowserEntry) []const u8 {
+        return self.size_buf[0..self.size_len];
+    }
+
+    fn typeLabel(self: *const BrowserEntry) []const u8 {
+        return switch (self.kind) {
+            .directory => "Directory",
+            .symlink => "Symbolic link",
+            .other => "Special",
+            .file => fileTypeLabel(self.name),
+        };
+    }
+
+    fn isDirectory(self: *const BrowserEntry) bool {
+        return self.kind == .directory;
+    }
+};
+
 const State = struct {
     running: bool = true,
     configured: bool = false,
@@ -203,48 +270,35 @@ const State = struct {
     // goop
     ctx: ?*goop.Context = null,
 
-    // Widget handles for querying state
-    btn_a: ?goop.NodeHandle = null,
-    btn_b: ?goop.NodeHandle = null,
-    btn_c: ?goop.NodeHandle = null,
-    checkbox: ?goop.NodeHandle = null,
-    radio_a: ?goop.NodeHandle = null,
-    radio_b: ?goop.NodeHandle = null,
-    radio_c: ?goop.NodeHandle = null,
-    tree_parent: ?goop.NodeHandle = null,
-    tree_child_a: ?goop.NodeHandle = null,
-    tree_child_b: ?goop.NodeHandle = null,
-    list_box: ?goop.NodeHandle = null,
-    selectable_scene: ?goop.NodeHandle = null,
-    selectable_camera: ?goop.NodeHandle = null,
-    selectable_light: ?goop.NodeHandle = null,
-    grid_selector: ?goop.NodeHandle = null,
-    grid_item_a: ?goop.NodeHandle = null,
-    grid_item_b: ?goop.NodeHandle = null,
-    grid_item_c: ?goop.NodeHandle = null,
-    grid_item_d: ?goop.NodeHandle = null,
+    // File browser model
+    current_dir: []u8 = &.{},
+    history: std.ArrayListUnmanaged([]u8) = .empty,
+    history_index: usize = 0,
+    places: std.ArrayListUnmanaged(BrowserPlace) = .empty,
+    entries: std.ArrayListUnmanaged(BrowserEntry) = .empty,
+    selected_path: ?[]u8 = null,
+    last_click_path: ?[]u8 = null,
+    last_click_ns: u64 = 0,
+    sort_column: BrowserSortColumn = .name,
+    sort_direction: BrowserSortDirection = .ascending,
+    nav_ratio: f32 = 0.22,
+    detail_ratio: f32 = 0.72,
+    table_column_weights: [4]f32 = .{ 0.50, 0.22, 0.16, 0.12 },
+
+    // Dynamic UI state
+    ui_root: ?goop.NodeHandle = null,
+    btn_back: ?goop.NodeHandle = null,
+    btn_up: ?goop.NodeHandle = null,
+    btn_home: ?goop.NodeHandle = null,
+    btn_refresh: ?goop.NodeHandle = null,
+    nav_splitter: ?goop.NodeHandle = null,
+    detail_splitter: ?goop.NodeHandle = null,
     asset_table: ?goop.NodeHandle = null,
-    asset_row_a: ?goop.NodeHandle = null,
-    asset_row_b: ?goop.NodeHandle = null,
-    asset_row_c: ?goop.NodeHandle = null,
-    dropdown: ?goop.NodeHandle = null,
-    menu_file: ?goop.NodeHandle = null,
-    menu_edit: ?goop.NodeHandle = null,
-    menu_open_recent: ?goop.NodeHandle = null,
-    menu_recent_a: ?goop.NodeHandle = null,
-    menu_recent_b: ?goop.NodeHandle = null,
-    menu_quit: ?goop.NodeHandle = null,
-    menu_copy: ?goop.NodeHandle = null,
-    menu_paste: ?goop.NodeHandle = null,
-    drag_value: ?goop.NodeHandle = null,
-    spinbox: ?goop.NodeHandle = null,
-    tab_scene: ?goop.NodeHandle = null,
-    tab_render: ?goop.NodeHandle = null,
-    splitter: ?goop.NodeHandle = null,
-    context_popup: ?goop.NodeHandle = null,
-    context_action_a: ?goop.NodeHandle = null,
-    context_action_b: ?goop.NodeHandle = null,
-    click_count: u32 = 0,
+    place_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
+    breadcrumb_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
+    breadcrumb_paths: std.ArrayListUnmanaged([]u8) = .empty,
+    row_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
+    ui_strings: std.ArrayListUnmanaged([]u8) = .empty,
 
     // Last known mouse position from Wayland pointer events
     mouse_x: f32 = 0,
@@ -1024,248 +1078,558 @@ fn deinitEgl(state: *State) void {
 
 // ── Widget tree ──
 
-fn buildWidgetTree(state: *State) !void {
-    const ctx = state.ctx.?;
+fn freeOptionalOwnedSlice(buf: *?[]u8) void {
+    if (buf.*) |slice| allocator.free(slice);
+    buf.* = null;
+}
 
-    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+fn clearUiStrings(state: *State) void {
+    for (state.ui_strings.items) |text| allocator.free(text);
+    state.ui_strings.clearRetainingCapacity();
+}
 
-    const menu_bar = try ctx.tree.addChild(root, .{ .menu_bar = .{} });
-    state.menu_file = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "File" } });
-    const file_popup = try ctx.tree.addChild(state.menu_file.?, .{ .popup = .{
-        .placement = .below_start,
-        .visible = false,
-    } });
-    state.menu_open_recent = try ctx.tree.addChild(file_popup, .{ .menu_item = .{ .label = "Open Recent" } });
-    const recent_popup = try ctx.tree.addChild(state.menu_open_recent.?, .{ .popup = .{
-        .placement = .right_start,
-        .visible = false,
-    } });
-    state.menu_recent_a = try ctx.tree.addChild(recent_popup, .{ .menu_item = .{ .label = "Documents" } });
-    state.menu_recent_b = try ctx.tree.addChild(recent_popup, .{ .menu_item = .{ .label = "Downloads" } });
-    state.menu_quit = try ctx.tree.addChild(file_popup, .{ .menu_item = .{ .label = "Exit" } });
+fn clearBreadcrumbPaths(state: *State) void {
+    for (state.breadcrumb_paths.items) |path| allocator.free(path);
+    state.breadcrumb_paths.clearRetainingCapacity();
+}
 
-    state.menu_edit = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "View" } });
-    const edit_popup = try ctx.tree.addChild(state.menu_edit.?, .{ .popup = .{
-        .placement = .below_start,
-        .visible = false,
-    } });
-    state.menu_copy = try ctx.tree.addChild(edit_popup, .{ .menu_item = .{ .label = "Large Icons" } });
-    state.menu_paste = try ctx.tree.addChild(edit_popup, .{ .menu_item = .{ .label = "Details" } });
+fn clearPlaces(state: *State) void {
+    for (state.places.items) |place| allocator.free(place.path);
+    state.places.clearRetainingCapacity();
+}
 
-    const toolbar = try ctx.tree.addChild(root, .{ .toolbar = .{} });
-    ctx.tree.get(toolbar).style_override = .{
-        .bg = .{ .r = 232, .g = 236, .b = 243, .a = 255 },
-        .border = .{ .r = 203, .g = 210, .b = 223, .a = 255 },
-        .padding = goop.style.Edges.symmetric(10, 8),
-        .border_radius = 0,
-    };
-    state.btn_a = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Back" } });
-    state.btn_b = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Up" } });
-    state.btn_c = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Refresh" } });
-    _ = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "New Folder" } });
-    const address_input = try ctx.tree.addChild(toolbar, .{ .text_input = .{} });
-    ctx.tree.get(address_input).kind.text_input.insertSlice("This PC\\Workspace\\goop");
-    _ = try ctx.tree.addChild(toolbar, .{ .text_input = .{ .placeholder = "Search goop" } });
-
-    state.splitter = try ctx.tree.addChild(root, .{ .splitter = .{
-        .direction = .row,
-        .ratio = 0.24,
-        .min_first = 190,
-        .min_second = 440,
-        .thickness = 8,
-    } });
-
-    const nav_panel = try ctx.tree.addChild(state.splitter.?, .{ .container = .{ .direction = .column } });
-    ctx.tree.get(nav_panel).style_override = .{
-        .bg = .{ .r = 247, .g = 249, .b = 252, .a = 255 },
-        .border = .{ .r = 214, .g = 220, .b = 230, .a = 255 },
-        .padding = goop.style.Edges.symmetric(10, 10),
-        .border_radius = 0,
-    };
-    _ = try ctx.tree.addChild(nav_panel, .{ .text = .{ .content = "Folders" } });
-    state.tree_parent = try ctx.tree.addChild(nav_panel, .{ .tree_item = .{
-        .label = "Quick access",
-        .group = 10,
-        .selected = true,
-        .editable = true,
-        .rename_trigger = .selected_click,
-    } });
-    state.tree_child_a = try ctx.tree.addChild(state.tree_parent.?, .{ .tree_item = .{
-        .label = "Workspace",
-        .group = 10,
-        .editable = true,
-        .rename_trigger = .selected_click,
-    } });
-    state.tree_child_b = try ctx.tree.addChild(state.tree_parent.?, .{ .tree_item = .{
-        .label = "Downloads",
-        .group = 10,
-        .editable = true,
-        .rename_trigger = .selected_click,
-    } });
-    const this_pc = try ctx.tree.addChild(nav_panel, .{ .tree_item = .{
-        .label = "This PC",
-        .group = 10,
-    } });
-    _ = try ctx.tree.addChild(this_pc, .{ .tree_item = .{ .label = "Desktop", .group = 10 } });
-    _ = try ctx.tree.addChild(this_pc, .{ .tree_item = .{ .label = "Documents", .group = 10 } });
-    _ = try ctx.tree.addChild(this_pc, .{ .tree_item = .{ .label = "Pictures", .group = 10 } });
-    _ = try ctx.tree.addChild(this_pc, .{ .tree_item = .{ .label = "Videos", .group = 10 } });
-
-    const pinned = try ctx.tree.addChild(nav_panel, .{ .tree_item = .{
-        .label = "Pinned",
-        .group = 10,
-    } });
-    _ = try ctx.tree.addChild(pinned, .{ .tree_item = .{ .label = "goop", .group = 10 } });
-    _ = try ctx.tree.addChild(pinned, .{ .tree_item = .{ .label = "snail", .group = 10 } });
-    _ = try ctx.tree.addChild(pinned, .{ .tree_item = .{ .label = "notes", .group = 10 } });
-
-    const content_panel = try ctx.tree.addChild(state.splitter.?, .{ .container = .{ .direction = .column } });
-    ctx.tree.get(content_panel).style_override = .{
-        .bg = .{ .r = 250, .g = 252, .b = 255, .a = 255 },
-        .border = .{ .r = 214, .g = 220, .b = 230, .a = 255 },
-        .padding = goop.style.Edges.symmetric(10, 10),
-        .border_radius = 0,
-    };
-
-    const breadcrumb_bar = try ctx.tree.addChild(content_panel, .{ .toolbar = .{} });
-    ctx.tree.get(breadcrumb_bar).style_override = .{
-        .bg = .{ .r = 255, .g = 255, .b = 255, .a = 255 },
-        .border = .{ .r = 214, .g = 220, .b = 230, .a = 255 },
-        .padding = goop.style.Edges.symmetric(10, 7),
-        .border_radius = 4,
-    };
-    _ = try ctx.tree.addChild(breadcrumb_bar, .{ .text = .{ .content = "This PC" } });
-    _ = try ctx.tree.addChild(breadcrumb_bar, .{ .text = .{ .content = ">" } });
-    _ = try ctx.tree.addChild(breadcrumb_bar, .{ .text = .{ .content = "Workspace" } });
-    _ = try ctx.tree.addChild(breadcrumb_bar, .{ .text = .{ .content = ">" } });
-    _ = try ctx.tree.addChild(breadcrumb_bar, .{ .text = .{ .content = "goop" } });
-
-    state.dropdown = try ctx.tree.addChild(content_panel, .{ .dropdown = .{ .placeholder = "Details view" } });
-    const dropdown_popup = try ctx.tree.addChild(state.dropdown.?, .{ .popup = .{ .placement = .below_start } });
-    _ = try ctx.tree.addChild(dropdown_popup, .{ .menu_item = .{ .label = "Details" } });
-    _ = try ctx.tree.addChild(dropdown_popup, .{ .menu_item = .{ .label = "Tiles" } });
-    _ = try ctx.tree.addChild(dropdown_popup, .{ .menu_item = .{ .label = "Content" } });
-
-    const tab_bar = try ctx.tree.addChild(content_panel, .{ .tab_bar = .{} });
-    state.tab_scene = try ctx.tree.addChild(tab_bar, .{ .tab_item = .{
-        .label = "Details",
-        .selected = true,
-    } });
-    _ = try ctx.tree.addChild(state.tab_scene.?, .{ .text = .{ .content = "Columns: Name, Date modified, Type, Size." } });
-    state.tab_render = try ctx.tree.addChild(tab_bar, .{ .tab_item = .{
-        .label = "Preview",
-    } });
-    _ = try ctx.tree.addChild(state.tab_render.?, .{ .text = .{ .content = "Preview pane ready for selected items." } });
-
-    state.asset_table = try ctx.tree.addChild(content_panel, .{ .table = .{
-        .columns = 4,
-        .resizable = true,
-        .sortable = true,
-        .selection_mode = .multiple,
-        .min_column_width = 96,
-    } });
-    {
-        const table = &ctx.tree.get(state.asset_table.?).kind.table;
-        table.column_weights[0] = 0.48;
-        table.column_weights[1] = 0.22;
-        table.column_weights[2] = 0.18;
-        table.column_weights[3] = 0.12;
+fn clearEntries(state: *State) void {
+    for (state.entries.items) |entry| {
+        allocator.free(entry.name);
+        allocator.free(entry.path);
     }
-    const asset_header = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{ .header = true } });
-    const asset_header_name = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
-    const asset_header_date = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
-    const asset_header_type = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
-    const asset_header_size = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
-    _ = try ctx.tree.addChild(asset_header_name, .{ .text = .{ .content = "Name" } });
-    _ = try ctx.tree.addChild(asset_header_date, .{ .text = .{ .content = "Date modified" } });
-    _ = try ctx.tree.addChild(asset_header_type, .{ .text = .{ .content = "Type" } });
-    _ = try ctx.tree.addChild(asset_header_size, .{ .text = .{ .content = "Size" } });
-
-    state.asset_row_a = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{ .selected = true } });
-    const asset_row_a_name = try ctx.tree.addChild(state.asset_row_a.?, .{ .table_cell = .{} });
-    const asset_row_a_date = try ctx.tree.addChild(state.asset_row_a.?, .{ .table_cell = .{} });
-    const asset_row_a_type = try ctx.tree.addChild(state.asset_row_a.?, .{ .table_cell = .{} });
-    const asset_row_a_size = try ctx.tree.addChild(state.asset_row_a.?, .{ .table_cell = .{} });
-    _ = try ctx.tree.addChild(asset_row_a_name, .{ .text = .{ .content = "README.md" } });
-    _ = try ctx.tree.addChild(asset_row_a_date, .{ .text = .{ .content = "2026-04-21  10:14" } });
-    _ = try ctx.tree.addChild(asset_row_a_type, .{ .text = .{ .content = "Markdown" } });
-    _ = try ctx.tree.addChild(asset_row_a_size, .{ .text = .{ .content = "14 KB" } });
-
-    state.asset_row_b = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{} });
-    const asset_row_b_name = try ctx.tree.addChild(state.asset_row_b.?, .{ .table_cell = .{} });
-    const asset_row_b_date = try ctx.tree.addChild(state.asset_row_b.?, .{ .table_cell = .{} });
-    const asset_row_b_type = try ctx.tree.addChild(state.asset_row_b.?, .{ .table_cell = .{} });
-    const asset_row_b_size = try ctx.tree.addChild(state.asset_row_b.?, .{ .table_cell = .{} });
-    _ = try ctx.tree.addChild(asset_row_b_name, .{ .text = .{ .content = "src" } });
-    _ = try ctx.tree.addChild(asset_row_b_date, .{ .text = .{ .content = "2026-04-21  09:48" } });
-    _ = try ctx.tree.addChild(asset_row_b_type, .{ .text = .{ .content = "File folder" } });
-    _ = try ctx.tree.addChild(asset_row_b_size, .{ .text = .{ .content = "" } });
-
-    state.asset_row_c = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{} });
-    const asset_row_c_name = try ctx.tree.addChild(state.asset_row_c.?, .{ .table_cell = .{} });
-    const asset_row_c_date = try ctx.tree.addChild(state.asset_row_c.?, .{ .table_cell = .{} });
-    const asset_row_c_type = try ctx.tree.addChild(state.asset_row_c.?, .{ .table_cell = .{} });
-    const asset_row_c_size = try ctx.tree.addChild(state.asset_row_c.?, .{ .table_cell = .{} });
-    _ = try ctx.tree.addChild(asset_row_c_name, .{ .text = .{ .content = "zig-out" } });
-    _ = try ctx.tree.addChild(asset_row_c_date, .{ .text = .{ .content = "2026-04-21  09:04" } });
-    _ = try ctx.tree.addChild(asset_row_c_type, .{ .text = .{ .content = "File folder" } });
-    _ = try ctx.tree.addChild(asset_row_c_size, .{ .text = .{ .content = "" } });
-
-    const extra_rows = [_]struct { name: []const u8, date: []const u8, kind: []const u8, size: []const u8 }{
-        .{ .name = "build.zig", .date = "2026-04-21  08:51", .kind = "Zig Source", .size = "5 KB" },
-        .{ .name = "build.zig.zon", .date = "2026-04-21  08:51", .kind = "ZON File", .size = "1 KB" },
-        .{ .name = "default.nix", .date = "2026-04-20  21:12", .kind = "Nix Expression", .size = "2 KB" },
-        .{ .name = "npins", .date = "2026-04-20  21:10", .kind = "File folder", .size = "" },
-        .{ .name = "examples", .date = "2026-04-20  20:56", .kind = "File folder", .size = "" },
-        .{ .name = "vendor", .date = "2026-04-20  20:56", .kind = "File folder", .size = "" },
-        .{ .name = "notes.txt", .date = "2026-04-19  18:33", .kind = "Text Document", .size = "3 KB" },
-        .{ .name = "render-cache-017.bin", .date = "2026-04-18  16:02", .kind = "Binary Cache", .size = "18.4 MB" },
-    };
-    for (extra_rows) |row| try addFileTableRow(ctx, state.asset_table.?, row.name, row.date, row.kind, row.size, false);
-
-    const status_bar = try ctx.tree.addChild(root, .{ .status_bar = .{} });
-    ctx.tree.get(status_bar).style_override = .{
-        .bg = .{ .r = 232, .g = 236, .b = 243, .a = 255 },
-        .border = .{ .r = 203, .g = 210, .b = 223, .a = 255 },
-        .padding = goop.style.Edges.symmetric(10, 7),
-        .border_radius = 0,
-    };
-    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "11 items" } });
-    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "1 selected" } });
-    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "Sync status: Up to date" } });
-
-    state.context_popup = try ctx.tree.addRoot(.{ .popup = .{ .placement = .absolute, .visible = false } });
-    state.context_action_a = try ctx.tree.addChild(state.context_popup.?, .{ .menu_item = .{ .label = "Open" } });
-    state.context_action_b = try ctx.tree.addChild(state.context_popup.?, .{ .menu_item = .{ .label = "Properties" } });
+    state.entries.clearRetainingCapacity();
 }
 
-fn addFileTableRow(
-    ctx: *goop.Context,
-    table: goop.NodeHandle,
-    name: []const u8,
-    date: []const u8,
-    kind: []const u8,
-    size: []const u8,
-    selected: bool,
-) !void {
-    const row = try ctx.tree.addChild(table, .{ .table_row = .{ .selected = selected } });
-    try addFileTableCell(ctx, row, name);
-    try addFileTableCell(ctx, row, date);
-    try addFileTableCell(ctx, row, kind);
-    try addFileTableCell(ctx, row, size);
+fn clearUiTracking(state: *State) void {
+    state.ui_root = null;
+    state.btn_back = null;
+    state.btn_up = null;
+    state.btn_home = null;
+    state.btn_refresh = null;
+    state.nav_splitter = null;
+    state.detail_splitter = null;
+    state.asset_table = null;
+    state.place_handles.clearRetainingCapacity();
+    state.breadcrumb_handles.clearRetainingCapacity();
+    state.row_handles.clearRetainingCapacity();
+    clearUiStrings(state);
+    clearBreadcrumbPaths(state);
 }
 
-fn addFileTableCell(ctx: *goop.Context, row: goop.NodeHandle, text: []const u8) !void {
+fn deinitBrowserState(state: *State) void {
+    clearUiTracking(state);
+    clearEntries(state);
+    clearPlaces(state);
+    for (state.history.items) |path| allocator.free(path);
+    state.history.deinit(allocator);
+    state.places.deinit(allocator);
+    state.entries.deinit(allocator);
+    state.place_handles.deinit(allocator);
+    state.breadcrumb_handles.deinit(allocator);
+    state.breadcrumb_paths.deinit(allocator);
+    state.row_handles.deinit(allocator);
+    state.ui_strings.deinit(allocator);
+    if (state.current_dir.len > 0) allocator.free(state.current_dir);
+    state.current_dir = &.{};
+    freeOptionalOwnedSlice(&state.selected_path);
+    freeOptionalOwnedSlice(&state.last_click_path);
+}
+
+fn allocUiString(state: *State, comptime fmt: []const u8, args: anytype) ![]const u8 {
+    const text = try std.fmt.allocPrint(allocator, fmt, args);
+    try state.ui_strings.append(allocator, text);
+    return text;
+}
+
+fn currentWorkingDirectoryAlloc(alloc: std.mem.Allocator) ![]u8 {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd = posix.getcwd(&buf, buf.len) orelse return error.GetCwdFailed;
+    return alloc.dupe(u8, std.mem.span(cwd));
+}
+
+fn normalizeDirectoryPath(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
+    if (path.len == 0) return alloc.dupe(u8, "/");
+    var end = path.len;
+    while (end > 1 and path[end - 1] == '/') end -= 1;
+    return alloc.dupe(u8, path[0..end]);
+}
+
+fn ensureDirectoryOpenable(path: []const u8) !void {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+    const dir = c_fs.opendir(path_z.ptr) orelse return error.NotDir;
+    defer _ = c_fs.closedir(dir);
+}
+
+fn joinPath(alloc: std.mem.Allocator, dir_path: []const u8, name: []const u8) ![]u8 {
+    if (std.mem.eql(u8, dir_path, "/")) return std.fmt.allocPrint(alloc, "/{s}", .{name});
+    return std.fmt.allocPrint(alloc, "{s}/{s}", .{ dir_path, name });
+}
+
+fn parentPathAlloc(alloc: std.mem.Allocator, path: []const u8) !?[]u8 {
+    if (path.len == 0 or std.mem.eql(u8, path, "/")) return null;
+
+    var end = path.len;
+    while (end > 1 and path[end - 1] == '/') end -= 1;
+    const trimmed = path[0..end];
+    const slash_index = std.mem.lastIndexOfScalar(u8, trimmed, '/') orelse {
+        return try alloc.dupe(u8, "/");
+    };
+    if (slash_index == 0) return try alloc.dupe(u8, "/");
+    return try alloc.dupe(u8, trimmed[0..slash_index]);
+}
+
+fn fileTypeLabel(name: []const u8) []const u8 {
+    const ext = std.fs.path.extension(name);
+    if (std.ascii.eqlIgnoreCase(ext, ".zig")) return "Zig source";
+    if (std.ascii.eqlIgnoreCase(ext, ".md")) return "Markdown";
+    if (std.ascii.eqlIgnoreCase(ext, ".txt")) return "Text file";
+    if (std.ascii.eqlIgnoreCase(ext, ".json")) return "JSON";
+    if (std.ascii.eqlIgnoreCase(ext, ".zon")) return "ZON";
+    if (std.ascii.eqlIgnoreCase(ext, ".nix")) return "Nix expression";
+    if (std.ascii.eqlIgnoreCase(ext, ".toml")) return "TOML";
+    if (std.ascii.eqlIgnoreCase(ext, ".yaml") or std.ascii.eqlIgnoreCase(ext, ".yml")) return "YAML";
+    if (std.ascii.eqlIgnoreCase(ext, ".png")) return "PNG image";
+    if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg")) return "JPEG image";
+    if (std.ascii.eqlIgnoreCase(ext, ".svg")) return "SVG";
+    if (std.ascii.eqlIgnoreCase(ext, ".pdf")) return "PDF";
+    if (std.ascii.eqlIgnoreCase(ext, ".so")) return "Shared library";
+    if (std.ascii.eqlIgnoreCase(ext, ".a")) return "Static library";
+    if (std.ascii.eqlIgnoreCase(ext, ".o")) return "Object file";
+    return "File";
+}
+
+fn browserEntryKind(mode: c_fs.mode_t) BrowserEntryKind {
+    const masked = mode & c_fs.S_IFMT;
+    if (masked == c_fs.S_IFDIR) return .directory;
+    if (masked == c_fs.S_IFREG) return .file;
+    if (masked == c_fs.S_IFLNK) return .symlink;
+    return .other;
+}
+
+fn formatTimestampText(buffer: []u8, unix_seconds: i64) []const u8 {
+    if (unix_seconds <= 0) return "";
+
+    var t: posix.time_t = @intCast(unix_seconds);
+    var tm_buf: posix.struct_tm = undefined;
+    if (posix.localtime_r(&t, &tm_buf) == null) return "";
+
+    const written = posix.strftime(buffer.ptr, buffer.len, "%Y-%m-%d %H:%M", &tm_buf);
+    return buffer[0..written];
+}
+
+fn formatSizeText(buffer: []u8, kind: BrowserEntryKind, size_bytes: u64) []const u8 {
+    if (kind == .directory) return "";
+    if (size_bytes < 1024) return std.fmt.bufPrint(buffer, "{} B", .{size_bytes}) catch "";
+
+    const units = [_][]const u8{ "KB", "MB", "GB", "TB" };
+    var scaled = @as(f64, @floatFromInt(size_bytes));
+    var unit_index: usize = 0;
+    while (scaled >= 1024 and unit_index + 1 < units.len) : (unit_index += 1) {
+        scaled /= 1024;
+    }
+    return std.fmt.bufPrint(buffer, "{d:.1} {s}", .{ scaled, units[unit_index] }) catch "";
+}
+
+fn appendPlaceIfDirectory(state: *State, label: []const u8, path: []const u8) !void {
+    const normalized = try normalizeDirectoryPath(allocator, path);
+    errdefer allocator.free(normalized);
+    ensureDirectoryOpenable(normalized) catch return;
+
+    for (state.places.items) |existing| {
+        if (std.mem.eql(u8, existing.path, normalized)) return;
+    }
+
+    try state.places.append(allocator, .{ .label = label, .path = normalized });
+}
+
+fn refreshPlaces(state: *State) !void {
+    clearPlaces(state);
+
+    if (c_io.getenv("HOME")) |home_raw| {
+        const home = std.mem.span(@as([*:0]const u8, @ptrCast(home_raw)));
+        try appendPlaceIfDirectory(state, "Home", home);
+
+        const desktop = try std.fmt.allocPrint(allocator, "{s}/Desktop", .{home});
+        defer allocator.free(desktop);
+        try appendPlaceIfDirectory(state, "Desktop", desktop);
+
+        const documents = try std.fmt.allocPrint(allocator, "{s}/Documents", .{home});
+        defer allocator.free(documents);
+        try appendPlaceIfDirectory(state, "Documents", documents);
+
+        const downloads = try std.fmt.allocPrint(allocator, "{s}/Downloads", .{home});
+        defer allocator.free(downloads);
+        try appendPlaceIfDirectory(state, "Downloads", downloads);
+
+        const projects = try std.fmt.allocPrint(allocator, "{s}/projects", .{home});
+        defer allocator.free(projects);
+        try appendPlaceIfDirectory(state, "Projects", projects);
+    }
+
+    if (state.current_dir.len > 0) try appendPlaceIfDirectory(state, "Workspace", state.current_dir);
+    try appendPlaceIfDirectory(state, "Temp", "/tmp");
+    try appendPlaceIfDirectory(state, "Root", "/");
+}
+
+fn sortFieldLess(state: *const State, a: BrowserEntry, b: BrowserEntry) bool {
+    return switch (state.sort_column) {
+        .name => switch (state.sort_direction) {
+            .ascending => std.ascii.lessThanIgnoreCase(a.name, b.name),
+            .descending => std.ascii.lessThanIgnoreCase(b.name, a.name),
+        },
+        .modified => switch (state.sort_direction) {
+            .ascending => a.modified_unix < b.modified_unix,
+            .descending => a.modified_unix > b.modified_unix,
+        },
+        .kind => switch (state.sort_direction) {
+            .ascending => std.ascii.lessThanIgnoreCase(a.typeLabel(), b.typeLabel()),
+            .descending => std.ascii.lessThanIgnoreCase(b.typeLabel(), a.typeLabel()),
+        },
+        .size => switch (state.sort_direction) {
+            .ascending => a.size_bytes < b.size_bytes,
+            .descending => a.size_bytes > b.size_bytes,
+        },
+    };
+}
+
+fn browserEntryLessThan(state: *const State, a: BrowserEntry, b: BrowserEntry) bool {
+    if (a.isDirectory() != b.isDirectory()) return a.isDirectory();
+    if (sortFieldLess(state, a, b)) return true;
+    if (sortFieldLess(state, b, a)) return false;
+    return std.ascii.lessThanIgnoreCase(a.name, b.name);
+}
+
+fn sortDirectoryEntries(state: *State) void {
+    std.mem.sort(BrowserEntry, state.entries.items, state, browserEntryLessThan);
+}
+
+fn setSelectedPath(state: *State, path: ?[]const u8) !void {
+    freeOptionalOwnedSlice(&state.selected_path);
+    if (path) |value| state.selected_path = try allocator.dupe(u8, value);
+}
+
+fn setLastClickPath(state: *State, path: ?[]const u8) !void {
+    freeOptionalOwnedSlice(&state.last_click_path);
+    if (path) |value| state.last_click_path = try allocator.dupe(u8, value);
+}
+
+fn loadDirectoryEntries(state: *State) !void {
+    clearEntries(state);
+
+    const dir_path_z = try allocator.dupeZ(u8, state.current_dir);
+    defer allocator.free(dir_path_z);
+    const dir = c_fs.opendir(dir_path_z.ptr) orelse return error.OpenDirFailed;
+    defer _ = c_fs.closedir(dir);
+
+    while (true) {
+        const entry_ptr = c_fs.readdir(dir);
+        if (entry_ptr == null) break;
+
+        const name = std.mem.span(@as([*:0]const u8, @ptrCast(&entry_ptr.*.d_name)));
+        if (name.len == 0) continue;
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+
+        const full_path = try joinPath(allocator, state.current_dir, name);
+        errdefer allocator.free(full_path);
+
+        const full_path_z = try allocator.dupeZ(u8, full_path);
+        defer allocator.free(full_path_z);
+
+        var stat_buf: c_fs.struct_stat = undefined;
+        if (c_fs.lstat(full_path_z.ptr, &stat_buf) != 0) {
+            allocator.free(full_path);
+            continue;
+        }
+
+        const entry_name = try allocator.dupe(u8, name);
+        errdefer allocator.free(entry_name);
+
+        var entry = BrowserEntry{
+            .name = entry_name,
+            .path = full_path,
+            .kind = browserEntryKind(stat_buf.st_mode),
+            .size_bytes = @intCast(@max(stat_buf.st_size, 0)),
+            .modified_unix = @intCast(stat_buf.st_mtim.tv_sec),
+        };
+        const modified = formatTimestampText(entry.modified_buf[0..], entry.modified_unix);
+        entry.modified_len = @intCast(modified.len);
+        const size = formatSizeText(entry.size_buf[0..], entry.kind, entry.size_bytes);
+        entry.size_len = @intCast(size.len);
+        try state.entries.append(allocator, entry);
+    }
+
+    sortDirectoryEntries(state);
+
+    if (state.selected_path) |selected_path| {
+        var found = false;
+        for (state.entries.items) |entry| {
+            if (std.mem.eql(u8, entry.path, selected_path)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) freeOptionalOwnedSlice(&state.selected_path);
+    }
+}
+
+fn selectedEntryIndex(state: *const State) ?usize {
+    const selected_path = state.selected_path orelse return null;
+    for (state.entries.items, 0..) |entry, index| {
+        if (std.mem.eql(u8, entry.path, selected_path)) return index;
+    }
+    return null;
+}
+
+fn selectedEntry(state: *const State) ?*const BrowserEntry {
+    const index = selectedEntryIndex(state) orelse return null;
+    return &state.entries.items[index];
+}
+
+fn setCurrentDirectory(state: *State, path: []const u8, push_history: bool) !bool {
+    const normalized = try normalizeDirectoryPath(allocator, path);
+    errdefer allocator.free(normalized);
+    try ensureDirectoryOpenable(normalized);
+
+    if (state.current_dir.len > 0 and std.mem.eql(u8, state.current_dir, normalized)) {
+        allocator.free(normalized);
+        try loadDirectoryEntries(state);
+        return true;
+    }
+
+    if (push_history) {
+        while (state.history.items.len > state.history_index + 1) allocator.free(state.history.pop().?);
+        try state.history.append(allocator, try allocator.dupe(u8, normalized));
+        state.history_index = state.history.items.len - 1;
+    }
+
+    if (state.current_dir.len > 0) allocator.free(state.current_dir);
+    state.current_dir = normalized;
+    freeOptionalOwnedSlice(&state.selected_path);
+    freeOptionalOwnedSlice(&state.last_click_path);
+    state.last_click_ns = 0;
+    try loadDirectoryEntries(state);
+    return true;
+}
+
+fn navigateBack(state: *State) !bool {
+    if (state.history_index == 0 or state.history.items.len == 0) return false;
+    state.history_index -= 1;
+    return setCurrentDirectory(state, state.history.items[state.history_index], false);
+}
+
+fn navigateUp(state: *State) !bool {
+    const parent = try parentPathAlloc(allocator, state.current_dir);
+    defer if (parent) |path| allocator.free(path);
+    const parent_path = parent orelse return false;
+    return setCurrentDirectory(state, parent_path, true);
+}
+
+fn refreshCurrentDirectory(state: *State) !void {
+    freeOptionalOwnedSlice(&state.last_click_path);
+    state.last_click_ns = 0;
+    try loadDirectoryEntries(state);
+}
+
+fn initializeBrowserState(state: *State) !void {
+    const cwd = try currentWorkingDirectoryAlloc(allocator);
+    defer allocator.free(cwd);
+    _ = try setCurrentDirectory(state, cwd, true);
+    try refreshPlaces(state);
+}
+
+fn addTextCell(ctx: *goop.Context, row: goop.NodeHandle, text: []const u8) !void {
     const cell = try ctx.tree.addChild(row, .{ .table_cell = .{} });
     _ = try ctx.tree.addChild(cell, .{ .text = .{ .content = text } });
 }
 
-// ── Font loading ──
+fn buildWidgetTree(state: *State) !void {
+    const ctx = state.ctx orelse return error.NoContext;
 
-const c_io = @cImport({
-    @cInclude("stdio.h");
-    @cInclude("stdlib.h");
-});
+    if (state.ui_root) |root| {
+        if (ctx.isAlive(root)) try ctx.removeWidget(root);
+    }
+    clearUiTracking(state);
+
+    state.ui_root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    const root = state.ui_root.?;
+
+    const header = try ctx.tree.addChild(root, .{ .toolbar = .{} });
+    ctx.tree.get(header).style_override = .{
+        .bg = .{ .r = 233, .g = 236, .b = 240, .a = 255 },
+        .border = .{ .r = 206, .g = 212, .b = 220, .a = 255 },
+        .padding = goop.style.Edges.symmetric(10, 8),
+        .border_radius = 0,
+    };
+    state.btn_back = try ctx.tree.addChild(header, .{ .button = .{ .label = "Back" } });
+    state.btn_up = try ctx.tree.addChild(header, .{ .button = .{ .label = "Up" } });
+    state.btn_home = try ctx.tree.addChild(header, .{ .button = .{ .label = "Home" } });
+    state.btn_refresh = try ctx.tree.addChild(header, .{ .button = .{ .label = "Refresh" } });
+    _ = try ctx.tree.addChild(header, .{ .text = .{ .content = try allocUiString(state, "Browsing {s}", .{state.current_dir}) } });
+
+    state.nav_splitter = try ctx.tree.addChild(root, .{ .splitter = .{
+        .direction = .row,
+        .ratio = state.nav_ratio,
+        .min_first = 180,
+        .min_second = 420,
+        .thickness = 8,
+    } });
+
+    const sidebar = try ctx.tree.addChild(state.nav_splitter.?, .{ .container = .{ .direction = .column } });
+    ctx.tree.get(sidebar).style_override = .{
+        .bg = .{ .r = 240, .g = 243, .b = 247, .a = 255 },
+        .border = .{ .r = 212, .g = 218, .b = 226, .a = 255 },
+        .padding = goop.style.Edges.symmetric(10, 10),
+        .border_radius = 0,
+    };
+    _ = try ctx.tree.addChild(sidebar, .{ .text = .{ .content = "Places" } });
+    const places_list = try ctx.tree.addChild(sidebar, .{ .list_box = .{ .selection_mode = .single } });
+    for (state.places.items) |place| {
+        const handle = try ctx.tree.addChild(places_list, .{ .selectable = .{
+            .label = place.label,
+            .selected = std.mem.eql(u8, place.path, state.current_dir),
+        } });
+        try state.place_handles.append(allocator, handle);
+    }
+
+    const content = try ctx.tree.addChild(state.nav_splitter.?, .{ .container = .{ .direction = .column } });
+    ctx.tree.get(content).style_override = .{
+        .bg = .{ .r = 247, .g = 248, .b = 250, .a = 255 },
+        .border = .{ .r = 212, .g = 218, .b = 226, .a = 255 },
+        .padding = goop.style.Edges.symmetric(10, 10),
+        .border_radius = 0,
+    };
+
+    const breadcrumb_bar = try ctx.tree.addChild(content, .{ .toolbar = .{} });
+    ctx.tree.get(breadcrumb_bar).style_override = .{
+        .bg = .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+        .border = .{ .r = 214, .g = 220, .b = 228, .a = 255 },
+        .padding = goop.style.Edges.symmetric(8, 6),
+        .border_radius = 8,
+    };
+    const root_button = try ctx.tree.addChild(breadcrumb_bar, .{ .button = .{ .label = "/" } });
+    try state.breadcrumb_handles.append(allocator, root_button);
+    try state.breadcrumb_paths.append(allocator, try allocator.dupe(u8, "/"));
+    if (!std.mem.eql(u8, state.current_dir, "/")) {
+        var start: usize = 1;
+        while (start < state.current_dir.len) {
+            const end = std.mem.indexOfScalarPos(u8, state.current_dir, start, '/') orelse state.current_dir.len;
+            _ = try ctx.tree.addChild(breadcrumb_bar, .{ .text = .{ .content = "/" } });
+            const segment = state.current_dir[start..end];
+            const handle = try ctx.tree.addChild(breadcrumb_bar, .{ .button = .{ .label = segment } });
+            try state.breadcrumb_handles.append(allocator, handle);
+            try state.breadcrumb_paths.append(allocator, try allocator.dupe(u8, state.current_dir[0..end]));
+            start = end + 1;
+        }
+    }
+
+    state.detail_splitter = try ctx.tree.addChild(content, .{ .splitter = .{
+        .direction = .row,
+        .ratio = state.detail_ratio,
+        .min_first = 360,
+        .min_second = 220,
+        .thickness = 8,
+    } });
+
+    const file_panel = try ctx.tree.addChild(state.detail_splitter.?, .{ .container = .{ .direction = .column } });
+    ctx.tree.get(file_panel).style_override = .{
+        .bg = .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+        .border = .{ .r = 214, .g = 220, .b = 228, .a = 255 },
+        .padding = goop.style.Edges.symmetric(8, 8),
+        .border_radius = 8,
+    };
+
+    state.asset_table = try ctx.tree.addChild(file_panel, .{ .table = .{
+        .columns = 4,
+        .resizable = true,
+        .sortable = true,
+        .selection_mode = .single,
+        .min_column_width = 96,
+    } });
+    {
+        const table = &ctx.tree.get(state.asset_table.?).kind.table;
+        table.column_weights[0] = state.table_column_weights[0];
+        table.column_weights[1] = state.table_column_weights[1];
+        table.column_weights[2] = state.table_column_weights[2];
+        table.column_weights[3] = state.table_column_weights[3];
+        table.sorted_column = @intFromEnum(state.sort_column);
+        table.sort_direction = switch (state.sort_direction) {
+            .ascending => .ascending,
+            .descending => .descending,
+        };
+    }
+
+    const header_row = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{ .header = true } });
+    try addTextCell(ctx, header_row, "Name");
+    try addTextCell(ctx, header_row, "Modified");
+    try addTextCell(ctx, header_row, "Type");
+    try addTextCell(ctx, header_row, "Size");
+
+    for (state.entries.items) |entry| {
+        const row = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{
+            .selected = if (state.selected_path) |selected_path| std.mem.eql(u8, entry.path, selected_path) else false,
+        } });
+        try state.row_handles.append(allocator, row);
+        try addTextCell(ctx, row, entry.name);
+        try addTextCell(ctx, row, entry.modifiedText());
+        try addTextCell(ctx, row, entry.typeLabel());
+        try addTextCell(ctx, row, entry.sizeText());
+    }
+
+    if (state.entries.items.len == 0) {
+        _ = try ctx.tree.addChild(file_panel, .{ .text = .{ .content = "This directory is empty." } });
+    }
+
+    const detail_panel = try ctx.tree.addChild(state.detail_splitter.?, .{ .container = .{ .direction = .column } });
+    ctx.tree.get(detail_panel).style_override = .{
+        .bg = .{ .r = 250, .g = 251, .b = 253, .a = 255 },
+        .border = .{ .r = 214, .g = 220, .b = 228, .a = 255 },
+        .padding = goop.style.Edges.symmetric(10, 10),
+        .border_radius = 8,
+    };
+    _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = "Details" } });
+
+    var directory_count: usize = 0;
+    for (state.entries.items) |entry| {
+        if (entry.isDirectory()) directory_count += 1;
+    }
+    const file_count = state.entries.items.len - directory_count;
+
+    if (selectedEntry(state)) |entry| {
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = entry.name } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Type: {s}", .{entry.typeLabel()}) } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Modified: {s}", .{entry.modifiedText()}) } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Size: {s}", .{if (entry.sizeText().len > 0) entry.sizeText() else "—"}) } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Path: {s}", .{entry.path}) } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = if (entry.isDirectory()) "Click again to open this directory." else "Files stay selected for inspection." } });
+    } else {
+        const directory_name = if (std.mem.eql(u8, state.current_dir, "/")) "/" else std.fs.path.basename(state.current_dir);
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = directory_name } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Path: {s}", .{state.current_dir}) } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "{d} directories", .{directory_count}) } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "{d} files", .{file_count}) } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = "Select an item, or use Back, Up, Home, and Places to move around." } });
+    }
+
+    const status_bar = try ctx.tree.addChild(root, .{ .status_bar = .{} });
+    ctx.tree.get(status_bar).style_override = .{
+        .bg = .{ .r = 233, .g = 236, .b = 240, .a = 255 },
+        .border = .{ .r = 206, .g = 212, .b = 220, .a = 255 },
+        .padding = goop.style.Edges.symmetric(10, 7),
+        .border_radius = 0,
+    };
+    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "{d} items", .{state.entries.items.len}) } });
+    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "{d} selected", .{if (state.selected_path == null) @as(usize, 0) else @as(usize, 1)}) } });
+    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "Location: {s}", .{state.current_dir}) } });
+}
+
+// ── Font loading ──
 
 fn loadFont(alloc: std.mem.Allocator) ![]u8 {
     if (fontPathFromEnv()) |path| {
@@ -1362,8 +1726,8 @@ pub fn main() !void {
     _ = wl.xdg_surface_add_listener(state.xdg_surface, &xdg_surface_listener, &state);
     state.xdg_toplevel = wl.xdg_surface_get_toplevel(state.xdg_surface) orelse return error.NoToplevel;
     _ = wl.xdg_toplevel_add_listener(state.xdg_toplevel, &xdg_toplevel_listener, &state);
-    wl.xdg_toplevel_set_title(state.xdg_toplevel, "goop file manager");
-    wl.xdg_toplevel_set_app_id(state.xdg_toplevel, "goop-file-manager");
+    wl.xdg_toplevel_set_title(state.xdg_toplevel, "goop files");
+    wl.xdg_toplevel_set_app_id(state.xdg_toplevel, "goop-files");
     wl.wl_surface_commit(state.surface.?);
     _ = wl.wl_display_roundtrip(display);
 
@@ -1428,12 +1792,13 @@ pub fn main() !void {
     defer ctx.deinit();
     state.ctx = &ctx;
     ctx.clipboard = state.clipboard();
+    try initializeBrowserState(&state);
     try buildWidgetTree(&state);
 
     // GL renderer (with snail text support)
     var renderer = try render.Renderer.init(state.buffer_width, state.buffer_height, &font, &atlas);
     defer renderer.deinit();
-    renderer.clear_color = .{ 0.95, 0.96, 0.98, 1.0 };
+    renderer.clear_color = .{ 0.95, 0.96, 0.97, 1.0 };
 
     std.debug.print("goop file manager running (logical {}x{}, scale {}, buffer {}x{})\n", .{
         state.logical_width,
@@ -1490,151 +1855,103 @@ pub fn main() !void {
 
         ctx.processEvents();
 
-        if (ctx.lastSecondaryClick()) |click| {
-            if (state.context_popup) |popup| {
-                const popup_node = ctx.tree.get(popup);
-                popup_node.kind.popup.x = click.x;
-                popup_node.kind.popup.y = click.y;
-                popup_node.kind.popup.visible = true;
-                std.debug.print("Secondary click on widget {} at ({d:.1}, {d:.1})\n", .{
-                    click.target.index,
-                    click.x,
-                    click.y,
-                });
-            }
-        }
+        var rebuild_ui = false;
 
-        // Check clicks
-        if (state.btn_a) |h| if (ctx.wasClicked(h)) {
-            state.click_count += 1;
-            std.debug.print("Toolbar action: Back (total: {})\n", .{state.click_count});
+        if (state.nav_splitter) |h| if (ctx.splitterChanged(h)) {
+            state.nav_ratio = ctx.splitterRatio(h);
         };
-        if (state.btn_b) |h| if (ctx.wasClicked(h)) {
-            state.click_count += 1;
-            std.debug.print("Toolbar action: Up (total: {})\n", .{state.click_count});
-        };
-        if (state.btn_c) |h| if (ctx.wasClicked(h)) {
-            state.click_count += 1;
-            std.debug.print("Toolbar action: Refresh (total: {})\n", .{state.click_count});
+        if (state.detail_splitter) |h| if (ctx.splitterChanged(h)) {
+            state.detail_ratio = ctx.splitterRatio(h);
         };
 
-        // Log checkbox state changes (checkbox toggles itself on click)
-        if (state.checkbox) |h| if (ctx.wasClicked(h)) {
-            std.debug.print("Checkbox toggled: {}\n", .{ctx.isChecked(h)});
-        };
-
-        // Log radio button selection
-        if (state.radio_a) |h| if (ctx.wasClicked(h)) std.debug.print("Radio: Option A selected\n", .{});
-        if (state.radio_b) |h| if (ctx.wasClicked(h)) std.debug.print("Radio: Option B selected\n", .{});
-        if (state.radio_c) |h| if (ctx.wasClicked(h)) std.debug.print("Radio: Option C selected\n", .{});
-        if (state.tree_parent) |h| {
-            if (ctx.treeItemToggled(h)) std.debug.print("Folder root expanded: {}\n", .{ctx.isExpanded(h)});
-            if (ctx.wasClicked(h)) std.debug.print("Folder selected: Quick access\n", .{});
-            if (ctx.treeItemRenameCommitted(h)) std.debug.print("Folder renamed: {s}\n", .{ctx.treeItemLabel(h)});
-        }
-        if (state.tree_child_a) |h| {
-            if (ctx.wasClicked(h)) std.debug.print("Folder selected: Workspace\n", .{});
-            if (ctx.treeItemRenameCommitted(h)) std.debug.print("Folder renamed: {s}\n", .{ctx.treeItemLabel(h)});
-        }
-        if (state.tree_child_b) |h| {
-            if (ctx.wasClicked(h)) std.debug.print("Folder selected: Downloads\n", .{});
-            if (ctx.treeItemRenameCommitted(h)) std.debug.print("Folder renamed: {s}\n", .{ctx.treeItemLabel(h)});
-        }
-        if (ctx.lastTreeDrop()) |drop| {
-            const position_name = switch (drop.position) {
-                .before => "before",
-                .into => "into",
-                .after => "after",
-            };
-            std.debug.print("Folder drop: {s} -> {s} ({s})\n", .{
-                ctx.treeItemLabel(drop.source),
-                ctx.treeItemLabel(drop.target),
-                position_name,
-            });
-        }
-        if (state.list_box) |h| if (ctx.listBoxChanged(h)) {
-            std.debug.print("List box selection count: {}\n", .{ctx.listBoxSelectionCount(h)});
-        };
-        if (state.selectable_scene) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Scene Collection\n", .{});
-        if (state.selectable_camera) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Camera Rig\n", .{});
-        if (state.selectable_light) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Lighting Set\n", .{});
-        if (state.grid_selector) |h| if (ctx.gridSelectorChanged(h)) {
-            std.debug.print("Grid selection count: {}\n", .{ctx.gridSelectorSelectionCount(h)});
-        };
-        if (state.grid_item_a) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: Brick\n", .{});
-        if (state.grid_item_b) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: Metal\n", .{});
-        if (state.grid_item_c) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: Leaves\n", .{});
-        if (state.grid_item_d) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: UI Icons\n", .{});
-        if (ctx.lastGridDrop()) |drop| {
-            switch (drop.position) {
-                .item => std.debug.print("Grid drop: {s} -> {s} (item)\n", .{
-                    ctx.tree.getConst(drop.source).kind.grid_item.label,
-                    ctx.tree.getConst(drop.target).kind.grid_item.label,
-                }),
-                .background => std.debug.print("Grid drop: {s} -> background\n", .{
-                    ctx.tree.getConst(drop.source).kind.grid_item.label,
-                }),
-            }
-        }
         if (state.asset_table) |h| if (ctx.tableChanged(h)) {
-            std.debug.print("File table divider {} resized: [{d:.2}, {d:.2}, {d:.2}, {d:.2}]\n", .{
-                ctx.tableResizedColumn(h).?,
-                ctx.tableColumnFraction(h, 0).?,
-                ctx.tableColumnFraction(h, 1).?,
-                ctx.tableColumnFraction(h, 2).?,
-                ctx.tableColumnFraction(h, 3).?,
-            });
+            state.table_column_weights[0] = ctx.tableColumnFraction(h, 0) orelse state.table_column_weights[0];
+            state.table_column_weights[1] = ctx.tableColumnFraction(h, 1) orelse state.table_column_weights[1];
+            state.table_column_weights[2] = ctx.tableColumnFraction(h, 2) orelse state.table_column_weights[2];
+            state.table_column_weights[3] = ctx.tableColumnFraction(h, 3) orelse state.table_column_weights[3];
         };
+
         if (state.asset_table) |h| if (ctx.tableSortChanged(h)) {
-            const column_name = switch (ctx.tableSortedColumn(h).?) {
-                0 => "Name",
-                1 => "Date modified",
-                2 => "Type",
-                3 => "Size",
-                else => "Unknown",
-            };
-            const direction_name = switch (ctx.tableSortDirection(h).?) {
-                .ascending => "ascending",
-                .descending => "descending",
-            };
-            std.debug.print("File table sort: {s} {s}\n", .{ column_name, direction_name });
+            if (ctx.tableSortedColumn(h)) |sorted_column| {
+                state.sort_column = @enumFromInt(sorted_column);
+                state.sort_direction = switch (ctx.tableSortDirection(h).?) {
+                    .ascending => .ascending,
+                    .descending => .descending,
+                };
+                sortDirectoryEntries(&state);
+                rebuild_ui = true;
+            }
         };
+
+        if (state.btn_back) |h| if (ctx.wasClicked(h)) {
+            rebuild_ui = try navigateBack(&state) or rebuild_ui;
+        };
+        if (state.btn_up) |h| if (ctx.wasClicked(h)) {
+            rebuild_ui = try navigateUp(&state) or rebuild_ui;
+        };
+        if (state.btn_home) |h| if (ctx.wasClicked(h)) {
+            if (c_io.getenv("HOME")) |home_raw| {
+                const home = std.mem.span(@as([*:0]const u8, @ptrCast(home_raw)));
+                rebuild_ui = try setCurrentDirectory(&state, home, true) or rebuild_ui;
+            }
+        };
+        if (state.btn_refresh) |h| if (ctx.wasClicked(h)) {
+            try refreshCurrentDirectory(&state);
+            rebuild_ui = true;
+        };
+
+        for (state.place_handles.items, 0..) |handle, index| {
+            if (!ctx.wasClicked(handle)) continue;
+            if (index >= state.places.items.len) continue;
+            rebuild_ui = try setCurrentDirectory(&state, state.places.items[index].path, true) or rebuild_ui;
+            break;
+        }
+
+        for (state.breadcrumb_handles.items, 0..) |handle, index| {
+            if (!ctx.wasClicked(handle)) continue;
+            if (index >= state.breadcrumb_paths.items.len) continue;
+            rebuild_ui = try setCurrentDirectory(&state, state.breadcrumb_paths.items[index], true) or rebuild_ui;
+            break;
+        }
+
         if (state.asset_table) |h| if (ctx.tableSelectionChanged(h)) {
-            std.debug.print("File table selection count: {}, first row: {?}\n", .{
-                ctx.tableSelectionCount(h),
-                ctx.tableSelectedRowIndex(h),
-            });
+            if (ctx.tableSelectedRowIndex(h)) |row_index| {
+                if (row_index < state.entries.items.len) {
+                    try setSelectedPath(&state, state.entries.items[row_index].path);
+                } else {
+                    try setSelectedPath(&state, null);
+                }
+            } else {
+                try setSelectedPath(&state, null);
+            }
+            rebuild_ui = true;
         };
-        if (state.asset_row_a) |h| if (ctx.wasClicked(h)) std.debug.print("File row clicked: README.md\n", .{});
-        if (state.asset_row_b) |h| if (ctx.wasClicked(h)) std.debug.print("File row clicked: src\n", .{});
-        if (state.asset_row_c) |h| if (ctx.wasClicked(h)) std.debug.print("File row clicked: zig-out\n", .{});
-        if (state.dropdown) |h| if (ctx.dropdownChanged(h)) {
-            std.debug.print("Dropdown selected: {s}\n", .{ctx.dropdownValue(h)});
-        };
-        if (state.menu_file) |h| if (ctx.wasClicked(h)) std.debug.print("Menu toggled: File\n", .{});
-        if (state.menu_edit) |h| if (ctx.wasClicked(h)) std.debug.print("Menu toggled: Edit\n", .{});
-        if (state.menu_recent_a) |h| if (ctx.wasClicked(h)) std.debug.print("Recent location: Documents\n", .{});
-        if (state.menu_recent_b) |h| if (ctx.wasClicked(h)) std.debug.print("Recent location: Downloads\n", .{});
-        if (state.menu_quit) |h| if (ctx.wasClicked(h)) std.debug.print("Menu action: Exit\n", .{});
-        if (state.menu_copy) |h| if (ctx.wasClicked(h)) std.debug.print("View mode: Large Icons\n", .{});
-        if (state.menu_paste) |h| if (ctx.wasClicked(h)) std.debug.print("View mode: Details\n", .{});
-        if (state.drag_value) |h| if (ctx.dragValueChanged(h)) {
-            std.debug.print("Exposure changed: {d:.2}\n", .{ctx.dragValue(h)});
-        };
-        if (state.spinbox) |h| if (ctx.spinboxChanged(h)) {
-            std.debug.print("Samples changed: {d:.0}\n", .{ctx.spinboxValue(h)});
-        };
-        if (state.tab_scene) |h| if (ctx.wasClicked(h)) {
-            std.debug.print("Pane selected: Details\n", .{});
-        };
-        if (state.tab_render) |h| if (ctx.wasClicked(h)) {
-            std.debug.print("Pane selected: Preview\n", .{});
-        };
-        if (state.splitter) |h| if (ctx.splitterChanged(h)) {
-            std.debug.print("Splitter ratio: {d:.2}\n", .{ctx.splitterRatio(h)});
-        };
-        if (state.context_action_a) |h| if (ctx.wasClicked(h)) std.debug.print("Context action: Open\n", .{});
-        if (state.context_action_b) |h| if (ctx.wasClicked(h)) std.debug.print("Context action: Properties\n", .{});
+
+        for (state.row_handles.items, 0..) |handle, index| {
+            if (!ctx.wasClicked(handle)) continue;
+            if (index >= state.entries.items.len) continue;
+
+            const entry = state.entries.items[index];
+            const now = getMonotonicNs();
+            const repeated_click = if (state.last_click_path) |last_clicked|
+                std.mem.eql(u8, last_clicked, entry.path) and now - state.last_click_ns <= 400 * std.time.ns_per_ms
+            else
+                false;
+
+            try setSelectedPath(&state, entry.path);
+            try setLastClickPath(&state, entry.path);
+            state.last_click_ns = now;
+            rebuild_ui = true;
+
+            if (repeated_click and entry.isDirectory()) {
+                rebuild_ui = try setCurrentDirectory(&state, entry.path, true) or rebuild_ui;
+            }
+            break;
+        }
+
+        if (rebuild_ui) {
+            try buildWidgetTree(&state);
+        }
 
         // Render
         var dl = try ctx.generateDrawList();
@@ -1658,6 +1975,7 @@ pub fn main() !void {
     state.destroyAllDataOffers();
     state.destroyAllOutputs();
     state.destroyClipboardSource();
+    deinitBrowserState(&state);
     state.clipboard_buf.deinit(allocator);
     if (state.data_device) |data_device| wl.wl_data_device_release(data_device);
     if (state.data_device_manager) |manager| wl.wl_data_device_manager_destroy(manager);
