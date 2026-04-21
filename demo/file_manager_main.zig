@@ -1,0 +1,1686 @@
+const std = @import("std");
+const goop = @import("goop");
+const snail = @import("snail");
+const render = @import("render.zig");
+
+const wl = @cImport({
+    @cInclude("wayland-client.h");
+    @cInclude("wayland-egl.h");
+    @cInclude("xdg-shell-client-protocol.h");
+});
+
+const xkb = @cImport({
+    @cInclude("xkbcommon/xkbcommon.h");
+});
+
+const egl = @cImport({
+    @cInclude("EGL/egl.h");
+});
+
+const posix = @cImport({
+    @cInclude("poll.h");
+    @cInclude("time.h");
+    @cInclude("unistd.h");
+    @cInclude("sys/mman.h");
+});
+
+const allocator = std.heap.page_allocator;
+const clipboard_mime_utf8 = "text/plain;charset=utf-8";
+const clipboard_mime_utf8_string = "UTF8_STRING";
+const clipboard_mime_text = "text/plain";
+
+/// Snail-based text measurement adapter for goop.
+const SnailTextCtx = struct {
+    allocator: std.mem.Allocator,
+    font: *const snail.Font,
+    atlas: *const snail.Atlas,
+    glyph_cache: snail.ttf.GlyphCache,
+    ascent_units: f32,
+    descent_units: f32,
+};
+
+const OutputState = struct {
+    global_name: u32,
+    output: *wl.wl_output,
+    scale: u32 = 1,
+    entered: bool = false,
+    next: ?*OutputState = null,
+};
+
+fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) goop.TextDimensions {
+    const ctx: *SnailTextCtx = @ptrCast(@alignCast(user_data));
+    const MeasuredGlyph = struct {
+        advance_width: u16,
+        bbox: snail.bezier.BBox,
+    };
+    const scale = font_size / @as(f32, @floatFromInt(ctx.font.unitsPerEm()));
+    var width: f32 = 0;
+    var prev_gid: u16 = 0;
+    var min_y = std.math.inf(f32);
+    var max_y = -std.math.inf(f32);
+    var have_vertical_bounds = false;
+    const view = std.unicode.Utf8View.initUnchecked(text);
+    var it = view.iterator();
+    while (it.nextCodepoint()) |cp| {
+        const gid = ctx.font.glyphIndex(cp) catch 0;
+        if (gid == 0) {
+            width += scale * 500;
+            prev_gid = 0;
+            continue;
+        }
+        if (prev_gid != 0) {
+            const kern = ctx.font.getKerning(prev_gid, gid) catch 0;
+            width += @as(f32, @floatFromInt(kern)) * scale;
+        }
+        const glyph_metrics: MeasuredGlyph = if (ctx.atlas.getGlyph(gid)) |info|
+            .{ .advance_width = info.advance_width, .bbox = info.bbox }
+        else blk: {
+            const glyph = ctx.font.inner.parseGlyph(ctx.allocator, &ctx.glyph_cache, gid) catch {
+                width += scale * 500;
+                prev_gid = gid;
+                continue;
+            };
+            break :blk .{ .advance_width = glyph.metrics.advance_width, .bbox = glyph.metrics.bbox };
+        };
+
+        if (glyph_metrics.bbox.max.y > glyph_metrics.bbox.min.y) {
+            min_y = @min(min_y, glyph_metrics.bbox.min.y);
+            max_y = @max(max_y, glyph_metrics.bbox.max.y);
+            have_vertical_bounds = true;
+        }
+
+        width += @as(f32, @floatFromInt(glyph_metrics.advance_width)) * scale;
+        prev_gid = gid;
+    }
+
+    if (have_vertical_bounds) {
+        const ascent = @max(max_y, 0) * font_size;
+        const descent = @max(-min_y, 0) * font_size;
+        return .{
+            .width = width,
+            .height = ascent + descent,
+            .ascent = ascent,
+            .descent = descent,
+        };
+    }
+
+    return .{
+        .width = width,
+        .height = (ctx.ascent_units + ctx.descent_units) * scale,
+        .ascent = ctx.ascent_units * scale,
+        .descent = ctx.descent_units * scale,
+    };
+}
+
+fn readBigI16(data: []const u8, offset: usize) ?i16 {
+    if (offset + 2 > data.len) return null;
+    return std.mem.readInt(i16, data[offset..][0..2], .big);
+}
+
+fn fontLineMetrics(font: *const snail.Font) struct { ascent: f32, descent: f32 } {
+    const inner = font.inner;
+    if (inner.hhea_offset != 0) {
+        const ascent = readBigI16(inner.data, inner.hhea_offset + 4) orelse @as(i16, @intCast(inner.units_per_em));
+        const descent = readBigI16(inner.data, inner.hhea_offset + 6) orelse 0;
+        return .{
+            .ascent = @floatFromInt(ascent),
+            .descent = @floatFromInt(@abs(descent)),
+        };
+    }
+    return .{
+        .ascent = @floatFromInt(inner.units_per_em),
+        .descent = 0,
+    };
+}
+
+fn isPrintableTextCodepoint(codepoint: u32) bool {
+    if (codepoint > std.math.maxInt(u21)) return false;
+    if (!std.unicode.utf8ValidCodepoint(@intCast(codepoint))) return false;
+    if (codepoint < 0x20) return false;
+    if (codepoint >= 0x7F and codepoint < 0xA0) return false;
+    return true;
+}
+
+fn ensureAtlasForDrawList(atlas: *snail.Atlas, renderer: *render.Renderer, draw_list: goop.DrawList) !bool {
+    var unique_codepoints = std.AutoHashMap(u32, void).init(allocator);
+    defer unique_codepoints.deinit();
+
+    for (draw_list.commands) |command| {
+        if (command != .text) continue;
+        const text = command.text.text;
+        const view = std.unicode.Utf8View.init(text) catch continue;
+        var it = view.iterator();
+        while (it.nextCodepoint()) |codepoint| {
+            if (!isPrintableTextCodepoint(codepoint)) continue;
+            try unique_codepoints.put(codepoint, {});
+        }
+    }
+
+    if (unique_codepoints.count() == 0) return false;
+
+    var codepoints = try allocator.alloc(u32, unique_codepoints.count());
+    defer allocator.free(codepoints);
+
+    var index: usize = 0;
+    var it = unique_codepoints.keyIterator();
+    while (it.next()) |codepoint| : (index += 1) {
+        codepoints[index] = codepoint.*;
+    }
+
+    if (try atlas.extendCodepoints(codepoints)) |next| {
+        _ = snail.replaceAtlas(atlas, next);
+        renderer.uploadAtlas(atlas);
+        return true;
+    }
+    return false;
+}
+
+const State = struct {
+    running: bool = true,
+    configured: bool = false,
+    logical_width: u32 = 800,
+    logical_height: u32 = 600,
+    buffer_width: u32 = 800,
+    buffer_height: u32 = 600,
+    buffer_scale: u32 = 1,
+    compositor_version: u32 = 0,
+    surface_preferred_scale: ?u32 = null,
+    needs_redraw: bool = true,
+    frame_pending: bool = false,
+    timeout_ns: ?u64 = null,
+    start_time: posix.struct_timespec = .{ .tv_sec = 0, .tv_nsec = 0 },
+
+    // Wayland globals
+    display: ?*wl.wl_display = null,
+    compositor: ?*wl.wl_compositor = null,
+    wm_base: ?*wl.xdg_wm_base = null,
+    seat: ?*wl.wl_seat = null,
+    data_device_manager: ?*wl.wl_data_device_manager = null,
+    outputs: ?*OutputState = null,
+
+    // Wayland surface chain
+    surface: ?*wl.wl_surface = null,
+    xdg_surface: ?*wl.xdg_surface = null,
+    xdg_toplevel: ?*wl.xdg_toplevel = null,
+    egl_window: ?*wl.wl_egl_window = null,
+    pointer: ?*wl.wl_pointer = null,
+    keyboard: ?*wl.wl_keyboard = null,
+    data_device: ?*wl.wl_data_device = null,
+    clipboard_source: ?*wl.wl_data_source = null,
+    selection_offer: ?*DataOfferState = null,
+    drag_offer: ?*DataOfferState = null,
+    data_offers: ?*DataOfferState = null,
+    last_input_serial: u32 = 0,
+
+    // EGL
+    egl_display: egl.EGLDisplay = egl.EGL_NO_DISPLAY,
+    egl_surface: egl.EGLSurface = egl.EGL_NO_SURFACE,
+    egl_context: egl.EGLContext = egl.EGL_NO_CONTEXT,
+
+    // goop
+    ctx: ?*goop.Context = null,
+
+    // Widget handles for querying state
+    btn_a: ?goop.NodeHandle = null,
+    btn_b: ?goop.NodeHandle = null,
+    btn_c: ?goop.NodeHandle = null,
+    checkbox: ?goop.NodeHandle = null,
+    radio_a: ?goop.NodeHandle = null,
+    radio_b: ?goop.NodeHandle = null,
+    radio_c: ?goop.NodeHandle = null,
+    tree_parent: ?goop.NodeHandle = null,
+    tree_child_a: ?goop.NodeHandle = null,
+    tree_child_b: ?goop.NodeHandle = null,
+    list_box: ?goop.NodeHandle = null,
+    selectable_scene: ?goop.NodeHandle = null,
+    selectable_camera: ?goop.NodeHandle = null,
+    selectable_light: ?goop.NodeHandle = null,
+    grid_selector: ?goop.NodeHandle = null,
+    grid_item_a: ?goop.NodeHandle = null,
+    grid_item_b: ?goop.NodeHandle = null,
+    grid_item_c: ?goop.NodeHandle = null,
+    grid_item_d: ?goop.NodeHandle = null,
+    asset_table: ?goop.NodeHandle = null,
+    asset_row_a: ?goop.NodeHandle = null,
+    asset_row_b: ?goop.NodeHandle = null,
+    asset_row_c: ?goop.NodeHandle = null,
+    dropdown: ?goop.NodeHandle = null,
+    menu_file: ?goop.NodeHandle = null,
+    menu_edit: ?goop.NodeHandle = null,
+    menu_open_recent: ?goop.NodeHandle = null,
+    menu_recent_a: ?goop.NodeHandle = null,
+    menu_recent_b: ?goop.NodeHandle = null,
+    menu_quit: ?goop.NodeHandle = null,
+    menu_copy: ?goop.NodeHandle = null,
+    menu_paste: ?goop.NodeHandle = null,
+    drag_value: ?goop.NodeHandle = null,
+    spinbox: ?goop.NodeHandle = null,
+    tab_scene: ?goop.NodeHandle = null,
+    tab_render: ?goop.NodeHandle = null,
+    splitter: ?goop.NodeHandle = null,
+    context_popup: ?goop.NodeHandle = null,
+    context_action_a: ?goop.NodeHandle = null,
+    context_action_b: ?goop.NodeHandle = null,
+    click_count: u32 = 0,
+
+    // Last known mouse position from Wayland pointer events
+    mouse_x: f32 = 0,
+    mouse_y: f32 = 0,
+
+    // xkbcommon state for keymap → text conversion
+    xkb_ctx: ?*xkb.xkb_context = null,
+    xkb_keymap: ?*xkb.xkb_keymap = null,
+    xkb_state: ?*xkb.xkb_state = null,
+
+    // Clipboard text for self-owned selections and the most recent external paste.
+    clipboard_buf: std.ArrayListUnmanaged(u8) = .empty,
+
+    fn clipboard(self: *State) goop.Clipboard {
+        return .{
+            .ptr = @ptrCast(self),
+            .getTextFn = @ptrCast(&clipboardGetText),
+            .setTextFn = @ptrCast(&clipboardSetText),
+        };
+    }
+
+    fn clipboardGetText(ptr: *anyopaque) ?[]const u8 {
+        const self: *State = @ptrCast(@alignCast(ptr));
+        if (self.clipboard_source != null) {
+            if (self.clipboard_buf.items.len == 0) return null;
+            return self.clipboard_buf.items;
+        }
+        self.fetchClipboardSelection() catch return null;
+        if (self.clipboard_buf.items.len == 0) return null;
+        return self.clipboard_buf.items;
+    }
+
+    fn clipboardSetText(ptr: *anyopaque, text: []const u8) void {
+        const self: *State = @ptrCast(@alignCast(ptr));
+        self.setClipboardSelection(text) catch {};
+    }
+
+    fn setClipboardSelection(self: *State, text: []const u8) !void {
+        try self.setClipboardBuffer(text);
+        if (self.data_device_manager == null or self.data_device == null or self.last_input_serial == 0) return;
+
+        self.destroyClipboardSource();
+
+        const source = wl.wl_data_device_manager_create_data_source(self.data_device_manager) orelse return;
+        self.clipboard_source = source;
+        _ = wl.wl_data_source_add_listener(source, &data_source_listener, self);
+        wl.wl_data_source_offer(source, clipboard_mime_utf8);
+        wl.wl_data_source_offer(source, clipboard_mime_utf8_string);
+        wl.wl_data_source_offer(source, clipboard_mime_text);
+        wl.wl_data_device_set_selection(self.data_device, source, self.last_input_serial);
+        if (self.display) |display| _ = wl.wl_display_flush(display);
+    }
+
+    fn fetchClipboardSelection(self: *State) !void {
+        const offer = self.selection_offer orelse return;
+        const mime = preferredOfferMime(offer) orelse return;
+
+        var fds: [2]i32 = undefined;
+        if (posix.pipe(&fds) != 0) return error.PipeFailed;
+        errdefer _ = posix.close(fds[0]);
+        errdefer _ = posix.close(fds[1]);
+
+        wl.wl_data_offer_receive(offer.offer, mime, fds[1]);
+        _ = posix.close(fds[1]);
+        if (self.display) |display| _ = wl.wl_display_flush(display);
+
+        self.clipboard_buf.clearRetainingCapacity();
+        var chunk: [4096]u8 = undefined;
+        while (true) {
+            const read_count = posix.read(fds[0], &chunk, chunk.len);
+            if (read_count <= 0) break;
+            try self.clipboard_buf.appendSlice(allocator, chunk[0..@intCast(read_count)]);
+        }
+        _ = posix.close(fds[0]);
+    }
+
+    fn setClipboardBuffer(self: *State, text: []const u8) !void {
+        self.clipboard_buf.clearRetainingCapacity();
+        try self.clipboard_buf.appendSlice(allocator, text);
+    }
+
+    fn addDataOffer(self: *State, offer: *wl.wl_data_offer) !void {
+        const entry = try allocator.create(DataOfferState);
+        entry.* = .{
+            .owner = self,
+            .offer = offer,
+            .next = self.data_offers,
+        };
+        self.data_offers = entry;
+        _ = wl.wl_data_offer_add_listener(offer, &data_offer_listener, entry);
+    }
+
+    fn findDataOffer(self: *State, offer: *wl.wl_data_offer) ?*DataOfferState {
+        var it = self.data_offers;
+        while (it) |entry| : (it = entry.next) {
+            if (entry.offer == offer) return entry;
+        }
+        return null;
+    }
+
+    fn destroyDataOffer(self: *State, target: *DataOfferState) void {
+        if (self.selection_offer == target) self.selection_offer = null;
+        if (self.drag_offer == target) self.drag_offer = null;
+
+        if (self.data_offers == target) {
+            self.data_offers = target.next;
+        } else {
+            var it = self.data_offers;
+            while (it) |entry| : (it = entry.next) {
+                if (entry.next == target) {
+                    entry.next = target.next;
+                    break;
+                }
+            }
+        }
+
+        wl.wl_data_offer_destroy(target.offer);
+        allocator.destroy(target);
+    }
+
+    fn destroyAllDataOffers(self: *State) void {
+        while (self.data_offers) |entry| {
+            self.destroyDataOffer(entry);
+        }
+    }
+
+    fn destroyClipboardSource(self: *State) void {
+        if (self.clipboard_source) |source| {
+            wl.wl_data_source_destroy(source);
+            self.clipboard_source = null;
+        }
+    }
+
+    fn addOutput(self: *State, global_name: u32, output: *wl.wl_output) !void {
+        const entry = try allocator.create(OutputState);
+        entry.* = .{
+            .global_name = global_name,
+            .output = output,
+            .next = self.outputs,
+        };
+        self.outputs = entry;
+        _ = wl.wl_output_add_listener(output, &output_listener, self);
+    }
+
+    fn findOutput(self: *State, output: *wl.wl_output) ?*OutputState {
+        var it = self.outputs;
+        while (it) |entry| : (it = entry.next) {
+            if (entry.output == output) return entry;
+        }
+        return null;
+    }
+
+    fn destroyOutputEntry(self: *State, target: *OutputState) void {
+        if (self.outputs == target) {
+            self.outputs = target.next;
+        } else {
+            var it = self.outputs;
+            while (it) |entry| : (it = entry.next) {
+                if (entry.next == target) {
+                    entry.next = target.next;
+                    break;
+                }
+            }
+        }
+        wl.wl_output_destroy(target.output);
+        allocator.destroy(target);
+    }
+
+    fn removeOutputByGlobalName(self: *State, global_name: u32) void {
+        var it = self.outputs;
+        while (it) |entry| : (it = entry.next) {
+            if (entry.global_name == global_name) {
+                const was_entered = entry.entered;
+                self.destroyOutputEntry(entry);
+                if (was_entered and self.surface_preferred_scale == null) self.updateBufferMetrics();
+                return;
+            }
+        }
+    }
+
+    fn destroyAllOutputs(self: *State) void {
+        while (self.outputs) |entry| {
+            self.destroyOutputEntry(entry);
+        }
+    }
+
+    fn effectiveBufferScale(self: *const State) u32 {
+        if (self.surface_preferred_scale) |preferred| return @max(preferred, 1);
+
+        var scale: u32 = 1;
+        var it = self.outputs;
+        while (it) |entry| : (it = entry.next) {
+            if (entry.entered) scale = @max(scale, entry.scale);
+        }
+        return scale;
+    }
+
+    fn setLogicalSize(self: *State, width: u32, height: u32) void {
+        self.logical_width = @max(width, 1);
+        self.logical_height = @max(height, 1);
+        if (self.ctx) |ctx| ctx.setDimensions(self.logical_width, self.logical_height);
+        self.updateBufferMetrics();
+    }
+
+    fn updateBufferMetrics(self: *State) void {
+        const next_scale = self.effectiveBufferScale();
+        const next_width = self.logical_width * next_scale;
+        const next_height = self.logical_height * next_scale;
+        const changed = self.buffer_scale != next_scale or self.buffer_width != next_width or self.buffer_height != next_height;
+
+        self.buffer_scale = next_scale;
+        self.buffer_width = next_width;
+        self.buffer_height = next_height;
+
+        if (self.surface) |surface| {
+            if (self.compositor_version >= 3) {
+                wl.wl_surface_set_buffer_scale(surface, @intCast(self.buffer_scale));
+            }
+        }
+        if (changed) {
+            if (self.egl_window) |window| {
+                wl.wl_egl_window_resize(window, @intCast(self.buffer_width), @intCast(self.buffer_height), 0, 0);
+            }
+        }
+        if (changed) self.needs_redraw = true;
+    }
+};
+
+const DataOfferState = struct {
+    owner: *State,
+    offer: *wl.wl_data_offer,
+    next: ?*DataOfferState = null,
+    offers_text_utf8: bool = false,
+    offers_utf8_string: bool = false,
+    offers_text_plain: bool = false,
+};
+
+fn offerSupportsMime(mime: []const u8, expected: []const u8) bool {
+    return std.mem.eql(u8, mime, expected);
+}
+
+fn preferredOfferMime(offer: *const DataOfferState) ?[*:0]const u8 {
+    if (offer.offers_text_utf8) return clipboard_mime_utf8;
+    if (offer.offers_utf8_string) return clipboard_mime_utf8_string;
+    if (offer.offers_text_plain) return clipboard_mime_text;
+    return null;
+}
+
+fn writeAll(fd: i32, bytes: []const u8) void {
+    var written: usize = 0;
+    while (written < bytes.len) {
+        const chunk = posix.write(fd, bytes.ptr + written, bytes.len - written);
+        if (chunk <= 0) return;
+        written += @intCast(chunk);
+    }
+}
+
+// ── Wayland listeners ──
+
+const registry_listener = wl.wl_registry_listener{
+    .global = &registryGlobal,
+    .global_remove = &registryGlobalRemove,
+};
+
+fn registryGlobal(data: ?*anyopaque, registry: ?*wl.wl_registry, name: u32, interface: [*c]const u8, version: u32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const iface = std.mem.span(@as([*:0]const u8, @ptrCast(interface)));
+
+    if (std.mem.eql(u8, iface, "wl_compositor")) {
+        state.compositor_version = @min(version, 6);
+        state.compositor = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_compositor_interface, state.compositor_version));
+    } else if (std.mem.eql(u8, iface, "xdg_wm_base")) {
+        state.wm_base = @ptrCast(wl.wl_registry_bind(registry, name, &wl.xdg_wm_base_interface, @min(version, 2)));
+        _ = wl.xdg_wm_base_add_listener(state.wm_base, &wm_base_listener, data);
+    } else if (std.mem.eql(u8, iface, "wl_seat")) {
+        state.seat = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_seat_interface, @min(version, 5)));
+        _ = wl.wl_seat_add_listener(state.seat, &seat_listener, data);
+        ensureDataDevice(state, data);
+    } else if (std.mem.eql(u8, iface, "wl_data_device_manager")) {
+        state.data_device_manager = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_data_device_manager_interface, @min(version, 3)));
+        ensureDataDevice(state, data);
+    } else if (std.mem.eql(u8, iface, "wl_output")) {
+        const output = @as(?*wl.wl_output, @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_output_interface, @min(version, 4)))) orelse return;
+        state.addOutput(name, output) catch wl.wl_output_destroy(output);
+    }
+}
+
+fn registryGlobalRemove(data: ?*anyopaque, _: ?*wl.wl_registry, name: u32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    state.removeOutputByGlobalName(name);
+}
+
+const wm_base_listener = wl.xdg_wm_base_listener{
+    .ping = &wmBasePing,
+};
+
+fn wmBasePing(_: ?*anyopaque, wm_base: ?*wl.xdg_wm_base, serial: u32) callconv(.c) void {
+    wl.xdg_wm_base_pong(wm_base, serial);
+}
+
+const xdg_surface_listener = wl.xdg_surface_listener{
+    .configure = &xdgSurfaceConfigure,
+};
+
+fn xdgSurfaceConfigure(data: ?*anyopaque, xdg_surface: ?*wl.xdg_surface, serial: u32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    wl.xdg_surface_ack_configure(xdg_surface, serial);
+    state.configured = true;
+    state.needs_redraw = true;
+}
+
+const xdg_toplevel_listener = wl.xdg_toplevel_listener{
+    .configure = &xdgToplevelConfigure,
+    .close = &xdgToplevelClose,
+    .configure_bounds = &noopConfigureBounds,
+    .wm_capabilities = &noopWmCapabilities,
+};
+
+fn noopConfigureBounds(_: ?*anyopaque, _: ?*wl.xdg_toplevel, _: i32, _: i32) callconv(.c) void {}
+fn noopWmCapabilities(_: ?*anyopaque, _: ?*wl.xdg_toplevel, _: ?*wl.wl_array) callconv(.c) void {}
+
+fn xdgToplevelConfigure(data: ?*anyopaque, _: ?*wl.xdg_toplevel, width: i32, height: i32, _: ?[*]wl.wl_array) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    if (width > 0 and height > 0) {
+        state.setLogicalSize(@intCast(width), @intCast(height));
+    }
+    state.needs_redraw = true;
+}
+
+fn xdgToplevelClose(data: ?*anyopaque, _: ?*wl.xdg_toplevel) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    state.running = false;
+}
+
+fn ensureDataDevice(state: *State, data: ?*anyopaque) void {
+    if (state.data_device != null) return;
+    if (state.data_device_manager == null or state.seat == null) return;
+    state.data_device = wl.wl_data_device_manager_get_data_device(state.data_device_manager, state.seat);
+    if (state.data_device) |device| {
+        _ = wl.wl_data_device_add_listener(device, &data_device_listener, data);
+    }
+}
+
+const output_listener = wl.wl_output_listener{
+    .geometry = &noopOutputGeometry,
+    .mode = &noopOutputMode,
+    .done = &noopOutputDone,
+    .scale = &outputScale,
+    .name = &noopOutputName,
+    .description = &noopOutputDescription,
+};
+
+fn noopOutputGeometry(_: ?*anyopaque, _: ?*wl.wl_output, _: i32, _: i32, _: i32, _: i32, _: i32, _: [*c]const u8, _: [*c]const u8, _: i32) callconv(.c) void {}
+fn noopOutputMode(_: ?*anyopaque, _: ?*wl.wl_output, _: u32, _: i32, _: i32, _: i32) callconv(.c) void {}
+fn noopOutputDone(_: ?*anyopaque, _: ?*wl.wl_output) callconv(.c) void {}
+fn noopOutputName(_: ?*anyopaque, _: ?*wl.wl_output, _: [*c]const u8) callconv(.c) void {}
+fn noopOutputDescription(_: ?*anyopaque, _: ?*wl.wl_output, _: [*c]const u8) callconv(.c) void {}
+
+fn outputScale(data: ?*anyopaque, output: ?*wl.wl_output, factor: i32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const wl_output = output orelse return;
+    const entry = state.findOutput(wl_output) orelse return;
+    entry.scale = @intCast(@max(factor, 1));
+    if (entry.entered and state.surface_preferred_scale == null) state.updateBufferMetrics();
+}
+
+const surface_listener = wl.wl_surface_listener{
+    .enter = &surfaceEnter,
+    .leave = &surfaceLeave,
+    .preferred_buffer_scale = &surfacePreferredBufferScale,
+    .preferred_buffer_transform = &noopSurfacePreferredBufferTransform,
+};
+
+fn surfaceEnter(data: ?*anyopaque, _: ?*wl.wl_surface, output: ?*wl.wl_output) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const wl_output = output orelse return;
+    if (state.findOutput(wl_output)) |entry| {
+        if (!entry.entered) {
+            entry.entered = true;
+            if (state.surface_preferred_scale == null) state.updateBufferMetrics();
+        }
+    }
+}
+
+fn surfaceLeave(data: ?*anyopaque, _: ?*wl.wl_surface, output: ?*wl.wl_output) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const wl_output = output orelse return;
+    if (state.findOutput(wl_output)) |entry| {
+        if (entry.entered) {
+            entry.entered = false;
+            if (state.surface_preferred_scale == null) state.updateBufferMetrics();
+        }
+    }
+}
+
+fn surfacePreferredBufferScale(data: ?*anyopaque, _: ?*wl.wl_surface, factor: i32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    state.surface_preferred_scale = @intCast(@max(factor, 1));
+    state.updateBufferMetrics();
+}
+
+fn noopSurfacePreferredBufferTransform(_: ?*anyopaque, _: ?*wl.wl_surface, _: u32) callconv(.c) void {}
+
+const seat_listener = wl.wl_seat_listener{
+    .capabilities = &seatCapabilities,
+    .name = &seatName,
+};
+
+fn seatName(_: ?*anyopaque, _: ?*wl.wl_seat, _: [*c]const u8) callconv(.c) void {}
+
+fn seatCapabilities(data: ?*anyopaque, seat: ?*wl.wl_seat, caps: u32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const has_pointer = (caps & wl.WL_SEAT_CAPABILITY_POINTER) != 0;
+    const has_keyboard = (caps & wl.WL_SEAT_CAPABILITY_KEYBOARD) != 0;
+
+    if (has_pointer and state.pointer == null) {
+        state.pointer = wl.wl_seat_get_pointer(seat);
+        _ = wl.wl_pointer_add_listener(state.pointer, &pointer_listener, data);
+    } else if (!has_pointer and state.pointer != null) {
+        wl.wl_pointer_destroy(state.pointer);
+        state.pointer = null;
+    }
+
+    if (has_keyboard and state.keyboard == null) {
+        state.keyboard = wl.wl_seat_get_keyboard(seat);
+        _ = wl.wl_keyboard_add_listener(state.keyboard, &keyboard_listener, data);
+    } else if (!has_keyboard and state.keyboard != null) {
+        wl.wl_keyboard_destroy(state.keyboard);
+        state.keyboard = null;
+    }
+
+    ensureDataDevice(state, data);
+}
+
+const data_offer_listener = wl.wl_data_offer_listener{
+    .offer = &dataOfferOffer,
+    .source_actions = &noopDataOfferSourceActions,
+    .action = &noopDataOfferAction,
+};
+
+fn dataOfferOffer(data: ?*anyopaque, _: ?*wl.wl_data_offer, mime_type: [*c]const u8) callconv(.c) void {
+    const offer: *DataOfferState = @ptrCast(@alignCast(data));
+    const mime = std.mem.span(@as([*:0]const u8, @ptrCast(mime_type)));
+    if (offerSupportsMime(mime, clipboard_mime_utf8)) {
+        offer.offers_text_utf8 = true;
+    } else if (offerSupportsMime(mime, clipboard_mime_utf8_string)) {
+        offer.offers_utf8_string = true;
+    } else if (offerSupportsMime(mime, clipboard_mime_text)) {
+        offer.offers_text_plain = true;
+    }
+}
+
+fn noopDataOfferSourceActions(_: ?*anyopaque, _: ?*wl.wl_data_offer, _: u32) callconv(.c) void {}
+fn noopDataOfferAction(_: ?*anyopaque, _: ?*wl.wl_data_offer, _: u32) callconv(.c) void {}
+
+const data_source_listener = wl.wl_data_source_listener{
+    .target = &noopDataSourceTarget,
+    .send = &dataSourceSend,
+    .cancelled = &dataSourceCancelled,
+    .dnd_drop_performed = &noopDataSourceDropPerformed,
+    .dnd_finished = &noopDataSourceFinished,
+    .action = &noopDataSourceAction,
+};
+
+fn noopDataSourceTarget(_: ?*anyopaque, _: ?*wl.wl_data_source, _: [*c]const u8) callconv(.c) void {}
+fn noopDataSourceDropPerformed(_: ?*anyopaque, _: ?*wl.wl_data_source) callconv(.c) void {}
+fn noopDataSourceFinished(_: ?*anyopaque, _: ?*wl.wl_data_source) callconv(.c) void {}
+fn noopDataSourceAction(_: ?*anyopaque, _: ?*wl.wl_data_source, _: u32) callconv(.c) void {}
+
+fn dataSourceSend(data: ?*anyopaque, _: ?*wl.wl_data_source, _: [*c]const u8, fd: i32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    defer _ = posix.close(fd);
+    if (state.clipboard_buf.items.len == 0) return;
+    writeAll(fd, state.clipboard_buf.items);
+}
+
+fn dataSourceCancelled(data: ?*anyopaque, source: ?*wl.wl_data_source) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    if (state.clipboard_source == source) state.clipboard_source = null;
+    if (source) |clipboard_source| wl.wl_data_source_destroy(clipboard_source);
+}
+
+const data_device_listener = wl.wl_data_device_listener{
+    .data_offer = &dataDeviceDataOffer,
+    .enter = &dataDeviceEnter,
+    .leave = &dataDeviceLeave,
+    .motion = &noopDataDeviceMotion,
+    .drop = &noopDataDeviceDrop,
+    .selection = &dataDeviceSelection,
+};
+
+fn dataDeviceDataOffer(data: ?*anyopaque, _: ?*wl.wl_data_device, offer: ?*wl.wl_data_offer) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const data_offer = offer orelse return;
+    state.addDataOffer(data_offer) catch wl.wl_data_offer_destroy(data_offer);
+}
+
+fn dataDeviceEnter(data: ?*anyopaque, _: ?*wl.wl_data_device, _: u32, _: ?*wl.wl_surface, _: wl.wl_fixed_t, _: wl.wl_fixed_t, offer: ?*wl.wl_data_offer) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    if (state.drag_offer) |drag_offer| state.destroyDataOffer(drag_offer);
+    if (offer) |drag_offer| {
+        state.drag_offer = state.findDataOffer(drag_offer);
+    }
+}
+
+fn dataDeviceLeave(data: ?*anyopaque, _: ?*wl.wl_data_device) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    if (state.drag_offer) |drag_offer| state.destroyDataOffer(drag_offer);
+}
+
+fn noopDataDeviceMotion(_: ?*anyopaque, _: ?*wl.wl_data_device, _: u32, _: wl.wl_fixed_t, _: wl.wl_fixed_t) callconv(.c) void {}
+fn noopDataDeviceDrop(_: ?*anyopaque, _: ?*wl.wl_data_device) callconv(.c) void {}
+
+fn dataDeviceSelection(data: ?*anyopaque, _: ?*wl.wl_data_device, offer: ?*wl.wl_data_offer) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    if (state.selection_offer) |selection_offer| {
+        if (offer == null or selection_offer.offer != offer) {
+            state.destroyDataOffer(selection_offer);
+        }
+    }
+    if (offer) |selection_offer| {
+        state.selection_offer = state.findDataOffer(selection_offer);
+    }
+}
+
+const pointer_listener = wl.wl_pointer_listener{
+    .enter = &pointerEnter,
+    .leave = &pointerLeave,
+    .motion = &pointerMotion,
+    .button = &pointerButton,
+    .axis = &pointerAxis,
+    .frame = &noopPointerFrame,
+    .axis_source = &noopAxisSource,
+    .axis_stop = &noopAxisStop,
+    .axis_discrete = &noopAxisDiscrete,
+    .axis_value120 = &noopAxisValue120,
+    .axis_relative_direction = &noopAxisRelDir,
+};
+
+fn noopPointerFrame(_: ?*anyopaque, _: ?*wl.wl_pointer) callconv(.c) void {}
+fn noopAxisSource(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32) callconv(.c) void {}
+fn noopAxisStop(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: u32) callconv(.c) void {}
+fn noopAxisDiscrete(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: i32) callconv(.c) void {}
+fn noopAxisValue120(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: i32) callconv(.c) void {}
+fn noopAxisRelDir(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: u32) callconv(.c) void {}
+
+// ── Keyboard listener ──
+
+const keyboard_listener = wl.wl_keyboard_listener{
+    .keymap = &keymapHandler,
+    .enter = &noopKeyboardEnter,
+    .leave = &noopKeyboardLeave,
+    .key = &keyboardKey,
+    .modifiers = &modifiersHandler,
+    .repeat_info = &noopRepeatInfo,
+};
+
+fn keymapHandler(data: ?*anyopaque, _: ?*wl.wl_keyboard, format: u32, fd: i32, size: u32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    defer _ = posix.close(fd);
+
+    if (format != wl.WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) return;
+
+    if (state.xkb_ctx == null) {
+        state.xkb_ctx = xkb.xkb_context_new(xkb.XKB_CONTEXT_NO_FLAGS);
+        if (state.xkb_ctx == null) return;
+    }
+
+    const ptr = posix.mmap(null, size, posix.PROT_READ, posix.MAP_SHARED, fd, 0);
+    if (ptr == posix.MAP_FAILED) return;
+    const map_str: [*]const u8 = @ptrCast(ptr);
+    defer _ = posix.munmap(@ptrCast(@constCast(map_str)), size);
+
+    if (state.xkb_state) |s| xkb.xkb_state_unref(s);
+    if (state.xkb_keymap) |k| xkb.xkb_keymap_unref(k);
+
+    state.xkb_keymap = xkb.xkb_keymap_new_from_string(
+        state.xkb_ctx,
+        map_str,
+        xkb.XKB_KEYMAP_FORMAT_TEXT_V1,
+        xkb.XKB_KEYMAP_COMPILE_NO_FLAGS,
+    );
+    if (state.xkb_keymap) |km| {
+        state.xkb_state = xkb.xkb_state_new(km);
+    }
+}
+
+fn noopKeyboardEnter(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: ?*wl.wl_surface, _: ?*wl.wl_array) callconv(.c) void {}
+fn noopKeyboardLeave(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: ?*wl.wl_surface) callconv(.c) void {}
+
+fn modifiersHandler(data: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, mods_depressed: u32, mods_latched: u32, mods_locked: u32, group: u32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    if (state.xkb_state) |s| {
+        _ = xkb.xkb_state_update_mask(s, mods_depressed, mods_latched, mods_locked, 0, 0, group);
+    }
+}
+fn noopRepeatInfo(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: i32, _: i32) callconv(.c) void {}
+
+fn evdevToKeycode(scancode: u32) goop.Event.Keycode {
+    return switch (scancode) {
+        14 => .backspace,
+        111 => .delete,
+        15 => .tab,
+        28 => .enter,
+        57 => .space,
+        1 => .escape,
+        42 => .left_shift,
+        54 => .right_shift,
+        29 => .left_ctrl,
+        97 => .right_ctrl,
+        30 => .a,
+        46 => .c,
+        47 => .v,
+        45 => .x,
+        102 => .home,
+        105 => .left,
+        106 => .right,
+        103 => .up,
+        108 => .down,
+        107 => .end,
+        else => .unknown,
+    };
+}
+
+fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, serial: u32, _: u32, key: u32, key_state: u32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const ctx = state.ctx orelse return;
+    state.last_input_serial = serial;
+    // Wayland delivers Linux evdev codes here. xkbcommon needs an extra +8,
+    // but goop's logical-key mapping table is keyed by the raw evdev values.
+    const scancode = key;
+    const goop_state: goop.Event.Key.KeyState = if (key_state == 1) .pressed else .released;
+    ctx.pushEvent(.{ .key = .{
+        .scancode = scancode,
+        .keycode = evdevToKeycode(scancode),
+        .state = goop_state,
+    } }) catch {};
+
+    // On key press, use xkbcommon to produce a text event with the composed codepoint
+    if (key_state == 1) {
+        if (state.xkb_state) |xkb_st| {
+            // xkb uses evdev keycodes (key + 8)
+            const codepoint = xkb.xkb_state_key_get_utf32(xkb_st, key + 8);
+            if (isPrintableTextCodepoint(codepoint)) {
+                ctx.pushEvent(.{ .text = .{
+                    .codepoint = @intCast(codepoint),
+                } }) catch {};
+            }
+        }
+    }
+    state.needs_redraw = true;
+}
+
+fn pointerEnter(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: ?*wl.wl_surface, sx: wl.wl_fixed_t, sy: wl.wl_fixed_t) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    state.mouse_x = fixedToF32(sx);
+    state.mouse_y = fixedToF32(sy);
+}
+
+fn pointerLeave(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: ?*wl.wl_surface) callconv(.c) void {}
+
+fn pointerMotion(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, sx: wl.wl_fixed_t, sy: wl.wl_fixed_t) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const x = fixedToF32(sx);
+    const y = fixedToF32(sy);
+    state.mouse_x = x;
+    state.mouse_y = y;
+    if (state.ctx) |ctx| ctx.pushEvent(.{ .mouse_move = .{ .x = x, .y = y } }) catch {};
+    state.needs_redraw = true;
+}
+
+fn pointerButton(data: ?*anyopaque, _: ?*wl.wl_pointer, serial: u32, time_ms: u32, button: u32, btn_state: u32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const ctx = state.ctx orelse return;
+    state.last_input_serial = serial;
+    const goop_button: goop.Event.MouseButton.Button = switch (button) {
+        0x110 => .left, // BTN_LEFT
+        0x111 => .right, // BTN_RIGHT
+        0x112 => .middle, // BTN_MIDDLE
+        else => return,
+    };
+    const goop_state: goop.Event.MouseButton.ButtonState = if (btn_state == 1) .pressed else .released;
+
+    // Use last known mouse position from Wayland pointer events
+    const mx = state.mouse_x;
+    const my = state.mouse_y;
+    ctx.pushEvent(.{ .mouse_button = .{
+        .button = goop_button,
+        .state = goop_state,
+        .x = mx,
+        .y = my,
+        .timestamp_ms = time_ms,
+    } }) catch {};
+    state.needs_redraw = true;
+}
+
+fn pointerAxis(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, axis: u32, value: wl.wl_fixed_t) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const v = fixedToF32(value);
+    const dx: f32 = if (axis == 1) v else 0; // WL_POINTER_AXIS_HORIZONTAL_SCROLL
+    const dy: f32 = if (axis == 0) v else 0; // WL_POINTER_AXIS_VERTICAL_SCROLL
+    if (state.ctx) |ctx| ctx.pushEvent(.{ .mouse_scroll = .{ .dx = dx, .dy = dy } }) catch {};
+    state.needs_redraw = true;
+}
+
+fn fixedToF32(fixed: wl.wl_fixed_t) f32 {
+    return @as(f32, @floatFromInt(fixed)) / 256.0;
+}
+
+// ── Frame callback ──
+
+const frame_listener = wl.wl_callback_listener{
+    .done = &frameDone,
+};
+
+fn frameDone(data: ?*anyopaque, callback: ?*wl.wl_callback, _: u32) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    wl.wl_callback_destroy(callback);
+    state.frame_pending = false;
+}
+
+fn requestFrame(state: *State) void {
+    if (state.frame_pending) return;
+    const callback = wl.wl_surface_frame(state.surface) orelse return;
+    _ = wl.wl_callback_add_listener(callback, &frame_listener, state);
+    state.frame_pending = true;
+}
+
+// ── EGL setup ──
+
+fn initEgl(state: *State, display: *wl.wl_display) !void {
+    state.egl_display = egl.eglGetDisplay(@ptrCast(display)) orelse return error.EglNoDisplay;
+
+    var major: egl.EGLint = 0;
+    var minor: egl.EGLint = 0;
+    if (egl.eglInitialize(state.egl_display, &major, &minor) == 0) return error.EglInitFailed;
+
+    const attribs = [_]egl.EGLint{
+        egl.EGL_SURFACE_TYPE,    egl.EGL_WINDOW_BIT,
+        egl.EGL_RED_SIZE,        8,
+        egl.EGL_GREEN_SIZE,      8,
+        egl.EGL_BLUE_SIZE,       8,
+        egl.EGL_ALPHA_SIZE,      8,
+        egl.EGL_RENDERABLE_TYPE, egl.EGL_OPENGL_BIT,
+        egl.EGL_SAMPLE_BUFFERS,  1,
+        egl.EGL_SAMPLES,         4,
+        egl.EGL_NONE,
+    };
+    var config: egl.EGLConfig = null;
+    var num_configs: egl.EGLint = 0;
+    if (egl.eglChooseConfig(state.egl_display, &attribs, &config, 1, &num_configs) == 0) return error.EglChooseConfigFailed;
+
+    if (egl.eglBindAPI(egl.EGL_OPENGL_API) == 0) return error.EglBindApiFailed;
+
+    const ctx_attribs = [_]egl.EGLint{
+        egl.EGL_CONTEXT_MAJOR_VERSION,       3,
+        egl.EGL_CONTEXT_MINOR_VERSION,       3,
+        egl.EGL_CONTEXT_OPENGL_PROFILE_MASK, egl.EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+        egl.EGL_NONE,
+    };
+    state.egl_context = egl.eglCreateContext(state.egl_display, config, egl.EGL_NO_CONTEXT, &ctx_attribs) orelse return error.EglCreateContextFailed;
+
+    state.egl_window = wl.wl_egl_window_create(state.surface, @intCast(state.buffer_width), @intCast(state.buffer_height)) orelse return error.EglWindowCreateFailed;
+
+    state.egl_surface = egl.eglCreateWindowSurface(state.egl_display, config, @intFromPtr(state.egl_window), null) orelse return error.EglCreateSurfaceFailed;
+
+    if (egl.eglMakeCurrent(state.egl_display, state.egl_surface, state.egl_surface, state.egl_context) == 0) return error.EglMakeCurrentFailed;
+}
+
+fn deinitEgl(state: *State) void {
+    _ = egl.eglMakeCurrent(state.egl_display, egl.EGL_NO_SURFACE, egl.EGL_NO_SURFACE, egl.EGL_NO_CONTEXT);
+    if (state.egl_surface != egl.EGL_NO_SURFACE) _ = egl.eglDestroySurface(state.egl_display, state.egl_surface);
+    if (state.egl_context != egl.EGL_NO_CONTEXT) _ = egl.eglDestroyContext(state.egl_display, state.egl_context);
+    if (state.egl_window != null) wl.wl_egl_window_destroy(state.egl_window);
+    if (state.egl_display != egl.EGL_NO_DISPLAY) _ = egl.eglTerminate(state.egl_display);
+}
+
+// ── Widget tree ──
+
+fn buildWidgetTree(state: *State) !void {
+    const ctx = state.ctx.?;
+
+    const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+
+    const menu_bar = try ctx.tree.addChild(root, .{ .menu_bar = .{} });
+    state.menu_file = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "File" } });
+    const file_popup = try ctx.tree.addChild(state.menu_file.?, .{ .popup = .{
+        .placement = .below_start,
+        .visible = false,
+    } });
+    state.menu_open_recent = try ctx.tree.addChild(file_popup, .{ .menu_item = .{ .label = "Open Recent" } });
+    const recent_popup = try ctx.tree.addChild(state.menu_open_recent.?, .{ .popup = .{
+        .placement = .right_start,
+        .visible = false,
+    } });
+    state.menu_recent_a = try ctx.tree.addChild(recent_popup, .{ .menu_item = .{ .label = "Documents" } });
+    state.menu_recent_b = try ctx.tree.addChild(recent_popup, .{ .menu_item = .{ .label = "Downloads" } });
+    state.menu_quit = try ctx.tree.addChild(file_popup, .{ .menu_item = .{ .label = "Exit" } });
+
+    state.menu_edit = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "View" } });
+    const edit_popup = try ctx.tree.addChild(state.menu_edit.?, .{ .popup = .{
+        .placement = .below_start,
+        .visible = false,
+    } });
+    state.menu_copy = try ctx.tree.addChild(edit_popup, .{ .menu_item = .{ .label = "Large Icons" } });
+    state.menu_paste = try ctx.tree.addChild(edit_popup, .{ .menu_item = .{ .label = "Details" } });
+
+    const toolbar = try ctx.tree.addChild(root, .{ .toolbar = .{} });
+    ctx.tree.get(toolbar).style_override = .{
+        .bg = .{ .r = 232, .g = 236, .b = 243, .a = 255 },
+        .border = .{ .r = 203, .g = 210, .b = 223, .a = 255 },
+        .padding = goop.style.Edges.symmetric(10, 8),
+        .border_radius = 0,
+    };
+    state.btn_a = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Back" } });
+    state.btn_b = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Up" } });
+    state.btn_c = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Refresh" } });
+    _ = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "New Folder" } });
+    const address_input = try ctx.tree.addChild(toolbar, .{ .text_input = .{} });
+    ctx.tree.get(address_input).kind.text_input.insertSlice("This PC\\Workspace\\goop");
+    _ = try ctx.tree.addChild(toolbar, .{ .text_input = .{ .placeholder = "Search goop" } });
+
+    state.splitter = try ctx.tree.addChild(root, .{ .splitter = .{
+        .direction = .row,
+        .ratio = 0.24,
+        .min_first = 190,
+        .min_second = 440,
+        .thickness = 8,
+    } });
+
+    const nav_panel = try ctx.tree.addChild(state.splitter.?, .{ .container = .{ .direction = .column } });
+    ctx.tree.get(nav_panel).style_override = .{
+        .bg = .{ .r = 247, .g = 249, .b = 252, .a = 255 },
+        .border = .{ .r = 214, .g = 220, .b = 230, .a = 255 },
+        .padding = goop.style.Edges.symmetric(10, 10),
+        .border_radius = 0,
+    };
+    _ = try ctx.tree.addChild(nav_panel, .{ .text = .{ .content = "Folders" } });
+    state.tree_parent = try ctx.tree.addChild(nav_panel, .{ .tree_item = .{
+        .label = "Quick access",
+        .group = 10,
+        .selected = true,
+        .editable = true,
+        .rename_trigger = .selected_click,
+    } });
+    state.tree_child_a = try ctx.tree.addChild(state.tree_parent.?, .{ .tree_item = .{
+        .label = "Workspace",
+        .group = 10,
+        .editable = true,
+        .rename_trigger = .selected_click,
+    } });
+    state.tree_child_b = try ctx.tree.addChild(state.tree_parent.?, .{ .tree_item = .{
+        .label = "Downloads",
+        .group = 10,
+        .editable = true,
+        .rename_trigger = .selected_click,
+    } });
+    const this_pc = try ctx.tree.addChild(nav_panel, .{ .tree_item = .{
+        .label = "This PC",
+        .group = 10,
+    } });
+    _ = try ctx.tree.addChild(this_pc, .{ .tree_item = .{ .label = "Desktop", .group = 10 } });
+    _ = try ctx.tree.addChild(this_pc, .{ .tree_item = .{ .label = "Documents", .group = 10 } });
+    _ = try ctx.tree.addChild(this_pc, .{ .tree_item = .{ .label = "Pictures", .group = 10 } });
+    _ = try ctx.tree.addChild(this_pc, .{ .tree_item = .{ .label = "Videos", .group = 10 } });
+
+    const pinned = try ctx.tree.addChild(nav_panel, .{ .tree_item = .{
+        .label = "Pinned",
+        .group = 10,
+    } });
+    _ = try ctx.tree.addChild(pinned, .{ .tree_item = .{ .label = "goop", .group = 10 } });
+    _ = try ctx.tree.addChild(pinned, .{ .tree_item = .{ .label = "snail", .group = 10 } });
+    _ = try ctx.tree.addChild(pinned, .{ .tree_item = .{ .label = "notes", .group = 10 } });
+
+    const content_panel = try ctx.tree.addChild(state.splitter.?, .{ .container = .{ .direction = .column } });
+    ctx.tree.get(content_panel).style_override = .{
+        .bg = .{ .r = 250, .g = 252, .b = 255, .a = 255 },
+        .border = .{ .r = 214, .g = 220, .b = 230, .a = 255 },
+        .padding = goop.style.Edges.symmetric(10, 10),
+        .border_radius = 0,
+    };
+
+    const breadcrumb_bar = try ctx.tree.addChild(content_panel, .{ .toolbar = .{} });
+    ctx.tree.get(breadcrumb_bar).style_override = .{
+        .bg = .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+        .border = .{ .r = 214, .g = 220, .b = 230, .a = 255 },
+        .padding = goop.style.Edges.symmetric(10, 7),
+        .border_radius = 4,
+    };
+    _ = try ctx.tree.addChild(breadcrumb_bar, .{ .text = .{ .content = "This PC" } });
+    _ = try ctx.tree.addChild(breadcrumb_bar, .{ .text = .{ .content = ">" } });
+    _ = try ctx.tree.addChild(breadcrumb_bar, .{ .text = .{ .content = "Workspace" } });
+    _ = try ctx.tree.addChild(breadcrumb_bar, .{ .text = .{ .content = ">" } });
+    _ = try ctx.tree.addChild(breadcrumb_bar, .{ .text = .{ .content = "goop" } });
+
+    state.dropdown = try ctx.tree.addChild(content_panel, .{ .dropdown = .{ .placeholder = "Details view" } });
+    const dropdown_popup = try ctx.tree.addChild(state.dropdown.?, .{ .popup = .{ .placement = .below_start } });
+    _ = try ctx.tree.addChild(dropdown_popup, .{ .menu_item = .{ .label = "Details" } });
+    _ = try ctx.tree.addChild(dropdown_popup, .{ .menu_item = .{ .label = "Tiles" } });
+    _ = try ctx.tree.addChild(dropdown_popup, .{ .menu_item = .{ .label = "Content" } });
+
+    const tab_bar = try ctx.tree.addChild(content_panel, .{ .tab_bar = .{} });
+    state.tab_scene = try ctx.tree.addChild(tab_bar, .{ .tab_item = .{
+        .label = "Details",
+        .selected = true,
+    } });
+    _ = try ctx.tree.addChild(state.tab_scene.?, .{ .text = .{ .content = "Columns: Name, Date modified, Type, Size." } });
+    state.tab_render = try ctx.tree.addChild(tab_bar, .{ .tab_item = .{
+        .label = "Preview",
+    } });
+    _ = try ctx.tree.addChild(state.tab_render.?, .{ .text = .{ .content = "Preview pane ready for selected items." } });
+
+    state.asset_table = try ctx.tree.addChild(content_panel, .{ .table = .{
+        .columns = 4,
+        .resizable = true,
+        .sortable = true,
+        .selection_mode = .multiple,
+        .min_column_width = 96,
+    } });
+    {
+        const table = &ctx.tree.get(state.asset_table.?).kind.table;
+        table.column_weights[0] = 0.48;
+        table.column_weights[1] = 0.22;
+        table.column_weights[2] = 0.18;
+        table.column_weights[3] = 0.12;
+    }
+    const asset_header = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{ .header = true } });
+    const asset_header_name = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
+    const asset_header_date = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
+    const asset_header_type = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
+    const asset_header_size = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(asset_header_name, .{ .text = .{ .content = "Name" } });
+    _ = try ctx.tree.addChild(asset_header_date, .{ .text = .{ .content = "Date modified" } });
+    _ = try ctx.tree.addChild(asset_header_type, .{ .text = .{ .content = "Type" } });
+    _ = try ctx.tree.addChild(asset_header_size, .{ .text = .{ .content = "Size" } });
+
+    state.asset_row_a = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{ .selected = true } });
+    const asset_row_a_name = try ctx.tree.addChild(state.asset_row_a.?, .{ .table_cell = .{} });
+    const asset_row_a_date = try ctx.tree.addChild(state.asset_row_a.?, .{ .table_cell = .{} });
+    const asset_row_a_type = try ctx.tree.addChild(state.asset_row_a.?, .{ .table_cell = .{} });
+    const asset_row_a_size = try ctx.tree.addChild(state.asset_row_a.?, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(asset_row_a_name, .{ .text = .{ .content = "README.md" } });
+    _ = try ctx.tree.addChild(asset_row_a_date, .{ .text = .{ .content = "2026-04-21  10:14" } });
+    _ = try ctx.tree.addChild(asset_row_a_type, .{ .text = .{ .content = "Markdown" } });
+    _ = try ctx.tree.addChild(asset_row_a_size, .{ .text = .{ .content = "14 KB" } });
+
+    state.asset_row_b = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{} });
+    const asset_row_b_name = try ctx.tree.addChild(state.asset_row_b.?, .{ .table_cell = .{} });
+    const asset_row_b_date = try ctx.tree.addChild(state.asset_row_b.?, .{ .table_cell = .{} });
+    const asset_row_b_type = try ctx.tree.addChild(state.asset_row_b.?, .{ .table_cell = .{} });
+    const asset_row_b_size = try ctx.tree.addChild(state.asset_row_b.?, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(asset_row_b_name, .{ .text = .{ .content = "src" } });
+    _ = try ctx.tree.addChild(asset_row_b_date, .{ .text = .{ .content = "2026-04-21  09:48" } });
+    _ = try ctx.tree.addChild(asset_row_b_type, .{ .text = .{ .content = "File folder" } });
+    _ = try ctx.tree.addChild(asset_row_b_size, .{ .text = .{ .content = "" } });
+
+    state.asset_row_c = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{} });
+    const asset_row_c_name = try ctx.tree.addChild(state.asset_row_c.?, .{ .table_cell = .{} });
+    const asset_row_c_date = try ctx.tree.addChild(state.asset_row_c.?, .{ .table_cell = .{} });
+    const asset_row_c_type = try ctx.tree.addChild(state.asset_row_c.?, .{ .table_cell = .{} });
+    const asset_row_c_size = try ctx.tree.addChild(state.asset_row_c.?, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(asset_row_c_name, .{ .text = .{ .content = "zig-out" } });
+    _ = try ctx.tree.addChild(asset_row_c_date, .{ .text = .{ .content = "2026-04-21  09:04" } });
+    _ = try ctx.tree.addChild(asset_row_c_type, .{ .text = .{ .content = "File folder" } });
+    _ = try ctx.tree.addChild(asset_row_c_size, .{ .text = .{ .content = "" } });
+
+    const extra_rows = [_]struct { name: []const u8, date: []const u8, kind: []const u8, size: []const u8 }{
+        .{ .name = "build.zig", .date = "2026-04-21  08:51", .kind = "Zig Source", .size = "5 KB" },
+        .{ .name = "build.zig.zon", .date = "2026-04-21  08:51", .kind = "ZON File", .size = "1 KB" },
+        .{ .name = "default.nix", .date = "2026-04-20  21:12", .kind = "Nix Expression", .size = "2 KB" },
+        .{ .name = "npins", .date = "2026-04-20  21:10", .kind = "File folder", .size = "" },
+        .{ .name = "examples", .date = "2026-04-20  20:56", .kind = "File folder", .size = "" },
+        .{ .name = "vendor", .date = "2026-04-20  20:56", .kind = "File folder", .size = "" },
+        .{ .name = "notes.txt", .date = "2026-04-19  18:33", .kind = "Text Document", .size = "3 KB" },
+        .{ .name = "render-cache-017.bin", .date = "2026-04-18  16:02", .kind = "Binary Cache", .size = "18.4 MB" },
+    };
+    for (extra_rows) |row| try addFileTableRow(ctx, state.asset_table.?, row.name, row.date, row.kind, row.size, false);
+
+    const status_bar = try ctx.tree.addChild(root, .{ .status_bar = .{} });
+    ctx.tree.get(status_bar).style_override = .{
+        .bg = .{ .r = 232, .g = 236, .b = 243, .a = 255 },
+        .border = .{ .r = 203, .g = 210, .b = 223, .a = 255 },
+        .padding = goop.style.Edges.symmetric(10, 7),
+        .border_radius = 0,
+    };
+    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "11 items" } });
+    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "1 selected" } });
+    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "Sync status: Up to date" } });
+
+    state.context_popup = try ctx.tree.addRoot(.{ .popup = .{ .placement = .absolute, .visible = false } });
+    state.context_action_a = try ctx.tree.addChild(state.context_popup.?, .{ .menu_item = .{ .label = "Open" } });
+    state.context_action_b = try ctx.tree.addChild(state.context_popup.?, .{ .menu_item = .{ .label = "Properties" } });
+}
+
+fn addFileTableRow(
+    ctx: *goop.Context,
+    table: goop.NodeHandle,
+    name: []const u8,
+    date: []const u8,
+    kind: []const u8,
+    size: []const u8,
+    selected: bool,
+) !void {
+    const row = try ctx.tree.addChild(table, .{ .table_row = .{ .selected = selected } });
+    try addFileTableCell(ctx, row, name);
+    try addFileTableCell(ctx, row, date);
+    try addFileTableCell(ctx, row, kind);
+    try addFileTableCell(ctx, row, size);
+}
+
+fn addFileTableCell(ctx: *goop.Context, row: goop.NodeHandle, text: []const u8) !void {
+    const cell = try ctx.tree.addChild(row, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(cell, .{ .text = .{ .content = text } });
+}
+
+// ── Font loading ──
+
+const c_io = @cImport({
+    @cInclude("stdio.h");
+    @cInclude("stdlib.h");
+});
+
+fn loadFont(alloc: std.mem.Allocator) ![]u8 {
+    if (fontPathFromEnv()) |path| {
+        return readFile(alloc, path);
+    }
+
+    const fallback_paths = [_][]const u8{
+        "/run/current-system/sw/share/X11/fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    };
+    for (fallback_paths) |path| {
+        return readFile(alloc, path) catch continue;
+    }
+
+    std.debug.print("font not found; set GOOP_DEMO_FONT_PATH to a TTF file\n", .{});
+    return error.FontNotFound;
+}
+
+fn fontPathFromEnv() ?[]const u8 {
+    const raw = c_io.getenv("GOOP_DEMO_FONT_PATH") orelse return null;
+    return std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
+}
+
+fn readFile(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
+    var path_z: [1024]u8 = undefined;
+    if (path.len >= path_z.len) return error.PathTooLong;
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+    const fp = c_io.fopen(&path_z, "rb") orelse return error.FileNotFound;
+    defer _ = c_io.fclose(fp);
+    _ = c_io.fseek(fp, 0, c_io.SEEK_END);
+    const tell = c_io.ftell(fp);
+    if (tell < 0) return error.ReadFailed;
+    const size: usize = @intCast(tell);
+    _ = c_io.fseek(fp, 0, c_io.SEEK_SET);
+    const buf = try alloc.alloc(u8, size);
+    errdefer alloc.free(buf);
+    const read = c_io.fread(buf.ptr, 1, size, fp);
+    if (read != size) {
+        alloc.free(buf);
+        return error.ReadFailed;
+    }
+    std.debug.print("loaded font: {s} ({} bytes)\n", .{ path, size });
+    return buf;
+}
+
+// ── Main ──
+
+fn parseTimeout() ?u64 {
+    const raw = c_io.getenv("GOOP_DEMO_TIMEOUT") orelse return null;
+    const val = std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
+    const secs = std.fmt.parseFloat(f64, val) catch return null;
+    if (secs <= 0) return null;
+    return @intFromFloat(secs * @as(f64, @floatFromInt(std.time.ns_per_s)));
+}
+
+fn getMonotonicNs() u64 {
+    var ts: posix.struct_timespec = undefined;
+    _ = posix.clock_gettime(posix.CLOCK_MONOTONIC, &ts);
+    return @intCast(@as(i128, ts.tv_sec) * std.time.ns_per_s + ts.tv_nsec);
+}
+
+pub fn main() !void {
+    // Connect to Wayland
+    const display = wl.wl_display_connect(null) orelse {
+        std.debug.print("failed to connect to wayland display\n", .{});
+        return error.NoDisplay;
+    };
+    defer wl.wl_display_disconnect(display);
+
+    var state = State{};
+    state.display = display;
+    state.timeout_ns = parseTimeout();
+    if (state.timeout_ns) |t| {
+        std.debug.print("demo will exit after {d:.1}s\n", .{@as(f64, @floatFromInt(t)) / std.time.ns_per_s});
+    }
+    if (state.timeout_ns != null) {
+        _ = posix.clock_gettime(posix.CLOCK_MONOTONIC, &state.start_time);
+    }
+
+    // Bind globals
+    const registry = wl.wl_display_get_registry(display) orelse return error.NoRegistry;
+    _ = wl.wl_registry_add_listener(registry, &registry_listener, &state);
+    _ = wl.wl_display_roundtrip(display);
+
+    if (state.compositor == null) return error.NoCompositor;
+    if (state.wm_base == null) return error.NoXdgWmBase;
+
+    // Create surface
+    state.surface = wl.wl_compositor_create_surface(state.compositor) orelse return error.NoSurface;
+    _ = wl.wl_surface_add_listener(state.surface, &surface_listener, &state);
+    state.xdg_surface = wl.xdg_wm_base_get_xdg_surface(state.wm_base, state.surface) orelse return error.NoXdgSurface;
+    _ = wl.xdg_surface_add_listener(state.xdg_surface, &xdg_surface_listener, &state);
+    state.xdg_toplevel = wl.xdg_surface_get_toplevel(state.xdg_surface) orelse return error.NoToplevel;
+    _ = wl.xdg_toplevel_add_listener(state.xdg_toplevel, &xdg_toplevel_listener, &state);
+    wl.xdg_toplevel_set_title(state.xdg_toplevel, "goop file manager");
+    wl.xdg_toplevel_set_app_id(state.xdg_toplevel, "goop-file-manager");
+    wl.wl_surface_commit(state.surface.?);
+    _ = wl.wl_display_roundtrip(display);
+
+    // EGL + OpenGL
+    try initEgl(&state, display);
+    defer deinitEgl(&state);
+
+    // Load font
+    const font_data = loadFont(allocator) catch |err| {
+        std.debug.print("failed to load font: {}\n", .{err});
+        return err;
+    };
+    defer allocator.free(font_data);
+
+    var font = try snail.Font.init(font_data);
+    defer font.deinit();
+
+    // Build glyph atlas for printable ASCII
+    var codepoints: [95]u32 = undefined;
+    for (0..95) |i| codepoints[i] = @intCast(32 + i);
+    var atlas = try snail.Atlas.init(allocator, &font, &codepoints);
+    defer atlas.deinit();
+
+    const line_metrics = fontLineMetrics(&font);
+    var text_measure = SnailTextCtx{
+        .allocator = allocator,
+        .font = &font,
+        .atlas = &atlas,
+        .glyph_cache = snail.ttf.GlyphCache.init(allocator),
+        .ascent_units = line_metrics.ascent,
+        .descent_units = line_metrics.descent,
+    };
+    defer text_measure.glyph_cache.deinit();
+    const text_measure_ctx = goop.TextMeasureCtx{
+        .measureFn = &snailMeasureText,
+        .user_data = @ptrCast(&text_measure),
+    };
+
+    // goop context + widget tree
+    var ctx = try goop.Context.init(allocator, .{
+        .width = state.logical_width,
+        .height = state.logical_height,
+        .theme = .{
+            .bg = .rgb(243, 246, 251),
+            .fg = .rgb(24, 29, 38),
+            .accent = .rgb(58, 126, 219),
+            .border = .rgb(203, 210, 223),
+            .bg_hover = .rgb(231, 238, 248),
+            .bg_active = .rgb(220, 229, 243),
+            .focus_ring = .rgba(58, 126, 219, 210),
+            .placeholder_fg = .rgb(123, 133, 148),
+            .selection_bg = .rgba(58, 126, 219, 84),
+            .tree_guide = .rgba(145, 152, 165, 180),
+            .font_size = 14,
+            .padding = goop.style.Edges.symmetric(8, 6),
+            .border_radius = 6,
+            .border_width = 1,
+            .spacing = 6,
+            .thumb_width = 14,
+        },
+    });
+    defer ctx.deinit();
+    state.ctx = &ctx;
+    ctx.clipboard = state.clipboard();
+    try buildWidgetTree(&state);
+
+    // GL renderer (with snail text support)
+    var renderer = try render.Renderer.init(state.buffer_width, state.buffer_height, &font, &atlas);
+    defer renderer.deinit();
+    renderer.clear_color = .{ 0.95, 0.96, 0.98, 1.0 };
+
+    std.debug.print("goop file manager running (logical {}x{}, scale {}, buffer {}x{})\n", .{
+        state.logical_width,
+        state.logical_height,
+        state.buffer_scale,
+        state.buffer_width,
+        state.buffer_height,
+    });
+
+    // Wayland dispatch/render loop. Redraws are paced by frame callbacks.
+    while (state.running) {
+        // Check timeout
+        if (state.timeout_ns) |t| {
+            const now = getMonotonicNs();
+            const start = @as(u64, @intCast(@as(i128, state.start_time.tv_sec) * std.time.ns_per_s + state.start_time.tv_nsec));
+            const elapsed = now - start;
+            if (elapsed >= t) {
+                std.debug.print("demo timeout reached, exiting\n", .{});
+                break;
+            }
+        }
+
+        // Dispatch events — use poll with timeout when --timeout is set
+        if (state.timeout_ns != null) {
+            // Non-blocking: flush + prepare read, poll with 100ms timeout, then read
+            while (wl.wl_display_prepare_read(display) != 0)
+                _ = wl.wl_display_dispatch_pending(display);
+            _ = wl.wl_display_flush(display);
+
+            var pfd = posix.pollfd{
+                .fd = wl.wl_display_get_fd(display),
+                .events = posix.POLLIN,
+                .revents = 0,
+            };
+            const poll_ret = posix.poll(&pfd, 1, 100);
+            if (poll_ret > 0) {
+                _ = wl.wl_display_read_events(display);
+                _ = wl.wl_display_dispatch_pending(display);
+            } else {
+                wl.wl_display_cancel_read(display);
+                if (poll_ret < 0) break;
+            }
+        } else {
+            // No timeout — block until events arrive
+            if (wl.wl_display_dispatch(display) == -1) break;
+        }
+
+        if (!state.configured or !state.needs_redraw or state.frame_pending) continue;
+        state.needs_redraw = false;
+
+        // Process frame
+        ctx.clearClickedFlags();
+        ctx.doLayout(&text_measure_ctx);
+
+        ctx.processEvents();
+
+        if (ctx.lastSecondaryClick()) |click| {
+            if (state.context_popup) |popup| {
+                const popup_node = ctx.tree.get(popup);
+                popup_node.kind.popup.x = click.x;
+                popup_node.kind.popup.y = click.y;
+                popup_node.kind.popup.visible = true;
+                std.debug.print("Secondary click on widget {} at ({d:.1}, {d:.1})\n", .{
+                    click.target.index,
+                    click.x,
+                    click.y,
+                });
+            }
+        }
+
+        // Check clicks
+        if (state.btn_a) |h| if (ctx.wasClicked(h)) {
+            state.click_count += 1;
+            std.debug.print("Toolbar action: Back (total: {})\n", .{state.click_count});
+        };
+        if (state.btn_b) |h| if (ctx.wasClicked(h)) {
+            state.click_count += 1;
+            std.debug.print("Toolbar action: Up (total: {})\n", .{state.click_count});
+        };
+        if (state.btn_c) |h| if (ctx.wasClicked(h)) {
+            state.click_count += 1;
+            std.debug.print("Toolbar action: Refresh (total: {})\n", .{state.click_count});
+        };
+
+        // Log checkbox state changes (checkbox toggles itself on click)
+        if (state.checkbox) |h| if (ctx.wasClicked(h)) {
+            std.debug.print("Checkbox toggled: {}\n", .{ctx.isChecked(h)});
+        };
+
+        // Log radio button selection
+        if (state.radio_a) |h| if (ctx.wasClicked(h)) std.debug.print("Radio: Option A selected\n", .{});
+        if (state.radio_b) |h| if (ctx.wasClicked(h)) std.debug.print("Radio: Option B selected\n", .{});
+        if (state.radio_c) |h| if (ctx.wasClicked(h)) std.debug.print("Radio: Option C selected\n", .{});
+        if (state.tree_parent) |h| {
+            if (ctx.treeItemToggled(h)) std.debug.print("Folder root expanded: {}\n", .{ctx.isExpanded(h)});
+            if (ctx.wasClicked(h)) std.debug.print("Folder selected: Quick access\n", .{});
+            if (ctx.treeItemRenameCommitted(h)) std.debug.print("Folder renamed: {s}\n", .{ctx.treeItemLabel(h)});
+        }
+        if (state.tree_child_a) |h| {
+            if (ctx.wasClicked(h)) std.debug.print("Folder selected: Workspace\n", .{});
+            if (ctx.treeItemRenameCommitted(h)) std.debug.print("Folder renamed: {s}\n", .{ctx.treeItemLabel(h)});
+        }
+        if (state.tree_child_b) |h| {
+            if (ctx.wasClicked(h)) std.debug.print("Folder selected: Downloads\n", .{});
+            if (ctx.treeItemRenameCommitted(h)) std.debug.print("Folder renamed: {s}\n", .{ctx.treeItemLabel(h)});
+        }
+        if (ctx.lastTreeDrop()) |drop| {
+            const position_name = switch (drop.position) {
+                .before => "before",
+                .into => "into",
+                .after => "after",
+            };
+            std.debug.print("Folder drop: {s} -> {s} ({s})\n", .{
+                ctx.treeItemLabel(drop.source),
+                ctx.treeItemLabel(drop.target),
+                position_name,
+            });
+        }
+        if (state.list_box) |h| if (ctx.listBoxChanged(h)) {
+            std.debug.print("List box selection count: {}\n", .{ctx.listBoxSelectionCount(h)});
+        };
+        if (state.selectable_scene) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Scene Collection\n", .{});
+        if (state.selectable_camera) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Camera Rig\n", .{});
+        if (state.selectable_light) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Lighting Set\n", .{});
+        if (state.grid_selector) |h| if (ctx.gridSelectorChanged(h)) {
+            std.debug.print("Grid selection count: {}\n", .{ctx.gridSelectorSelectionCount(h)});
+        };
+        if (state.grid_item_a) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: Brick\n", .{});
+        if (state.grid_item_b) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: Metal\n", .{});
+        if (state.grid_item_c) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: Leaves\n", .{});
+        if (state.grid_item_d) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: UI Icons\n", .{});
+        if (ctx.lastGridDrop()) |drop| {
+            switch (drop.position) {
+                .item => std.debug.print("Grid drop: {s} -> {s} (item)\n", .{
+                    ctx.tree.getConst(drop.source).kind.grid_item.label,
+                    ctx.tree.getConst(drop.target).kind.grid_item.label,
+                }),
+                .background => std.debug.print("Grid drop: {s} -> background\n", .{
+                    ctx.tree.getConst(drop.source).kind.grid_item.label,
+                }),
+            }
+        }
+        if (state.asset_table) |h| if (ctx.tableChanged(h)) {
+            std.debug.print("File table divider {} resized: [{d:.2}, {d:.2}, {d:.2}, {d:.2}]\n", .{
+                ctx.tableResizedColumn(h).?,
+                ctx.tableColumnFraction(h, 0).?,
+                ctx.tableColumnFraction(h, 1).?,
+                ctx.tableColumnFraction(h, 2).?,
+                ctx.tableColumnFraction(h, 3).?,
+            });
+        };
+        if (state.asset_table) |h| if (ctx.tableSortChanged(h)) {
+            const column_name = switch (ctx.tableSortedColumn(h).?) {
+                0 => "Name",
+                1 => "Date modified",
+                2 => "Type",
+                3 => "Size",
+                else => "Unknown",
+            };
+            const direction_name = switch (ctx.tableSortDirection(h).?) {
+                .ascending => "ascending",
+                .descending => "descending",
+            };
+            std.debug.print("File table sort: {s} {s}\n", .{ column_name, direction_name });
+        };
+        if (state.asset_table) |h| if (ctx.tableSelectionChanged(h)) {
+            std.debug.print("File table selection count: {}, first row: {?}\n", .{
+                ctx.tableSelectionCount(h),
+                ctx.tableSelectedRowIndex(h),
+            });
+        };
+        if (state.asset_row_a) |h| if (ctx.wasClicked(h)) std.debug.print("File row clicked: README.md\n", .{});
+        if (state.asset_row_b) |h| if (ctx.wasClicked(h)) std.debug.print("File row clicked: src\n", .{});
+        if (state.asset_row_c) |h| if (ctx.wasClicked(h)) std.debug.print("File row clicked: zig-out\n", .{});
+        if (state.dropdown) |h| if (ctx.dropdownChanged(h)) {
+            std.debug.print("Dropdown selected: {s}\n", .{ctx.dropdownValue(h)});
+        };
+        if (state.menu_file) |h| if (ctx.wasClicked(h)) std.debug.print("Menu toggled: File\n", .{});
+        if (state.menu_edit) |h| if (ctx.wasClicked(h)) std.debug.print("Menu toggled: Edit\n", .{});
+        if (state.menu_recent_a) |h| if (ctx.wasClicked(h)) std.debug.print("Recent location: Documents\n", .{});
+        if (state.menu_recent_b) |h| if (ctx.wasClicked(h)) std.debug.print("Recent location: Downloads\n", .{});
+        if (state.menu_quit) |h| if (ctx.wasClicked(h)) std.debug.print("Menu action: Exit\n", .{});
+        if (state.menu_copy) |h| if (ctx.wasClicked(h)) std.debug.print("View mode: Large Icons\n", .{});
+        if (state.menu_paste) |h| if (ctx.wasClicked(h)) std.debug.print("View mode: Details\n", .{});
+        if (state.drag_value) |h| if (ctx.dragValueChanged(h)) {
+            std.debug.print("Exposure changed: {d:.2}\n", .{ctx.dragValue(h)});
+        };
+        if (state.spinbox) |h| if (ctx.spinboxChanged(h)) {
+            std.debug.print("Samples changed: {d:.0}\n", .{ctx.spinboxValue(h)});
+        };
+        if (state.tab_scene) |h| if (ctx.wasClicked(h)) {
+            std.debug.print("Pane selected: Details\n", .{});
+        };
+        if (state.tab_render) |h| if (ctx.wasClicked(h)) {
+            std.debug.print("Pane selected: Preview\n", .{});
+        };
+        if (state.splitter) |h| if (ctx.splitterChanged(h)) {
+            std.debug.print("Splitter ratio: {d:.2}\n", .{ctx.splitterRatio(h)});
+        };
+        if (state.context_action_a) |h| if (ctx.wasClicked(h)) std.debug.print("Context action: Open\n", .{});
+        if (state.context_action_b) |h| if (ctx.wasClicked(h)) std.debug.print("Context action: Properties\n", .{});
+
+        // Render
+        var dl = try ctx.generateDrawList();
+        defer ctx.freeDrawList(&dl);
+        if (try ensureAtlasForDrawList(&atlas, &renderer, dl)) {
+            ctx.setDimensions(state.logical_width, state.logical_height);
+            ctx.doLayout(&text_measure_ctx);
+            dl = try ctx.generateDrawList();
+        }
+
+        renderer.beginFrame(state.buffer_width, state.buffer_height, @floatFromInt(state.buffer_scale));
+        renderer.render(dl);
+
+        // Request frame callback BEFORE swap — the callback must be
+        // registered before the surface commit that eglSwapBuffers triggers.
+        requestFrame(&state);
+        _ = egl.eglSwapBuffers(state.egl_display, state.egl_surface);
+    }
+
+    // Clean up xkb state
+    state.destroyAllDataOffers();
+    state.destroyAllOutputs();
+    state.destroyClipboardSource();
+    state.clipboard_buf.deinit(allocator);
+    if (state.data_device) |data_device| wl.wl_data_device_release(data_device);
+    if (state.data_device_manager) |manager| wl.wl_data_device_manager_destroy(manager);
+    if (state.xkb_state) |s| xkb.xkb_state_unref(s);
+    if (state.xkb_keymap) |k| xkb.xkb_keymap_unref(k);
+    if (state.xkb_ctx) |c| xkb.xkb_context_unref(c);
+
+    std.debug.print("goop file manager exiting\n", .{});
+}

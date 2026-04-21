@@ -19,6 +19,7 @@ pub const Renderer = struct {
     viewport_w: f32,
     viewport_h: f32,
     scale: f32,
+    clear_color: [4]f32,
     scissor_stack: [16]Scissor = undefined,
     scissor_depth: u32 = 0,
 
@@ -44,6 +45,7 @@ pub const Renderer = struct {
             .viewport_w = @floatFromInt(w),
             .viewport_h = @floatFromInt(h),
             .scale = 1,
+            .clear_color = .{ 0.12, 0.12, 0.12, 1.0 },
             .text_renderer = text_renderer,
             .text_batch = snail.Batch.init(vertex_buf),
             .vertex_buf = vertex_buf,
@@ -70,7 +72,7 @@ pub const Renderer = struct {
         self.scale = scale;
         self.scissor_depth = 0;
         gl.glViewport(0, 0, @intCast(w), @intCast(h));
-        gl.glClearColor(0.12, 0.12, 0.12, 1.0);
+        gl.glClearColor(self.clear_color[0], self.clear_color[1], self.clear_color[2], self.clear_color[3]);
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
         gl.glEnable(gl.GL_BLEND);
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);

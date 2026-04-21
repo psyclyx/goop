@@ -100,6 +100,59 @@ pub fn build(b: *std.Build) void {
     const demo_step = b.step("demo", "Build and run the demo");
     demo_step.dependOn(&run_demo.step);
 
+    const file_manager_demo_mod = b.createModule(.{
+        .root_source_file = b.path("demo/file_manager_main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    file_manager_demo_mod.addImport("goop", goop_mod);
+    file_manager_demo_mod.addImport("snail", snail_mod);
+    file_manager_demo_mod.addIncludePath(b.path("demo/protocol"));
+    file_manager_demo_mod.addCSourceFile(.{ .file = b.path("demo/protocol/xdg-shell-protocol.c") });
+    file_manager_demo_mod.linkSystemLibrary("wayland-client", .{});
+    file_manager_demo_mod.linkSystemLibrary("wayland-egl", .{});
+    file_manager_demo_mod.linkSystemLibrary("egl", .{});
+    file_manager_demo_mod.linkSystemLibrary("xkbcommon", .{});
+    file_manager_demo_mod.linkSystemLibrary("gl", .{});
+
+    const file_manager_demo_exe = b.addExecutable(.{
+        .name = "goop-file-manager-demo",
+        .root_module = file_manager_demo_mod,
+    });
+    b.installArtifact(file_manager_demo_exe);
+
+    const build_file_manager_demo = b.step("build-file-manager-demo", "Build the file manager demo executable");
+    build_file_manager_demo.dependOn(&b.addInstallArtifact(file_manager_demo_exe, .{}).step);
+
+    const run_file_manager_demo = b.addRunArtifact(file_manager_demo_exe);
+    run_file_manager_demo.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_file_manager_demo.addArgs(args);
+
+    const file_manager_demo_step = b.step("file-manager-demo", "Build and run the file manager demo");
+    file_manager_demo_step.dependOn(&run_file_manager_demo.step);
+
+    // ── Headless perf round ──
+    const perf_mod = b.createModule(.{
+        .root_source_file = b.path("tools/perf_round.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    perf_mod.addImport("goop", goop_mod);
+
+    const perf_exe = b.addExecutable(.{
+        .name = "goop-perf-round",
+        .root_module = perf_mod,
+    });
+
+    const build_perf = b.step("build-perf-round", "Build the headless perf benchmark");
+    build_perf.dependOn(&perf_exe.step);
+
+    const run_perf = b.addRunArtifact(perf_exe);
+    const perf_step = b.step("perf-round", "Build and run the headless perf benchmark");
+    perf_step.dependOn(&run_perf.step);
+
     // ── Tests ──
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),

@@ -68,7 +68,9 @@ nix-shell
 zig build test          # unit tests
 zig build               # library + demo
 zig build demo          # build and run the Wayland demo
+zig build file-manager-demo  # build and run the Explorer-style Wayland demo
 zig build c-example     # build and run the headless C API example
+zig build perf-round    # run the headless retained-UI perf benchmark
 zig build install       # install static/shared libgoop, goop-demo, and goop.h to zig-out/
 ```
 
@@ -220,6 +222,14 @@ Run it with:
 
 ```sh
 nix-shell --run 'zig build demo'
+```
+
+A second reference example in [demo/file_manager_main.zig](demo/file_manager_main.zig)
+leans into a classic Explorer-style file manager layout: folders on the left,
+details table on the right, light chrome, and the same Wayland/EGL/snail stack.
+
+```sh
+nix-shell --run 'zig build file-manager-demo'
 ```
 
 ## Docs
