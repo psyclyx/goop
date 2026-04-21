@@ -31,6 +31,7 @@ pub const GridDrop = dispatch.GridDrop;
 pub const Context = struct {
     allocator: std.mem.Allocator,
     clay_arena: []u8,
+    clay_context: *c.Clay_Context,
     tree: Tree,
     theme: Theme,
     events: std.ArrayListUnmanaged(Event),
@@ -49,13 +50,14 @@ pub const Context = struct {
             .capacity = min_memory,
             .memory = arena.ptr,
         };
-        _ = c.Clay_Initialize(clay_arena, .{
+        const clay_context = c.Clay_Initialize(clay_arena, .{
             .width = @floatFromInt(opts.width),
             .height = @floatFromInt(opts.height),
-        }, .{});
+        }, .{}) orelse return error.OutOfMemory;
         return .{
             .allocator = allocator,
             .clay_arena = arena,
+            .clay_context = clay_context,
             .tree = Tree.init(allocator),
             .theme = opts.theme,
             .events = .empty,
@@ -66,7 +68,9 @@ pub const Context = struct {
         self.invalidateDrawCache();
         self.events.deinit(self.allocator);
         self.tree.deinit();
-        c.Clay_SetCurrentContext(null);
+        if (c.Clay_GetCurrentContext() == self.clay_context) {
+            c.Clay_SetCurrentContext(null);
+        }
         self.allocator.free(self.clay_arena);
     }
 
@@ -92,6 +96,7 @@ pub const Context = struct {
         if (self.events.items.len > 0) self.draw_dirty = true;
         dispatch.processWithClipboard(&self.tree, self.events.items, &self.mouse, self.theme, self.clipboard, self.text_measure_ctx);
         if (self.layout_dirty or self.mouse.layout_changed) {
+            self.bindClayContext();
             layout.run(&self.tree, self.theme, self.text_measure_ctx);
             self.layout_dirty = false;
             self.draw_dirty = true;
@@ -436,6 +441,7 @@ pub const Context = struct {
         self.text_measure_ctx = text_ctx;
         const current_count = self.tree.count();
         if (!self.layout_dirty and current_count == self.last_node_count) return;
+        self.bindClayContext();
         layout.run(&self.tree, self.theme, text_ctx);
         self.layout_dirty = false;
         self.draw_dirty = true;
@@ -473,10 +479,17 @@ pub const Context = struct {
     /// Update layout dimensions (e.g. on window resize).
     pub fn setDimensions(self: *Context, width: u32, height: u32) void {
         self.layout_dirty = true;
+        self.bindClayContext();
         c.Clay_SetLayoutDimensions(.{
             .width = @floatFromInt(width),
             .height = @floatFromInt(height),
         });
+    }
+
+    fn bindClayContext(self: *Context) void {
+        if (c.Clay_GetCurrentContext() != self.clay_context) {
+            c.Clay_SetCurrentContext(self.clay_context);
+        }
     }
 
     pub const InitOptions = struct {
@@ -642,6 +655,28 @@ test "setDimensions dirties layout" {
 
     ctx.setDimensions(1024, 768);
     try std.testing.expect(ctx.layout_dirty);
+}
+
+test "retained context rebinds after another context deinit" {
+    var primary = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
+    defer primary.deinit();
+
+    _ = try primary.tree.addRoot(.{ .container = .{} });
+    primary.doLayout(null);
+    try std.testing.expect(!primary.layout_dirty);
+
+    {
+        var secondary = try Context.init(std.testing.allocator, .{ .width = 640, .height = 480 });
+        defer secondary.deinit();
+
+        _ = try secondary.tree.addRoot(.{ .container = .{} });
+        secondary.doLayout(null);
+        try std.testing.expect(!secondary.layout_dirty);
+    }
+
+    primary.setDimensions(1024, 768);
+    primary.doLayout(null);
+    try std.testing.expect(!primary.layout_dirty);
 }
 
 test "adding nodes triggers layout" {
