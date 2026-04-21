@@ -142,37 +142,20 @@ fn isPrintableTextCodepoint(codepoint: u32) bool {
 }
 
 fn ensureAtlasForDrawList(atlas: *snail.Atlas, renderer: *render.Renderer, draw_list: goop.DrawList) !bool {
-    var unique_codepoints = std.AutoHashMap(u32, void).init(allocator);
-    defer unique_codepoints.deinit();
-
+    var changed = false;
     for (draw_list.commands) |command| {
         if (command != .text) continue;
         const text = command.text.text;
-        const view = std.unicode.Utf8View.init(text) catch continue;
-        var it = view.iterator();
-        while (it.nextCodepoint()) |codepoint| {
-            if (!isPrintableTextCodepoint(codepoint)) continue;
-            try unique_codepoints.put(codepoint, {});
+        if (text.len == 0) continue;
+
+        if (try atlas.extendGlyphsForText(text)) |next| {
+            _ = snail.replaceAtlas(atlas, next);
+            changed = true;
         }
     }
 
-    if (unique_codepoints.count() == 0) return false;
-
-    var codepoints = try allocator.alloc(u32, unique_codepoints.count());
-    defer allocator.free(codepoints);
-
-    var index: usize = 0;
-    var it = unique_codepoints.keyIterator();
-    while (it.next()) |codepoint| : (index += 1) {
-        codepoints[index] = codepoint.*;
-    }
-
-    if (try atlas.extendCodepoints(codepoints)) |next| {
-        _ = snail.replaceAtlas(atlas, next);
-        renderer.uploadAtlas(atlas);
-        return true;
-    }
-    return false;
+    if (changed) renderer.uploadAtlas(atlas);
+    return changed;
 }
 
 const State = struct {
