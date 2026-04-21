@@ -1147,6 +1147,10 @@ fn allocUiString(state: *State, comptime fmt: []const u8, args: anytype) ![]cons
     return text;
 }
 
+fn allocUiUtf8Lossy(state: *State, bytes: []const u8) ![]const u8 {
+    return allocUiString(state, "{f}", .{std.unicode.fmtUtf8(bytes)});
+}
+
 fn currentWorkingDirectoryAlloc(alloc: std.mem.Allocator) ![]u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const cwd = posix.getcwd(&buf, buf.len) orelse return error.GetCwdFailed;
@@ -1471,7 +1475,7 @@ fn buildWidgetTree(state: *State) !void {
     state.btn_up = try ctx.tree.addChild(header, .{ .button = .{ .label = "Up" } });
     state.btn_home = try ctx.tree.addChild(header, .{ .button = .{ .label = "Home" } });
     state.btn_refresh = try ctx.tree.addChild(header, .{ .button = .{ .label = "Refresh" } });
-    _ = try ctx.tree.addChild(header, .{ .text = .{ .content = try allocUiString(state, "Browsing {s}", .{state.current_dir}) } });
+    _ = try ctx.tree.addChild(header, .{ .text = .{ .content = try allocUiString(state, "Browsing {f}", .{std.unicode.fmtUtf8(state.current_dir)}) } });
 
     state.nav_splitter = try ctx.tree.addChild(root, .{ .splitter = .{
         .direction = .row,
@@ -1522,7 +1526,7 @@ fn buildWidgetTree(state: *State) !void {
             const end = std.mem.indexOfScalarPos(u8, state.current_dir, start, '/') orelse state.current_dir.len;
             _ = try ctx.tree.addChild(breadcrumb_bar, .{ .text = .{ .content = "/" } });
             const segment = state.current_dir[start..end];
-            const handle = try ctx.tree.addChild(breadcrumb_bar, .{ .button = .{ .label = segment } });
+            const handle = try ctx.tree.addChild(breadcrumb_bar, .{ .button = .{ .label = try allocUiUtf8Lossy(state, segment) } });
             try state.breadcrumb_handles.append(allocator, handle);
             try state.breadcrumb_paths.append(allocator, try allocator.dupe(u8, state.current_dir[0..end]));
             start = end + 1;
@@ -1576,7 +1580,7 @@ fn buildWidgetTree(state: *State) !void {
             .selected = if (state.selected_path) |selected_path| std.mem.eql(u8, entry.path, selected_path) else false,
         } });
         try state.row_handles.append(allocator, row);
-        try addTextCell(ctx, row, entry.name);
+        try addTextCell(ctx, row, try allocUiUtf8Lossy(state, entry.name));
         try addTextCell(ctx, row, entry.modifiedText());
         try addTextCell(ctx, row, entry.typeLabel());
         try addTextCell(ctx, row, entry.sizeText());
@@ -1602,16 +1606,16 @@ fn buildWidgetTree(state: *State) !void {
     const file_count = state.entries.items.len - directory_count;
 
     if (selectedEntry(state)) |entry| {
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = entry.name } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiUtf8Lossy(state, entry.name) } });
         _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Type: {s}", .{entry.typeLabel()}) } });
         _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Modified: {s}", .{entry.modifiedText()}) } });
         _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Size: {s}", .{if (entry.sizeText().len > 0) entry.sizeText() else "—"}) } });
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Path: {s}", .{entry.path}) } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Path: {f}", .{std.unicode.fmtUtf8(entry.path)}) } });
         _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = if (entry.isDirectory()) "Click again to open this directory." else "Files stay selected for inspection." } });
     } else {
         const directory_name = if (std.mem.eql(u8, state.current_dir, "/")) "/" else std.fs.path.basename(state.current_dir);
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = directory_name } });
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Path: {s}", .{state.current_dir}) } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiUtf8Lossy(state, directory_name) } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Path: {f}", .{std.unicode.fmtUtf8(state.current_dir)}) } });
         _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "{d} directories", .{directory_count}) } });
         _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "{d} files", .{file_count}) } });
         _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = "Select an item, or use Back, Up, Home, and Places to move around." } });
@@ -1626,7 +1630,7 @@ fn buildWidgetTree(state: *State) !void {
     };
     _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "{d} items", .{state.entries.items.len}) } });
     _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "{d} selected", .{if (state.selected_path == null) @as(usize, 0) else @as(usize, 1)}) } });
-    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "Location: {s}", .{state.current_dir}) } });
+    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "Location: {f}", .{std.unicode.fmtUtf8(state.current_dir)}) } });
 }
 
 // ── Font loading ──
