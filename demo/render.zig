@@ -29,13 +29,13 @@ pub const Renderer = struct {
     vector_batch: snail.VectorBatch,
     vector_buf: []f32,
     font: *const snail.Font,
-    atlas: *const snail.Atlas,
+    atlas_view: snail.AtlasView,
 
     const Scissor = struct { x: i32, y: i32, w: i32, h: i32 };
 
     pub fn init(w: u32, h: u32, font: *const snail.Font, atlas: *const snail.Atlas) !Renderer {
         var text_renderer = try snail.Renderer.init();
-        text_renderer.uploadAtlas(atlas);
+        const atlas_view = text_renderer.uploadAtlas(atlas);
 
         const vertex_buf = try std.heap.page_allocator.alloc(f32, VERTEX_BUF_LEN);
         const vector_buf = try std.heap.page_allocator.alloc(f32, VECTOR_BUF_LEN);
@@ -50,7 +50,7 @@ pub const Renderer = struct {
             .vector_batch = snail.VectorBatch.init(vector_buf),
             .vector_buf = vector_buf,
             .font = font,
-            .atlas = atlas,
+            .atlas_view = atlas_view,
         };
     }
 
@@ -61,8 +61,7 @@ pub const Renderer = struct {
     }
 
     pub fn uploadAtlas(self: *Renderer, atlas: *const snail.Atlas) void {
-        self.atlas = atlas;
-        self.text_renderer.uploadAtlas(atlas);
+        self.atlas_view = self.text_renderer.uploadAtlas(atlas);
     }
 
     pub fn beginFrame(self: *Renderer, w: u32, h: u32, scale: f32) void {
@@ -115,7 +114,7 @@ pub const Renderer = struct {
         const scaled_baseline = snapToDevicePixels(t.baseline_y, self.scale);
         const scaled_font_size = t.font_size * self.scale;
         const baseline_y = @round(self.viewport_h - scaled_baseline);
-        _ = self.text_batch.addString(self.atlas, self.font, t.text, scaled_x, baseline_y, scaled_font_size, color);
+        _ = self.text_batch.addString(&self.atlas_view, self.font, t.text, scaled_x, baseline_y, scaled_font_size, color);
     }
 
     fn flushText(self: *Renderer) void {
@@ -136,11 +135,17 @@ pub const Renderer = struct {
             .w = r.bounds.w * self.scale,
             .h = r.bounds.h * self.scale,
         };
-        const fill = colorToVec4(r.color);
-        const border = colorToVec4(r.border_color);
-        if (!self.vector_batch.addRoundedRect(rect, fill, border, r.border_width * self.scale, r.corner_radius * self.scale)) {
+        const border_width = r.border_width * self.scale;
+        const fill_color = colorToVec4(r.color);
+        const border_color = colorToVec4(r.border_color);
+        const fill: ?snail.VectorFillStyle = if (r.color.a == 0) null else .{ .color = fill_color };
+        const stroke: ?snail.VectorStrokeStyle = if (border_width <= 0 or r.border_color.a == 0) null else .{
+            .color = border_color,
+            .width = border_width,
+        };
+        if (!self.vector_batch.addRoundedRectStyled(rect, fill, stroke, r.corner_radius * self.scale, .identity)) {
             self.flushVector();
-            _ = self.vector_batch.addRoundedRect(rect, fill, border, r.border_width * self.scale, r.corner_radius * self.scale);
+            _ = self.vector_batch.addRoundedRectStyled(rect, fill, stroke, r.corner_radius * self.scale, .identity);
         }
     }
 

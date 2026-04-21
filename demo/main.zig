@@ -167,9 +167,12 @@ fn ensureAtlasForDrawList(atlas: *snail.Atlas, renderer: *render.Renderer, draw_
         codepoints[index] = codepoint.*;
     }
 
-    const added = try atlas.addCodepoints(codepoints);
-    if (added) renderer.uploadAtlas(atlas);
-    return added;
+    if (try atlas.extendCodepoints(codepoints)) |next| {
+        _ = snail.replaceAtlas(atlas, next);
+        renderer.uploadAtlas(atlas);
+        return true;
+    }
+    return false;
 }
 
 const State = struct {
