@@ -189,6 +189,7 @@ pub const WidgetKind = union(enum) {
 
     pub const GridItem = struct {
         label: []const u8,
+        icon: []const u8 = "",
         selected: bool = false,
         clicked: bool = false,
         marquee_base_selected: bool = false,

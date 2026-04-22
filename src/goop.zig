@@ -9,6 +9,7 @@ pub const style = @import("core/style.zig");
 pub const draw = @import("core/draw.zig");
 pub const layout = @import("core/layout.zig");
 pub const dispatch = @import("core/dispatch.zig");
+pub const hittest = @import("core/hittest.zig");
 
 pub const Tree = widget.Tree;
 pub const NodeHandle = widget.NodeHandle;
@@ -17,8 +18,13 @@ pub const Event = event.Event;
 pub const Theme = style.Theme;
 pub const Style = style.Style;
 pub const Color = style.Color;
+pub const PaintCommand = draw.PaintCommand;
+pub const PaintList = draw.PaintList;
 pub const DrawCommand = draw.DrawCommand;
 pub const DrawList = draw.DrawList;
+pub const TextAlign = draw.TextAlign;
+pub const TextOverflow = draw.TextOverflow;
+pub const IconKind = draw.IconKind;
 pub const TextMeasureCtx = layout.TextMeasureCtx;
 pub const MeasureTextFn = layout.MeasureTextFn;
 pub const TextDimensions = layout.TextDimensions;
@@ -38,6 +44,7 @@ pub const Runtime = struct {
     layout_dirty: bool = true,
     draw_dirty: bool = true,
     last_node_count: u32 = 0,
+    cached_paint_list: ?PaintList = null,
     cached_draw_list: ?DrawList = null,
 
     pub fn init(allocator: std.mem.Allocator, opts: InitOptions) !Runtime {
@@ -240,11 +247,23 @@ pub const Runtime = struct {
         if (!self.draw_dirty) {
             if (self.cached_draw_list) |cached| return cached;
         }
-        self.invalidateDrawCache();
-        const dl = try draw.generate(tree, theme, self.allocator, self.text_measure_ctx);
+        const paint_list = try self.generatePaintList(tree, theme);
+        if (self.cached_draw_list) |cached| return cached;
+        const dl = try draw.lowerPaintList(paint_list, self.allocator, self.text_measure_ctx);
         self.cached_draw_list = dl;
         self.draw_dirty = false;
         return dl;
+    }
+
+    pub fn generatePaintList(self: *Runtime, tree: *const Tree, theme: Theme) !PaintList {
+        if (!self.draw_dirty) {
+            if (self.cached_paint_list) |cached| return cached;
+        }
+        self.invalidateDrawCache();
+        const paint_list = try draw.generatePaint(tree, theme, self.allocator, self.text_measure_ctx);
+        self.cached_paint_list = paint_list;
+        self.draw_dirty = false;
+        return paint_list;
     }
 
     /// Free a DrawList returned by generateDrawList.
@@ -252,12 +271,19 @@ pub const Runtime = struct {
     /// manages its lifetime internally. Retained for API compatibility.
     pub fn freeDrawList(_: *Runtime, _: *DrawList) void {}
 
+    pub fn freePaintList(_: *Runtime, _: *PaintList) void {}
+
     /// Invalidate and free the cached draw list.
     fn invalidateDrawCache(self: *Runtime) void {
+        if (self.cached_paint_list) |*cached| {
+            draw.freePaintList(cached, self.allocator);
+            self.cached_paint_list = null;
+        }
         if (self.cached_draw_list) |*cached| {
             draw.freeDrawList(cached, self.allocator);
             self.cached_draw_list = null;
         }
+        self.draw_dirty = true;
     }
 
     /// Update layout dimensions (e.g. on window resize).
@@ -590,9 +616,17 @@ pub const Context = struct {
         return self.runtime.generateDrawList(&self.tree, self.theme);
     }
 
+    pub fn generatePaintList(self: *Context) !PaintList {
+        return self.runtime.generatePaintList(&self.tree, self.theme);
+    }
+
     /// Free a DrawList returned by generateDrawList.
     pub fn freeDrawList(self: *Context, draw_list: *DrawList) void {
         self.runtime.freeDrawList(draw_list);
+    }
+
+    pub fn freePaintList(self: *Context, paint_list: *PaintList) void {
+        self.runtime.freePaintList(paint_list);
     }
 
     /// Update layout dimensions (e.g. on window resize).

@@ -148,9 +148,9 @@ fn isPrintableTextCodepoint(codepoint: u32) bool {
     return true;
 }
 
-fn ensureAtlasForDrawList(atlas: *snail.Atlas, renderer: *render.Renderer, draw_list: goop.DrawList) !bool {
+fn ensureAtlasForPaintList(atlas: *snail.Atlas, renderer: *render.Renderer, paint_list: goop.PaintList) !bool {
     var changed = false;
-    for (draw_list.commands) |command| {
+    for (paint_list.commands) |command| {
         if (command != .text) continue;
         const text = command.text.text;
         if (text.len == 0) continue;
@@ -1673,16 +1673,16 @@ pub fn main() !void {
         if (state.context_action_b) |h| if (ctx.wasClicked(h)) std.debug.print("Context action: Delete\n", .{});
 
         // Render
-        var dl = try ctx.generateDrawList();
-        defer ctx.freeDrawList(&dl);
-        if (try ensureAtlasForDrawList(&atlas, &renderer, dl)) {
+        var paint_list = try ctx.generatePaintList();
+        defer ctx.freePaintList(&paint_list);
+        if (try ensureAtlasForPaintList(&atlas, &renderer, paint_list)) {
             ctx.setDimensions(state.logical_width, state.logical_height);
             ctx.doLayout(&text_measure_ctx);
-            dl = try ctx.generateDrawList();
+            paint_list = try ctx.generatePaintList();
         }
 
         renderer.beginFrame(state.buffer_width, state.buffer_height, @floatFromInt(state.buffer_scale));
-        renderer.render(dl);
+        renderer.renderPaintList(paint_list);
 
         // Request frame callback BEFORE swap — the callback must be
         // registered before the surface commit that eglSwapBuffers triggers.

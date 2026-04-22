@@ -458,7 +458,33 @@ const CDrawCommandKind = enum(c_int) {
     rect = 0,
     text = 1,
     clip = 2,
-    custom = 3,
+    icon = 3,
+    custom = 4,
+};
+
+const CTextAlign = enum(c_int) {
+    start = 0,
+    center = 1,
+    end = 2,
+};
+
+const CTextOverflow = enum(c_int) {
+    visible = 0,
+    clip = 1,
+    ellipsis = 2,
+};
+
+const CIconKind = enum(c_int) {
+    folder = 0,
+    file = 1,
+    symlink = 2,
+    home = 3,
+    back = 4,
+    up = 5,
+    refresh = 6,
+    list = 7,
+    grid = 8,
+    info = 9,
 };
 
 const CDrawRect = extern struct {
@@ -470,13 +496,12 @@ const CDrawRect = extern struct {
 };
 
 const CDrawText = extern struct {
-    x: f32 = 0,
-    y: f32 = 0,
     bounds: CRect = .{},
-    baseline_y: f32 = 0,
     text: CStr = .{},
     color: CColor = .{},
     font_size: f32 = 0,
+    text_align: CTextAlign = .start,
+    overflow: CTextOverflow = .visible,
 };
 
 const CClipRect = extern struct {
@@ -489,12 +514,19 @@ const CDrawCustom = extern struct {
     bounds: CRect = .{},
 };
 
+const CDrawIcon = extern struct {
+    bounds: CRect = .{},
+    kind: CIconKind = .file,
+    color: CColor = .{},
+};
+
 const CDrawCommand = extern struct {
     kind: CDrawCommandKind = .rect,
     data: extern union {
         rect: CDrawRect,
         text: CDrawText,
         clip: CClipRect,
+        icon: CDrawIcon,
         custom: CDrawCustom,
     } = .{ .rect = .{} },
 };
@@ -1140,13 +1172,20 @@ fn convertDrawCommand(cmd: draw.DrawCommand) CDrawCommand {
         .text => |text_cmd| .{
             .kind = .text,
             .data = .{ .text = .{
-                .x = text_cmd.x,
-                .y = text_cmd.y,
                 .bounds = rectToC(text_cmd.bounds),
-                .baseline_y = text_cmd.baseline_y,
                 .text = toCStr(text_cmd.text),
                 .color = colorToC(text_cmd.color),
                 .font_size = text_cmd.font_size,
+                .text_align = switch (text_cmd.text_align) {
+                    .start => .start,
+                    .center => .center,
+                    .end => .end,
+                },
+                .overflow = switch (text_cmd.overflow) {
+                    .visible => .visible,
+                    .clip => .clip,
+                    .ellipsis => .ellipsis,
+                },
             } },
         },
         .clip => |clip_cmd| .{
@@ -1154,6 +1193,25 @@ fn convertDrawCommand(cmd: draw.DrawCommand) CDrawCommand {
             .data = .{ .clip = .{
                 .has_bounds = clip_cmd.bounds != null,
                 .bounds = if (clip_cmd.bounds) |bounds| rectToC(bounds) else .{},
+            } },
+        },
+        .icon => |icon_cmd| .{
+            .kind = .icon,
+            .data = .{ .icon = .{
+                .bounds = rectToC(icon_cmd.bounds),
+                .kind = switch (icon_cmd.kind) {
+                    .folder => .folder,
+                    .file => .file,
+                    .symlink => .symlink,
+                    .home => .home,
+                    .back => .back,
+                    .up => .up,
+                    .refresh => .refresh,
+                    .list => .list,
+                    .grid => .grid,
+                    .info => .info,
+                },
+                .color = colorToC(icon_cmd.color),
             } },
         },
         .custom => |custom_cmd| .{

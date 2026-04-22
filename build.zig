@@ -111,6 +111,7 @@ pub fn build(b: *std.Build) void {
     file_manager_demo_mod.addIncludePath(b.path("demo/protocol"));
     file_manager_demo_mod.addCSourceFile(.{ .file = b.path("demo/protocol/xdg-shell-protocol.c") });
     file_manager_demo_mod.linkSystemLibrary("wayland-client", .{});
+    file_manager_demo_mod.linkSystemLibrary("wayland-cursor", .{});
     file_manager_demo_mod.linkSystemLibrary("wayland-egl", .{});
     file_manager_demo_mod.linkSystemLibrary("egl", .{});
     file_manager_demo_mod.linkSystemLibrary("xkbcommon", .{});

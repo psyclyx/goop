@@ -5,6 +5,7 @@ const render = @import("render.zig");
 
 const wl = @cImport({
     @cInclude("wayland-client.h");
+    @cInclude("wayland-cursor.h");
     @cInclude("wayland-egl.h");
     @cInclude("xdg-shell-client-protocol.h");
 });
@@ -110,6 +111,14 @@ const OutputState = struct {
     next: ?*OutputState = null,
 };
 
+const CursorKind = enum {
+    default,
+    pointer,
+    text,
+    ew_resize,
+    ns_resize,
+};
+
 fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) goop.TextDimensions {
     const ctx: *SnailTextCtx = @ptrCast(@alignCast(user_data));
     const sanitized = ctx.sanitizeUtf8Lossy(text);
@@ -158,9 +167,9 @@ fn isPrintableTextCodepoint(codepoint: u32) bool {
     return true;
 }
 
-fn ensureAtlasForDrawList(atlas: *snail.Atlas, renderer: *render.Renderer, draw_list: goop.DrawList) !bool {
+fn ensureAtlasForPaintList(atlas: *snail.Atlas, renderer: *render.Renderer, paint_list: goop.PaintList) !bool {
     var changed = false;
-    for (draw_list.commands) |command| {
+    for (paint_list.commands) |command| {
         if (command != .text) continue;
         const text = command.text.text;
         if (text.len == 0) continue;
@@ -249,15 +258,22 @@ const State = struct {
     compositor: ?*wl.wl_compositor = null,
     wm_base: ?*wl.xdg_wm_base = null,
     seat: ?*wl.wl_seat = null,
+    shm: ?*wl.wl_shm = null,
     data_device_manager: ?*wl.wl_data_device_manager = null,
     outputs: ?*OutputState = null,
 
     // Wayland surface chain
     surface: ?*wl.wl_surface = null,
+    cursor_surface: ?*wl.wl_surface = null,
     xdg_surface: ?*wl.xdg_surface = null,
     xdg_toplevel: ?*wl.xdg_toplevel = null,
     egl_window: ?*wl.wl_egl_window = null,
     pointer: ?*wl.wl_pointer = null,
+    cursor_theme: ?*wl.wl_cursor_theme = null,
+    cursor_theme_scale: u32 = 0,
+    pointer_enter_serial: u32 = 0,
+    pointer_inside: bool = false,
+    cursor_kind: CursorKind = .default,
     keyboard: ?*wl.wl_keyboard = null,
     data_device: ?*wl.wl_data_device = null,
     clipboard_source: ?*wl.wl_data_source = null,
@@ -280,6 +296,7 @@ const State = struct {
     history_index: usize = 0,
     places: std.ArrayListUnmanaged(BrowserPlace) = .empty,
     entries: std.ArrayListUnmanaged(BrowserEntry) = .empty,
+    selected_paths: std.ArrayListUnmanaged([]u8) = .empty,
     selected_path: ?[]u8 = null,
     last_click_path: ?[]u8 = null,
     last_click_ns: u64 = 0,
@@ -306,12 +323,15 @@ const State = struct {
     breadcrumb_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
     breadcrumb_paths: std.ArrayListUnmanaged([]u8) = .empty,
     row_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
+    name_cell_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
     grid_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
     ui_strings: std.ArrayListUnmanaged([]u8) = .empty,
+    composed_paint_commands: std.ArrayListUnmanaged(goop.PaintCommand) = .empty,
 
     // Last known mouse position from Wayland pointer events
     mouse_x: f32 = 0,
     mouse_y: f32 = 0,
+    text_measure_ctx: ?*const goop.TextMeasureCtx = null,
 
     // xkbcommon state for keymap → text conversion
     xkb_ctx: ?*xkb.xkb_context = null,
@@ -531,8 +551,29 @@ const State = struct {
             if (self.egl_window) |window| {
                 wl.wl_egl_window_resize(window, @intCast(self.buffer_width), @intCast(self.buffer_height), 0, 0);
             }
+            self.resetCursorTheme();
         }
         if (changed) self.needs_redraw = true;
+    }
+
+    fn ensureCursorSurface(self: *State) void {
+        if (self.cursor_surface != null or self.compositor == null) return;
+        self.cursor_surface = wl.wl_compositor_create_surface(self.compositor);
+    }
+
+    fn ensureCursorTheme(self: *State) void {
+        if (self.shm == null) return;
+        if (self.cursor_theme != null and self.cursor_theme_scale == self.buffer_scale) return;
+        self.resetCursorTheme();
+        const size = @as(c_int, @intCast(24 * @max(self.buffer_scale, 1)));
+        self.cursor_theme = wl.wl_cursor_theme_load(null, size, self.shm);
+        self.cursor_theme_scale = self.buffer_scale;
+    }
+
+    fn resetCursorTheme(self: *State) void {
+        if (self.cursor_theme) |theme| wl.wl_cursor_theme_destroy(theme);
+        self.cursor_theme = null;
+        self.cursor_theme_scale = 0;
     }
 };
 
@@ -565,6 +606,78 @@ fn writeAll(fd: i32, bytes: []const u8) void {
     }
 }
 
+fn cursorNames(kind: CursorKind) []const [:0]const u8 {
+    return switch (kind) {
+        .default => &[_][:0]const u8{ "left_ptr" },
+        .pointer => &[_][:0]const u8{ "pointer", "hand2", "left_ptr" },
+        .text => &[_][:0]const u8{ "text", "xterm", "left_ptr" },
+        .ew_resize => &[_][:0]const u8{ "col-resize", "sb_h_double_arrow", "left_ptr" },
+        .ns_resize => &[_][:0]const u8{ "row-resize", "sb_v_double_arrow", "left_ptr" },
+    };
+}
+
+fn lookupCursor(state: *State, kind: CursorKind) ?*wl.wl_cursor {
+    state.ensureCursorTheme();
+    const theme = state.cursor_theme orelse return null;
+    for (cursorNames(kind)) |name| {
+        if (wl.wl_cursor_theme_get_cursor(theme, name.ptr)) |cursor| return cursor;
+    }
+    return null;
+}
+
+fn desiredCursorKind(state: *State) CursorKind {
+    if (!state.pointer_inside) return .default;
+    const ctx = state.ctx orelse return .default;
+    const handle = goop.hittest.hitTest(&ctx.tree, state.mouse_x, state.mouse_y) orelse return .default;
+    const node = ctx.tree.getConst(handle);
+
+    return switch (node.kind) {
+        .splitter => switch (node.kind.splitter.direction) {
+            .row => .ew_resize,
+            .column => .ns_resize,
+        },
+        .table => blk: {
+            if (goop.widget.tableResizeHandleIndexAtPoint(&ctx.tree, handle, state.mouse_x, state.mouse_y) != null) break :blk .ew_resize;
+            if (goop.widget.tableHeaderCellIndexAtPoint(&ctx.tree, handle, state.mouse_x, state.mouse_y) != null) break :blk .pointer;
+            break :blk .default;
+        },
+        .button,
+        .selectable,
+        .dropdown,
+        .menu,
+        .menu_item,
+        .tab_item,
+        => .pointer,
+        .text_input => .text,
+        else => .default,
+    };
+}
+
+fn applyCursorKind(state: *State, kind: CursorKind) void {
+    if (!state.pointer_inside or state.pointer == null or state.pointer_enter_serial == 0) return;
+
+    state.ensureCursorSurface();
+    const cursor_surface = state.cursor_surface orelse return;
+    const cursor = lookupCursor(state, kind) orelse lookupCursor(state, .default) orelse return;
+    if (cursor.image_count == 0) return;
+
+    const image_ptr = cursor.images[0];
+    const image = image_ptr.*;
+    const buffer = wl.wl_cursor_image_get_buffer(image_ptr) orelse return;
+
+    wl.wl_pointer_set_cursor(state.pointer, state.pointer_enter_serial, cursor_surface, @intCast(image.hotspot_x), @intCast(image.hotspot_y));
+    wl.wl_surface_attach(cursor_surface, buffer, 0, 0);
+    wl.wl_surface_damage_buffer(cursor_surface, 0, 0, @intCast(image.width), @intCast(image.height));
+    wl.wl_surface_commit(cursor_surface);
+    state.cursor_kind = kind;
+}
+
+fn updatePointerCursor(state: *State) void {
+    const next = desiredCursorKind(state);
+    if (next == state.cursor_kind and state.cursor_theme != null and state.cursor_theme_scale == state.buffer_scale) return;
+    applyCursorKind(state, next);
+}
+
 // ── Wayland listeners ──
 
 const registry_listener = wl.wl_registry_listener{
@@ -579,6 +692,8 @@ fn registryGlobal(data: ?*anyopaque, registry: ?*wl.wl_registry, name: u32, inte
     if (std.mem.eql(u8, iface, "wl_compositor")) {
         state.compositor_version = @min(version, 6);
         state.compositor = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_compositor_interface, state.compositor_version));
+    } else if (std.mem.eql(u8, iface, "wl_shm")) {
+        state.shm = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_shm_interface, @min(version, 1)));
     } else if (std.mem.eql(u8, iface, "xdg_wm_base")) {
         state.wm_base = @ptrCast(wl.wl_registry_bind(registry, name, &wl.xdg_wm_base_interface, @min(version, 2)));
         _ = wl.xdg_wm_base_add_listener(state.wm_base, &wm_base_listener, data);
@@ -729,6 +844,9 @@ fn seatCapabilities(data: ?*anyopaque, seat: ?*wl.wl_seat, caps: u32) callconv(.
     } else if (!has_pointer and state.pointer != null) {
         wl.wl_pointer_destroy(state.pointer);
         state.pointer = null;
+        state.pointer_inside = false;
+        state.pointer_enter_serial = 0;
+        state.cursor_kind = .default;
     }
 
     if (has_keyboard and state.keyboard == null) {
@@ -961,13 +1079,20 @@ fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, serial: u32, _: u32, key:
     state.needs_redraw = true;
 }
 
-fn pointerEnter(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: ?*wl.wl_surface, sx: wl.wl_fixed_t, sy: wl.wl_fixed_t) callconv(.c) void {
+fn pointerEnter(data: ?*anyopaque, _: ?*wl.wl_pointer, serial: u32, _: ?*wl.wl_surface, sx: wl.wl_fixed_t, sy: wl.wl_fixed_t) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
+    state.pointer_enter_serial = serial;
+    state.pointer_inside = true;
     state.mouse_x = fixedToF32(sx);
     state.mouse_y = fixedToF32(sy);
+    updatePointerCursor(state);
 }
 
-fn pointerLeave(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: ?*wl.wl_surface) callconv(.c) void {}
+fn pointerLeave(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: ?*wl.wl_surface) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    state.pointer_inside = false;
+    state.cursor_kind = .default;
+}
 
 fn pointerMotion(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, sx: wl.wl_fixed_t, sy: wl.wl_fixed_t) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
@@ -976,6 +1101,7 @@ fn pointerMotion(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, sx: wl.wl_fixed_
     state.mouse_x = x;
     state.mouse_y = y;
     if (state.ctx) |ctx| ctx.pushEvent(.{ .mouse_move = .{ .x = x, .y = y } }) catch {};
+    updatePointerCursor(state);
     state.needs_redraw = true;
 }
 
@@ -1107,6 +1233,11 @@ fn clearPlaces(state: *State) void {
     state.places.clearRetainingCapacity();
 }
 
+fn clearSelectedPaths(state: *State) void {
+    for (state.selected_paths.items) |path| allocator.free(path);
+    state.selected_paths.clearRetainingCapacity();
+}
+
 fn clearEntries(state: *State) void {
     for (state.entries.items) |entry| {
         allocator.free(entry.name);
@@ -1130,6 +1261,7 @@ fn clearUiTracking(state: *State) void {
     state.place_handles.clearRetainingCapacity();
     state.breadcrumb_handles.clearRetainingCapacity();
     state.row_handles.clearRetainingCapacity();
+    state.name_cell_handles.clearRetainingCapacity();
     state.grid_handles.clearRetainingCapacity();
     clearUiStrings(state);
     clearBreadcrumbPaths(state);
@@ -1139,30 +1271,83 @@ fn deinitBrowserState(state: *State) void {
     clearUiTracking(state);
     clearEntries(state);
     clearPlaces(state);
+    clearSelectedPaths(state);
     for (state.history.items) |path| allocator.free(path);
     state.history.deinit(allocator);
     state.places.deinit(allocator);
     state.entries.deinit(allocator);
+    state.selected_paths.deinit(allocator);
     state.place_handles.deinit(allocator);
     state.breadcrumb_handles.deinit(allocator);
     state.breadcrumb_paths.deinit(allocator);
     state.row_handles.deinit(allocator);
+    state.name_cell_handles.deinit(allocator);
     state.grid_handles.deinit(allocator);
     state.ui_strings.deinit(allocator);
+    state.composed_paint_commands.deinit(allocator);
     if (state.current_dir.len > 0) allocator.free(state.current_dir);
     state.current_dir = &.{};
     freeOptionalOwnedSlice(&state.selected_path);
     freeOptionalOwnedSlice(&state.last_click_path);
 }
 
-fn allocUiString(state: *State, comptime fmt: []const u8, args: anytype) ![]const u8 {
-    const text = try std.fmt.allocPrint(allocator, fmt, args);
+fn trackUiString(state: *State, text: []u8) ![]const u8 {
     try state.ui_strings.append(allocator, text);
     return text;
 }
 
+fn allocUiString(state: *State, comptime fmt: []const u8, args: anytype) ![]const u8 {
+    return trackUiString(state, try std.fmt.allocPrint(allocator, fmt, args));
+}
+
+fn allocUtf8LossyOwned(bytes: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{f}", .{std.unicode.fmtUtf8(bytes)});
+}
+
 fn allocUiUtf8Lossy(state: *State, bytes: []const u8) ![]const u8 {
-    return allocUiString(state, "{f}", .{std.unicode.fmtUtf8(bytes)});
+    return trackUiString(state, try allocUtf8LossyOwned(bytes));
+}
+
+fn allocUiEllipsizedUtf8Lossy(state: *State, bytes: []const u8, max_width: f32, font_size: f32) ![]const u8 {
+    const full = try allocUtf8LossyOwned(bytes);
+    errdefer allocator.free(full);
+
+    const text_ctx = state.text_measure_ctx;
+    if (text_ctx == null or goop.layout.measureTextDimensions(full, font_size, text_ctx).width <= max_width) {
+        return trackUiString(state, full);
+    }
+
+    const ellipsis = "...";
+    const ellipsis_width = goop.layout.measureTextDimensions(ellipsis, font_size, text_ctx).width;
+    if (ellipsis_width >= max_width) {
+        allocator.free(full);
+        return allocUiString(state, "{s}", .{ellipsis});
+    }
+
+    var codepoint_ends: std.ArrayListUnmanaged(usize) = .empty;
+    defer codepoint_ends.deinit(allocator);
+
+    var total_bytes: usize = 0;
+    var view = std.unicode.Utf8View.init(full) catch unreachable;
+    var it = view.iterator();
+    while (it.nextCodepointSlice()) |slice| {
+        total_bytes += slice.len;
+        try codepoint_ends.append(allocator, total_bytes);
+    }
+
+    var keep = codepoint_ends.items.len;
+    while (keep > 0) : (keep -= 1) {
+        const prefix_len = codepoint_ends.items[keep - 1];
+        const prefix_width = goop.layout.measureTextDimensions(full[0..prefix_len], font_size, text_ctx).width;
+        if (prefix_width + ellipsis_width <= max_width) {
+            const truncated = try std.fmt.allocPrint(allocator, "{s}{s}", .{ full[0..prefix_len], ellipsis });
+            allocator.free(full);
+            return trackUiString(state, truncated);
+        }
+    }
+
+    allocator.free(full);
+    return allocUiString(state, "{s}", .{ellipsis});
 }
 
 fn currentWorkingDirectoryAlloc(alloc: std.mem.Allocator) ![]u8 {
@@ -1231,17 +1416,76 @@ fn browserEntryKind(mode: c_fs.mode_t) BrowserEntryKind {
     return .other;
 }
 
-fn formatTimestampText(buffer: []u8, unix_seconds: i64) []const u8 {
+fn timestampMonthAbbrev(index: i32) []const u8 {
+    const months = [_][]const u8{
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+    };
+    const clamped = std.math.clamp(index, 0, @as(i32, @intCast(months.len - 1)));
+    return months[@intCast(clamped)];
+}
+
+fn formatTimestampCompactText(buffer: []u8, unix_seconds: i64) []const u8 {
     if (unix_seconds <= 0) return "";
 
     var t: posix.time_t = @intCast(unix_seconds);
     var tm_buf: posix.struct_tm = undefined;
     if (posix.localtime_r(&t, &tm_buf) == null) return "";
 
-    return std.fmt.bufPrint(buffer, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}", .{
-        tm_buf.tm_year + 1900,
-        tm_buf.tm_mon + 1,
+    const now = posix.time(null);
+    var now_tm: posix.struct_tm = undefined;
+    const now_ok = posix.localtime_r(&now, &now_tm) != null;
+    const diff_seconds = if (now_ok) @as(i64, @intCast(now)) - unix_seconds else std.math.maxInt(i64);
+
+    if (now_ok and tm_buf.tm_year == now_tm.tm_year and tm_buf.tm_yday == now_tm.tm_yday) {
+        return std.fmt.bufPrint(buffer, "Today {d:0>2}:{d:0>2}", .{
+            tm_buf.tm_hour,
+            tm_buf.tm_min,
+        }) catch "";
+    }
+    if (now_ok and diff_seconds >= 0 and diff_seconds < 48 * 60 * 60) {
+        return std.fmt.bufPrint(buffer, "Yesterday {d:0>2}:{d:0>2}", .{
+            tm_buf.tm_hour,
+            tm_buf.tm_min,
+        }) catch "";
+    }
+    if (now_ok and tm_buf.tm_year == now_tm.tm_year) {
+        return std.fmt.bufPrint(buffer, "{s} {d} {d:0>2}:{d:0>2}", .{
+            timestampMonthAbbrev(tm_buf.tm_mon),
+            tm_buf.tm_mday,
+            tm_buf.tm_hour,
+            tm_buf.tm_min,
+        }) catch "";
+    }
+
+    return std.fmt.bufPrint(buffer, "{s} {d}, {d}", .{
+        timestampMonthAbbrev(tm_buf.tm_mon),
         tm_buf.tm_mday,
+        tm_buf.tm_year + 1900,
+    }) catch "";
+}
+
+fn formatTimestampDetailText(buffer: []u8, unix_seconds: i64) []const u8 {
+    if (unix_seconds <= 0) return "";
+
+    var t: posix.time_t = @intCast(unix_seconds);
+    var tm_buf: posix.struct_tm = undefined;
+    if (posix.localtime_r(&t, &tm_buf) == null) return "";
+
+    return std.fmt.bufPrint(buffer, "{s} {d}, {d} at {d:0>2}:{d:0>2}", .{
+        timestampMonthAbbrev(tm_buf.tm_mon),
+        tm_buf.tm_mday,
+        tm_buf.tm_year + 1900,
         tm_buf.tm_hour,
         tm_buf.tm_min,
     }) catch "";
@@ -1276,9 +1520,31 @@ fn sortDirectionLabel(direction: BrowserSortDirection) []const u8 {
     };
 }
 
+fn entryIconText(entry: BrowserEntry) []const u8 {
+    return switch (entry.kind) {
+        .directory => "\u{25A3}",
+        .symlink => "\u{2197}",
+        .other => "\u{25EB}",
+        .file => "\u{25A4}",
+    };
+}
+
+fn allocEntryNameLabel(state: *State, entry: BrowserEntry) ![]const u8 {
+    return allocUiString(state, "{s} {f}", .{
+        entryIconText(entry),
+        std.unicode.fmtUtf8(entry.name),
+    });
+}
+
 fn allocFormattedTimestamp(state: *State, unix_seconds: i64) ![]const u8 {
-    var buf: [32]u8 = undefined;
-    const text = formatTimestampText(buf[0..], unix_seconds);
+    var buf: [40]u8 = undefined;
+    const text = formatTimestampCompactText(buf[0..], unix_seconds);
+    return allocUiString(state, "{s}", .{text});
+}
+
+fn allocFormattedTimestampDetail(state: *State, unix_seconds: i64) ![]const u8 {
+    var buf: [48]u8 = undefined;
+    const text = formatTimestampDetailText(buf[0..], unix_seconds);
     return allocUiString(state, "{s}", .{text});
 }
 
@@ -1356,6 +1622,24 @@ fn sortDirectoryEntries(state: *State) void {
     std.mem.sort(BrowserEntry, state.entries.items, state, browserEntryLessThan);
 }
 
+fn isPathSelected(state: *const State, path: []const u8) bool {
+    for (state.selected_paths.items) |selected| {
+        if (std.mem.eql(u8, selected, path)) return true;
+    }
+    return false;
+}
+
+fn selectedPathCount(state: *const State) usize {
+    return state.selected_paths.items.len;
+}
+
+fn selectedEntryExists(state: *const State, path: []const u8) bool {
+    for (state.entries.items) |entry| {
+        if (std.mem.eql(u8, entry.path, path)) return true;
+    }
+    return false;
+}
+
 fn setSelectedPath(state: *State, path: ?[]const u8) !void {
     freeOptionalOwnedSlice(&state.selected_path);
     if (path) |value| state.selected_path = try allocator.dupe(u8, value);
@@ -1364,6 +1648,53 @@ fn setSelectedPath(state: *State, path: ?[]const u8) !void {
 fn setLastClickPath(state: *State, path: ?[]const u8) !void {
     freeOptionalOwnedSlice(&state.last_click_path);
     if (path) |value| state.last_click_path = try allocator.dupe(u8, value);
+}
+
+fn syncPrimarySelection(state: *State) !void {
+    if (state.selected_path) |selected_path| {
+        if (isPathSelected(state, selected_path)) return;
+        freeOptionalOwnedSlice(&state.selected_path);
+    }
+
+    if (state.selected_paths.items.len > 0) {
+        try setSelectedPath(state, state.selected_paths.items[0]);
+    }
+}
+
+fn syncSelectedPathsFromTable(state: *State, ctx: *goop.Context, handle: goop.NodeHandle) !void {
+    clearSelectedPaths(state);
+
+    var row_index: usize = 0;
+    var iter = ctx.tree.children(handle);
+    while (iter.next()) |child| {
+        const node = ctx.tree.getConst(child);
+        if (node.kind != .table_row or node.kind.table_row.header) continue;
+        if (row_index >= state.entries.items.len) break;
+        if (node.kind.table_row.selected) {
+            try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[row_index].path));
+        }
+        row_index += 1;
+    }
+
+    try syncPrimarySelection(state);
+}
+
+fn syncSelectedPathsFromGrid(state: *State, ctx: *goop.Context, handle: goop.NodeHandle) !void {
+    clearSelectedPaths(state);
+
+    var item_index: usize = 0;
+    var iter = ctx.tree.children(handle);
+    while (iter.next()) |child| {
+        const node = ctx.tree.getConst(child);
+        if (node.kind != .grid_item) continue;
+        if (item_index >= state.entries.items.len) break;
+        if (node.kind.grid_item.selected) {
+            try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[item_index].path));
+        }
+        item_index += 1;
+    }
+
+    try syncPrimarySelection(state);
 }
 
 fn loadDirectoryEntries(state: *State) !void {
@@ -1409,16 +1740,20 @@ fn loadDirectoryEntries(state: *State) !void {
 
     sortDirectoryEntries(state);
 
-    if (state.selected_path) |selected_path| {
-        var found = false;
-        for (state.entries.items) |entry| {
-            if (std.mem.eql(u8, entry.path, selected_path)) {
-                found = true;
-                break;
-            }
+    var index: usize = 0;
+    while (index < state.selected_paths.items.len) {
+        if (selectedEntryExists(state, state.selected_paths.items[index])) {
+            index += 1;
+            continue;
         }
-        if (!found) freeOptionalOwnedSlice(&state.selected_path);
+        allocator.free(state.selected_paths.swapRemove(index));
     }
+
+    if (state.selected_path) |selected_path| {
+        if (!selectedEntryExists(state, selected_path)) freeOptionalOwnedSlice(&state.selected_path);
+    }
+
+    try syncPrimarySelection(state);
 }
 
 fn selectedEntryIndex(state: *const State) ?usize {
@@ -1453,6 +1788,7 @@ fn setCurrentDirectory(state: *State, path: []const u8, push_history: bool) !boo
 
     if (state.current_dir.len > 0) allocator.free(state.current_dir);
     state.current_dir = normalized;
+    clearSelectedPaths(state);
     freeOptionalOwnedSlice(&state.selected_path);
     freeOptionalOwnedSlice(&state.last_click_path);
     state.last_click_ns = 0;
@@ -1491,17 +1827,110 @@ fn addTextCell(ctx: *goop.Context, row: goop.NodeHandle, text: []const u8) !void
     _ = try ctx.tree.addChild(cell, .{ .text = .{ .content = text } });
 }
 
+fn addNameCell(ctx: *goop.Context, row: goop.NodeHandle, text: []const u8) !goop.NodeHandle {
+    const cell = try ctx.tree.addChild(row, .{ .table_cell = .{} });
+    ctx.tree.get(cell).style_override = .{
+        .padding = .{ .top = 6, .right = 8, .bottom = 6, .left = 30 },
+    };
+    _ = try ctx.tree.addChild(cell, .{ .text = .{ .content = text } });
+    return cell;
+}
+
+fn browserEntryIconKind(entry: BrowserEntry) goop.IconKind {
+    return switch (entry.kind) {
+        .directory => .folder,
+        .symlink => .symlink,
+        else => .file,
+    };
+}
+
+fn browserEntryIconColor(theme: goop.Theme, entry: BrowserEntry, selected: bool) goop.Color {
+    if (selected) return theme.accent;
+    return switch (entry.kind) {
+        .directory => .rgb(74, 120, 201),
+        .symlink => .rgb(44, 140, 134),
+        else => .rgb(118, 127, 141),
+    };
+}
+
+fn iconRectInTableCell(cell_rect: goop.draw.Rect) goop.draw.Rect {
+    const size = @min(@max(cell_rect.h - 10, 14), 18);
+    return .{
+        .x = cell_rect.x + 8,
+        .y = cell_rect.y + (cell_rect.h - size) * 0.5,
+        .w = size,
+        .h = size,
+    };
+}
+
+fn iconRectInGridItem(ctx: *goop.Context, handle: goop.NodeHandle) goop.draw.Rect {
+    const node = ctx.tree.getConst(handle);
+    const resolved = node.style_override.resolve(ctx.theme);
+    const rect = node.layout_rect;
+    const inner = goop.draw.Rect{
+        .x = rect.x + resolved.padding.left,
+        .y = rect.y + resolved.padding.top,
+        .w = @max(rect.w - resolved.padding.left - resolved.padding.right, 0),
+        .h = @max(rect.h - resolved.padding.top - resolved.padding.bottom, 0),
+    };
+    const icon_size = @max(@min(inner.w, inner.h - resolved.font_size - ctx.theme.spacing), 0);
+    return .{
+        .x = inner.x + (inner.w - icon_size) * 0.5,
+        .y = inner.y,
+        .w = icon_size,
+        .h = @min(icon_size, inner.h - resolved.font_size - ctx.theme.spacing),
+    };
+}
+
+fn composeFileBrowserPaintList(state: *State, base: goop.PaintList) !goop.PaintList {
+    const ctx = state.ctx orelse return base;
+    state.composed_paint_commands.clearRetainingCapacity();
+    try state.composed_paint_commands.appendSlice(allocator, base.commands);
+
+    switch (state.view_mode) {
+        .list => {
+            for (state.name_cell_handles.items, 0..) |handle, index| {
+                if (index >= state.entries.items.len or !ctx.isAlive(handle)) continue;
+                const cell = ctx.tree.getConst(handle);
+                const row_handle = cell.parent orelse continue;
+                const row = ctx.tree.getConst(row_handle);
+                const entry = state.entries.items[index];
+                try state.composed_paint_commands.append(allocator, .{ .icon = .{
+                    .bounds = iconRectInTableCell(cell.layout_rect),
+                    .kind = browserEntryIconKind(entry),
+                    .color = browserEntryIconColor(ctx.theme, entry, row.kind.table_row.selected),
+                } });
+            }
+        },
+        .grid => {
+            for (state.grid_handles.items, 0..) |handle, index| {
+                if (index >= state.entries.items.len or !ctx.isAlive(handle)) continue;
+                const node = ctx.tree.getConst(handle);
+                const entry = state.entries.items[index];
+                try state.composed_paint_commands.append(allocator, .{ .icon = .{
+                    .bounds = iconRectInGridItem(ctx, handle),
+                    .kind = browserEntryIconKind(entry),
+                    .color = browserEntryIconColor(ctx.theme, entry, node.kind.grid_item.selected),
+                } });
+            }
+        },
+    }
+
+    return .{ .commands = state.composed_paint_commands.items };
+}
+
 fn addViewModeButton(ctx: *goop.Context, parent: goop.NodeHandle, label: []const u8, active: bool) !goop.NodeHandle {
     const handle = try ctx.tree.addChild(parent, .{ .button = .{ .label = label } });
     ctx.tree.get(handle).style_override = .{
         .bg = if (active)
             .{ .r = 219, .g = 233, .b = 253, .a = 255 }
         else
-            .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+            .{ .r = 243, .g = 246, .b = 250, .a = 255 },
         .border = if (active)
             .{ .r = 88, .g = 135, .b = 212, .a = 255 }
         else
-            .{ .r = 204, .g = 211, .b = 220, .a = 255 },
+            .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+        .border_width = if (active) 1 else 0,
         .padding = goop.style.Edges.symmetric(10, 6),
         .border_radius = 6,
     };
@@ -1510,6 +1939,7 @@ fn addViewModeButton(ctx: *goop.Context, parent: goop.NodeHandle, label: []const
 
 fn buildWidgetTree(state: *State) !void {
     const ctx = state.ctx orelse return error.NoContext;
+    const transparent = goop.Color.rgba(0, 0, 0, 0);
 
     if (state.ui_root) |root| {
         if (ctx.isAlive(root)) try ctx.removeWidget(root);
@@ -1518,12 +1948,18 @@ fn buildWidgetTree(state: *State) !void {
 
     state.ui_root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
     const root = state.ui_root.?;
+    ctx.tree.get(root).style_override = .{
+        .bg = transparent,
+        .border_width = 0,
+        .padding = goop.style.Edges.all(0),
+        .border_radius = 0,
+    };
 
     const header = try ctx.tree.addChild(root, .{ .toolbar = .{} });
     ctx.tree.get(header).style_override = .{
         .bg = .{ .r = 233, .g = 236, .b = 240, .a = 255 },
-        .border = .{ .r = 206, .g = 212, .b = 220, .a = 255 },
-        .padding = goop.style.Edges.symmetric(10, 8),
+        .border_width = 0,
+        .padding = goop.style.Edges.symmetric(12, 10),
         .border_radius = 0,
     };
     state.btn_back = try ctx.tree.addChild(header, .{ .button = .{ .label = "Back" } });
@@ -1543,12 +1979,19 @@ fn buildWidgetTree(state: *State) !void {
     const sidebar = try ctx.tree.addChild(state.nav_splitter.?, .{ .container = .{ .direction = .column } });
     ctx.tree.get(sidebar).style_override = .{
         .bg = .{ .r = 240, .g = 243, .b = 247, .a = 255 },
-        .border = .{ .r = 212, .g = 218, .b = 226, .a = 255 },
-        .padding = goop.style.Edges.symmetric(10, 10),
+        .border_width = 0,
+        .padding = goop.style.Edges.symmetric(12, 12),
         .border_radius = 0,
     };
-    _ = try ctx.tree.addChild(sidebar, .{ .text = .{ .content = "Locations" } });
-    const places_list = try ctx.tree.addChild(sidebar, .{ .list_box = .{ .selection_mode = .single } });
+    _ = try ctx.tree.addChild(sidebar, .{ .text = .{ .content = "Places" } });
+    const places_scroll = try ctx.tree.addChild(sidebar, .{ .scroll_area = .{} });
+    ctx.tree.get(places_scroll).style_override = .{
+        .bg = transparent,
+        .border_width = 0,
+        .padding = goop.style.Edges.all(0),
+        .border_radius = 0,
+    };
+    const places_list = try ctx.tree.addChild(places_scroll, .{ .list_box = .{ .selection_mode = .single } });
     for (state.places.items) |place| {
         const handle = try ctx.tree.addChild(places_list, .{ .selectable = .{
             .label = place.label,
@@ -1559,8 +2002,8 @@ fn buildWidgetTree(state: *State) !void {
 
     const content = try ctx.tree.addChild(state.nav_splitter.?, .{ .container = .{ .direction = .column } });
     ctx.tree.get(content).style_override = .{
-        .bg = .{ .r = 247, .g = 248, .b = 250, .a = 255 },
-        .border = .{ .r = 212, .g = 218, .b = 226, .a = 255 },
+        .bg = transparent,
+        .border_width = 0,
         .padding = goop.style.Edges.symmetric(10, 10),
         .border_radius = 0,
     };
@@ -1569,7 +2012,7 @@ fn buildWidgetTree(state: *State) !void {
     ctx.tree.get(breadcrumb_bar).style_override = .{
         .bg = .{ .r = 255, .g = 255, .b = 255, .a = 255 },
         .border = .{ .r = 214, .g = 220, .b = 228, .a = 255 },
-        .padding = goop.style.Edges.symmetric(8, 6),
+        .padding = goop.style.Edges.symmetric(10, 7),
         .border_radius = 8,
     };
     const root_button = try ctx.tree.addChild(breadcrumb_bar, .{ .button = .{ .label = "/" } });
@@ -1599,32 +2042,46 @@ fn buildWidgetTree(state: *State) !void {
     const file_panel = try ctx.tree.addChild(state.detail_splitter.?, .{ .container = .{ .direction = .column } });
     ctx.tree.get(file_panel).style_override = .{
         .bg = .{ .r = 255, .g = 255, .b = 255, .a = 255 },
-        .border = .{ .r = 214, .g = 220, .b = 228, .a = 255 },
-        .padding = goop.style.Edges.symmetric(8, 8),
-        .border_radius = 8,
+        .border_width = 0,
+        .padding = goop.style.Edges.all(0),
+        .border_radius = 10,
     };
 
     const file_panel_header = try ctx.tree.addChild(file_panel, .{ .toolbar = .{} });
     ctx.tree.get(file_panel_header).style_override = .{
         .bg = .{ .r = 247, .g = 249, .b = 252, .a = 255 },
-        .border = .{ .r = 214, .g = 220, .b = 228, .a = 255 },
-        .padding = goop.style.Edges.symmetric(8, 6),
-        .border_radius = 6,
+        .border_width = 0,
+        .padding = goop.style.Edges.symmetric(12, 9),
+        .border_radius = 10,
     };
     _ = try ctx.tree.addChild(file_panel_header, .{ .text = .{ .content = try allocUiString(state, "{d} entries", .{state.entries.items.len}) } });
     _ = try ctx.tree.addChild(file_panel_header, .{ .text = .{ .content = try allocUiString(state, "Sort: {s}, {s}", .{ sortColumnLabel(state.sort_column), sortDirectionLabel(state.sort_direction) }) } });
     state.btn_list_view = try addViewModeButton(ctx, file_panel_header, "List", state.view_mode == .list);
     state.btn_grid_view = try addViewModeButton(ctx, file_panel_header, "Grid", state.view_mode == .grid);
 
+    const file_panel_scroll = try ctx.tree.addChild(file_panel, .{ .scroll_area = .{} });
+    ctx.tree.get(file_panel_scroll).style_override = .{
+        .bg = transparent,
+        .border_width = 0,
+        .padding = goop.style.Edges.all(0),
+        .border_radius = 0,
+    };
+
     switch (state.view_mode) {
         .list => {
-            state.asset_table = try ctx.tree.addChild(file_panel, .{ .table = .{
+            state.asset_table = try ctx.tree.addChild(file_panel_scroll, .{ .table = .{
                 .columns = 4,
                 .resizable = true,
                 .sortable = true,
-                .selection_mode = .single,
+                .selection_mode = .multiple,
                 .min_column_width = 96,
             } });
+            ctx.tree.get(state.asset_table.?).style_override = .{
+                .bg = .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+                .border_width = 0,
+                .padding = goop.style.Edges.all(0),
+                .border_radius = 0,
+            };
             {
                 const table = &ctx.tree.get(state.asset_table.?).kind.table;
                 table.column_weights[0] = state.table_column_weights[0];
@@ -1646,34 +2103,35 @@ fn buildWidgetTree(state: *State) !void {
 
             for (state.entries.items) |entry| {
                 const row = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{
-                    .selected = if (state.selected_path) |selected_path| std.mem.eql(u8, entry.path, selected_path) else false,
+                    .selected = isPathSelected(state, entry.path),
                 } });
                 try state.row_handles.append(allocator, row);
-                try addTextCell(ctx, row, try allocUiUtf8Lossy(state, entry.name));
+                try state.name_cell_handles.append(allocator, try addNameCell(ctx, row, try allocEntryNameLabel(state, entry)));
                 try addTextCell(ctx, row, try allocFormattedTimestamp(state, entry.modified_unix));
                 try addTextCell(ctx, row, entry.typeLabel());
                 try addTextCell(ctx, row, try allocFormattedSize(state, entry.kind, entry.size_bytes));
             }
         },
         .grid => {
-            state.asset_grid = try ctx.tree.addChild(file_panel, .{ .grid_selector = .{
-                .selection_mode = .single,
+            state.asset_grid = try ctx.tree.addChild(file_panel_scroll, .{ .grid_selector = .{
+                .selection_mode = .multiple,
                 .item_width = 132,
                 .item_height = 108,
                 .column_gap = 12,
                 .row_gap = 12,
             } });
             ctx.tree.get(state.asset_grid.?).style_override = .{
-                .bg = .{ .r = 250, .g = 251, .b = 253, .a = 255 },
-                .border = .{ .r = 214, .g = 220, .b = 228, .a = 255 },
+                .bg = transparent,
+                .border_width = 0,
                 .padding = goop.style.Edges.symmetric(10, 10),
-                .border_radius = 8,
+                .border_radius = 0,
             };
 
             for (state.entries.items) |entry| {
                 const item = try ctx.tree.addChild(state.asset_grid.?, .{ .grid_item = .{
-                    .label = try allocUiUtf8Lossy(state, entry.name),
-                    .selected = if (state.selected_path) |selected_path| std.mem.eql(u8, entry.path, selected_path) else false,
+                    .label = try allocUiEllipsizedUtf8Lossy(state, entry.name, 104, ctx.theme.font_size),
+                    .icon = entryIconText(entry),
+                    .selected = isPathSelected(state, entry.path),
                 } });
                 ctx.tree.get(item).style_override = .{
                     .bg = if (entry.isDirectory())
@@ -1684,6 +2142,7 @@ fn buildWidgetTree(state: *State) !void {
                         .{ .r = 184, .g = 204, .b = 233, .a = 255 }
                     else
                         .{ .r = 214, .g = 220, .b = 228, .a = 255 },
+                    .border_width = 0,
                     .padding = goop.style.Edges.symmetric(10, 10),
                     .border_radius = 10,
                 };
@@ -1693,17 +2152,31 @@ fn buildWidgetTree(state: *State) !void {
     }
 
     if (state.entries.items.len == 0) {
-        _ = try ctx.tree.addChild(file_panel, .{ .text = .{ .content = "This directory is empty." } });
+        _ = try ctx.tree.addChild(file_panel_scroll, .{ .text = .{ .content = "This directory is empty." } });
     }
 
     const detail_panel = try ctx.tree.addChild(state.detail_splitter.?, .{ .container = .{ .direction = .column } });
     ctx.tree.get(detail_panel).style_override = .{
-        .bg = .{ .r = 250, .g = 251, .b = 253, .a = 255 },
-        .border = .{ .r = 214, .g = 220, .b = 228, .a = 255 },
-        .padding = goop.style.Edges.symmetric(10, 10),
-        .border_radius = 8,
+        .bg = .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+        .border_width = 0,
+        .padding = goop.style.Edges.all(0),
+        .border_radius = 10,
     };
-    _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = "Info" } });
+    const detail_header = try ctx.tree.addChild(detail_panel, .{ .toolbar = .{} });
+    ctx.tree.get(detail_header).style_override = .{
+        .bg = .{ .r = 247, .g = 249, .b = 252, .a = 255 },
+        .border_width = 0,
+        .padding = goop.style.Edges.symmetric(12, 9),
+        .border_radius = 10,
+    };
+    _ = try ctx.tree.addChild(detail_header, .{ .text = .{ .content = "Info" } });
+    const detail_scroll = try ctx.tree.addChild(detail_panel, .{ .scroll_area = .{} });
+    ctx.tree.get(detail_scroll).style_override = .{
+        .bg = transparent,
+        .border_width = 0,
+        .padding = goop.style.Edges.symmetric(12, 12),
+        .border_radius = 0,
+    };
 
     var directory_count: usize = 0;
     for (state.entries.items) |entry| {
@@ -1711,33 +2184,58 @@ fn buildWidgetTree(state: *State) !void {
     }
     const file_count = state.entries.items.len - directory_count;
 
-    if (selectedEntry(state)) |entry| {
-        const modified_text = try allocFormattedTimestamp(state, entry.modified_unix);
+    var selected_directory_count: usize = 0;
+    var selected_file_count: usize = 0;
+    var selected_file_bytes: u64 = 0;
+    for (state.entries.items) |entry| {
+        if (!isPathSelected(state, entry.path)) continue;
+        if (entry.isDirectory()) {
+            selected_directory_count += 1;
+        } else {
+            selected_file_count += 1;
+            selected_file_bytes += entry.size_bytes;
+        }
+    }
+
+    if (selectedPathCount(state) == 1 and selectedEntry(state) != null) {
+        const entry = selectedEntry(state).?;
+        const modified_text = try allocFormattedTimestampDetail(state, entry.modified_unix);
         const size_text = try allocFormattedSize(state, entry.kind, entry.size_bytes);
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiUtf8Lossy(state, entry.name) } });
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Type: {s}", .{entry.typeLabel()}) } });
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Modified: {s}", .{modified_text}) } });
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Size: {s}", .{if (size_text.len > 0) size_text else "—"}) } });
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Path: {f}", .{std.unicode.fmtUtf8(entry.path)}) } });
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = if (entry.isDirectory()) "Click again to open this directory." else "Files stay selected for inspection." } });
+        _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = try allocEntryNameLabel(state, entry.*) } });
+        _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = try allocUiString(state, "Type: {s}", .{entry.typeLabel()}) } });
+        _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = try allocUiString(state, "Modified: {s}", .{modified_text}) } });
+        _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = try allocUiString(state, "Size: {s}", .{if (size_text.len > 0) size_text else "-"}) } });
+        _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = try allocUiString(state, "Path: {f}", .{std.unicode.fmtUtf8(entry.path)}) } });
+        _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = if (entry.isDirectory()) "Double-click to open this directory." else "Use Ctrl-click and Shift-click to build a selection." } });
+    } else if (selectedPathCount(state) > 1) {
+        const selected_size_text = try allocFormattedSize(state, .file, selected_file_bytes);
+        _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = try allocUiString(state, "{d} items selected", .{selectedPathCount(state)}) } });
+        _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = try allocUiString(state, "{d} directories", .{selected_directory_count}) } });
+        _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = try allocUiString(state, "{d} files", .{selected_file_count}) } });
+        if (selected_file_count > 0) {
+            _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = try allocUiString(state, "Combined file size: {s}", .{selected_size_text}) } });
+        }
+        if (state.selected_path) |selected_path| {
+            _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = try allocUiString(state, "Active item: {f}", .{std.unicode.fmtUtf8(std.fs.path.basename(selected_path))}) } });
+        }
     } else {
         const directory_name = if (std.mem.eql(u8, state.current_dir, "/")) "/" else std.fs.path.basename(state.current_dir);
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiUtf8Lossy(state, directory_name) } });
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Path: {f}", .{std.unicode.fmtUtf8(state.current_dir)}) } });
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "{d} directories", .{directory_count}) } });
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "{d} files", .{file_count}) } });
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = "Select a file or open a directory." } });
+        _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = try allocUiUtf8Lossy(state, directory_name) } });
+        _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = try allocUiString(state, "Path: {f}", .{std.unicode.fmtUtf8(state.current_dir)}) } });
+        _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = try allocUiString(state, "{d} directories", .{directory_count}) } });
+        _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = try allocUiString(state, "{d} files", .{file_count}) } });
+        _ = try ctx.tree.addChild(detail_scroll, .{ .text = .{ .content = "Select files, or double-click a directory to open it." } });
     }
 
     const status_bar = try ctx.tree.addChild(root, .{ .status_bar = .{} });
     ctx.tree.get(status_bar).style_override = .{
         .bg = .{ .r = 233, .g = 236, .b = 240, .a = 255 },
-        .border = .{ .r = 206, .g = 212, .b = 220, .a = 255 },
-        .padding = goop.style.Edges.symmetric(10, 7),
+        .border_width = 0,
+        .padding = goop.style.Edges.symmetric(12, 8),
         .border_radius = 0,
     };
     _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "{d} entries", .{state.entries.items.len}) } });
-    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "{d} selected", .{if (state.selected_path == null) @as(usize, 0) else @as(usize, 1)}) } });
+    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "{d} selected", .{selectedPathCount(state)}) } });
     _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "Path: {f}", .{std.unicode.fmtUtf8(state.current_dir)}) } });
 }
 
@@ -1909,6 +2407,7 @@ pub fn main() !void {
         .measureFn = &snailMeasureText,
         .user_data = @ptrCast(&text_measure),
     };
+    state.text_measure_ctx = &text_measure_ctx;
 
     // goop context + widget tree
     var ctx = try goop.Context.init(allocator, .{
@@ -2067,27 +2566,11 @@ pub fn main() !void {
         }
 
         if (state.asset_table) |h| if (ctx.tableSelectionChanged(h)) {
-            if (ctx.tableSelectedRowIndex(h)) |row_index| {
-                if (row_index < state.entries.items.len) {
-                    try setSelectedPath(&state, state.entries.items[row_index].path);
-                } else {
-                    try setSelectedPath(&state, null);
-                }
-            } else {
-                try setSelectedPath(&state, null);
-            }
+            try syncSelectedPathsFromTable(&state, &ctx, h);
             rebuild_ui = true;
         };
         if (state.asset_grid) |h| if (ctx.gridSelectorChanged(h)) {
-            if (ctx.gridSelectorSelectedIndex(h)) |item_index| {
-                if (item_index < state.entries.items.len) {
-                    try setSelectedPath(&state, state.entries.items[item_index].path);
-                } else {
-                    try setSelectedPath(&state, null);
-                }
-            } else {
-                try setSelectedPath(&state, null);
-            }
+            try syncSelectedPathsFromGrid(&state, &ctx, h);
             rebuild_ui = true;
         };
 
@@ -2096,13 +2579,18 @@ pub fn main() !void {
             if (index >= state.entries.items.len) continue;
 
             const entry = state.entries.items[index];
+            const still_selected = ctx.tree.getConst(handle).kind.table_row.selected;
             const now = getMonotonicNs();
             const repeated_click = if (state.last_click_path) |last_clicked|
                 std.mem.eql(u8, last_clicked, entry.path) and now - state.last_click_ns <= 400 * std.time.ns_per_ms
             else
                 false;
 
-            try setSelectedPath(&state, entry.path);
+            if (still_selected) {
+                try setSelectedPath(&state, entry.path);
+            } else {
+                try syncPrimarySelection(&state);
+            }
             try setLastClickPath(&state, entry.path);
             state.last_click_ns = now;
             rebuild_ui = true;
@@ -2118,13 +2606,18 @@ pub fn main() !void {
             if (index >= state.entries.items.len) continue;
 
             const entry = state.entries.items[index];
+            const still_selected = ctx.tree.getConst(handle).kind.grid_item.selected;
             const now = getMonotonicNs();
             const repeated_click = if (state.last_click_path) |last_clicked|
                 std.mem.eql(u8, last_clicked, entry.path) and now - state.last_click_ns <= 400 * std.time.ns_per_ms
             else
                 false;
 
-            try setSelectedPath(&state, entry.path);
+            if (still_selected) {
+                try setSelectedPath(&state, entry.path);
+            } else {
+                try syncPrimarySelection(&state);
+            }
             try setLastClickPath(&state, entry.path);
             state.last_click_ns = now;
             rebuild_ui = true;
@@ -2143,16 +2636,18 @@ pub fn main() !void {
         // Event handlers can rebuild the widget tree after the initial hit-test
         // layout pass above, so run layout again if the tree became dirty.
         ctx.doLayout(&text_measure_ctx);
-        var dl = try ctx.generateDrawList();
-        defer ctx.freeDrawList(&dl);
-        if (try ensureAtlasForDrawList(&atlas, &renderer, dl)) {
+        updatePointerCursor(&state);
+        var base_paint_list = try ctx.generatePaintList();
+        defer ctx.freePaintList(&base_paint_list);
+        if (try ensureAtlasForPaintList(&atlas, &renderer, base_paint_list)) {
             ctx.setDimensions(state.logical_width, state.logical_height);
             ctx.doLayout(&text_measure_ctx);
-            dl = try ctx.generateDrawList();
+            base_paint_list = try ctx.generatePaintList();
         }
+        const paint_list = try composeFileBrowserPaintList(&state, base_paint_list);
 
         renderer.beginFrame(state.buffer_width, state.buffer_height, @floatFromInt(state.buffer_scale));
-        renderer.render(dl);
+        renderer.renderPaintList(paint_list);
 
         // Request frame callback BEFORE swap — the callback must be
         // registered before the surface commit that eglSwapBuffers triggers.
@@ -2168,6 +2663,9 @@ pub fn main() !void {
     state.clipboard_buf.deinit(allocator);
     if (state.data_device) |data_device| wl.wl_data_device_release(data_device);
     if (state.data_device_manager) |manager| wl.wl_data_device_manager_destroy(manager);
+    state.resetCursorTheme();
+    if (state.cursor_surface) |cursor_surface| wl.wl_surface_destroy(cursor_surface);
+    if (state.shm) |shm| wl.wl_shm_destroy(shm);
     if (state.xkb_state) |s| xkb.xkb_state_unref(s);
     if (state.xkb_keymap) |k| xkb.xkb_keymap_unref(k);
     if (state.xkb_ctx) |c| xkb.xkb_context_unref(c);
