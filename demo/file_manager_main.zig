@@ -61,14 +61,10 @@ fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) go
     const ctx: *SnailTextCtx = @ptrCast(@alignCast(user_data));
     const MeasuredGlyph = struct {
         advance_width: u16,
-        bbox: snail.bezier.BBox,
     };
     const MeasureState = struct {
         width: f32 = 0,
         prev_gid: u16 = 0,
-        min_y: f32 = std.math.inf(f32),
-        max_y: f32 = -std.math.inf(f32),
-        have_vertical_bounds: bool = false,
     };
     const scale = font_size / @as(f32, @floatFromInt(ctx.font.unitsPerEm()));
     var state: MeasureState = .{};
@@ -86,21 +82,15 @@ fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) go
                 state_inner.width += @as(f32, @floatFromInt(kern)) * scale_inner;
             }
             const glyph_metrics: MeasuredGlyph = if (ctx_inner.atlas.getGlyph(gid)) |info|
-                .{ .advance_width = info.advance_width, .bbox = info.bbox }
+                .{ .advance_width = info.advance_width }
             else blk: {
                 const glyph = ctx_inner.font.inner.parseGlyph(ctx_inner.allocator, &ctx_inner.glyph_cache, gid) catch {
                     state_inner.width += scale_inner * 500;
                     state_inner.prev_gid = gid;
                     return;
                 };
-                break :blk .{ .advance_width = glyph.metrics.advance_width, .bbox = glyph.metrics.bbox };
+                break :blk .{ .advance_width = glyph.metrics.advance_width };
             };
-
-            if (glyph_metrics.bbox.max.y > glyph_metrics.bbox.min.y) {
-                state_inner.min_y = @min(state_inner.min_y, glyph_metrics.bbox.min.y);
-                state_inner.max_y = @max(state_inner.max_y, glyph_metrics.bbox.max.y);
-                state_inner.have_vertical_bounds = true;
-            }
 
             state_inner.width += @as(f32, @floatFromInt(glyph_metrics.advance_width)) * scale_inner;
             state_inner.prev_gid = gid;
@@ -128,17 +118,6 @@ fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) go
         };
 
         measureCodepoint(ctx, cp, scale, &state);
-    }
-
-    if (state.have_vertical_bounds) {
-        const ascent = @max(state.max_y, 0) * font_size;
-        const descent = @max(-state.min_y, 0) * font_size;
-        return .{
-            .width = state.width,
-            .height = ascent + descent,
-            .ascent = ascent,
-            .descent = descent,
-        };
     }
 
     return .{
