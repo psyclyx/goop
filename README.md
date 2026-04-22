@@ -60,8 +60,8 @@ For the current engineering snapshot and rough edges, see
 ## Build
 
 Use `nix-shell` first. The shell provides the pinned Zig 0.16.0 toolchain plus
-the demo's native dependencies, including `harfbuzz`, and exports
-`GOOP_DEMO_FONT_PATH` for the bundled demo font.
+the demo's native dependencies, including `harfbuzz`, `fontconfig`, and Noto
+fonts for the demos.
 
 ```sh
 nix-shell
@@ -75,9 +75,9 @@ zig build install       # install static/shared libgoop, goop-demo, and goop.h t
 ```
 
 The core library only needs libc plus the vendored `clay` C source. The demo
-additionally needs Wayland, EGL, OpenGL, `xkbcommon`, and a `.ttf` font. If
-you are running the demo outside `nix-shell`, set `GOOP_DEMO_FONT_PATH` to a
-font file if the built-in fallback paths do not exist on your system.
+additionally needs Wayland, EGL, OpenGL, `xkbcommon`, and a `.ttf` font. The
+demos try `GOOP_DEMO_FONT_PATH` first, then resolve a font through
+`fontconfig`, then fall back to a few common system paths.
 
 ## Zig usage
 

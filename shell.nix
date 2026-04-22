@@ -10,6 +10,7 @@ in
     packages = with pkgs; [
       zigpkgs."0.16.0"
       pkg-config
+      fontconfig
       libGL
       libglvnd
       wayland
@@ -17,10 +18,16 @@ in
       wayland-scanner
       libxkbcommon
       harfbuzz
+      noto-fonts
       dejavu_fonts
     ];
 
-    GOOP_DEMO_FONT_PATH = "${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSans.ttf";
+    FONTCONFIG_FILE = pkgs.makeFontsConf {
+      fontDirectories = with pkgs; [
+        noto-fonts
+        dejavu_fonts
+      ];
+    };
 
     LD_LIBRARY_PATH = with pkgs;
       pkgs.lib.makeLibraryPath [

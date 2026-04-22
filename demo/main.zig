@@ -1320,6 +1320,13 @@ fn loadFont(alloc: std.mem.Allocator) ![]u8 {
         return readFile(alloc, path);
     }
 
+    if (try fontPathFromFontconfig(alloc)) |path| {
+        defer alloc.free(path);
+        if (readFile(alloc, path)) |font_data| {
+            return font_data;
+        } else |_| {}
+    }
+
     const fallback_paths = [_][]const u8{
         "/run/current-system/sw/share/X11/fonts/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -1336,6 +1343,29 @@ fn loadFont(alloc: std.mem.Allocator) ![]u8 {
 fn fontPathFromEnv() ?[]const u8 {
     const raw = c_io.getenv("GOOP_DEMO_FONT_PATH") orelse return null;
     return std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
+}
+
+fn fontPathFromFontconfig(alloc: std.mem.Allocator) !?[]u8 {
+    const patterns = [_][]const u8{
+        "Noto Sans:style=Regular",
+        "sans-serif:style=Regular",
+    };
+
+    for (patterns) |pattern| {
+        var command_buf: [256]u8 = undefined;
+        const command = try std.fmt.bufPrintZ(&command_buf, "fc-match -f '%{{file}}\\n' '{s}'", .{pattern});
+
+        const pipe = c_io.popen(command.ptr, "r") orelse continue;
+        defer _ = c_io.pclose(pipe);
+
+        var buf: [4096]u8 = undefined;
+        const raw = c_io.fgets(&buf, @intCast(buf.len), pipe) orelse continue;
+        const line = std.mem.trimEnd(u8, std.mem.span(@as([*:0]const u8, @ptrCast(raw))), "\r\n");
+        if (line.len == 0) continue;
+        return @as(?[]u8, try alloc.dupe(u8, line));
+    }
+
+    return null;
 }
 
 fn readFile(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
