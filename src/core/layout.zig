@@ -73,7 +73,14 @@ pub fn textMetrics(font_size: f32, text_ctx: ?*const TextMeasureCtx) TextDimensi
 
 pub fn measureTextDimensions(text: []const u8, font_size: f32, text_ctx: ?*const TextMeasureCtx) TextDimensions {
     if (text_ctx) |ctx| {
-        return normalizeTextDimensions(ctx.measureFn(text, font_size, ctx.user_data), font_size);
+        const measured = normalizeTextDimensions(ctx.measureFn(text, font_size, ctx.user_data), font_size);
+        const metrics = textMetrics(font_size, text_ctx);
+        return .{
+            .width = measured.width,
+            .height = metrics.height,
+            .ascent = metrics.ascent,
+            .descent = metrics.descent,
+        };
     }
     return normalizeTextDimensions(.{
         .width = @as(f32, @floatFromInt(text.len)) * font_size * 0.6,
@@ -2074,9 +2081,8 @@ fn measureText(
 
     if (user_data) |ptr| {
         const ctx: *const TextMeasureCtx = @ptrCast(@alignCast(ptr));
-        const dims = ctx.measureFn(str, font_size, ctx.user_data);
-        const normalized = normalizeTextDimensions(dims, font_size);
-        return .{ .width = normalized.width, .height = normalized.height };
+        const dims = measureTextDimensions(str, font_size, ctx);
+        return .{ .width = dims.width, .height = dims.height };
     }
 
     // Fallback: rough approximation when no measurement function is provided
@@ -2086,6 +2092,37 @@ fn measureText(
         .width = len * char_width,
         .height = font_size,
     };
+}
+
+test "measureTextDimensions keeps width but stabilizes line metrics" {
+    const helper = struct {
+        fn measure(text: []const u8, font_size: f32, _: ?*anyopaque) TextDimensions {
+            if (std.mem.eql(u8, text, "Mg")) {
+                return .{
+                    .width = font_size,
+                    .height = 20,
+                    .ascent = 14,
+                    .descent = 6,
+                };
+            }
+            return .{
+                .width = @as(f32, @floatFromInt(text.len)) * font_size * 0.5,
+                .height = 10,
+                .ascent = 8,
+                .descent = 2,
+            };
+        }
+    };
+
+    const text_ctx = TextMeasureCtx{
+        .measureFn = &helper.measure,
+    };
+    const dims = measureTextDimensions("hello", 16, &text_ctx);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 40), dims.width, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), dims.height, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 14), dims.ascent, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 6), dims.descent, 0.01);
 }
 
 test "popup layout is clamped into the viewport" {

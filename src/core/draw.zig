@@ -2299,7 +2299,7 @@ test "spinbox emits buttons and value" {
     try std.testing.expectEqualStrings("4", dl.commands[5].text.text);
 }
 
-test "numeric controls baseline uses string metrics when available" {
+test "numeric controls baseline uses stable line metrics" {
     const allocator = std.testing.allocator;
 
     var tree = widget.Tree.init(allocator);
@@ -2323,8 +2323,8 @@ test "numeric controls baseline uses string metrics when available" {
     var dl = try generate(&tree, style.Theme.default, allocator, &text_ctx);
     defer freeDrawList(&dl, allocator);
 
-    try std.testing.expectApproxEqAbs(@as(f32, 37), dl.commands[1].text.baseline_y, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 77), dl.commands[7].text.baseline_y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 40), dl.commands[1].text.baseline_y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 80), dl.commands[7].text.baseline_y, 0.01);
 }
 
 test "tab bar emits selected tab header and active panel only" {
