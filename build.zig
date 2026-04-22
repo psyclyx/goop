@@ -133,6 +133,16 @@ pub fn build(b: *std.Build) void {
     const file_manager_demo_step = b.step("file-manager-demo", "Build and run the file manager demo");
     file_manager_demo_step.dependOn(&run_file_manager_demo.step);
 
+    const render_mod = b.createModule(.{
+        .root_source_file = b.path("demo/render.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    render_mod.addImport("goop", goop_mod);
+    render_mod.addImport("snail", snail_mod);
+    render_mod.linkSystemLibrary("gl", .{});
+
     // ── Headless perf round ──
     const perf_mod = b.createModule(.{
         .root_source_file = b.path("tools/perf_round.zig"),
@@ -141,6 +151,10 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     perf_mod.addImport("goop", goop_mod);
+    perf_mod.addImport("goop_demo_render", render_mod);
+    perf_mod.addImport("snail", snail_mod);
+    perf_mod.linkSystemLibrary("egl", .{});
+    perf_mod.linkSystemLibrary("gl", .{});
 
     const perf_exe = b.addExecutable(.{
         .name = "goop-perf-round",

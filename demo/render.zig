@@ -39,6 +39,10 @@ pub const Renderer = struct {
     descent_units: f32,
 
     const Scissor = struct { x: i32, y: i32, w: i32, h: i32 };
+    const ResolvedText = struct {
+        text: []const u8,
+        width: f32,
+    };
 
     pub fn init(w: u32, h: u32, font: *const snail.Font, atlas: *const snail.Atlas) !Renderer {
         var text_renderer = try snail.Renderer.init();
@@ -159,19 +163,25 @@ pub const Renderer = struct {
     }
 
     fn addText(self: *Renderer, t: anytype) void {
-        const visible_text = self.resolveTextForBounds(t.text, t.font_size * self.scale, t.bounds.w * self.scale, t.overflow);
-        if (visible_text.len == 0) return;
-        const color = colorToVec4(t.color);
         const scaled_font_size = t.font_size * self.scale;
-        const text_width = self.measureTextWidth(visible_text, scaled_font_size);
-        const scaled_x = snapToDevicePixels(textXForBounds(t.bounds, text_width / self.scale, t.text_align), self.scale);
+        const resolved = self.resolveTextForBounds(
+            t.text,
+            scaled_font_size,
+            t.bounds.w * self.scale,
+            t.text_align,
+            t.overflow,
+        );
+        if (resolved.text.len == 0) return;
+        const color = colorToVec4(t.color);
+        const unscaled_width = if (resolved.width > 0) resolved.width / self.scale else 0;
+        const scaled_x = snapToDevicePixels(textXForBounds(t.bounds, unscaled_width, t.text_align), self.scale);
         const baseline = if (comptime @hasField(@TypeOf(t), "baseline_y"))
             t.baseline_y
         else
             self.textBaselineY(t.bounds, t.font_size);
         const scaled_baseline = snapToDevicePixels(baseline, self.scale);
         const baseline_y = @round(self.viewport_h - scaled_baseline);
-        _ = self.text_batch.addString(&self.atlas_view, self.font, visible_text, scaled_x, baseline_y, scaled_font_size, color);
+        _ = self.text_batch.addString(&self.atlas_view, self.font, resolved.text, scaled_x, baseline_y, scaled_font_size, color);
     }
 
     fn flushText(self: *Renderer) void {
@@ -345,49 +355,69 @@ pub const Renderer = struct {
         return probe.addString(&self.atlas_view, self.font, text, 0, 0, font_size, .{ 1, 1, 1, 1 });
     }
 
-    fn resolveTextForBounds(self: *Renderer, text: []const u8, font_size: f32, max_width: f32, overflow: goop.TextOverflow) []const u8 {
+    fn resolveTextForBounds(
+        self: *Renderer,
+        text: []const u8,
+        font_size: f32,
+        max_width: f32,
+        text_align: goop.TextAlign,
+        overflow: goop.TextOverflow,
+    ) ResolvedText {
         switch (overflow) {
-            .visible => return text,
-            .clip => return text,
+            .visible => return .{
+                .text = text,
+                .width = if (text_align == .start) 0 else self.measureTextWidth(text, font_size),
+            },
+            .clip => return .{
+                .text = text,
+                .width = if (text_align == .start) 0 else self.measureTextWidth(text, font_size),
+            },
             .ellipsis => {},
         }
-        if (text.len == 0 or max_width <= 0) return "";
-        if (self.measureTextWidth(text, font_size) <= max_width) return text;
+        if (text.len == 0 or max_width <= 0) return .{ .text = "", .width = 0 };
+        const full_width = self.measureTextWidth(text, font_size);
+        if (full_width <= max_width) return .{ .text = text, .width = full_width };
 
         const ellipsis = "...";
         const ellipsis_width = self.measureTextWidth(ellipsis, font_size);
-        if (ellipsis_width > max_width) return "";
+        if (ellipsis_width > max_width) return .{ .text = "", .width = 0 };
 
-        var utf8_view = std.unicode.Utf8View.init(text) catch return text;
+        var utf8_view = std.unicode.Utf8View.init(text) catch return .{ .text = text, .width = full_width };
         var it = utf8_view.iterator();
         var boundaries: std.ArrayListUnmanaged(usize) = .empty;
         defer boundaries.deinit(std.heap.page_allocator);
         while (it.nextCodepointSlice()) |slice| {
             boundaries.append(std.heap.page_allocator, @intFromPtr(slice.ptr) - @intFromPtr(text.ptr) + slice.len) catch break;
         }
-        if (boundaries.items.len == 0) return ellipsis;
+        if (boundaries.items.len == 0) return .{ .text = ellipsis, .width = ellipsis_width };
 
         var low: usize = 0;
         var high: usize = boundaries.items.len;
+        var best_width = ellipsis_width;
         while (low < high) {
             const mid = (low + high + 1) / 2;
             const prefix_len = boundaries.items[mid - 1];
             self.ensureScratchCapacity(prefix_len + ellipsis.len);
             @memcpy(self.scratch_buf[0..prefix_len], text[0..prefix_len]);
             @memcpy(self.scratch_buf[prefix_len .. prefix_len + ellipsis.len], ellipsis);
-            if (self.measureTextWidth(self.scratch_buf[0 .. prefix_len + ellipsis.len], font_size) <= max_width) {
+            const candidate_width = self.measureTextWidth(self.scratch_buf[0 .. prefix_len + ellipsis.len], font_size);
+            if (candidate_width <= max_width) {
                 low = mid;
+                best_width = candidate_width;
             } else {
                 high = mid - 1;
             }
         }
 
-        if (low == 0) return ellipsis;
+        if (low == 0) return .{ .text = ellipsis, .width = ellipsis_width };
         const prefix_len = boundaries.items[low - 1];
         self.ensureScratchCapacity(prefix_len + ellipsis.len);
         @memcpy(self.scratch_buf[0..prefix_len], text[0..prefix_len]);
         @memcpy(self.scratch_buf[prefix_len .. prefix_len + ellipsis.len], ellipsis);
-        return self.scratch_buf[0 .. prefix_len + ellipsis.len];
+        return .{
+            .text = self.scratch_buf[0 .. prefix_len + ellipsis.len],
+            .width = best_width,
+        };
     }
 
     fn textBaselineY(self: *Renderer, bounds: goop.draw.Rect, font_size: f32) f32 {

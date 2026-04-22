@@ -163,6 +163,7 @@ pub fn freePaintList(paint_list: *PaintList, allocator: std.mem.Allocator) void 
 pub fn lowerPaintList(paint_list: PaintList, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !DrawList {
     var commands: std.ArrayListUnmanaged(DrawCommand) = .empty;
     errdefer commands.deinit(allocator);
+    var metrics_cache = TextMetricsCache{};
 
     for (paint_list.commands) |command| {
         switch (command) {
@@ -173,7 +174,10 @@ pub fn lowerPaintList(paint_list: PaintList, allocator: std.mem.Allocator, text_
                 .border_width = box.border_width,
                 .corner_radius = box.corner_radius,
             } }),
-            .text => |text| try commands.append(allocator, .{ .text = lowerTextCommand(text, text_ctx) }),
+            .text => |text| {
+                const metrics = metrics_cache.metricsFor(text.font_size, text_ctx);
+                try commands.append(allocator, .{ .text = lowerTextCommand(text, metrics) });
+            },
             .clip => |clip| try commands.append(allocator, .{ .clip = .{ .bounds = clip.bounds } }),
             .icon => |icon| try commands.append(allocator, .{ .icon = .{
                 .bounds = icon.bounds,
@@ -321,10 +325,44 @@ fn appendTextCommand(
     } });
 }
 
-fn lowerTextCommand(text: PaintCommand.Text, text_ctx: ?*const layout.TextMeasureCtx) DrawCommand.DrawText {
+const TextMetricsCache = struct {
+    const Entry = struct {
+        font_size: f32,
+        metrics: layout.TextDimensions,
+    };
+
+    entries: [8]?Entry = [_]?Entry{null} ** 8,
+    len: usize = 0,
+    next_slot: usize = 0,
+
+    fn metricsFor(self: *TextMetricsCache, font_size: f32, text_ctx: ?*const layout.TextMeasureCtx) layout.TextDimensions {
+        for (self.entries[0..self.len]) |entry_opt| {
+            const entry = entry_opt orelse continue;
+            if (entry.font_size == font_size) return entry.metrics;
+        }
+
+        const metrics = layout.textMetrics(font_size, text_ctx);
+        if (self.len < self.entries.len) {
+            self.entries[self.len] = .{
+                .font_size = font_size,
+                .metrics = metrics,
+            };
+            self.len += 1;
+        } else {
+            self.entries[self.next_slot] = .{
+                .font_size = font_size,
+                .metrics = metrics,
+            };
+            self.next_slot = (self.next_slot + 1) % self.entries.len;
+        }
+        return metrics;
+    }
+};
+
+fn lowerTextCommand(text: PaintCommand.Text, metrics: layout.TextDimensions) DrawCommand.DrawText {
     return .{
         .bounds = text.bounds,
-        .baseline_y = textBaselineY(text.bounds, text.text, text.font_size, text_ctx),
+        .baseline_y = textBaselineY(text.bounds, metrics),
         .text = text.text,
         .color = text.color,
         .font_size = text.font_size,
@@ -333,11 +371,7 @@ fn lowerTextCommand(text: PaintCommand.Text, text_ctx: ?*const layout.TextMeasur
     };
 }
 
-fn textBaselineY(bounds: Rect, text: []const u8, font_size: f32, text_ctx: ?*const layout.TextMeasureCtx) f32 {
-    const metrics = if (text.len > 0)
-        layout.measureTextDimensions(text, font_size, text_ctx)
-    else
-        layout.textMetrics(font_size, text_ctx);
+fn textBaselineY(bounds: Rect, metrics: layout.TextDimensions) f32 {
     const extra_vertical = @max(bounds.h - metrics.height, 0);
     return bounds.y + extra_vertical * 0.5 + metrics.ascent;
 }
