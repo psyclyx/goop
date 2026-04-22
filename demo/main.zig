@@ -53,51 +53,78 @@ fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) go
         advance_width: u16,
         bbox: snail.bezier.BBox,
     };
+    const MeasureState = struct {
+        width: f32 = 0,
+        prev_gid: u16 = 0,
+        min_y: f32 = std.math.inf(f32),
+        max_y: f32 = -std.math.inf(f32),
+        have_vertical_bounds: bool = false,
+    };
     const scale = font_size / @as(f32, @floatFromInt(ctx.font.unitsPerEm()));
-    var width: f32 = 0;
-    var prev_gid: u16 = 0;
-    var min_y = std.math.inf(f32);
-    var max_y = -std.math.inf(f32);
-    var have_vertical_bounds = false;
-    const view = std.unicode.Utf8View.initUnchecked(text);
-    var it = view.iterator();
-    while (it.nextCodepoint()) |cp| {
-        const gid = ctx.font.glyphIndex(cp) catch 0;
-        if (gid == 0) {
-            width += scale * 500;
-            prev_gid = 0;
-            continue;
-        }
-        if (prev_gid != 0) {
-            const kern = ctx.font.getKerning(prev_gid, gid) catch 0;
-            width += @as(f32, @floatFromInt(kern)) * scale;
-        }
-        const glyph_metrics: MeasuredGlyph = if (ctx.atlas.getGlyph(gid)) |info|
-            .{ .advance_width = info.advance_width, .bbox = info.bbox }
-        else blk: {
-            const glyph = ctx.font.inner.parseGlyph(ctx.allocator, &ctx.glyph_cache, gid) catch {
-                width += scale * 500;
-                prev_gid = gid;
-                continue;
+    var state: MeasureState = .{};
+
+    const measureCodepoint = struct {
+        fn f(ctx_inner: *SnailTextCtx, cp: u21, scale_inner: f32, state_inner: *MeasureState) void {
+            const gid = ctx_inner.font.glyphIndex(cp) catch 0;
+            if (gid == 0) {
+                state_inner.width += scale_inner * 500;
+                state_inner.prev_gid = 0;
+                return;
+            }
+            if (state_inner.prev_gid != 0) {
+                const kern = ctx_inner.font.getKerning(state_inner.prev_gid, gid) catch 0;
+                state_inner.width += @as(f32, @floatFromInt(kern)) * scale_inner;
+            }
+            const glyph_metrics: MeasuredGlyph = if (ctx_inner.atlas.getGlyph(gid)) |info|
+                .{ .advance_width = info.advance_width, .bbox = info.bbox }
+            else blk: {
+                const glyph = ctx_inner.font.inner.parseGlyph(ctx_inner.allocator, &ctx_inner.glyph_cache, gid) catch {
+                    state_inner.width += scale_inner * 500;
+                    state_inner.prev_gid = gid;
+                    return;
+                };
+                break :blk .{ .advance_width = glyph.metrics.advance_width, .bbox = glyph.metrics.bbox };
             };
-            break :blk .{ .advance_width = glyph.metrics.advance_width, .bbox = glyph.metrics.bbox };
+
+            if (glyph_metrics.bbox.max.y > glyph_metrics.bbox.min.y) {
+                state_inner.min_y = @min(state_inner.min_y, glyph_metrics.bbox.min.y);
+                state_inner.max_y = @max(state_inner.max_y, glyph_metrics.bbox.max.y);
+                state_inner.have_vertical_bounds = true;
+            }
+
+            state_inner.width += @as(f32, @floatFromInt(glyph_metrics.advance_width)) * scale_inner;
+            state_inner.prev_gid = gid;
+        }
+    }.f;
+
+    var index: usize = 0;
+    while (index < text.len) {
+        const cp = blk: {
+            const cp_len = std.unicode.utf8ByteSequenceLength(text[index]) catch {
+                index += 1;
+                break :blk std.unicode.replacement_character;
+            };
+            if (index + cp_len > text.len) {
+                index += 1;
+                break :blk std.unicode.replacement_character;
+            }
+            const slice = text[index .. index + cp_len];
+            const decoded = std.unicode.utf8Decode(slice) catch {
+                index += 1;
+                break :blk std.unicode.replacement_character;
+            };
+            index += cp_len;
+            break :blk decoded;
         };
 
-        if (glyph_metrics.bbox.max.y > glyph_metrics.bbox.min.y) {
-            min_y = @min(min_y, glyph_metrics.bbox.min.y);
-            max_y = @max(max_y, glyph_metrics.bbox.max.y);
-            have_vertical_bounds = true;
-        }
-
-        width += @as(f32, @floatFromInt(glyph_metrics.advance_width)) * scale;
-        prev_gid = gid;
+        measureCodepoint(ctx, cp, scale, &state);
     }
 
-    if (have_vertical_bounds) {
-        const ascent = @max(max_y, 0) * font_size;
-        const descent = @max(-min_y, 0) * font_size;
+    if (state.have_vertical_bounds) {
+        const ascent = @max(state.max_y, 0) * font_size;
+        const descent = @max(-state.min_y, 0) * font_size;
         return .{
-            .width = width,
+            .width = state.width,
             .height = ascent + descent,
             .ascent = ascent,
             .descent = descent,
@@ -105,7 +132,7 @@ fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) go
     }
 
     return .{
-        .width = width,
+        .width = state.width,
         .height = (ctx.ascent_units + ctx.descent_units) * scale,
         .ascent = ctx.ascent_units * scale,
         .descent = ctx.descent_units * scale,
@@ -148,8 +175,12 @@ fn ensureAtlasForDrawList(atlas: *snail.Atlas, renderer: *render.Renderer, draw_
         const text = command.text.text;
         if (text.len == 0) continue;
 
-        if (try atlas.extendGlyphsForText(text)) |next| {
-            _ = snail.replaceAtlas(atlas, next);
+        const next = if (comptime @hasDecl(snail.Atlas, "extendText"))
+            try atlas.extendText(text)
+        else
+            try atlas.extendGlyphsForText(text);
+        if (next) |next_atlas| {
+            _ = snail.replaceAtlas(atlas, next_atlas);
             changed = true;
         }
     }
