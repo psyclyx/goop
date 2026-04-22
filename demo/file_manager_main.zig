@@ -2022,6 +2022,9 @@ pub fn main() !void {
         }
 
         // Render
+        // Event handlers can rebuild the widget tree after the initial hit-test
+        // layout pass above, so run layout again if the tree became dirty.
+        ctx.doLayout(&text_measure_ctx);
         var dl = try ctx.generateDrawList();
         defer ctx.freeDrawList(&dl);
         if (try ensureAtlasForDrawList(&atlas, &renderer, dl)) {
