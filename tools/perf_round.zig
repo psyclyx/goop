@@ -9,6 +9,8 @@ const BenchConfig = struct {
     height: u32 = 900,
     table_rows: usize = 320,
     layout_iters: usize = 120,
+    paint_iters: usize = 240,
+    lower_iters: usize = 240,
     redraw_iters: usize = 240,
     cache_iters: usize = 20_000,
 };
@@ -47,15 +49,18 @@ pub fn main() !void {
     try buildExplorerWorkload(&ctx, alloc, config.table_rows);
 
     ctx.doLayout(null);
+    const initial_paint_list = try ctx.generatePaintList();
     const initial_draw_list = try ctx.generateDrawList();
 
     const node_count = ctx.tree.count();
+    const paint_count = initial_paint_list.commands.len;
     const draw_count = initial_draw_list.commands.len;
 
     // Warm caches before timing.
     for (0..16) |i| {
         ctx.setDimensions(config.width + @as(u32, @intCast(i & 1)), config.height);
         ctx.doLayout(null);
+        _ = try ctx.generatePaintList();
         _ = try ctx.generateDrawList();
     }
     for (0..32) |i| {
@@ -64,37 +69,102 @@ pub fn main() !void {
             .y = 180 + @as(f32, @floatFromInt(i % 11)),
         } });
         ctx.processEvents();
+        _ = try ctx.generatePaintList();
         _ = try ctx.generateDrawList();
     }
+    _ = try ctx.generatePaintList();
     _ = try ctx.generateDrawList();
 
-    const layout_total_ns = try benchLayoutAndDraw(&ctx, config);
-    const redraw_total_ns = try benchDrawRegen(&ctx, config);
-    const cache_total_ns = try benchCachedDraw(&ctx, config);
+    const layout_paint_total_ns = try benchLayoutAndPaint(&ctx, config);
+    const paint_regen_total_ns = try benchPaintRegen(&ctx, config);
+    const lower_total_ns = try benchLowerCachedPaint(&ctx, config);
+    const draw_regen_total_ns = try benchDrawRegen(&ctx, config);
+    const paint_cache_total_ns = try benchCachedPaint(&ctx, config);
+    const draw_cache_total_ns = try benchCachedDraw(&ctx, config);
 
-    printSummary("layout+draw (resize invalidation)", layout_total_ns, config.layout_iters);
-    printSummary("draw regen (mouse move)", redraw_total_ns, config.redraw_iters);
-    printSummary("cached draw list hit", cache_total_ns, config.cache_iters);
+    printSummary("layout+paint (resize invalidation)", layout_paint_total_ns, config.layout_iters);
+    printSummary("paint regen (mouse move)", paint_regen_total_ns, config.paint_iters);
+    printSummary("lower cached paint -> draw", lower_total_ns, config.lower_iters);
+    printSummary("full draw regen (mouse move)", draw_regen_total_ns, config.redraw_iters);
+    printSummary("cached paint list hit", paint_cache_total_ns, config.cache_iters);
+    printSummary("cached draw list hit", draw_cache_total_ns, config.cache_iters);
 
     std.debug.print(
-        "scene summary: nodes={}, draw_commands={}, table_rows={}\n",
-        .{ node_count, draw_count, config.table_rows },
+        "scene summary: nodes={}, paint_commands={}, draw_commands={}, table_rows={}\n",
+        .{ node_count, paint_count, draw_count, config.table_rows },
     );
 }
 
-fn benchLayoutAndDraw(ctx: *goop.Context, config: BenchConfig) !u64 {
+fn benchLayoutAndPaint(ctx: *goop.Context, config: BenchConfig) !u64 {
     const start_ns = monotonicNs();
-    var draw_accum: usize = 0;
+    var paint_accum: usize = 0;
 
     for (0..config.layout_iters) |i| {
         const width = config.width + @as(u32, @intCast(i & 1));
         ctx.setDimensions(width, config.height);
         ctx.doLayout(null);
-        const draw_list = try ctx.generateDrawList();
+        const paint_list = try ctx.generatePaintList();
+        paint_accum +%= paint_list.commands.len;
+    }
+
+    std.mem.doNotOptimizeAway(paint_accum);
+    return monotonicNs() - start_ns;
+}
+
+fn benchPaintRegen(ctx: *goop.Context, config: BenchConfig) !u64 {
+    ctx.setDimensions(config.width, config.height);
+    ctx.doLayout(null);
+    _ = try ctx.generatePaintList();
+
+    const start_ns = monotonicNs();
+    var paint_accum: usize = 0;
+
+    for (0..config.paint_iters) |i| {
+        try ctx.pushEvent(.{ .mouse_move = .{
+            .x = 280 + @as(f32, @floatFromInt((i * 7) % 91)),
+            .y = 160 + @as(f32, @floatFromInt((i * 13) % 57)),
+        } });
+        ctx.processEvents();
+        const paint_list = try ctx.generatePaintList();
+        paint_accum +%= paint_list.commands.len;
+    }
+
+    std.mem.doNotOptimizeAway(paint_accum);
+    return monotonicNs() - start_ns;
+}
+
+fn benchLowerCachedPaint(ctx: *goop.Context, config: BenchConfig) !u64 {
+    ctx.setDimensions(config.width, config.height);
+    ctx.doLayout(null);
+    const paint_list = try ctx.generatePaintList();
+
+    const start_ns = monotonicNs();
+    var draw_accum: usize = 0;
+
+    for (0..config.lower_iters) |_| {
+        var draw_list = try goop.draw.lowerPaintList(paint_list, std.heap.page_allocator, null);
         draw_accum +%= draw_list.commands.len;
+        goop.draw.freeDrawList(&draw_list, std.heap.page_allocator);
     }
 
     std.mem.doNotOptimizeAway(draw_accum);
+    return monotonicNs() - start_ns;
+}
+
+fn benchCachedPaint(ctx: *goop.Context, config: BenchConfig) !u64 {
+    ctx.setDimensions(config.width, config.height);
+    ctx.doLayout(null);
+    _ = try ctx.generatePaintList();
+
+    const start_ns = monotonicNs();
+    var paint_accum: usize = 0;
+
+    for (0..config.cache_iters) |_| {
+        const paint_list = try ctx.generatePaintList();
+        paint_accum +%= paint_list.commands.len;
+    }
+
+    std.mem.doNotOptimizeAway(paint_accum);
     return monotonicNs() - start_ns;
 }
 
