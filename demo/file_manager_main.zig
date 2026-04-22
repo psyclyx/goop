@@ -211,6 +211,11 @@ const BrowserSortDirection = enum {
     descending,
 };
 
+const BrowserViewMode = enum {
+    list,
+    grid,
+};
+
 const BrowserEntryKind = enum {
     directory,
     file,
@@ -300,6 +305,7 @@ const State = struct {
     last_click_ns: u64 = 0,
     sort_column: BrowserSortColumn = .name,
     sort_direction: BrowserSortDirection = .ascending,
+    view_mode: BrowserViewMode = .list,
     nav_ratio: f32 = 0.22,
     detail_ratio: f32 = 0.72,
     table_column_weights: [4]f32 = .{ 0.50, 0.22, 0.16, 0.12 },
@@ -310,13 +316,17 @@ const State = struct {
     btn_up: ?goop.NodeHandle = null,
     btn_home: ?goop.NodeHandle = null,
     btn_refresh: ?goop.NodeHandle = null,
+    btn_list_view: ?goop.NodeHandle = null,
+    btn_grid_view: ?goop.NodeHandle = null,
     nav_splitter: ?goop.NodeHandle = null,
     detail_splitter: ?goop.NodeHandle = null,
     asset_table: ?goop.NodeHandle = null,
+    asset_grid: ?goop.NodeHandle = null,
     place_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
     breadcrumb_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
     breadcrumb_paths: std.ArrayListUnmanaged([]u8) = .empty,
     row_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
+    grid_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
     ui_strings: std.ArrayListUnmanaged([]u8) = .empty,
 
     // Last known mouse position from Wayland pointer events
@@ -1131,12 +1141,16 @@ fn clearUiTracking(state: *State) void {
     state.btn_up = null;
     state.btn_home = null;
     state.btn_refresh = null;
+    state.btn_list_view = null;
+    state.btn_grid_view = null;
     state.nav_splitter = null;
     state.detail_splitter = null;
     state.asset_table = null;
+    state.asset_grid = null;
     state.place_handles.clearRetainingCapacity();
     state.breadcrumb_handles.clearRetainingCapacity();
     state.row_handles.clearRetainingCapacity();
+    state.grid_handles.clearRetainingCapacity();
     clearUiStrings(state);
     clearBreadcrumbPaths(state);
 }
@@ -1153,6 +1167,7 @@ fn deinitBrowserState(state: *State) void {
     state.breadcrumb_handles.deinit(allocator);
     state.breadcrumb_paths.deinit(allocator);
     state.row_handles.deinit(allocator);
+    state.grid_handles.deinit(allocator);
     state.ui_strings.deinit(allocator);
     if (state.current_dir.len > 0) allocator.free(state.current_dir);
     state.current_dir = &.{};
@@ -1265,6 +1280,22 @@ fn formatSizeText(buffer: []u8, kind: BrowserEntryKind, size_bytes: u64) []const
     return std.fmt.bufPrint(buffer, "{d:.1} {s}", .{ scaled, units[unit_index] }) catch "";
 }
 
+fn sortColumnLabel(column: BrowserSortColumn) []const u8 {
+    return switch (column) {
+        .name => "name",
+        .modified => "modified time",
+        .kind => "type",
+        .size => "size",
+    };
+}
+
+fn sortDirectionLabel(direction: BrowserSortDirection) []const u8 {
+    return switch (direction) {
+        .ascending => "ascending",
+        .descending => "descending",
+    };
+}
+
 fn allocFormattedTimestamp(state: *State, unix_seconds: i64) ![]const u8 {
     var buf: [32]u8 = undefined;
     const text = formatTimestampText(buf[0..], unix_seconds);
@@ -1307,15 +1338,10 @@ fn refreshPlaces(state: *State) !void {
         const downloads = try std.fmt.allocPrint(allocator, "{s}/Downloads", .{home});
         defer allocator.free(downloads);
         try appendPlaceIfDirectory(state, "Downloads", downloads);
-
-        const projects = try std.fmt.allocPrint(allocator, "{s}/projects", .{home});
-        defer allocator.free(projects);
-        try appendPlaceIfDirectory(state, "Projects", projects);
     }
 
-    if (state.current_dir.len > 0) try appendPlaceIfDirectory(state, "Workspace", state.current_dir);
-    try appendPlaceIfDirectory(state, "Temp", "/tmp");
-    try appendPlaceIfDirectory(state, "Root", "/");
+    try appendPlaceIfDirectory(state, "/tmp", "/tmp");
+    try appendPlaceIfDirectory(state, "/", "/");
 }
 
 fn sortFieldLess(state: *const State, a: BrowserEntry, b: BrowserEntry) bool {
@@ -1485,6 +1511,23 @@ fn addTextCell(ctx: *goop.Context, row: goop.NodeHandle, text: []const u8) !void
     _ = try ctx.tree.addChild(cell, .{ .text = .{ .content = text } });
 }
 
+fn addViewModeButton(ctx: *goop.Context, parent: goop.NodeHandle, label: []const u8, active: bool) !goop.NodeHandle {
+    const handle = try ctx.tree.addChild(parent, .{ .button = .{ .label = label } });
+    ctx.tree.get(handle).style_override = .{
+        .bg = if (active)
+            .{ .r = 219, .g = 233, .b = 253, .a = 255 }
+        else
+            .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+        .border = if (active)
+            .{ .r = 88, .g = 135, .b = 212, .a = 255 }
+        else
+            .{ .r = 204, .g = 211, .b = 220, .a = 255 },
+        .padding = goop.style.Edges.symmetric(10, 6),
+        .border_radius = 6,
+    };
+    return handle;
+}
+
 fn buildWidgetTree(state: *State) !void {
     const ctx = state.ctx orelse return error.NoContext;
 
@@ -1507,7 +1550,7 @@ fn buildWidgetTree(state: *State) !void {
     state.btn_up = try ctx.tree.addChild(header, .{ .button = .{ .label = "Up" } });
     state.btn_home = try ctx.tree.addChild(header, .{ .button = .{ .label = "Home" } });
     state.btn_refresh = try ctx.tree.addChild(header, .{ .button = .{ .label = "Refresh" } });
-    _ = try ctx.tree.addChild(header, .{ .text = .{ .content = try allocUiString(state, "Browsing {f}", .{std.unicode.fmtUtf8(state.current_dir)}) } });
+    _ = try ctx.tree.addChild(header, .{ .text = .{ .content = try allocUiUtf8Lossy(state, state.current_dir) } });
 
     state.nav_splitter = try ctx.tree.addChild(root, .{ .splitter = .{
         .direction = .row,
@@ -1524,7 +1567,7 @@ fn buildWidgetTree(state: *State) !void {
         .padding = goop.style.Edges.symmetric(10, 10),
         .border_radius = 0,
     };
-    _ = try ctx.tree.addChild(sidebar, .{ .text = .{ .content = "Places" } });
+    _ = try ctx.tree.addChild(sidebar, .{ .text = .{ .content = "Locations" } });
     const places_list = try ctx.tree.addChild(sidebar, .{ .list_box = .{ .selection_mode = .single } });
     for (state.places.items) |place| {
         const handle = try ctx.tree.addChild(places_list, .{ .selectable = .{
@@ -1581,41 +1624,92 @@ fn buildWidgetTree(state: *State) !void {
         .border_radius = 8,
     };
 
-    state.asset_table = try ctx.tree.addChild(file_panel, .{ .table = .{
-        .columns = 4,
-        .resizable = true,
-        .sortable = true,
-        .selection_mode = .single,
-        .min_column_width = 96,
-    } });
-    {
-        const table = &ctx.tree.get(state.asset_table.?).kind.table;
-        table.column_weights[0] = state.table_column_weights[0];
-        table.column_weights[1] = state.table_column_weights[1];
-        table.column_weights[2] = state.table_column_weights[2];
-        table.column_weights[3] = state.table_column_weights[3];
-        table.sorted_column = @intFromEnum(state.sort_column);
-        table.sort_direction = switch (state.sort_direction) {
-            .ascending => .ascending,
-            .descending => .descending,
-        };
-    }
+    const file_panel_header = try ctx.tree.addChild(file_panel, .{ .toolbar = .{} });
+    ctx.tree.get(file_panel_header).style_override = .{
+        .bg = .{ .r = 247, .g = 249, .b = 252, .a = 255 },
+        .border = .{ .r = 214, .g = 220, .b = 228, .a = 255 },
+        .padding = goop.style.Edges.symmetric(8, 6),
+        .border_radius = 6,
+    };
+    _ = try ctx.tree.addChild(file_panel_header, .{ .text = .{ .content = try allocUiString(state, "{d} entries", .{state.entries.items.len}) } });
+    _ = try ctx.tree.addChild(file_panel_header, .{ .text = .{ .content = try allocUiString(state, "Sort: {s}, {s}", .{ sortColumnLabel(state.sort_column), sortDirectionLabel(state.sort_direction) }) } });
+    state.btn_list_view = try addViewModeButton(ctx, file_panel_header, "List", state.view_mode == .list);
+    state.btn_grid_view = try addViewModeButton(ctx, file_panel_header, "Grid", state.view_mode == .grid);
 
-    const header_row = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{ .header = true } });
-    try addTextCell(ctx, header_row, "Name");
-    try addTextCell(ctx, header_row, "Modified");
-    try addTextCell(ctx, header_row, "Type");
-    try addTextCell(ctx, header_row, "Size");
+    switch (state.view_mode) {
+        .list => {
+            state.asset_table = try ctx.tree.addChild(file_panel, .{ .table = .{
+                .columns = 4,
+                .resizable = true,
+                .sortable = true,
+                .selection_mode = .single,
+                .min_column_width = 96,
+            } });
+            {
+                const table = &ctx.tree.get(state.asset_table.?).kind.table;
+                table.column_weights[0] = state.table_column_weights[0];
+                table.column_weights[1] = state.table_column_weights[1];
+                table.column_weights[2] = state.table_column_weights[2];
+                table.column_weights[3] = state.table_column_weights[3];
+                table.sorted_column = @intFromEnum(state.sort_column);
+                table.sort_direction = switch (state.sort_direction) {
+                    .ascending => .ascending,
+                    .descending => .descending,
+                };
+            }
 
-    for (state.entries.items) |entry| {
-        const row = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{
-            .selected = if (state.selected_path) |selected_path| std.mem.eql(u8, entry.path, selected_path) else false,
-        } });
-        try state.row_handles.append(allocator, row);
-        try addTextCell(ctx, row, try allocUiUtf8Lossy(state, entry.name));
-        try addTextCell(ctx, row, try allocFormattedTimestamp(state, entry.modified_unix));
-        try addTextCell(ctx, row, entry.typeLabel());
-        try addTextCell(ctx, row, try allocFormattedSize(state, entry.kind, entry.size_bytes));
+            const header_row = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{ .header = true } });
+            try addTextCell(ctx, header_row, "Name");
+            try addTextCell(ctx, header_row, "Modified");
+            try addTextCell(ctx, header_row, "Type");
+            try addTextCell(ctx, header_row, "Size");
+
+            for (state.entries.items) |entry| {
+                const row = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{
+                    .selected = if (state.selected_path) |selected_path| std.mem.eql(u8, entry.path, selected_path) else false,
+                } });
+                try state.row_handles.append(allocator, row);
+                try addTextCell(ctx, row, try allocUiUtf8Lossy(state, entry.name));
+                try addTextCell(ctx, row, try allocFormattedTimestamp(state, entry.modified_unix));
+                try addTextCell(ctx, row, entry.typeLabel());
+                try addTextCell(ctx, row, try allocFormattedSize(state, entry.kind, entry.size_bytes));
+            }
+        },
+        .grid => {
+            state.asset_grid = try ctx.tree.addChild(file_panel, .{ .grid_selector = .{
+                .selection_mode = .single,
+                .item_width = 132,
+                .item_height = 108,
+                .column_gap = 12,
+                .row_gap = 12,
+            } });
+            ctx.tree.get(state.asset_grid.?).style_override = .{
+                .bg = .{ .r = 250, .g = 251, .b = 253, .a = 255 },
+                .border = .{ .r = 214, .g = 220, .b = 228, .a = 255 },
+                .padding = goop.style.Edges.symmetric(10, 10),
+                .border_radius = 8,
+            };
+
+            for (state.entries.items) |entry| {
+                const item = try ctx.tree.addChild(state.asset_grid.?, .{ .grid_item = .{
+                    .label = try allocUiUtf8Lossy(state, entry.name),
+                    .selected = if (state.selected_path) |selected_path| std.mem.eql(u8, entry.path, selected_path) else false,
+                } });
+                ctx.tree.get(item).style_override = .{
+                    .bg = if (entry.isDirectory())
+                        .{ .r = 243, .g = 247, .b = 255, .a = 255 }
+                    else
+                        .{ .r = 252, .g = 252, .b = 253, .a = 255 },
+                    .border = if (entry.isDirectory())
+                        .{ .r = 184, .g = 204, .b = 233, .a = 255 }
+                    else
+                        .{ .r = 214, .g = 220, .b = 228, .a = 255 },
+                    .padding = goop.style.Edges.symmetric(10, 10),
+                    .border_radius = 10,
+                };
+                try state.grid_handles.append(allocator, item);
+            }
+        },
     }
 
     if (state.entries.items.len == 0) {
@@ -1629,7 +1723,7 @@ fn buildWidgetTree(state: *State) !void {
         .padding = goop.style.Edges.symmetric(10, 10),
         .border_radius = 8,
     };
-    _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = "Details" } });
+    _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = "Info" } });
 
     var directory_count: usize = 0;
     for (state.entries.items) |entry| {
@@ -1652,7 +1746,7 @@ fn buildWidgetTree(state: *State) !void {
         _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Path: {f}", .{std.unicode.fmtUtf8(state.current_dir)}) } });
         _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "{d} directories", .{directory_count}) } });
         _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "{d} files", .{file_count}) } });
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = "Select an item, or use Back, Up, Home, and Places to move around." } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = "Select a file or open a directory." } });
     }
 
     const status_bar = try ctx.tree.addChild(root, .{ .status_bar = .{} });
@@ -1662,9 +1756,9 @@ fn buildWidgetTree(state: *State) !void {
         .padding = goop.style.Edges.symmetric(10, 7),
         .border_radius = 0,
     };
-    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "{d} items", .{state.entries.items.len}) } });
+    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "{d} entries", .{state.entries.items.len}) } });
     _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "{d} selected", .{if (state.selected_path == null) @as(usize, 0) else @as(usize, 1)}) } });
-    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "Location: {f}", .{std.unicode.fmtUtf8(state.current_dir)}) } });
+    _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "Path: {f}", .{std.unicode.fmtUtf8(state.current_dir)}) } });
 }
 
 // ── Font loading ──
@@ -1967,6 +2061,14 @@ pub fn main() !void {
             try refreshCurrentDirectory(&state);
             rebuild_ui = true;
         };
+        if (state.btn_list_view) |h| if (ctx.wasClicked(h) and state.view_mode != .list) {
+            state.view_mode = .list;
+            rebuild_ui = true;
+        };
+        if (state.btn_grid_view) |h| if (ctx.wasClicked(h) and state.view_mode != .grid) {
+            state.view_mode = .grid;
+            rebuild_ui = true;
+        };
 
         for (state.place_handles.items, 0..) |handle, index| {
             if (!ctx.wasClicked(handle)) continue;
@@ -1994,8 +2096,42 @@ pub fn main() !void {
             }
             rebuild_ui = true;
         };
+        if (state.asset_grid) |h| if (ctx.gridSelectorChanged(h)) {
+            if (ctx.gridSelectorSelectedIndex(h)) |item_index| {
+                if (item_index < state.entries.items.len) {
+                    try setSelectedPath(&state, state.entries.items[item_index].path);
+                } else {
+                    try setSelectedPath(&state, null);
+                }
+            } else {
+                try setSelectedPath(&state, null);
+            }
+            rebuild_ui = true;
+        };
 
         for (state.row_handles.items, 0..) |handle, index| {
+            if (!ctx.wasClicked(handle)) continue;
+            if (index >= state.entries.items.len) continue;
+
+            const entry = state.entries.items[index];
+            const now = getMonotonicNs();
+            const repeated_click = if (state.last_click_path) |last_clicked|
+                std.mem.eql(u8, last_clicked, entry.path) and now - state.last_click_ns <= 400 * std.time.ns_per_ms
+            else
+                false;
+
+            try setSelectedPath(&state, entry.path);
+            try setLastClickPath(&state, entry.path);
+            state.last_click_ns = now;
+            rebuild_ui = true;
+
+            if (repeated_click and entry.isDirectory()) {
+                rebuild_ui = try setCurrentDirectory(&state, entry.path, true) or rebuild_ui;
+            }
+            break;
+        }
+
+        for (state.grid_handles.items, 0..) |handle, index| {
             if (!ctx.wasClicked(handle)) continue;
             if (index >= state.entries.items.len) continue;
 
