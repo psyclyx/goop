@@ -34,9 +34,62 @@ const SnailTextCtx = struct {
     allocator: std.mem.Allocator,
     font: *const snail.Font,
     atlas: *const snail.Atlas,
-    glyph_cache: snail.ttf.GlyphCache,
+    measure_buf: []f32,
+    scratch_buf: []u8,
     ascent_units: f32,
     descent_units: f32,
+
+    fn ensureMeasureCapacity(self: *SnailTextCtx, glyph_capacity: usize) !void {
+        const needed = @max(glyph_capacity, 64) * snail.FLOATS_PER_GLYPH;
+        if (self.measure_buf.len >= needed) return;
+        const next_len = std.math.ceilPowerOfTwo(usize, needed) catch needed;
+        self.measure_buf = try self.allocator.realloc(self.measure_buf, next_len);
+    }
+
+    fn ensureScratchCapacity(self: *SnailTextCtx, byte_len: usize) !void {
+        if (self.scratch_buf.len >= byte_len) return;
+        const next_len = std.math.ceilPowerOfTwo(usize, @max(byte_len, 64)) catch @max(byte_len, 64);
+        self.scratch_buf = try self.allocator.realloc(self.scratch_buf, next_len);
+    }
+
+    fn sanitizeUtf8Lossy(self: *SnailTextCtx, text: []const u8) []const u8 {
+        if (std.unicode.Utf8View.init(text)) |_| return text else |_| {}
+
+        var out_len: usize = 0;
+        var index: usize = 0;
+        while (index < text.len) {
+            const cp = blk: {
+                const cp_len = std.unicode.utf8ByteSequenceLength(text[index]) catch {
+                    index += 1;
+                    break :blk std.unicode.replacement_character;
+                };
+                if (index + cp_len > text.len) {
+                    index += 1;
+                    break :blk std.unicode.replacement_character;
+                }
+                const slice = text[index .. index + cp_len];
+                const decoded = std.unicode.utf8Decode(slice) catch {
+                    index += 1;
+                    break :blk std.unicode.replacement_character;
+                };
+                index += cp_len;
+                break :blk decoded;
+            };
+
+            var encoded: [4]u8 = undefined;
+            const encoded_len = std.unicode.utf8Encode(cp, &encoded) catch 0;
+            self.ensureScratchCapacity(out_len + encoded_len) catch return text;
+            @memcpy(self.scratch_buf[out_len..][0..encoded_len], encoded[0..encoded_len]);
+            out_len += encoded_len;
+        }
+
+        return self.scratch_buf[0..out_len];
+    }
+
+    fn fallbackWidth(text: []const u8, font_size: f32) f32 {
+        const glyphs = std.unicode.utf8CountCodepoints(text) catch text.len;
+        return @as(f32, @floatFromInt(glyphs)) * font_size * 0.6;
+    }
 };
 
 const OutputState = struct {
@@ -49,69 +102,17 @@ const OutputState = struct {
 
 fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) goop.TextDimensions {
     const ctx: *SnailTextCtx = @ptrCast(@alignCast(user_data));
-    const MeasuredGlyph = struct {
-        advance_width: u16,
-    };
-    const MeasureState = struct {
-        width: f32 = 0,
-        prev_gid: u16 = 0,
-    };
+    const sanitized = ctx.sanitizeUtf8Lossy(text);
     const scale = font_size / @as(f32, @floatFromInt(ctx.font.unitsPerEm()));
-    var state: MeasureState = .{};
-
-    const measureCodepoint = struct {
-        fn f(ctx_inner: *SnailTextCtx, cp: u21, scale_inner: f32, state_inner: *MeasureState) void {
-            const gid = ctx_inner.font.glyphIndex(cp) catch 0;
-            if (gid == 0) {
-                state_inner.width += scale_inner * 500;
-                state_inner.prev_gid = 0;
-                return;
-            }
-            if (state_inner.prev_gid != 0) {
-                const kern = ctx_inner.font.getKerning(state_inner.prev_gid, gid) catch 0;
-                state_inner.width += @as(f32, @floatFromInt(kern)) * scale_inner;
-            }
-            const glyph_metrics: MeasuredGlyph = if (ctx_inner.atlas.getGlyph(gid)) |info|
-                .{ .advance_width = info.advance_width }
-            else blk: {
-                const glyph = ctx_inner.font.inner.parseGlyph(ctx_inner.allocator, &ctx_inner.glyph_cache, gid) catch {
-                    state_inner.width += scale_inner * 500;
-                    state_inner.prev_gid = gid;
-                    return;
-                };
-                break :blk .{ .advance_width = glyph.metrics.advance_width };
-            };
-
-            state_inner.width += @as(f32, @floatFromInt(glyph_metrics.advance_width)) * scale_inner;
-            state_inner.prev_gid = gid;
-        }
-    }.f;
-
-    var index: usize = 0;
-    while (index < text.len) {
-        const cp = blk: {
-            const cp_len = std.unicode.utf8ByteSequenceLength(text[index]) catch {
-                index += 1;
-                break :blk std.unicode.replacement_character;
-            };
-            if (index + cp_len > text.len) {
-                index += 1;
-                break :blk std.unicode.replacement_character;
-            }
-            const slice = text[index .. index + cp_len];
-            const decoded = std.unicode.utf8Decode(slice) catch {
-                index += 1;
-                break :blk std.unicode.replacement_character;
-            };
-            index += cp_len;
-            break :blk decoded;
-        };
-
-        measureCodepoint(ctx, cp, scale, &state);
-    }
+    const glyphs = @max(std.unicode.utf8CountCodepoints(sanitized) catch sanitized.len, 1);
+    const width = blk: {
+        ctx.ensureMeasureCapacity(glyphs) catch break :blk SnailTextCtx.fallbackWidth(sanitized, font_size);
+        var probe = snail.Batch.init(ctx.measure_buf);
+        break :blk probe.addString(ctx.atlas, ctx.font, sanitized, 0, 0, font_size, .{ 1, 1, 1, 1 });
+    };
 
     return .{
-        .width = state.width,
+        .width = width,
         .height = (ctx.ascent_units + ctx.descent_units) * scale,
         .ascent = ctx.ascent_units * scale,
         .descent = ctx.descent_units * scale,
@@ -1449,11 +1450,13 @@ pub fn main() !void {
         .allocator = allocator,
         .font = &font,
         .atlas = &atlas,
-        .glyph_cache = snail.ttf.GlyphCache.init(allocator),
+        .measure_buf = try allocator.alloc(f32, 64 * snail.FLOATS_PER_GLYPH),
+        .scratch_buf = try allocator.alloc(u8, 64),
         .ascent_units = line_metrics.ascent,
         .descent_units = line_metrics.descent,
     };
-    defer text_measure.glyph_cache.deinit();
+    defer allocator.free(text_measure.measure_buf);
+    defer allocator.free(text_measure.scratch_buf);
     const text_measure_ctx = goop.TextMeasureCtx{
         .measureFn = &snailMeasureText,
         .user_data = @ptrCast(&text_measure),

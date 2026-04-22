@@ -28,22 +28,19 @@ pub const SecondaryClick = dispatch.SecondaryClick;
 pub const TreeDrop = dispatch.TreeDrop;
 pub const GridDrop = dispatch.GridDrop;
 
-pub const Context = struct {
+pub const Runtime = struct {
     allocator: std.mem.Allocator,
     clay_arena: []u8,
     clay_context: *c.Clay_Context,
-    tree: Tree,
-    theme: Theme,
     events: std.ArrayListUnmanaged(Event),
     mouse: dispatch.MouseState = .{},
-    clipboard: ?Clipboard = null,
     text_measure_ctx: ?*const TextMeasureCtx = null,
     layout_dirty: bool = true,
     draw_dirty: bool = true,
     last_node_count: u32 = 0,
     cached_draw_list: ?DrawList = null,
 
-    pub fn init(allocator: std.mem.Allocator, opts: InitOptions) !Context {
+    pub fn init(allocator: std.mem.Allocator, opts: InitOptions) !Runtime {
         const min_memory = c.Clay_MinMemorySize();
         const arena = try allocator.alloc(u8, min_memory);
         const clay_arena = c.Clay_Arena{
@@ -58,16 +55,13 @@ pub const Context = struct {
             .allocator = allocator,
             .clay_arena = arena,
             .clay_context = clay_context,
-            .tree = Tree.init(allocator),
-            .theme = opts.theme,
             .events = .empty,
         };
     }
 
-    pub fn deinit(self: *Context) void {
+    pub fn deinit(self: *Runtime) void {
         self.invalidateDrawCache();
         self.events.deinit(self.allocator);
-        self.tree.deinit();
         if (c.Clay_GetCurrentContext() == self.clay_context) {
             c.Clay_SetCurrentContext(null);
         }
@@ -75,14 +69,20 @@ pub const Context = struct {
     }
 
     /// Queue an input event for processing.
-    pub fn pushEvent(self: *Context, ev: Event) !void {
+    pub fn pushEvent(self: *Runtime, ev: Event) !void {
         try self.events.append(self.allocator, ev);
+    }
+
+    /// Mark cached layout and draw output stale after caller-owned state changes.
+    pub fn invalidate(self: *Runtime) void {
+        self.layout_dirty = true;
+        self.draw_dirty = true;
     }
 
     /// Process all queued events: hit test, update interaction state,
     /// detect clicks. Call after doLayout. Marks layout dirty if any
     /// events could affect layout (text input, scroll, resize).
-    pub fn processEvents(self: *Context) void {
+    pub fn processEvents(self: *Runtime, tree: *Tree, theme: Theme, clipboard: ?Clipboard) void {
         self.mouse.layout_changed = false;
         for (self.events.items) |ev| {
             switch (ev) {
@@ -94,13 +94,14 @@ pub const Context = struct {
             }
         }
         if (self.events.items.len > 0) self.draw_dirty = true;
-        dispatch.processWithClipboard(&self.tree, self.events.items, &self.mouse, self.theme, self.clipboard, self.text_measure_ctx);
+        dispatch.processWithClipboard(tree, self.events.items, &self.mouse, theme, clipboard, self.text_measure_ctx);
         if (self.layout_dirty or self.mouse.layout_changed) {
-            self.bindClayContext();
-            layout.run(&self.tree, self.theme, self.text_measure_ctx);
+            const previous = self.bindClayContext();
+            defer c.Clay_SetCurrentContext(previous);
+            layout.run(tree, theme, self.text_measure_ctx);
             self.layout_dirty = false;
             self.draw_dirty = true;
-            self.last_node_count = self.tree.count();
+            self.last_node_count = tree.count();
             self.mouse.layout_changed = false;
         }
         self.events.clearRetainingCapacity();
@@ -109,11 +110,11 @@ pub const Context = struct {
     /// Clear transient activation/change flags. Call at the start of each
     /// frame so clicks, toggles, and selection changes are only observed
     /// for one frame.
-    pub fn clearClickedFlags(self: *Context) void {
+    pub fn clearClickedFlags(self: *Runtime, tree: *Tree) void {
         self.mouse.last_secondary_click = null;
         self.mouse.last_tree_drop = null;
         self.mouse.last_grid_drop = null;
-        for (self.tree.nodes.items) |*node| {
+        for (tree.nodes.items) |*node| {
             if (!node.alive) continue;
             node.interaction.primary_clicked = false;
             node.interaction.secondary_clicked = false;
@@ -179,13 +180,161 @@ pub const Context = struct {
     }
 
     /// Check if a widget was activated with the primary button this frame.
+    pub fn wasClicked(_: *const Runtime, tree: *const Tree, handle: NodeHandle) bool {
+        return tree.getConst(handle).interaction.primary_clicked;
+    }
+
+    /// Check if a widget was activated with the secondary button this frame.
+    pub fn wasSecondaryClicked(_: *const Runtime, tree: *const Tree, handle: NodeHandle) bool {
+        return tree.getConst(handle).interaction.secondary_clicked;
+    }
+
+    /// Get the most recent secondary click that occurred this frame, if any.
+    pub fn lastSecondaryClick(self: *const Runtime) ?SecondaryClick {
+        return self.mouse.last_secondary_click;
+    }
+
+    /// Get the most recent completed tree-item drop that occurred this frame, if any.
+    pub fn lastTreeDrop(self: *const Runtime) ?TreeDrop {
+        return self.mouse.last_tree_drop;
+    }
+
+    /// Get the most recent completed grid-item drop that occurred this frame, if any.
+    pub fn lastGridDrop(self: *const Runtime) ?GridDrop {
+        return self.mouse.last_grid_drop;
+    }
+
+    /// Remove a widget and its entire subtree from the tree.
+    /// The handle becomes invalid after this call.
+    pub fn removeWidget(self: *Runtime, tree: *Tree, handle: NodeHandle) !void {
+        self.invalidate();
+        try tree.remove(handle);
+    }
+
+    /// Check whether a handle still refers to a living widget.
+    pub fn isAlive(_: *const Runtime, tree: *const Tree, handle: NodeHandle) bool {
+        return tree.isAlive(handle);
+    }
+
+    /// Run layout: walk the widget tree through clay and write back rects.
+    /// Skips the full clay pass if nothing layout-affecting has changed.
+    /// Pass a TextMeasureCtx for accurate snail-based text measurement,
+    /// or null to use a rough character-width approximation.
+    pub fn doLayout(self: *Runtime, tree: *Tree, theme: Theme, text_ctx: ?*const TextMeasureCtx) void {
+        self.text_measure_ctx = text_ctx;
+        const current_count = tree.count();
+        if (!self.layout_dirty and current_count == self.last_node_count) return;
+        const previous = self.bindClayContext();
+        defer c.Clay_SetCurrentContext(previous);
+        layout.run(tree, theme, text_ctx);
+        self.layout_dirty = false;
+        self.draw_dirty = true;
+        self.last_node_count = current_count;
+    }
+
+    /// Generate draw commands from the laid-out widget tree.
+    /// Returns a cached list when nothing has changed. Caller must
+    /// call freeDrawList when done — cached lists are ref-shared and
+    /// only freed when the cache is invalidated or the context is deinited.
+    pub fn generateDrawList(self: *Runtime, tree: *const Tree, theme: Theme) !DrawList {
+        if (!self.draw_dirty) {
+            if (self.cached_draw_list) |cached| return cached;
+        }
+        self.invalidateDrawCache();
+        const dl = try draw.generate(tree, theme, self.allocator, self.text_measure_ctx);
+        self.cached_draw_list = dl;
+        self.draw_dirty = false;
+        return dl;
+    }
+
+    /// Free a DrawList returned by generateDrawList.
+    /// This is a no-op — the Context owns the draw list memory and
+    /// manages its lifetime internally. Retained for API compatibility.
+    pub fn freeDrawList(_: *Runtime, _: *DrawList) void {}
+
+    /// Invalidate and free the cached draw list.
+    fn invalidateDrawCache(self: *Runtime) void {
+        if (self.cached_draw_list) |*cached| {
+            draw.freeDrawList(cached, self.allocator);
+            self.cached_draw_list = null;
+        }
+    }
+
+    /// Update layout dimensions (e.g. on window resize).
+    pub fn setDimensions(self: *Runtime, width: u32, height: u32) void {
+        self.layout_dirty = true;
+        const previous = self.bindClayContext();
+        defer c.Clay_SetCurrentContext(previous);
+        c.Clay_SetLayoutDimensions(.{
+            .width = @floatFromInt(width),
+            .height = @floatFromInt(height),
+        });
+    }
+
+    fn bindClayContext(self: *Runtime) ?*c.Clay_Context {
+        const previous = c.Clay_GetCurrentContext();
+        if (previous != self.clay_context) c.Clay_SetCurrentContext(self.clay_context);
+        return previous;
+    }
+
+    pub const InitOptions = struct {
+        width: u32 = 800,
+        height: u32 = 600,
+    };
+};
+
+pub const Context = struct {
+    tree: Tree,
+    theme: Theme,
+    runtime: Runtime,
+    clipboard: ?Clipboard = null,
+
+    pub fn init(allocator: std.mem.Allocator, opts: InitOptions) !Context {
+        return .{
+            .tree = Tree.init(allocator),
+            .theme = opts.theme,
+            .runtime = try Runtime.init(allocator, .{
+                .width = opts.width,
+                .height = opts.height,
+            }),
+        };
+    }
+
+    pub fn deinit(self: *Context) void {
+        self.runtime.deinit();
+        self.tree.deinit();
+    }
+
+    pub fn invalidate(self: *Context) void {
+        self.runtime.invalidate();
+    }
+
+    /// Queue an input event for processing.
+    pub fn pushEvent(self: *Context, ev: Event) !void {
+        try self.runtime.pushEvent(ev);
+    }
+
+    /// Process all queued events: hit test, update interaction state,
+    /// detect clicks. Call after doLayout.
+    pub fn processEvents(self: *Context) void {
+        self.runtime.processEvents(&self.tree, self.theme, self.clipboard);
+    }
+
+    /// Clear transient activation/change flags. Call at the start of each
+    /// frame so clicks, toggles, and selection changes are only observed
+    /// for one frame.
+    pub fn clearClickedFlags(self: *Context) void {
+        self.runtime.clearClickedFlags(&self.tree);
+    }
+
+    /// Check if a widget was activated with the primary button this frame.
     pub fn wasClicked(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).interaction.primary_clicked;
+        return self.runtime.wasClicked(&self.tree, handle);
     }
 
     /// Check if a widget was activated with the secondary button this frame.
     pub fn wasSecondaryClicked(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).interaction.secondary_clicked;
+        return self.runtime.wasSecondaryClicked(&self.tree, handle);
     }
 
     /// Check if a checkbox is currently checked.
@@ -407,89 +556,48 @@ pub const Context = struct {
 
     /// Get the most recent secondary click that occurred this frame, if any.
     pub fn lastSecondaryClick(self: *const Context) ?SecondaryClick {
-        return self.mouse.last_secondary_click;
+        return self.runtime.lastSecondaryClick();
     }
 
     /// Get the most recent completed tree-item drop that occurred this frame, if any.
     pub fn lastTreeDrop(self: *const Context) ?TreeDrop {
-        return self.mouse.last_tree_drop;
+        return self.runtime.lastTreeDrop();
     }
 
     /// Get the most recent completed grid-item drop that occurred this frame, if any.
     pub fn lastGridDrop(self: *const Context) ?GridDrop {
-        return self.mouse.last_grid_drop;
+        return self.runtime.lastGridDrop();
     }
 
     /// Remove a widget and its entire subtree from the tree.
     /// The handle becomes invalid after this call.
     pub fn removeWidget(self: *Context, handle: NodeHandle) !void {
-        self.layout_dirty = true;
-        self.draw_dirty = true;
-        try self.tree.remove(handle);
+        try self.runtime.removeWidget(&self.tree, handle);
     }
 
     /// Check whether a handle still refers to a living widget.
     pub fn isAlive(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.isAlive(handle);
+        return self.runtime.isAlive(&self.tree, handle);
     }
 
     /// Run layout: walk the widget tree through clay and write back rects.
-    /// Skips the full clay pass if nothing layout-affecting has changed.
-    /// Pass a TextMeasureCtx for accurate snail-based text measurement,
-    /// or null to use a rough character-width approximation.
     pub fn doLayout(self: *Context, text_ctx: ?*const TextMeasureCtx) void {
-        self.text_measure_ctx = text_ctx;
-        const current_count = self.tree.count();
-        if (!self.layout_dirty and current_count == self.last_node_count) return;
-        self.bindClayContext();
-        layout.run(&self.tree, self.theme, text_ctx);
-        self.layout_dirty = false;
-        self.draw_dirty = true;
-        self.last_node_count = current_count;
+        self.runtime.doLayout(&self.tree, self.theme, text_ctx);
     }
 
     /// Generate draw commands from the laid-out widget tree.
-    /// Returns a cached list when nothing has changed. Caller must
-    /// call freeDrawList when done — cached lists are ref-shared and
-    /// only freed when the cache is invalidated or the context is deinited.
     pub fn generateDrawList(self: *Context) !DrawList {
-        if (!self.draw_dirty) {
-            if (self.cached_draw_list) |cached| return cached;
-        }
-        self.invalidateDrawCache();
-        const dl = try draw.generate(&self.tree, self.theme, self.allocator, self.text_measure_ctx);
-        self.cached_draw_list = dl;
-        self.draw_dirty = false;
-        return dl;
+        return self.runtime.generateDrawList(&self.tree, self.theme);
     }
 
     /// Free a DrawList returned by generateDrawList.
-    /// This is a no-op — the Context owns the draw list memory and
-    /// manages its lifetime internally. Retained for API compatibility.
-    pub fn freeDrawList(_: *Context, _: *DrawList) void {}
-
-    /// Invalidate and free the cached draw list.
-    fn invalidateDrawCache(self: *Context) void {
-        if (self.cached_draw_list) |*cached| {
-            draw.freeDrawList(cached, self.allocator);
-            self.cached_draw_list = null;
-        }
+    pub fn freeDrawList(self: *Context, draw_list: *DrawList) void {
+        self.runtime.freeDrawList(draw_list);
     }
 
     /// Update layout dimensions (e.g. on window resize).
     pub fn setDimensions(self: *Context, width: u32, height: u32) void {
-        self.layout_dirty = true;
-        self.bindClayContext();
-        c.Clay_SetLayoutDimensions(.{
-            .width = @floatFromInt(width),
-            .height = @floatFromInt(height),
-        });
-    }
-
-    fn bindClayContext(self: *Context) void {
-        if (c.Clay_GetCurrentContext() != self.clay_context) {
-            c.Clay_SetCurrentContext(self.clay_context);
-        }
+        self.runtime.setDimensions(width, height);
     }
 
     pub const InitOptions = struct {
@@ -504,6 +612,41 @@ test "context initializes" {
     defer ctx.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), ctx.tree.count());
+}
+
+test "runtime operates on caller-owned tree" {
+    var runtime = try Runtime.init(std.testing.allocator, .{ .width = 800, .height = 600 });
+    defer runtime.deinit();
+
+    var tree = Tree.init(std.testing.allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    _ = try tree.addChild(root, .{ .button = .{ .label = "OK" } });
+
+    runtime.doLayout(&tree, .{}, null);
+    var draw_list = try runtime.generateDrawList(&tree, .{});
+    defer runtime.freeDrawList(&draw_list);
+
+    try std.testing.expect(draw_list.commands.len > 0);
+}
+
+test "runtime restores previous clay context" {
+    var primary = try Runtime.init(std.testing.allocator, .{ .width = 800, .height = 600 });
+    defer primary.deinit();
+
+    var secondary = try Runtime.init(std.testing.allocator, .{ .width = 640, .height = 480 });
+    defer secondary.deinit();
+
+    var tree = Tree.init(std.testing.allocator);
+    defer tree.deinit();
+
+    _ = try tree.addRoot(.{ .container = .{} });
+    c.Clay_SetCurrentContext(primary.clay_context);
+    defer c.Clay_SetCurrentContext(null);
+
+    secondary.doLayout(&tree, .{}, null);
+    try std.testing.expect(c.Clay_GetCurrentContext() == primary.clay_context);
 }
 
 test "layout produces non-zero rects" {
@@ -625,24 +768,24 @@ test "layout skips when not dirty" {
 
     // First layout runs (dirty by default)
     ctx.doLayout(null);
-    try std.testing.expect(!ctx.layout_dirty);
+    try std.testing.expect(!ctx.runtime.layout_dirty);
 
     const rect_after_first = ctx.tree.getConst(root).layout_rect;
     try std.testing.expect(rect_after_first.w > 0);
 
     // Second layout with no changes — should be a no-op
     ctx.doLayout(null);
-    try std.testing.expect(!ctx.layout_dirty);
+    try std.testing.expect(!ctx.runtime.layout_dirty);
 
     // Mouse-only events don't dirty layout
     try ctx.pushEvent(.{ .mouse_move = .{ .x = 50, .y = 50 } });
     ctx.processEvents();
-    try std.testing.expect(!ctx.layout_dirty);
+    try std.testing.expect(!ctx.runtime.layout_dirty);
 
     // Key events trigger a follow-up layout inside processEvents
     try ctx.pushEvent(.{ .key = .{ .scancode = 0, .keycode = .backspace, .state = .pressed } });
     ctx.processEvents();
-    try std.testing.expect(!ctx.layout_dirty);
+    try std.testing.expect(!ctx.runtime.layout_dirty);
 }
 
 test "setDimensions dirties layout" {
@@ -651,10 +794,10 @@ test "setDimensions dirties layout" {
 
     _ = try ctx.tree.addRoot(.{ .container = .{} });
     ctx.doLayout(null);
-    try std.testing.expect(!ctx.layout_dirty);
+    try std.testing.expect(!ctx.runtime.layout_dirty);
 
     ctx.setDimensions(1024, 768);
-    try std.testing.expect(ctx.layout_dirty);
+    try std.testing.expect(ctx.runtime.layout_dirty);
 }
 
 test "retained context rebinds after another context deinit" {
@@ -663,7 +806,7 @@ test "retained context rebinds after another context deinit" {
 
     _ = try primary.tree.addRoot(.{ .container = .{} });
     primary.doLayout(null);
-    try std.testing.expect(!primary.layout_dirty);
+    try std.testing.expect(!primary.runtime.layout_dirty);
 
     {
         var secondary = try Context.init(std.testing.allocator, .{ .width = 640, .height = 480 });
@@ -671,12 +814,12 @@ test "retained context rebinds after another context deinit" {
 
         _ = try secondary.tree.addRoot(.{ .container = .{} });
         secondary.doLayout(null);
-        try std.testing.expect(!secondary.layout_dirty);
+        try std.testing.expect(!secondary.runtime.layout_dirty);
     }
 
     primary.setDimensions(1024, 768);
     primary.doLayout(null);
-    try std.testing.expect(!primary.layout_dirty);
+    try std.testing.expect(!primary.runtime.layout_dirty);
 }
 
 test "adding nodes triggers layout" {
@@ -685,14 +828,14 @@ test "adding nodes triggers layout" {
 
     const root = try ctx.tree.addRoot(.{ .container = .{} });
     ctx.doLayout(null);
-    try std.testing.expect(!ctx.layout_dirty);
+    try std.testing.expect(!ctx.runtime.layout_dirty);
 
     // Adding a node changes tree count — doLayout should detect and run
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "new" } });
     ctx.doLayout(null);
     // After running, dirty is cleared and count is updated
-    try std.testing.expect(!ctx.layout_dirty);
-    try std.testing.expectEqual(@as(u32, 2), ctx.last_node_count);
+    try std.testing.expect(!ctx.runtime.layout_dirty);
+    try std.testing.expectEqual(@as(u32, 2), ctx.runtime.last_node_count);
 }
 
 test "draw list caching returns same list when clean" {
@@ -705,7 +848,7 @@ test "draw list caching returns same list when clean" {
     ctx.doLayout(null);
 
     var dl1 = try ctx.generateDrawList();
-    try std.testing.expect(!ctx.draw_dirty);
+    try std.testing.expect(!ctx.runtime.draw_dirty);
 
     // Second call without changes returns the cached pointer
     var dl2 = try ctx.generateDrawList();
@@ -730,11 +873,11 @@ test "draw list regenerated after events" {
     // Pushing an event and processing marks draw dirty
     try ctx.pushEvent(.{ .mouse_move = .{ .x = 50, .y = 50 } });
     ctx.processEvents();
-    try std.testing.expect(ctx.draw_dirty);
+    try std.testing.expect(ctx.runtime.draw_dirty);
 
     // Regeneration produces a new list (old cache freed internally)
     var dl2 = try ctx.generateDrawList();
-    try std.testing.expect(!ctx.draw_dirty);
+    try std.testing.expect(!ctx.runtime.draw_dirty);
     _ = ptr1;
 
     ctx.freeDrawList(&dl1);

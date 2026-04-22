@@ -26,6 +26,7 @@ pub const MeasureTextFn = goop.MeasureTextFn;
 pub const TextDimensions = goop.TextDimensions;
 pub const Clipboard = goop.Clipboard;
 pub const SecondaryClick = goop.SecondaryClick;
+pub const Runtime = goop.Runtime;
 pub const Context = goop.Context;
 
 test {

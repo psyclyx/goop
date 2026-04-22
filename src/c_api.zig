@@ -1118,8 +1118,7 @@ fn convertEvent(ev: CEvent) event.Event {
 }
 
 fn markDirty(ctx: *CContext) void {
-    ctx.ctx.layout_dirty = true;
-    ctx.ctx.draw_dirty = true;
+    ctx.ctx.invalidate();
 }
 
 fn validHandle(ctx: *const CContext, handle: CHandle) bool {

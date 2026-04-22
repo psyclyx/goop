@@ -84,33 +84,38 @@ demos try `GOOP_DEMO_FONT_PATH` first, then resolve a font through
 ```zig
 const goop = @import("goop");
 
-var ctx = try goop.Context.init(allocator, .{
+var tree = goop.Tree.init(allocator);
+defer tree.deinit();
+
+var runtime = try goop.Runtime.init(allocator, .{
     .width = 1280,
     .height = 720,
 });
-defer ctx.deinit();
+defer runtime.deinit();
 
-const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
-const outline = try ctx.tree.addChild(root, .{ .tree_item = .{
+const theme: goop.Theme = .{};
+
+const root = try tree.addRoot(.{ .container = .{ .direction = .column } });
+const outline = try tree.addChild(root, .{ .tree_item = .{
     .label = "Scene",
     .group = 1,
     .selected = true,
 } });
-const button = try ctx.tree.addChild(root, .{ .button = .{ .label = "Run" } });
+const button = try tree.addChild(root, .{ .button = .{ .label = "Run" } });
 
 _ = outline;
 
 // Queue embedder input for the current frame.
-try ctx.pushEvent(.{ .mouse_move = .{ .x = 96, .y = 48 } });
+try runtime.pushEvent(.{ .mouse_move = .{ .x = 96, .y = 48 } });
 
 // Layout, dispatch, then generate draw commands.
-ctx.doLayout(null);
-ctx.processEvents();
+runtime.doLayout(&tree, theme, null);
+runtime.processEvents(&tree, theme, null);
 
-var draw_list = try ctx.generateDrawList();
-defer ctx.freeDrawList(&draw_list);
+var draw_list = try runtime.generateDrawList(&tree, theme);
+defer runtime.freeDrawList(&draw_list);
 
-if (ctx.wasClicked(button)) {
+if (runtime.wasClicked(&tree, button)) {
     // Handle the action in the embedder.
 }
 ```
@@ -120,7 +125,11 @@ If you pass `null`, `goop` falls back to a rough width estimate. For
 single-frame click/change flags, call `clearClickedFlags()` at the start of
 each frame before queuing new input. For best text alignment, your measure
 callback should return real line metrics in `TextDimensions.height`,
-`TextDimensions.ascent`, and `TextDimensions.descent`.
+`TextDimensions.ascent`, and `TextDimensions.descent`. When you mutate the
+caller-owned tree or theme outside event processing, call `runtime.invalidate()`
+before the next layout/draw pass. `goop.Context` remains available as a
+convenience wrapper if you want `goop` to bundle `Tree`, `Theme`, and `Runtime`
+for you.
 
 ## C API
 

@@ -837,6 +837,8 @@ CLAY_DLL_EXPORT void Clay_SetPointerState(Clay_Vector2 position, bool pointerDow
 CLAY_DLL_EXPORT Clay_Context* Clay_Initialize(Clay_Arena arena, Clay_Dimensions layoutDimensions, Clay_ErrorHandler errorHandler);
 // Returns the Context that clay is currently using. Used when using multiple instances of clay simultaneously.
 CLAY_DLL_EXPORT Clay_Context* Clay_GetCurrentContext(void);
+// Returns the currently bound text measure callback user data, if any.
+CLAY_DLL_EXPORT void* Clay_GetMeasureTextUserData(void);
 // Sets the context that clay will use to compute the layout.
 // Used to restore a context saved from Clay_GetCurrentContext when using multiple instances of clay simultaneously.
 CLAY_DLL_EXPORT void Clay_SetCurrentContext(Clay_Context* context);
@@ -1015,7 +1017,17 @@ typedef struct                                      \
                                                     \
 CLAY__ARRAY_DEFINE_FUNCTIONS(typeName, arrayName)   \
 
-Clay_Context *Clay__currentContext;
+#ifndef CLAY_THREAD_LOCAL
+#if defined(_MSC_VER)
+#define CLAY_THREAD_LOCAL __declspec(thread)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define CLAY_THREAD_LOCAL _Thread_local
+#else
+#define CLAY_THREAD_LOCAL __thread
+#endif
+#endif
+
+CLAY_THREAD_LOCAL Clay_Context *Clay__currentContext;
 int32_t Clay__defaultMaxElementCount = 8192;
 int32_t Clay__defaultMaxMeasureTextWordCacheCount = 16384;
 
@@ -4014,6 +4026,12 @@ Clay_Context* Clay_Initialize(Clay_Arena arena, Clay_Dimensions layoutDimensions
 CLAY_WASM_EXPORT("Clay_GetCurrentContext")
 Clay_Context* Clay_GetCurrentContext(void) {
     return Clay__currentContext;
+}
+
+CLAY_WASM_EXPORT("Clay_GetMeasureTextUserData")
+void* Clay_GetMeasureTextUserData(void) {
+    Clay_Context* context = Clay_GetCurrentContext();
+    return context ? context->measureTextUserData : NULL;
 }
 
 CLAY_WASM_EXPORT("Clay_SetCurrentContext")

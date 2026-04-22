@@ -24,13 +24,9 @@ pub const TextMeasureCtx = struct {
     user_data: ?*anyopaque = null,
 };
 
-var active_text_ctx: ?*const TextMeasureCtx = null;
-
 /// Run the layout pass: walk the widget tree, feed elements to clay,
 /// compute layout, and write computed rects back to each node.
 pub fn run(tree: *widget.Tree, theme: style_mod.Theme, text_ctx: ?*const TextMeasureCtx) void {
-    active_text_ctx = text_ctx;
-    defer active_text_ctx = null;
     syncTableState(tree);
     c.Clay_SetMeasureTextFunction(&measureText, @ptrCast(@constCast(text_ctx)));
     c.Clay_BeginLayout();
@@ -89,7 +85,7 @@ pub fn measureTextDimensions(text: []const u8, font_size: f32, text_ctx: ?*const
 }
 
 fn controlTextHeight(resolved: style_mod.ResolvedStyle) f32 {
-    return textMetrics(resolved.font_size, active_text_ctx).height + resolved.padding.top + resolved.padding.bottom;
+    return textMetrics(resolved.font_size, currentTextMeasureCtx()).height + resolved.padding.top + resolved.padding.bottom;
 }
 
 fn normalizeTextDimensions(raw: TextDimensions, font_size: f32) TextDimensions {
@@ -115,6 +111,11 @@ fn normalizeTextDimensions(raw: TextDimensions, font_size: f32) TextDimensions {
     if (dims.height <= 0) dims.height = dims.ascent + dims.descent;
     if (dims.height <= 0) dims.height = font_size;
     return dims;
+}
+
+fn currentTextMeasureCtx() ?*const TextMeasureCtx {
+    const user_data = c.Clay_GetMeasureTextUserData() orelse return null;
+    return @ptrCast(@alignCast(user_data));
 }
 
 fn writeBackRects(tree: *widget.Tree) void {
