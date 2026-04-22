@@ -229,18 +229,6 @@ const BrowserEntry = struct {
     kind: BrowserEntryKind,
     size_bytes: u64,
     modified_unix: i64,
-    modified_buf: [24]u8 = [_]u8{0} ** 24,
-    modified_len: u8 = 0,
-    size_buf: [24]u8 = [_]u8{0} ** 24,
-    size_len: u8 = 0,
-
-    fn modifiedText(self: *const BrowserEntry) []const u8 {
-        return self.modified_buf[0..self.modified_len];
-    }
-
-    fn sizeText(self: *const BrowserEntry) []const u8 {
-        return self.size_buf[0..self.size_len];
-    }
 
     fn typeLabel(self: *const BrowserEntry) []const u8 {
         return switch (self.kind) {
@@ -1255,8 +1243,13 @@ fn formatTimestampText(buffer: []u8, unix_seconds: i64) []const u8 {
     var tm_buf: posix.struct_tm = undefined;
     if (posix.localtime_r(&t, &tm_buf) == null) return "";
 
-    const written = posix.strftime(buffer.ptr, buffer.len, "%Y-%m-%d %H:%M", &tm_buf);
-    return buffer[0..written];
+    return std.fmt.bufPrint(buffer, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}", .{
+        tm_buf.tm_year + 1900,
+        tm_buf.tm_mon + 1,
+        tm_buf.tm_mday,
+        tm_buf.tm_hour,
+        tm_buf.tm_min,
+    }) catch "";
 }
 
 fn formatSizeText(buffer: []u8, kind: BrowserEntryKind, size_bytes: u64) []const u8 {
@@ -1270,6 +1263,18 @@ fn formatSizeText(buffer: []u8, kind: BrowserEntryKind, size_bytes: u64) []const
         scaled /= 1024;
     }
     return std.fmt.bufPrint(buffer, "{d:.1} {s}", .{ scaled, units[unit_index] }) catch "";
+}
+
+fn allocFormattedTimestamp(state: *State, unix_seconds: i64) ![]const u8 {
+    var buf: [32]u8 = undefined;
+    const text = formatTimestampText(buf[0..], unix_seconds);
+    return allocUiString(state, "{s}", .{text});
+}
+
+fn allocFormattedSize(state: *State, kind: BrowserEntryKind, size_bytes: u64) ![]const u8 {
+    var buf: [24]u8 = undefined;
+    const text = formatSizeText(buf[0..], kind, size_bytes);
+    return allocUiString(state, "{s}", .{text});
 }
 
 fn appendPlaceIfDirectory(state: *State, label: []const u8, path: []const u8) !void {
@@ -1386,17 +1391,13 @@ fn loadDirectoryEntries(state: *State) !void {
         const entry_name = try allocator.dupe(u8, name);
         errdefer allocator.free(entry_name);
 
-        var entry = BrowserEntry{
+        const entry = BrowserEntry{
             .name = entry_name,
             .path = full_path,
             .kind = browserEntryKind(stat_buf.st_mode),
             .size_bytes = @intCast(@max(stat_buf.st_size, 0)),
             .modified_unix = @intCast(stat_buf.st_mtim.tv_sec),
         };
-        const modified = formatTimestampText(entry.modified_buf[0..], entry.modified_unix);
-        entry.modified_len = @intCast(modified.len);
-        const size = formatSizeText(entry.size_buf[0..], entry.kind, entry.size_bytes);
-        entry.size_len = @intCast(size.len);
         try state.entries.append(allocator, entry);
     }
 
@@ -1612,9 +1613,9 @@ fn buildWidgetTree(state: *State) !void {
         } });
         try state.row_handles.append(allocator, row);
         try addTextCell(ctx, row, try allocUiUtf8Lossy(state, entry.name));
-        try addTextCell(ctx, row, entry.modifiedText());
+        try addTextCell(ctx, row, try allocFormattedTimestamp(state, entry.modified_unix));
         try addTextCell(ctx, row, entry.typeLabel());
-        try addTextCell(ctx, row, entry.sizeText());
+        try addTextCell(ctx, row, try allocFormattedSize(state, entry.kind, entry.size_bytes));
     }
 
     if (state.entries.items.len == 0) {
@@ -1637,10 +1638,12 @@ fn buildWidgetTree(state: *State) !void {
     const file_count = state.entries.items.len - directory_count;
 
     if (selectedEntry(state)) |entry| {
+        const modified_text = try allocFormattedTimestamp(state, entry.modified_unix);
+        const size_text = try allocFormattedSize(state, entry.kind, entry.size_bytes);
         _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiUtf8Lossy(state, entry.name) } });
         _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Type: {s}", .{entry.typeLabel()}) } });
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Modified: {s}", .{entry.modifiedText()}) } });
-        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Size: {s}", .{if (entry.sizeText().len > 0) entry.sizeText() else "—"}) } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Modified: {s}", .{modified_text}) } });
+        _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Size: {s}", .{if (size_text.len > 0) size_text else "—"}) } });
         _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = try allocUiString(state, "Path: {f}", .{std.unicode.fmtUtf8(entry.path)}) } });
         _ = try ctx.tree.addChild(detail_panel, .{ .text = .{ .content = if (entry.isDirectory()) "Click again to open this directory." else "Files stay selected for inspection." } });
     } else {
