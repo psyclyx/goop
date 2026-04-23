@@ -70,7 +70,7 @@ pub fn isInteractive(kind: widget.WidgetKind) bool {
         .container,
         .text_input,
         => true,
-        .text, .list_box, .table_cell, .toolbar, .status_bar, .menu_bar, .tooltip, .tab_bar => false,
+        .text, .list_box, .table_cell, .toolbar, .status_bar, .menu_bar, .tooltip, .tab_bar, .spacer => false,
     };
 }
 
@@ -168,7 +168,11 @@ fn pointHitsWidget(tree: *const widget.Tree, handle: widget.NodeHandle, x: f32, 
         .table => widget.tableResizeHandleIndexAtPoint(tree, handle, x, y) != null or
             widget.tableHeaderCellIndexAtPoint(tree, handle, x, y) != null,
         .table_row => widget.tableRowSelectable(tree, handle) and pointInRect(x, y, node.layout_rect),
-        .splitter => pointInRect(x, y, splitterDividerRect(node.layout_rect, node.kind.splitter, node.style_override.resolve(style.Theme.default))),
+        .splitter => {
+            const resolved = node.style_override.resolve(style.Theme.default);
+            const divider = splitterDividerRect(node.layout_rect, node.kind.splitter, resolved);
+            return pointInRect(x, y, splitterHandleRect(divider, node.kind.splitter));
+        },
         else => pointInRect(x, y, node.layout_rect),
     };
 }
@@ -181,18 +185,37 @@ fn splitterDividerRect(rect: draw.Rect, splitter: widget.WidgetKind.Splitter, re
         .h = @max(rect.h - resolved.padding.top - resolved.padding.bottom, 0),
     };
     const ratio = clampedSplitterRatio(splitter, rect, resolved);
+    const gap_thickness = splitterGapThickness(splitter);
     return switch (splitter.direction) {
         .row => .{
-            .x = inner.x + (inner.w - splitter.thickness) * ratio,
+            .x = inner.x + (inner.w - gap_thickness) * ratio,
             .y = inner.y,
-            .w = splitter.thickness,
+            .w = gap_thickness,
             .h = inner.h,
         },
         .column => .{
             .x = inner.x,
-            .y = inner.y + (inner.h - splitter.thickness) * ratio,
+            .y = inner.y + (inner.h - gap_thickness) * ratio,
             .w = inner.w,
-            .h = splitter.thickness,
+            .h = gap_thickness,
+        },
+    };
+}
+
+fn splitterHandleRect(divider: draw.Rect, splitter: widget.WidgetKind.Splitter) draw.Rect {
+    const handle_thickness = @max(splitter.thickness, splitterGapThickness(splitter));
+    return switch (splitter.direction) {
+        .row => .{
+            .x = divider.x + (divider.w - handle_thickness) * 0.5,
+            .y = divider.y,
+            .w = handle_thickness,
+            .h = divider.h,
+        },
+        .column => .{
+            .x = divider.x,
+            .y = divider.y + (divider.h - handle_thickness) * 0.5,
+            .w = divider.w,
+            .h = handle_thickness,
         },
     };
 }
@@ -204,8 +227,8 @@ fn clampedSplitterRatio(
 ) f32 {
     const raw = std.math.clamp(splitter.ratio, 0, 1);
     const available = switch (splitter.direction) {
-        .row => rect.w - resolved.padding.left - resolved.padding.right - splitter.thickness,
-        .column => rect.h - resolved.padding.top - resolved.padding.bottom - splitter.thickness,
+        .row => rect.w - resolved.padding.left - resolved.padding.right - splitterGapThickness(splitter),
+        .column => rect.h - resolved.padding.top - resolved.padding.bottom - splitterGapThickness(splitter),
     };
     if (available <= 0) return raw;
 
@@ -213,6 +236,10 @@ fn clampedSplitterRatio(
     const max_ratio = std.math.clamp(1 - splitter.min_second / available, 0, 1);
     if (min_ratio > max_ratio) return raw;
     return std.math.clamp(raw, min_ratio, max_ratio);
+}
+
+fn splitterGapThickness(splitter: widget.WidgetKind.Splitter) f32 {
+    return @max(@min(splitter.gap_thickness, splitter.thickness), 1);
 }
 
 test "floating popup subtree wins hit testing over regular content" {

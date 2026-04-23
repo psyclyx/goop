@@ -77,6 +77,22 @@ pub const Runtime = struct {
 
     /// Queue an input event for processing.
     pub fn pushEvent(self: *Runtime, ev: Event) !void {
+        switch (ev) {
+            .mouse_scroll => |scroll| {
+                if (self.events.items.len > 0) {
+                    const last = &self.events.items[self.events.items.len - 1];
+                    switch (last.*) {
+                        .mouse_scroll => |*queued| {
+                            queued.dx += scroll.dx;
+                            queued.dy += scroll.dy;
+                            return;
+                        },
+                        else => {},
+                    }
+                }
+            },
+            else => {},
+        }
         try self.events.append(self.allocator, ev);
     }
 
@@ -820,6 +836,21 @@ test "layout skips when not dirty" {
     try ctx.pushEvent(.{ .key = .{ .scancode = 0, .keycode = .backspace, .state = .pressed } });
     ctx.processEvents();
     try std.testing.expect(!ctx.runtime.layout_dirty);
+}
+
+test "runtime coalesces consecutive mouse scroll events" {
+    var runtime = try Runtime.init(std.testing.allocator, .{ .width = 320, .height = 240 });
+    defer runtime.deinit();
+
+    try runtime.pushEvent(.{ .mouse_scroll = .{ .dx = 0, .dy = 15 } });
+    try runtime.pushEvent(.{ .mouse_scroll = .{ .dx = 0, .dy = 30 } });
+    try std.testing.expectEqual(@as(usize, 1), runtime.events.items.len);
+    try std.testing.expectApproxEqAbs(@as(f32, 45), runtime.events.items[0].mouse_scroll.dy, 0.01);
+
+    try runtime.pushEvent(.{ .mouse_move = .{ .x = 10, .y = 10 } });
+    try runtime.pushEvent(.{ .mouse_scroll = .{ .dx = 5, .dy = 10 } });
+    try std.testing.expectEqual(@as(usize, 3), runtime.events.items.len);
+    try std.testing.expectApproxEqAbs(@as(f32, 10), runtime.events.items[2].mouse_scroll.dy, 0.01);
 }
 
 test "setDimensions dirties layout" {

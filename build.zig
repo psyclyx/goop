@@ -184,7 +184,28 @@ pub fn build(b: *std.Build) void {
     const unit_tests = b.addTest(.{ .root_module = test_mod });
     const run_tests = b.addRunArtifact(unit_tests);
 
+    const file_manager_test_mod = b.createModule(.{
+        .root_source_file = b.path("demo/file_manager_main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    file_manager_test_mod.addImport("goop", goop_mod);
+    file_manager_test_mod.addImport("snail", snail_mod);
+    file_manager_test_mod.addIncludePath(b.path("demo/protocol"));
+    file_manager_test_mod.addCSourceFile(.{ .file = b.path("demo/protocol/xdg-shell-protocol.c") });
+    file_manager_test_mod.linkSystemLibrary("wayland-client", .{});
+    file_manager_test_mod.linkSystemLibrary("wayland-cursor", .{});
+    file_manager_test_mod.linkSystemLibrary("wayland-egl", .{});
+    file_manager_test_mod.linkSystemLibrary("egl", .{});
+    file_manager_test_mod.linkSystemLibrary("xkbcommon", .{});
+    file_manager_test_mod.linkSystemLibrary("gl", .{});
+
+    const file_manager_unit_tests = b.addTest(.{ .root_module = file_manager_test_mod });
+    const run_file_manager_tests = b.addRunArtifact(file_manager_unit_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&run_file_manager_tests.step);
     test_step.dependOn(&run_c_example.step);
 }

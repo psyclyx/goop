@@ -153,6 +153,7 @@ const CWidgetKind = enum(c_int) {
     slider = 26,
     scroll_area = 27,
     text_input = 28,
+    spacer = 29,
 };
 
 const COptionalU16 = extern struct {
@@ -314,6 +315,11 @@ const CTextInputWidget = extern struct {
     value: CStr = .{},
 };
 
+const CSpacerWidget = extern struct {
+    width: f32 = 0,
+    height: f32 = 0,
+};
+
 const CUnitWidget = extern struct {
     _reserved: u8 = 0,
 };
@@ -350,6 +356,7 @@ const CWidget = extern struct {
         slider: CSliderWidget,
         scroll_area: CScrollAreaWidget,
         text_input: CTextInputWidget,
+        spacer: CSpacerWidget,
     } = .{ .container = .{} },
 };
 
@@ -928,6 +935,10 @@ fn buildWidgetKind(desc: CWidget) widget.WidgetKind {
             .scroll_y = desc.data.scroll_area.scroll_y,
         } },
         .text_input => .{ .text_input = buildTextInput(desc.data.text_input) },
+        .spacer => .{ .spacer = .{
+            .width = desc.data.spacer.width,
+            .height = desc.data.spacer.height,
+        } },
     };
 }
 
@@ -1098,6 +1109,11 @@ fn updateWidgetKind(kind: *widget.WidgetKind, desc: CWidget) bool {
         .text_input => |*text_input| {
             if (desc.kind != .text_input) return false;
             setTextInputValue(text_input, fromCStr(desc.data.text_input.placeholder), fromCStr(desc.data.text_input.value));
+        },
+        .spacer => |*spacer| {
+            if (desc.kind != .spacer) return false;
+            spacer.width = desc.data.spacer.width;
+            spacer.height = desc.data.spacer.height;
         },
     }
     return true;

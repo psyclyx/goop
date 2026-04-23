@@ -29,29 +29,14 @@ pub const TextMeasureCtx = struct {
 pub fn run(tree: *widget.Tree, theme: style_mod.Theme, text_ctx: ?*const TextMeasureCtx) void {
     syncTableState(tree);
     c.Clay_SetMeasureTextFunction(&measureText, @ptrCast(@constCast(text_ctx)));
-    c.Clay_BeginLayout();
+    const had_unresolved_splitters = hasUnresolvedSplitterRects(tree);
 
-    for (tree.nodes.items, 0..) |node, i| {
-        if (!node.alive) continue;
-        if (node.parent == null) {
-            emitNode(tree, tree.handleFromIndex(@intCast(i)), theme);
-        }
-    }
-
-    _ = c.Clay_EndLayout();
-
+    performLayoutPass(tree, theme);
     writeBackRects(tree);
-    if (syncGridSelectorLayout(tree, theme)) {
-        c.Clay_BeginLayout();
 
-        for (tree.nodes.items, 0..) |node, i| {
-            if (!node.alive) continue;
-            if (node.parent == null) {
-                emitNode(tree, tree.handleFromIndex(@intCast(i)), theme);
-            }
-        }
-
-        _ = c.Clay_EndLayout();
+    const splitter_relayout_needed = had_unresolved_splitters and splitterClampWouldChange(tree, theme);
+    if (splitter_relayout_needed or syncGridSelectorLayout(tree, theme)) {
+        performLayoutPass(tree, theme);
         writeBackRects(tree);
         _ = syncGridSelectorLayout(tree, theme);
     } else {
@@ -118,6 +103,19 @@ fn currentTextMeasureCtx() ?*const TextMeasureCtx {
     return @ptrCast(@alignCast(user_data));
 }
 
+fn performLayoutPass(tree: *widget.Tree, theme: style_mod.Theme) void {
+    c.Clay_BeginLayout();
+
+    for (tree.nodes.items, 0..) |node, i| {
+        if (!node.alive) continue;
+        if (node.parent == null) {
+            emitNode(tree, tree.handleFromIndex(@intCast(i)), theme);
+        }
+    }
+
+    _ = c.Clay_EndLayout();
+}
+
 fn writeBackRects(tree: *widget.Tree) void {
     for (tree.nodes.items, 0..) |*node, i| {
         if (!node.alive) continue;
@@ -172,6 +170,7 @@ fn emitNode(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style_mo
         .splitter => |splitter| emitSplitter(tree, handle, splitter, resolved, theme),
         .container => |cont| emitContainer(tree, handle, cont, resolved, theme),
         .slider => emitSlider(handle, resolved),
+        .spacer => |spacer| emitSpacer(handle, spacer),
         .text_input => |ti| emitTextInput(handle, ti, resolved),
         .scroll_area => emitScrollArea(tree, handle, resolved, theme),
     }
@@ -181,7 +180,15 @@ fn emitText(handle: widget.NodeHandle, txt: widget.WidgetKind.Text, resolved: st
     c.Clay__OpenElement();
     c.Clay__ConfigureOpenElement(.{
         .id = nodeId(handle),
-        .layout = .{},
+        .layout = .{
+            .sizing = .{
+                .width = switch (txt.overflow) {
+                    .ellipsis, .clip => growSizing(),
+                    .visible => .{},
+                },
+                .height = .{},
+            },
+        },
         .backgroundColor = .{},
         .cornerRadius = .{},
         .aspectRatio = .{},
@@ -201,7 +208,10 @@ fn emitText(handle: widget.NodeHandle, txt: widget.WidgetKind.Text, resolved: st
             .fontSize = @intFromFloat(resolved.font_size),
             .letterSpacing = 0,
             .lineHeight = 0,
-            .wrapMode = c.CLAY_TEXT_WRAP_WORDS,
+            .wrapMode = switch (txt.overflow) {
+                .clip, .ellipsis => c.CLAY_TEXT_WRAP_NONE,
+                .visible => c.CLAY_TEXT_WRAP_WORDS,
+            },
             .textAlignment = c.CLAY_TEXT_ALIGN_LEFT,
         }),
     );
@@ -341,7 +351,7 @@ fn emitContainer(
                 .height = growSizing(),
             },
             .padding = clayPadding(resolved.padding),
-            .childGap = @intFromFloat(theme.spacing),
+            .childGap = @intFromFloat(resolved.spacing),
             .childAlignment = switch (cont.direction) {
                 .row => .{ .y = c.CLAY_ALIGN_Y_CENTER },
                 .column => .{},
@@ -761,7 +771,7 @@ fn emitMenuBar(
                 .height = .{},
             },
             .padding = clayPadding(resolved.padding),
-            .childGap = @intFromFloat(theme.spacing),
+            .childGap = @intFromFloat(resolved.spacing),
             .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
             .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
         },
@@ -795,7 +805,7 @@ fn emitToolbar(
                 .height = .{},
             },
             .padding = clayPadding(resolved.padding),
-            .childGap = @intFromFloat(theme.spacing),
+            .childGap = @intFromFloat(resolved.spacing),
             .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
             .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
         },
@@ -828,7 +838,7 @@ fn emitStatusBar(
                 .height = .{},
             },
             .padding = clayPadding(resolved.padding),
-            .childGap = @intFromFloat(theme.spacing * 2),
+            .childGap = @intFromFloat(resolved.spacing * 2),
             .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
             .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
         },
@@ -1243,6 +1253,7 @@ fn emitSplitter(
 ) void {
     const panes = splitterPaneChildren(tree, handle);
     const ratio = splitterLayoutRatio(tree, handle, splitter, resolved);
+    const gap_thickness = splitterGapThickness(splitter);
 
     c.Clay__OpenElement();
     c.Clay__ConfigureOpenElement(.{
@@ -1279,7 +1290,7 @@ fn emitSplitter(
     c.Clay__ConfigureOpenElement(.{
         .id = .{},
         .layout = .{
-            .sizing = splitterHandleSizing(splitter.direction, splitter.thickness),
+            .sizing = splitterHandleSizing(splitter.direction, gap_thickness),
             .padding = .{},
             .childGap = 0,
             .childAlignment = .{},
@@ -1321,6 +1332,33 @@ fn emitSlider(handle: widget.NodeHandle, resolved: style_mod.ResolvedStyle) void
         },
         .backgroundColor = clayColor(resolved.bg),
         .cornerRadius = cornerRadiusAll(resolved.border_radius),
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
+    c.Clay__CloseElement();
+}
+
+fn emitSpacer(handle: widget.NodeHandle, spacer: widget.WidgetKind.Spacer) void {
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = nodeId(handle),
+        .layout = .{
+            .sizing = .{
+                .width = if (spacer.width > 0) fixedSizing(spacer.width) else growSizing(),
+                .height = fixedSizing(@max(spacer.height, 0)),
+            },
+            .padding = .{},
+            .childGap = 0,
+            .childAlignment = .{},
+            .layoutDirection = c.CLAY_TOP_TO_BOTTOM,
+        },
+        .backgroundColor = .{},
+        .cornerRadius = .{},
         .aspectRatio = .{},
         .image = .{},
         .floating = .{},
@@ -1562,6 +1600,26 @@ fn syncTableState(tree: *widget.Tree) void {
     }
 }
 
+fn hasUnresolvedSplitterRects(tree: *const widget.Tree) bool {
+    for (tree.nodes.items) |node| {
+        if (!node.alive or node.kind != .splitter) continue;
+        if (node.layout_rect.w <= 0 or node.layout_rect.h <= 0) return true;
+    }
+    return false;
+}
+
+fn splitterClampWouldChange(tree: *const widget.Tree, theme: style_mod.Theme) bool {
+    for (tree.nodes.items) |node| {
+        if (!node.alive or node.kind != .splitter) continue;
+        if (node.layout_rect.w <= 0 or node.layout_rect.h <= 0) continue;
+
+        const resolved = node.style_override.resolve(theme);
+        const clamped = clampedSplitterRatio(node.kind.splitter, node.layout_rect, resolved);
+        if (@abs(clamped - node.kind.splitter.ratio) > 0.0001) return true;
+    }
+    return false;
+}
+
 fn syncGridSelectorLayout(tree: *widget.Tree, theme: style_mod.Theme) bool {
     var changed = false;
     for (tree.nodes.items, 0..) |node, i| {
@@ -1751,9 +1809,13 @@ fn splitterAvailableExtent(
     resolved: style_mod.ResolvedStyle,
 ) f32 {
     return switch (splitter.direction) {
-        .row => rect.w - resolved.padding.left - resolved.padding.right - splitter.thickness,
-        .column => rect.h - resolved.padding.top - resolved.padding.bottom - splitter.thickness,
+        .row => rect.w - resolved.padding.left - resolved.padding.right - splitterGapThickness(splitter),
+        .column => rect.h - resolved.padding.top - resolved.padding.bottom - splitterGapThickness(splitter),
     };
+}
+
+fn splitterGapThickness(splitter: widget.WidgetKind.Splitter) f32 {
+    return @max(@min(splitter.gap_thickness, splitter.thickness), 1);
 }
 
 fn popupSizing(tree: *const widget.Tree, handle: widget.NodeHandle) c.Clay_Sizing {
@@ -2201,6 +2263,46 @@ test "splitter layout assigns both panes" {
     try std.testing.expect(left_rect.x < right_rect.x);
 }
 
+test "splitter applies minimum pane sizes on initial layout" {
+    const allocator = std.testing.allocator;
+    const min_memory = c.Clay_MinMemorySize();
+    const arena = try allocator.alloc(u8, min_memory);
+    defer allocator.free(arena);
+
+    const clay_arena = c.Clay_Arena{
+        .capacity = min_memory,
+        .memory = arena.ptr,
+    };
+    _ = c.Clay_Initialize(clay_arena, .{
+        .width = 320,
+        .height = 180,
+    }, .{});
+    defer c.Clay_SetCurrentContext(null);
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const splitter = try tree.addChild(root, .{ .splitter = .{
+        .direction = .row,
+        .ratio = 0.1,
+        .min_first = 120,
+        .min_second = 60,
+        .thickness = 8,
+    } });
+    const left = try tree.addChild(splitter, .{ .container = .{} });
+    const right = try tree.addChild(splitter, .{ .container = .{} });
+    _ = try tree.addChild(left, .{ .text = .{ .content = "Left" } });
+    _ = try tree.addChild(right, .{ .text = .{ .content = "Right" } });
+
+    run(&tree, style_mod.Theme.default, null);
+
+    const left_rect = tree.getConst(left).layout_rect;
+    const right_rect = tree.getConst(right).layout_rect;
+    try std.testing.expect(left_rect.w >= 120 - 0.01);
+    try std.testing.expect(right_rect.w >= 60 - 0.01);
+}
+
 test "row containers center children vertically" {
     const allocator = std.testing.allocator;
     const min_memory = c.Clay_MinMemorySize();
@@ -2237,4 +2339,66 @@ test "row containers center children vertically" {
 
     try std.testing.expect(value_rect.h > label_rect.h);
     try std.testing.expectApproxEqAbs(value_center_y, label_center_y, 0.01);
+}
+
+test "scroll area layout offsets child rects by scroll amount" {
+    const allocator = std.testing.allocator;
+    const min_memory = c.Clay_MinMemorySize();
+    const arena = try allocator.alloc(u8, min_memory);
+    defer allocator.free(arena);
+
+    const clay_arena = c.Clay_Arena{
+        .capacity = min_memory,
+        .memory = arena.ptr,
+    };
+    _ = c.Clay_Initialize(clay_arena, .{
+        .width = 320,
+        .height = 200,
+    }, .{});
+    defer c.Clay_SetCurrentContext(null);
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{ .scroll_y = 100 } });
+    const child = try tree.addChild(scroll, .{ .spacer = .{ .height = 500 } });
+
+    run(&tree, style_mod.Theme.default, null);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(scroll).layout_rect.y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, -94), tree.getConst(child).layout_rect.y, 0.01);
+}
+
+test "ellipsized text grows to parent width instead of content width" {
+    const theme = style_mod.Theme.default;
+    const allocator = std.testing.allocator;
+    const min_memory = c.Clay_MinMemorySize();
+    const arena = try allocator.alloc(u8, min_memory);
+    defer allocator.free(arena);
+
+    const clay_arena = c.Clay_Arena{
+        .capacity = min_memory,
+        .memory = arena.ptr,
+    };
+    _ = c.Clay_Initialize(clay_arena, .{
+        .width = 320,
+        .height = 200,
+    }, .{});
+    defer c.Clay_SetCurrentContext(null);
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{ .direction = .column } });
+    const line = try tree.addChild(root, .{ .text = .{
+        .content = "/a/very/long/path/without/spaces/that/should/not/resize/the/pane",
+        .overflow = .ellipsis,
+    } });
+
+    run(&tree, theme, null);
+
+    const root_rect = tree.getConst(root).layout_rect;
+    const line_rect = tree.getConst(line).layout_rect;
+    const root_inner_w = root_rect.w - theme.padding.left - theme.padding.right;
+    try std.testing.expectApproxEqAbs(root_inner_w, line_rect.w, 0.01);
 }

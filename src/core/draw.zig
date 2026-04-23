@@ -11,6 +11,13 @@ pub const Rect = struct {
     h: f32,
 };
 
+var active_paint_cull_rect: ?Rect = null;
+const PaintOffset = struct {
+    x: f32 = 0,
+    y: f32 = 0,
+};
+var active_paint_offset = PaintOffset{};
+
 pub const TextAlign = enum {
     start,
     center,
@@ -132,6 +139,12 @@ pub const DrawList = struct {
 pub fn generatePaint(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !PaintList {
     var commands: std.ArrayListUnmanaged(PaintCommand) = .empty;
     errdefer commands.deinit(allocator);
+    const previous_cull_rect = active_paint_cull_rect;
+    const previous_offset = active_paint_offset;
+    defer active_paint_cull_rect = previous_cull_rect;
+    defer active_paint_offset = previous_offset;
+    active_paint_cull_rect = null;
+    active_paint_offset = .{};
 
     for (tree.nodes.items, 0..) |node, i| {
         if (!node.alive) continue;
@@ -216,8 +229,14 @@ fn emitNode(
     in_floating_subtree: bool,
 ) std.mem.Allocator.Error!void {
     const node = tree.getConst(handle);
+    const node_rect = paintRect(node.layout_rect);
     if (!shouldDrawNode(tree, handle)) return;
     if (!in_floating_subtree and (node.kind == .popup or node.kind == .tooltip)) return;
+    if (!in_floating_subtree) {
+        if (active_paint_cull_rect) |cull_rect| {
+            if (!rectsIntersect(node_rect, cull_rect)) return;
+        }
+    }
     const resolved = node.style_override.resolve(theme);
 
     switch (node.kind) {
@@ -248,16 +267,26 @@ fn emitNode(
         .tab_item => |tab_item| try emitTabItem(tree, handle, node, tab_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .splitter => |splitter| try emitSplitter(tree, handle, node, splitter, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .slider => |sl| try emitSlider(node, sl, resolved, theme, commands, allocator),
+        .spacer => {},
         .text_input => try emitTextInput(node, resolved, theme, commands, allocator, text_ctx),
         .scroll_area => try emitScrollArea(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
     }
 
-    if (node.custom_draw and node.layout_rect.w > 0 and node.layout_rect.h > 0) {
+    if (node.custom_draw and node.kind != .table_cell and node_rect.w > 0 and node_rect.h > 0) {
         try commands.append(allocator, .{ .custom = .{
             .handle = handle,
-            .bounds = node.layout_rect,
+            .bounds = node_rect,
         } });
     }
+}
+
+fn paintRect(rect: Rect) Rect {
+    return .{
+        .x = rect.x + active_paint_offset.x,
+        .y = rect.y + active_paint_offset.y,
+        .w = rect.w,
+        .h = rect.h,
+    };
 }
 
 fn emitContainer(
@@ -271,9 +300,10 @@ fn emitContainer(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
+    const rect = paintRect(node.layout_rect);
     // Background rect
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
         .border_width = resolved.border_width,
@@ -384,7 +414,7 @@ fn emitText(
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
 ) !void {
-    try appendTextCommand(commands, allocator, node.layout_rect, txt.content, resolved.fg, resolved.font_size, .start, .visible);
+    try appendTextCommand(commands, allocator, paintRect(node.layout_rect), txt.content, resolved.fg, resolved.font_size, .start, txt.overflow);
 }
 
 fn emitButton(
@@ -399,16 +429,17 @@ fn emitButton(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
+    const rect = paintRect(node.layout_rect);
     // Background rect
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = interactionBg(node, resolved, theme),
         .border_color = resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
 
-    const label_bounds = defaultTextBounds(node.layout_rect, resolved);
+    const label_bounds = defaultTextBounds(rect, resolved);
     try appendTextCommand(commands, allocator, label_bounds, btn.label, resolved.fg, resolved.font_size, .start, .visible);
 
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
@@ -424,7 +455,7 @@ fn emitCheckbox(
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = node.layout_rect;
+    const rect = paintRect(node.layout_rect);
     const box_size = resolved.font_size;
 
     // Checkbox box
@@ -474,7 +505,7 @@ fn emitRadioButton(
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = node.layout_rect;
+    const rect = paintRect(node.layout_rect);
     const box_size = resolved.font_size;
     const circle_radius = box_size / 2;
 
@@ -528,7 +559,7 @@ fn emitTreeItem(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = node.layout_rect;
+    const rect = paintRect(node.layout_rect);
     const depth = treeDepth(tree, handle);
     const indent = @as(f32, @floatFromInt(depth)) * treeIndent(theme, resolved);
     const slot_width = disclosureSlotWidth(resolved);
@@ -629,7 +660,7 @@ fn emitDropdown(
         dropdown.selected_text
     else
         dropdown.placeholder;
-    const rect = node.layout_rect;
+    const rect = paintRect(node.layout_rect);
     const chevron = if (dropdown.open) dropdownChevronUp() else dropdownChevronDown();
     const chevron_x = rect.x + rect.w - resolved.padding.right - resolved.font_size * 0.6;
     const label_bounds = customTextBounds(rect, resolved, rect.x + resolved.padding.left, chevron_x - theme.spacing - (rect.x + resolved.padding.left));
@@ -662,8 +693,9 @@ fn emitListBox(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
+    const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
         .border_width = resolved.border_width,
@@ -682,14 +714,15 @@ fn emitSelectable(
     _: ?*const layout.TextMeasureCtx,
 ) !void {
     const fill = selectableBg(node, selectable.selected, theme);
+    const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = fill,
         .border_color = if (selectable.selected) theme.accent else resolved.border,
         .border_width = if (selectable.selected) 1 else 0,
         .corner_radius = resolved.border_radius,
     } });
-    const selectable_bounds = defaultTextBounds(node.layout_rect, resolved);
+    const selectable_bounds = defaultTextBounds(rect, resolved);
     try appendTextCommand(commands, allocator, selectable_bounds, selectable.label, resolved.fg, resolved.font_size, .start, .clip);
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
@@ -706,8 +739,9 @@ fn emitGridSelector(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
+    const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = if (grid_selector.drop_preview_background)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
         else
@@ -739,7 +773,7 @@ fn emitGridItem(
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = node.layout_rect;
+    const rect = paintRect(node.layout_rect);
     const fill = if (grid_item.dragging)
         style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
     else
@@ -801,8 +835,9 @@ fn emitTable(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
+    const rect = snappedRect(paintRect(node.layout_rect));
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
         .border_width = resolved.border_width,
@@ -845,10 +880,12 @@ fn emitTableRow(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
+    const rect = paintRect(node.layout_rect);
+    const row_fill_rect = tableRowFillRect(tree, handle, rect);
     const fill = tableRowFill(tree, handle, node, row, theme);
-    if (fill.a > 0) {
+    if (fill.a > 0 and row_fill_rect.w > 0 and row_fill_rect.h > 0) {
         try commands.append(allocator, .{ .box = .{
-            .bounds = node.layout_rect,
+            .bounds = row_fill_rect,
             .color = fill,
             .border_color = fill,
             .border_width = 0,
@@ -856,22 +893,43 @@ fn emitTableRow(
         } });
     }
 
-    if (!tableRowIsLast(tree, handle)) {
-        try commands.append(allocator, .{ .box = .{
-            .bounds = .{
-                .x = node.layout_rect.x,
-                .y = node.layout_rect.y + node.layout_rect.h - 1,
-                .w = node.layout_rect.w,
-                .h = 1,
-            },
-            .color = resolved.border,
-            .border_color = resolved.border,
-            .border_width = 0,
-            .corner_radius = 0,
-        } });
+    if (tableRowHasTopDivider(tree, handle)) {
+        const divider_thickness = tableDividerThickness(resolved.border_width);
+        if (divider_thickness > 0) {
+            const divider = snappedRect(.{
+                .x = rect.x,
+                .y = rect.y,
+                .w = rect.w,
+                .h = divider_thickness,
+            });
+            try commands.append(allocator, .{ .box = .{
+                .bounds = divider,
+                .color = resolved.border,
+                .border_color = resolved.border,
+                .border_width = 0,
+                .corner_radius = 0,
+            } });
+        }
     }
 
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    var iter = tree.children(handle);
+    while (iter.next()) |child| {
+        const child_node = tree.getConst(child);
+        if (child_node.kind == .table_cell) {
+            const child_resolved = child_node.style_override.resolve(theme);
+            try emitTableCellContents(tree, child, child_node, child_resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+        } else {
+            try emitNode(tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
+        }
+    }
+
+    var divider_iter = tree.children(handle);
+    while (divider_iter.next()) |child| {
+        const child_node = tree.getConst(child);
+        if (child_node.kind != .table_cell) continue;
+        const child_resolved = child_node.style_override.resolve(theme);
+        try emitTableCellDivider(tree, child, child_node, child_resolved, commands, allocator);
+    }
 }
 
 fn emitTableCell(
@@ -885,29 +943,96 @@ fn emitTableCell(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    if (tableCellIndex(tree, handle) > 0) {
-        const row_handle = tree.getConst(handle).parent orelse handle;
-        const row_rect = tree.getConst(row_handle).layout_rect;
-        try commands.append(allocator, .{ .box = .{
-            .bounds = .{
-                .x = node.layout_rect.x,
-                .y = row_rect.y,
-                .w = 1,
-                .h = row_rect.h,
-            },
-            .color = resolved.border,
-            .border_color = resolved.border,
-            .border_width = 0,
-            .corner_radius = 0,
-        } });
+    try emitTableCellContents(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitTableCellDivider(tree, handle, node, resolved, commands, allocator);
+}
+
+fn emitTableCellContents(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(PaintCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) !void {
+    const rect = paintRect(node.layout_rect);
+    const sort_direction = tableSortIndicator(tree, handle);
+    const chevron_x = if (sort_direction != null)
+        rect.x + rect.w - resolved.padding.right - resolved.font_size * 0.8
+    else
+        0;
+
+    var iter = tree.children(handle);
+    while (iter.next()) |child| {
+        const child_node = tree.getConst(child);
+        if (child_node.kind == .text) {
+            const child_resolved = child_node.style_override.resolve(theme);
+            const text_x = rect.x + resolved.padding.left;
+            const text_w = if (sort_direction != null)
+                chevron_x - text_x - resolved.font_size * 0.4
+            else
+                rectRight(rect) - resolved.padding.right - text_x;
+            const text_bounds = customTextBounds(rect, resolved, text_x, text_w);
+            try appendTextCommand(
+                commands,
+                allocator,
+                text_bounds,
+                child_node.kind.text.content,
+                child_resolved.fg,
+                child_resolved.font_size,
+                .start,
+                child_node.kind.text.overflow,
+            );
+            continue;
+        }
+
+        try emitNode(tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
     }
 
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
-
-    if (tableSortIndicator(tree, handle)) |direction| {
-        const chevron_x = node.layout_rect.x + node.layout_rect.w - resolved.padding.right - resolved.font_size * 0.8;
-        const chevron_bounds = customTextBounds(node.layout_rect, resolved, chevron_x, rectRight(node.layout_rect) - resolved.padding.right - chevron_x);
+    if (sort_direction) |direction| {
+        const chevron_bounds = customTextBounds(rect, resolved, chevron_x, rectRight(rect) - resolved.padding.right - chevron_x);
         try appendTextCommand(commands, allocator, chevron_bounds, tableSortChevron(direction), theme.accent, resolved.font_size, .center, .visible);
+    }
+
+    if (node.custom_draw and rect.w > 0 and rect.h > 0) {
+        try commands.append(allocator, .{ .custom = .{
+            .handle = handle,
+            .bounds = rect,
+        } });
+    }
+}
+
+fn emitTableCellDivider(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    resolved: style.ResolvedStyle,
+    commands: *std.ArrayListUnmanaged(PaintCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    if (tableCellIndex(tree, handle) > 0) {
+        const row_handle = tree.getConst(handle).parent orelse handle;
+        const row_rect = paintRect(tree.getConst(row_handle).layout_rect);
+        const rect = paintRect(node.layout_rect);
+        const divider_thickness = tableDividerThickness(resolved.border_width);
+        if (divider_thickness > 0) {
+            const divider = snappedRect(.{
+                .x = rect.x,
+                .y = row_rect.y,
+                .w = divider_thickness,
+                .h = row_rect.h,
+            });
+            try commands.append(allocator, .{ .box = .{
+                .bounds = divider,
+                .color = resolved.border,
+                .border_color = resolved.border,
+                .border_width = 0,
+                .corner_radius = 0,
+            } });
+        }
     }
 }
 
@@ -922,8 +1047,9 @@ fn emitMenuBar(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
+    const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
         .border_width = resolved.border_width,
@@ -943,8 +1069,9 @@ fn emitToolbar(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
+    const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
         .border_width = resolved.border_width,
@@ -964,8 +1091,9 @@ fn emitStatusBar(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
+    const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
         .border_width = resolved.border_width,
@@ -987,8 +1115,9 @@ fn emitMenu(
     in_floating_subtree: bool,
 ) !void {
     _ = in_floating_subtree;
+    const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = if (menuPopupVisible(tree, handle))
             theme.bg_active
         else
@@ -997,7 +1126,7 @@ fn emitMenu(
         .border_width = 0,
         .corner_radius = resolved.border_radius,
     } });
-    const menu_bounds = defaultTextBounds(node.layout_rect, resolved);
+    const menu_bounds = defaultTextBounds(rect, resolved);
     try appendTextCommand(commands, allocator, menu_bounds, menu.label, resolved.fg, resolved.font_size, .start, .visible);
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
@@ -1012,8 +1141,9 @@ fn emitPopup(
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
+    const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
         .border_width = resolved.border_width,
@@ -1032,8 +1162,9 @@ fn emitTooltip(
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
+    const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
         .border_width = resolved.border_width,
@@ -1054,8 +1185,9 @@ fn emitMenuItem(
     _: ?*const layout.TextMeasureCtx,
 ) !void {
     const has_popup = directPopupChild(tree, handle) != null;
+    const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = if (menuPopupVisible(tree, handle))
             theme.bg_active
         else
@@ -1064,10 +1196,10 @@ fn emitMenuItem(
         .border_width = 0,
         .corner_radius = resolved.border_radius,
     } });
-    const item_bounds = defaultTextBounds(node.layout_rect, resolved);
+    const item_bounds = defaultTextBounds(rect, resolved);
     try appendTextCommand(commands, allocator, item_bounds, item.label, resolved.fg, resolved.font_size, .start, .visible);
     if (has_popup) {
-        try emitMenuArrow(node.layout_rect, resolved, commands, allocator, resolved.fg);
+        try emitMenuArrow(rect, resolved, commands, allocator, resolved.fg);
     }
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
@@ -1081,7 +1213,7 @@ fn emitDragValue(
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = node.layout_rect;
+    const rect = paintRect(node.layout_rect);
 
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
@@ -1109,7 +1241,7 @@ fn emitSpinBox(
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = node.layout_rect;
+    const rect = paintRect(node.layout_rect);
     const buttons = spinBoxButtons(rect);
     const field_rect = Rect{
         .x = buttons.dec.x + buttons.dec.w,
@@ -1164,8 +1296,9 @@ fn emitTabBar(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
+    const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
         .border_width = resolved.border_width,
@@ -1214,8 +1347,9 @@ fn emitTabItemHeader(
     _: ?*const layout.TextMeasureCtx,
 ) !void {
     const chrome = tabItemChrome(node, item, resolved, theme);
+    const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = chrome.color,
         .border_color = chrome.border_color,
         .border_width = chrome.border_width,
@@ -1224,9 +1358,9 @@ fn emitTabItemHeader(
     if (item.selected) {
         try commands.append(allocator, .{ .box = .{
             .bounds = .{
-                .x = node.layout_rect.x,
-                .y = node.layout_rect.y + node.layout_rect.h - 2,
-                .w = node.layout_rect.w,
+                .x = rect.x,
+                .y = rect.y + rect.h - 2,
+                .w = rect.w,
                 .h = 2,
             },
             .color = theme.accent,
@@ -1235,7 +1369,7 @@ fn emitTabItemHeader(
             .corner_radius = 0,
         } });
     }
-    const tab_bounds = defaultTextBounds(node.layout_rect, resolved);
+    const tab_bounds = defaultTextBounds(rect, resolved);
     try appendTextCommand(commands, allocator, tab_bounds, item.label, resolved.fg, resolved.font_size, .start, .clip);
 
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
@@ -1253,8 +1387,9 @@ fn emitSplitter(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
+    const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
         .border_width = 0,
@@ -1263,8 +1398,10 @@ fn emitSplitter(
 
     try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
-    const divider = splitterDividerRect(node.layout_rect, splitter, resolved);
-    const grip = splitterGripRect(divider, splitter.direction);
+    const divider = splitterDividerRect(rect, splitter, resolved);
+    const handle_rect = splitterHandleRect(divider, splitter);
+    const visible_divider = splitterVisibleRect(divider, splitter.direction);
+    const grip = splitterGripRect(handle_rect, splitter.direction);
     const divider_color = if (node.interaction.pressed)
         theme.bg_active
     else if (node.interaction.hovered)
@@ -1273,21 +1410,36 @@ fn emitSplitter(
         resolved.border;
 
     try commands.append(allocator, .{ .box = .{
-        .bounds = divider,
+        .bounds = visible_divider,
         .color = divider_color,
         .border_color = divider_color,
         .border_width = 0,
         .corner_radius = resolved.border_radius,
     } });
-    try commands.append(allocator, .{ .box = .{
-        .bounds = grip,
-        .color = if (node.interaction.pressed or node.interaction.focused) theme.accent else resolved.fg,
-        .border_color = if (node.interaction.pressed or node.interaction.focused) theme.accent else resolved.fg,
-        .border_width = 0,
-        .corner_radius = 2,
-    } });
+    if (node.interaction.pressed or node.interaction.hovered or node.interaction.focused) {
+        const overlay_color = if (node.interaction.pressed)
+            style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
+        else if (node.interaction.focused)
+            style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
+        else
+            style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 40);
+        try commands.append(allocator, .{ .box = .{
+            .bounds = handle_rect,
+            .color = overlay_color,
+            .border_color = style.Color.rgba(0, 0, 0, 0),
+            .border_width = 0,
+            .corner_radius = 2,
+        } });
+        try commands.append(allocator, .{ .box = .{
+            .bounds = grip,
+            .color = if (node.interaction.pressed or node.interaction.focused) theme.accent else resolved.fg,
+            .border_color = if (node.interaction.pressed or node.interaction.focused) theme.accent else resolved.fg,
+            .border_width = 0,
+            .corner_radius = 2,
+        } });
+    }
 
-    try emitFocusRingRect(divider, theme, resolved.border_radius, commands, allocator, node.interaction.focused);
+    try emitFocusRingRect(handle_rect, theme, resolved.border_radius, commands, allocator, node.interaction.focused);
 }
 
 fn emitSlider(
@@ -1298,7 +1450,7 @@ fn emitSlider(
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
 ) !void {
-    const rect = node.layout_rect;
+    const rect = paintRect(node.layout_rect);
 
     // Track
     try commands.append(allocator, .{ .box = .{
@@ -1336,7 +1488,7 @@ fn emitTextInput(
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const ti = &node.kind.text_input;
-    const rect = node.layout_rect;
+    const rect = paintRect(node.layout_rect);
 
     // Background
     try commands.append(allocator, .{ .box = .{
@@ -1410,9 +1562,17 @@ fn emitScrollArea(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
+    const rect = paintRect(node.layout_rect);
+    const previous_cull_rect = active_paint_cull_rect;
+    active_paint_cull_rect = if (previous_cull_rect) |cull_rect|
+        intersectRects(cull_rect, rect)
+    else
+        rect;
+    defer active_paint_cull_rect = previous_cull_rect;
+
     // Background
     try commands.append(allocator, .{ .box = .{
-        .bounds = node.layout_rect,
+        .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
         .border_width = resolved.border_width,
@@ -1420,12 +1580,70 @@ fn emitScrollArea(
     } });
 
     // Push clip
-    try commands.append(allocator, .{ .clip = .{ .bounds = node.layout_rect } });
+    try commands.append(allocator, .{ .clip = .{ .bounds = active_paint_cull_rect orelse rect } });
 
+    const previous_offset = active_paint_offset;
+    active_paint_offset = .{
+        .x = previous_offset.x - node.kind.scroll_area.scroll_x,
+        .y = previous_offset.y - node.kind.scroll_area.scroll_y,
+    };
+    defer active_paint_offset = previous_offset;
     try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     // Pop clip
     try commands.append(allocator, .{ .clip = .{ .bounds = null } });
+
+    const extent = scrollContentExtent(tree, handle);
+    if (extent.h > rect.h + 0.01) {
+        const scrollbar_inset: f32 = 2;
+        const track_w = @max(resolved.thumb_width * 0.5, 6);
+        const track = Rect{
+            .x = rect.x + rect.w - track_w - scrollbar_inset,
+            .y = rect.y + scrollbar_inset,
+            .w = track_w,
+            .h = @max(rect.h - scrollbar_inset * 2, 0),
+        };
+        const thumb_h = @max(track.h * (rect.h / extent.h), @min(resolved.thumb_width * 1.5, track.h));
+        const max_scroll = @max(extent.h - rect.h, 0);
+        const thumb_t = if (max_scroll > 0) std.math.clamp(node.kind.scroll_area.scroll_y / max_scroll, 0, 1) else 0;
+        const thumb_y = track.y + (track.h - thumb_h) * thumb_t;
+
+        try commands.append(allocator, .{ .box = .{
+            .bounds = track,
+            .color = style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 64),
+            .border_color = style.Color.rgba(0, 0, 0, 0),
+            .border_width = 0,
+            .corner_radius = track.w * 0.5,
+        } });
+        try commands.append(allocator, .{ .box = .{
+            .bounds = .{ .x = track.x, .y = thumb_y, .w = track.w, .h = thumb_h },
+            .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 180),
+            .border_color = style.Color.rgba(0, 0, 0, 0),
+            .border_width = 0,
+            .corner_radius = track.w * 0.5,
+        } });
+    }
+}
+
+fn scrollContentExtent(tree: *const widget.Tree, handle: widget.NodeHandle) struct { w: f32, h: f32 } {
+    const node = tree.getConst(handle);
+    const parent_rect = node.layout_rect;
+    const scroll = node.kind.scroll_area;
+    var max_x: f32 = parent_rect.x;
+    var max_y: f32 = parent_rect.y;
+
+    var iter = tree.children(handle);
+    while (iter.next()) |child| {
+        if (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip) continue;
+        const r = tree.getConst(child).layout_rect;
+        max_x = @max(max_x, r.x + scroll.scroll_x + r.w);
+        max_y = @max(max_y, r.y + scroll.scroll_y + r.h);
+    }
+
+    return .{
+        .w = max_x - parent_rect.x,
+        .h = max_y - parent_rect.y,
+    };
 }
 
 /// Emit a focus ring around a widget's layout rect if it has focus.
@@ -1436,7 +1654,7 @@ fn emitFocusRing(
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
 ) !void {
-    try emitFocusRingRect(node.layout_rect, theme, corner_radius, commands, allocator, node.interaction.focused);
+    try emitFocusRingRect(paintRect(node.layout_rect), theme, corner_radius, commands, allocator, node.interaction.focused);
 }
 
 fn emitFocusRingRect(
@@ -1520,13 +1738,8 @@ fn tableRowIndex(tree: *const widget.Tree, handle: widget.NodeHandle) usize {
     return index;
 }
 
-fn tableRowIsLast(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
-    var current = tree.getConst(handle).next_sibling;
-    while (current) |candidate| {
-        if (tree.getConst(candidate).kind == .table_row) return false;
-        current = tree.getConst(candidate).next_sibling;
-    }
-    return true;
+fn tableRowHasTopDivider(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    return tableRowIndex(tree, handle) > 0;
 }
 
 fn tableCellIndex(tree: *const widget.Tree, handle: widget.NodeHandle) usize {
@@ -1608,19 +1821,38 @@ fn emitMenuArrow(
 fn splitterDividerRect(rect: Rect, splitter: widget.WidgetKind.Splitter, resolved: style.ResolvedStyle) Rect {
     const inner = splitterInnerRect(rect, resolved);
     const ratio = clampedSplitterRatio(splitter, rect, resolved);
+    const gap_thickness = splitterGapThickness(splitter);
     return switch (splitter.direction) {
         .row => .{
-            .x = inner.x + (inner.w - splitter.thickness) * ratio,
+            .x = inner.x + (inner.w - gap_thickness) * ratio,
             .y = inner.y,
-            .w = splitter.thickness,
+            .w = gap_thickness,
             .h = inner.h,
         },
         .column => .{
             .x = inner.x,
-            .y = inner.y + (inner.h - splitter.thickness) * ratio,
+            .y = inner.y + (inner.h - gap_thickness) * ratio,
             .w = inner.w,
-            .h = splitter.thickness,
+            .h = gap_thickness,
         },
+    };
+}
+
+fn splitterHandleRect(divider: Rect, splitter: widget.WidgetKind.Splitter) Rect {
+    const handle_thickness = @max(splitter.thickness, splitterGapThickness(splitter));
+    return switch (splitter.direction) {
+        .row => snappedRect(.{
+            .x = divider.x + (divider.w - handle_thickness) * 0.5,
+            .y = divider.y,
+            .w = handle_thickness,
+            .h = divider.h,
+        }),
+        .column => snappedRect(.{
+            .x = divider.x,
+            .y = divider.y + (divider.h - handle_thickness) * 0.5,
+            .w = divider.w,
+            .h = handle_thickness,
+        }),
     };
 }
 
@@ -1639,6 +1871,51 @@ fn splitterGripRect(divider: Rect, direction: widget.WidgetKind.Container.Direct
             .h = 2,
         },
     };
+}
+
+fn snappedRect(bounds: Rect) Rect {
+    const x0 = @round(bounds.x);
+    const y0 = @round(bounds.y);
+    const x1 = @round(bounds.x + bounds.w);
+    const y1 = @round(bounds.y + bounds.h);
+    return .{
+        .x = x0,
+        .y = y0,
+        .w = @max(x1 - x0, 0),
+        .h = @max(y1 - y0, 0),
+    };
+}
+
+fn snappedHairlineRect(bounds: Rect, axis: widget.WidgetKind.Container.Direction) Rect {
+    return switch (axis) {
+        .row => .{
+            .x = @round(bounds.x),
+            .y = @round(bounds.y),
+            .w = 1,
+            .h = @max(@round(bounds.h), 0),
+        },
+        .column => .{
+            .x = @round(bounds.x),
+            .y = @round(bounds.y),
+            .w = @max(@round(bounds.w), 0),
+            .h = 1,
+        },
+    };
+}
+
+fn tableRowFillRect(tree: *const widget.Tree, handle: widget.NodeHandle, rect: Rect) Rect {
+    _ = tree;
+    _ = handle;
+    return snappedRect(rect);
+}
+
+fn tableDividerThickness(border_width: f32) f32 {
+    return @max(@round(border_width), 0);
+}
+
+fn splitterVisibleRect(divider: Rect, direction: widget.WidgetKind.Container.Direction) Rect {
+    _ = direction;
+    return snappedRect(divider);
 }
 
 fn splitterInnerRect(rect: Rect, resolved: style.ResolvedStyle) Rect {
@@ -1672,9 +1949,13 @@ fn splitterAvailableExtent(
 ) f32 {
     const inner = splitterInnerRect(rect, resolved);
     return switch (splitter.direction) {
-        .row => inner.w - splitter.thickness,
-        .column => inner.h - splitter.thickness,
+        .row => inner.w - splitterGapThickness(splitter),
+        .column => inner.h - splitterGapThickness(splitter),
     };
+}
+
+fn splitterGapThickness(splitter: widget.WidgetKind.Splitter) f32 {
+    return @max(@min(splitter.gap_thickness, splitter.thickness), 1);
 }
 
 fn spinBoxButtons(rect: Rect) struct { dec: Rect, inc: Rect } {
@@ -2071,6 +2352,24 @@ fn emitDragGhostRect(
     } });
 }
 
+fn rectsIntersect(a: Rect, b: Rect) bool {
+    if (a.w <= 0 or a.h <= 0 or b.w <= 0 or b.h <= 0) return false;
+    return a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h;
+}
+
+fn intersectRects(a: Rect, b: Rect) Rect {
+    const x0 = @max(a.x, b.x);
+    const y0 = @max(a.y, b.y);
+    const x1 = @min(a.x + a.w, b.x + b.w);
+    const y1 = @min(a.y + a.h, b.y + b.h);
+    return .{
+        .x = x0,
+        .y = y0,
+        .w = @max(x1 - x0, 0),
+        .h = @max(y1 - y0, 0),
+    };
+}
+
 fn shouldDrawNode(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     const node = tree.getConst(handle);
     return switch (node.kind) {
@@ -2244,6 +2543,26 @@ test "custom draw commands are emitted before floating popups" {
     try std.testing.expect(dl.commands[6] == .rect);
     try std.testing.expect(dl.commands[6].rect.bounds.x == tree.getConst(popup).layout_rect.x);
     try std.testing.expect(dl.commands[6].rect.bounds.y == tree.getConst(popup).layout_rect.y);
+}
+
+test "table cells emit custom draw commands after text contents" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const cell = try tree.addRoot(.{ .table_cell = .{} });
+    _ = try tree.addChild(cell, .{ .text = .{ .content = "Name", .overflow = .ellipsis } });
+    tree.get(cell).layout_rect = .{ .x = 10, .y = 20, .w = 160, .h = 28 };
+    tree.get(cell).custom_draw = true;
+
+    var dl = try generate(&tree, style.Theme.default, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .text);
+    try std.testing.expect(dl.commands[1] == .custom);
+    try std.testing.expect(dl.commands[1].custom.handle.eql(cell));
 }
 
 test "toolbar and status bar emit chrome and children" {
@@ -2531,7 +2850,7 @@ test "tab bar emits selected tab header and active panel only" {
     try std.testing.expectEqualStrings("Active panel", dl.commands[6].text.text);
 }
 
-test "table emits header fill, stripes, and column dividers" {
+test "table emits header fill, row separators, and column dividers" {
     const allocator = std.testing.allocator;
 
     var tree = widget.Tree.init(allocator);
@@ -2568,16 +2887,66 @@ test "table emits header fill, stripes, and column dividers" {
     try std.testing.expectEqual(@as(usize, 10), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .rect); // table bg
     try std.testing.expect(dl.commands[1] == .rect); // header fill
-    try std.testing.expect(dl.commands[2] == .rect); // header bottom line
-    try std.testing.expect(dl.commands[3] == .text); // header name
+    try std.testing.expect(dl.commands[2] == .text); // header name
+    try std.testing.expect(dl.commands[3] == .text); // header type
     try std.testing.expect(dl.commands[4] == .rect); // header divider
-    try std.testing.expect(dl.commands[5] == .text); // header type
-    try std.testing.expect(dl.commands[6] == .rect); // striped row fill
+    try std.testing.expect(dl.commands[5] == .rect); // striped row fill
+    try std.testing.expect(dl.commands[6] == .rect); // row top separator
     try std.testing.expect(dl.commands[7] == .text); // row name
-    try std.testing.expect(dl.commands[8] == .rect); // row divider
-    try std.testing.expect(dl.commands[9] == .text); // row type
+    try std.testing.expect(dl.commands[8] == .text); // row type
+    try std.testing.expect(dl.commands[9] == .rect); // row divider
     try std.testing.expectEqualStrings("Cube", dl.commands[7].text.text);
-    try std.testing.expectEqualStrings("Mesh", dl.commands[9].text.text);
+    try std.testing.expectEqualStrings("Mesh", dl.commands[8].text.text);
+}
+
+test "table separators snap to whole pixels for fractional row positions" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const table = try tree.addRoot(.{ .table = .{ .columns = 2 } });
+    const header = try tree.addChild(table, .{ .table_row = .{ .header = true } });
+    const header_name = try tree.addChild(header, .{ .table_cell = .{} });
+    const header_type = try tree.addChild(header, .{ .table_cell = .{} });
+    const row_a = try tree.addChild(table, .{ .table_row = .{} });
+    const row_a_name = try tree.addChild(row_a, .{ .table_cell = .{} });
+    const row_a_type = try tree.addChild(row_a, .{ .table_cell = .{} });
+    const row_b = try tree.addChild(table, .{ .table_row = .{} });
+    const row_b_name = try tree.addChild(row_b, .{ .table_cell = .{} });
+    const row_b_type = try tree.addChild(row_b, .{ .table_cell = .{} });
+    _ = try tree.addChild(header_name, .{ .text = .{ .content = "Name" } });
+    _ = try tree.addChild(header_type, .{ .text = .{ .content = "Type" } });
+    _ = try tree.addChild(row_a_name, .{ .text = .{ .content = "Alpha" } });
+    _ = try tree.addChild(row_a_type, .{ .text = .{ .content = "File" } });
+    _ = try tree.addChild(row_b_name, .{ .text = .{ .content = "Beta" } });
+    _ = try tree.addChild(row_b_type, .{ .text = .{ .content = "File" } });
+
+    tree.get(table).layout_rect = .{ .x = 0.5, .y = 0.5, .w = 280.25, .h = 84.75 };
+    tree.get(header).layout_rect = .{ .x = 0.5, .y = 0.5, .w = 280.25, .h = 28.25 };
+    tree.get(header_name).layout_rect = .{ .x = 0.5, .y = 0.5, .w = 140.125, .h = 28.25 };
+    tree.get(header_type).layout_rect = .{ .x = 140.625, .y = 0.5, .w = 140.125, .h = 28.25 };
+    tree.get(row_a).layout_rect = .{ .x = 0.5, .y = 28.75, .w = 280.25, .h = 28.25 };
+    tree.get(row_a_name).layout_rect = .{ .x = 0.5, .y = 28.75, .w = 140.125, .h = 28.25 };
+    tree.get(row_a_type).layout_rect = .{ .x = 140.625, .y = 28.75, .w = 140.125, .h = 28.25 };
+    tree.get(row_b).layout_rect = .{ .x = 0.5, .y = 57.0, .w = 280.25, .h = 28.25 };
+    tree.get(row_b_name).layout_rect = .{ .x = 0.5, .y = 57.0, .w = 140.125, .h = 28.25 };
+    tree.get(row_b_type).layout_rect = .{ .x = 140.625, .y = 57.0, .w = 140.125, .h = 28.25 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 14), dl.commands.len);
+    try std.testing.expect(dl.commands[6] == .rect);
+    try std.testing.expect(dl.commands[10] == .rect);
+    try std.testing.expect(dl.commands[4] == .rect);
+    try std.testing.expect(dl.commands[13] == .rect);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 29), dl.commands[6].rect.bounds.y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 57), dl.commands[10].rect.bounds.y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 141), dl.commands[4].rect.bounds.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 141), dl.commands[13].rect.bounds.x, 0.01);
 }
 
 test "resizable table emits header grips" {
@@ -2612,6 +2981,36 @@ test "resizable table emits header grips" {
     try std.testing.expectApproxEqAbs(@as(f32, 139), dl.commands[5].rect.bounds.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 8), dl.commands[5].rect.bounds.y, 0.01);
     try std.testing.expectApproxEqAbs(widget.WidgetKind.Table.resize_grip_height, dl.commands[5].rect.bounds.h, 0.01);
+}
+
+test "splitter paints thin divider and hover overlay" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const splitter = try tree.addRoot(.{ .splitter = .{
+        .direction = .row,
+        .ratio = 0.5,
+        .min_first = 0,
+        .min_second = 0,
+        .thickness = 8,
+    } });
+    tree.get(splitter).layout_rect = .{ .x = 10, .y = 20, .w = 100, .h = 40 };
+    tree.get(splitter).interaction.hovered = true;
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 4), dl.commands.len);
+    try std.testing.expect(dl.commands[1] == .rect);
+    try std.testing.expect(dl.commands[2] == .rect);
+    try std.testing.expect(dl.commands[3] == .rect);
+    try std.testing.expectApproxEqAbs(@as(f32, 60), dl.commands[1].rect.bounds.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), dl.commands[1].rect.bounds.w, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 56), dl.commands[2].rect.bounds.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 8), dl.commands[2].rect.bounds.w, 0.01);
 }
 
 test "sortable table emits active sort indicator" {
@@ -2687,8 +3086,9 @@ test "scroll area emits clip commands" {
     defer tree.deinit();
 
     const scroll = try tree.addRoot(.{ .scroll_area = .{} });
-    _ = try tree.addChild(scroll, .{ .text = .{ .content = "inside" } });
+    const child = try tree.addChild(scroll, .{ .text = .{ .content = "inside" } });
     tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 200 };
+    tree.get(child).layout_rect = .{ .x = 8, .y = 6, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
     var dl = try generate(&tree, theme, allocator, null);
@@ -2702,6 +3102,77 @@ test "scroll area emits clip commands" {
     try std.testing.expect(dl.commands[2] == .text); // child text
     try std.testing.expect(dl.commands[3] == .clip); // pop
     try std.testing.expect(dl.commands[3].clip.bounds == null);
+}
+
+test "scroll area translates child paint commands by scroll offset" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{ .scroll_y = 20 } });
+    const child = try tree.addChild(scroll, .{ .text = .{ .content = "inside" } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 80 };
+    tree.get(child).layout_rect = .{ .x = 8, .y = 30, .w = 40, .h = 14 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 4), dl.commands.len);
+    try std.testing.expect(dl.commands[2] == .text);
+    try std.testing.expectEqualStrings("inside", dl.commands[2].text.text);
+    try std.testing.expectApproxEqAbs(@as(f32, 10), dl.commands[2].text.bounds.y, 0.01);
+}
+
+test "scroll area omits fully offscreen children" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{} });
+    const visible = try tree.addChild(scroll, .{ .text = .{ .content = "visible" } });
+    const hidden = try tree.addChild(scroll, .{ .text = .{ .content = "hidden" } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 120, .h = 40 };
+    tree.get(visible).layout_rect = .{ .x = 8, .y = 10, .w = 44, .h = 14 };
+    tree.get(hidden).layout_rect = .{ .x = 8, .y = 64, .w = 40, .h = 14 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 6), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[1] == .clip);
+    try std.testing.expect(dl.commands[2] == .text);
+    try std.testing.expectEqualStrings("visible", dl.commands[2].text.text);
+    try std.testing.expect(dl.commands[3] == .clip);
+    try std.testing.expect(dl.commands[4] == .rect);
+    try std.testing.expect(dl.commands[5] == .rect);
+}
+
+test "scroll area emits scrollbar thumb when content overflows" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{ .scroll_y = 40 } });
+    const child = try tree.addChild(scroll, .{ .spacer = .{ .height = 300 } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 120, .h = 80 };
+    tree.get(child).layout_rect = .{ .x = 6, .y = -34, .w = 108, .h = 300 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 5), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[1] == .clip);
+    try std.testing.expect(dl.commands[2] == .clip);
+    try std.testing.expect(dl.commands[3] == .rect);
+    try std.testing.expect(dl.commands[4] == .rect);
 }
 
 test "text input emits bg and text" {

@@ -135,6 +135,9 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                     .slider => updateSliderValue(tree, dt, mouse.x, theme),
                     .drag_value => updateDragValue(tree, dt, mouse.x, mouse),
                     .splitter => updateSplitterRatio(tree, dt, mouse.x, mouse.y, mouse, theme),
+                    .scroll_area => {
+                        if (updateScrollAreaDrag(tree, dt, mouse.y, mouse, theme)) mouse.layout_changed = true;
+                    },
                     .table => {
                         if (updateTableColumns(tree, dt, mouse)) mouse.layout_changed = true;
                     },
@@ -182,9 +185,13 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
             const target = hittest.hitTestKind(tree, mouse.x, mouse.y, .scroll_area);
             if (target) |t| {
                 const node = tree.get(t);
-                node.kind.scroll_area.scroll_x += ms.dx;
-                node.kind.scroll_area.scroll_y += ms.dy;
-                clampScroll(tree, t);
+                const old_scroll_x = node.kind.scroll_area.scroll_x;
+                const old_scroll_y = node.kind.scroll_area.scroll_y;
+                const viewport = node.layout_rect;
+                const extent = contentExtentForAppliedScroll(tree, t, old_scroll_x, old_scroll_y);
+
+                node.kind.scroll_area.scroll_x = std.math.clamp(old_scroll_x + ms.dx, 0, @max(extent.w - viewport.w, 0));
+                node.kind.scroll_area.scroll_y = std.math.clamp(old_scroll_y + ms.dy, 0, @max(extent.h - viewport.h, 0));
             }
         },
         .focus => |f| {
@@ -976,6 +983,67 @@ fn rectsIntersect(a: draw.Rect, b: draw.Rect) bool {
     return a.x < b.x + b.w and a.x + a.w > b.x and a.y < b.y + b.h and a.y + a.h > b.y;
 }
 
+const ScrollbarMetrics = struct {
+    track: draw.Rect,
+    thumb: draw.Rect,
+    max_scroll_y: f32,
+};
+
+fn verticalScrollbarMetrics(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    theme: style.Theme,
+) ?ScrollbarMetrics {
+    const node = tree.getConst(handle);
+    if (node.kind != .scroll_area) return null;
+
+    const viewport = node.layout_rect;
+    const extent = contentExtentForAppliedScroll(tree, handle, node.kind.scroll_area.scroll_x, node.kind.scroll_area.scroll_y);
+    if (extent.h <= viewport.h + 0.01) return null;
+
+    const resolved = node.style_override.resolve(theme);
+    const scrollbar_inset: f32 = 2;
+    const track_w = @max(resolved.thumb_width * 0.5, 6);
+    const track = draw.Rect{
+        .x = viewport.x + viewport.w - track_w - scrollbar_inset,
+        .y = viewport.y + scrollbar_inset,
+        .w = track_w,
+        .h = @max(viewport.h - scrollbar_inset * 2, 0),
+    };
+    const max_scroll_y = @max(extent.h - viewport.h, 0);
+    const thumb_h = @max(track.h * (viewport.h / extent.h), @min(resolved.thumb_width * 1.5, track.h));
+    const thumb_t = if (max_scroll_y > 0)
+        std.math.clamp(node.kind.scroll_area.scroll_y / max_scroll_y, 0, 1)
+    else
+        0;
+    const thumb_y = track.y + (track.h - thumb_h) * thumb_t;
+
+    return .{
+        .track = track,
+        .thumb = .{ .x = track.x, .y = thumb_y, .w = track.w, .h = thumb_h },
+        .max_scroll_y = max_scroll_y,
+    };
+}
+
+fn scrollbarTargetAtPoint(
+    tree: *const widget.Tree,
+    x: f32,
+    y: f32,
+    theme: style.Theme,
+) ?widget.NodeHandle {
+    const target = hittest.hitTestKind(tree, x, y, .scroll_area) orelse return null;
+    const metrics = verticalScrollbarMetrics(tree, target, theme) orelse return null;
+    if (!hittest.pointInRect(x, y, metrics.track)) return null;
+    return target;
+}
+
+fn scrollPositionForTrackPoint(metrics: ScrollbarMetrics, y: f32) f32 {
+    const usable = metrics.track.h - metrics.thumb.h;
+    if (usable <= 0 or metrics.max_scroll_y <= 0) return 0;
+    const t = std.math.clamp((y - metrics.track.y - metrics.thumb.h * 0.5) / usable, 0, 1);
+    return metrics.max_scroll_y * t;
+}
+
 fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
     mouse.left_down = true;
     mouse.press_origin_x = mouse.x;
@@ -983,7 +1051,7 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
     mouse.press_can_defer_drag = false;
     _ = updateHover(tree, mouse);
 
-    const target = hittest.hitTest(tree, mouse.x, mouse.y);
+    const target = scrollbarTargetAtPoint(tree, mouse.x, mouse.y, theme) orelse hittest.hitTest(tree, mouse.x, mouse.y);
     closePopupsForPress(tree, target);
     if (target) |t| {
         if (focus.isFocusable(tree.getConst(t).kind)) {
@@ -1030,6 +1098,23 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
                 mouse.drag_origin_x = mouse.x;
                 mouse.drag_origin_y = mouse.y;
                 mouse.drag_origin_value = tree.getConst(t).kind.splitter.ratio;
+            },
+            .scroll_area => {
+                if (verticalScrollbarMetrics(tree, t, theme)) |metrics| {
+                    if (hittest.pointInRect(mouse.x, mouse.y, metrics.track)) {
+                        if (!hittest.pointInRect(mouse.x, mouse.y, metrics.thumb)) {
+                            const next = scrollPositionForTrackPoint(metrics, mouse.y);
+                            if (@abs(next - tree.getConst(t).kind.scroll_area.scroll_y) > 0.01) {
+                                tree.get(t).kind.scroll_area.scroll_y = next;
+                                mouse.layout_changed = true;
+                            }
+                        }
+                        mouse.drag_target = t;
+                        mouse.drag_origin_x = mouse.x;
+                        mouse.drag_origin_y = mouse.y;
+                        mouse.drag_origin_value = tree.getConst(t).kind.scroll_area.scroll_y;
+                    }
+                }
             },
             .table => {
                 if (widget.tableResizeHandleIndexAtPoint(tree, t, mouse.x, mouse.y)) |divider_index| {
@@ -1308,6 +1393,25 @@ fn updateDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32, 
     }
 }
 
+fn updateScrollAreaDrag(
+    tree: *widget.Tree,
+    handle: widget.NodeHandle,
+    mouse_y: f32,
+    mouse: *const MouseState,
+    theme: style.Theme,
+) bool {
+    const metrics = verticalScrollbarMetrics(tree, handle, theme) orelse return false;
+    const usable = metrics.track.h - metrics.thumb.h;
+    if (usable <= 0 or metrics.max_scroll_y <= 0) return false;
+
+    const delta_scroll = (mouse_y - mouse.drag_origin_y) * (metrics.max_scroll_y / usable);
+    const next = std.math.clamp(mouse.drag_origin_value + delta_scroll, 0, metrics.max_scroll_y);
+    const node = tree.get(handle);
+    if (@abs(next - node.kind.scroll_area.scroll_y) <= 0.01) return false;
+    node.kind.scroll_area.scroll_y = next;
+    return true;
+}
+
 fn stepDragValue(tree: *widget.Tree, handle: widget.NodeHandle, direction: i8) void {
     const node = tree.get(handle);
     const drag_value = &node.kind.drag_value;
@@ -1414,7 +1518,7 @@ fn syncPopupMenuHover(tree: *widget.Tree, popup: widget.NodeHandle, hovered: wid
 fn clampScroll(tree: *widget.Tree, handle: widget.NodeHandle) void {
     const node = tree.get(handle);
     const viewport = node.layout_rect;
-    const extent = contentExtent(tree, handle);
+    const extent = contentExtentForAppliedScroll(tree, handle, node.kind.scroll_area.scroll_x, node.kind.scroll_area.scroll_y);
 
     const max_x = @max(extent.w - viewport.w, 0);
     const max_y = @max(extent.h - viewport.h, 0);
@@ -1426,7 +1530,22 @@ fn clampScroll(tree: *widget.Tree, handle: widget.NodeHandle) void {
 /// Compute the bounding box size of all direct children of a node.
 /// Returns the total width and height the content occupies.
 fn contentExtent(tree: *const widget.Tree, parent: widget.NodeHandle) struct { w: f32, h: f32 } {
-    const parent_rect = tree.getConst(parent).layout_rect;
+    const parent_node = tree.getConst(parent);
+    const scroll = if (parent_node.kind == .scroll_area)
+        parent_node.kind.scroll_area
+    else
+        widget.WidgetKind.ScrollArea{};
+    return contentExtentForAppliedScroll(tree, parent, scroll.scroll_x, scroll.scroll_y);
+}
+
+fn contentExtentForAppliedScroll(
+    tree: *const widget.Tree,
+    parent: widget.NodeHandle,
+    applied_scroll_x: f32,
+    applied_scroll_y: f32,
+) struct { w: f32, h: f32 } {
+    const parent_node = tree.getConst(parent);
+    const parent_rect = parent_node.layout_rect;
     var max_x: f32 = parent_rect.x;
     var max_y: f32 = parent_rect.y;
 
@@ -1434,8 +1553,8 @@ fn contentExtent(tree: *const widget.Tree, parent: widget.NodeHandle) struct { w
     while (iter.next()) |child| {
         if (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip) continue;
         const r = tree.getConst(child).layout_rect;
-        max_x = @max(max_x, r.x + r.w);
-        max_y = @max(max_y, r.y + r.h);
+        max_x = @max(max_x, r.x + applied_scroll_x + r.w);
+        max_y = @max(max_y, r.y + applied_scroll_y + r.h);
     }
 
     return .{
@@ -2186,9 +2305,13 @@ fn splitterAvailableExtent(
     resolved: style.ResolvedStyle,
 ) f32 {
     return switch (splitter.direction) {
-        .row => rect.w - resolved.padding.left - resolved.padding.right - splitter.thickness,
-        .column => rect.h - resolved.padding.top - resolved.padding.bottom - splitter.thickness,
+        .row => rect.w - resolved.padding.left - resolved.padding.right - splitterGapThickness(splitter),
+        .column => rect.h - resolved.padding.top - resolved.padding.bottom - splitterGapThickness(splitter),
     };
+}
+
+fn splitterGapThickness(splitter: widget.WidgetKind.Splitter) f32 {
+    return @max(@min(splitter.gap_thickness, splitter.thickness), 1);
 }
 
 fn treeDisclosureX(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style.Theme) f32 {
@@ -2882,6 +3005,68 @@ test "scroll clamped when content fits viewport" {
     process(&tree, &.{.{ .mouse_scroll = .{ .dx = 50, .dy = 50 } }}, &mouse, style.Theme.default);
     try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(scroll).kind.scroll_area.scroll_x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(scroll).kind.scroll_area.scroll_y, 0.01);
+}
+
+test "scroll clamping accounts for offset child rects" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{ .scroll_y = 150 } });
+    const child = try tree.addChild(scroll, .{ .text = .{ .content = "content" } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 200 };
+    tree.get(child).layout_rect = .{ .x = 0, .y = -150, .w = 300, .h = 500 };
+
+    clampScroll(&tree, scroll);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 150), tree.getConst(scroll).kind.scroll_area.scroll_y, 0.01);
+}
+
+test "scrollbar track click jumps scroll position" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{} });
+    const child = try tree.addChild(scroll, .{ .spacer = .{ .height = 300 } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 120, .h = 80 };
+    tree.get(child).layout_rect = .{ .x = 0, .y = 0, .w = 120, .h = 300 };
+
+    const theme = style.Theme.default;
+    const metrics = verticalScrollbarMetrics(&tree, scroll, theme).?;
+    var mouse = MouseState{};
+
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = metrics.track.x + metrics.track.w * 0.5, .y = metrics.track.y + metrics.track.h - 4 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = metrics.track.x + metrics.track.w * 0.5, .y = metrics.track.y + metrics.track.h - 4 } },
+    }, &mouse, theme);
+
+    try std.testing.expect(tree.getConst(scroll).kind.scroll_area.scroll_y > 0);
+}
+
+test "scrollbar thumb drag updates scroll position" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{} });
+    const child = try tree.addChild(scroll, .{ .spacer = .{ .height = 300 } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 120, .h = 80 };
+    tree.get(child).layout_rect = .{ .x = 0, .y = 0, .w = 120, .h = 300 };
+
+    const theme = style.Theme.default;
+    const metrics = verticalScrollbarMetrics(&tree, scroll, theme).?;
+    const thumb_center_x = metrics.thumb.x + metrics.thumb.w * 0.5;
+    const thumb_center_y = metrics.thumb.y + metrics.thumb.h * 0.5;
+    var mouse = MouseState{};
+
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = thumb_center_x, .y = thumb_center_y } },
+        .{ .mouse_move = .{ .x = thumb_center_x, .y = thumb_center_y + 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = thumb_center_x, .y = thumb_center_y + 20 } },
+    }, &mouse, theme);
+
+    try std.testing.expect(tree.getConst(scroll).kind.scroll_area.scroll_y > 0);
 }
 
 test "tab cycles focus through focusable widgets" {

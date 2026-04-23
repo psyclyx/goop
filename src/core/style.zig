@@ -63,6 +63,7 @@ pub const Style = struct {
     border: ?Color = null,
     font_size: ?f32 = null,
     padding: ?Edges = null,
+    spacing: ?f32 = null,
     border_radius: ?f32 = null,
     border_width: ?f32 = null,
     thumb_width: ?f32 = null,
@@ -74,6 +75,7 @@ pub const Style = struct {
             .border = self.border orelse theme.border,
             .font_size = self.font_size orelse theme.font_size,
             .padding = self.padding orelse theme.padding,
+            .spacing = self.spacing orelse theme.spacing,
             .border_radius = self.border_radius orelse theme.border_radius,
             .border_width = self.border_width orelse theme.border_width,
             .thumb_width = self.thumb_width orelse theme.thumb_width,
@@ -88,6 +90,7 @@ pub const ResolvedStyle = struct {
     border: Color,
     font_size: f32,
     padding: Edges,
+    spacing: f32,
     border_radius: f32,
     border_width: f32,
     thumb_width: f32,
@@ -99,4 +102,5 @@ test "style resolves against theme" {
     const resolved = style.resolve(theme);
     try std.testing.expectEqual(@as(u8, 255), resolved.bg.r);
     try std.testing.expectEqual(theme.fg, resolved.fg);
+    try std.testing.expectEqual(theme.spacing, resolved.spacing);
 }

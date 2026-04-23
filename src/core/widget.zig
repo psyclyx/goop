@@ -52,6 +52,7 @@ pub const WidgetKind = union(enum) {
     tab_item: TabItem,
     splitter: Splitter,
     slider: Slider,
+    spacer: Spacer,
     scroll_area: ScrollArea,
     text_input: TextInput,
 
@@ -63,6 +64,7 @@ pub const WidgetKind = union(enum) {
 
     pub const Text = struct {
         content: []const u8,
+        overflow: draw.TextOverflow = .visible,
     };
 
     pub const Button = struct {
@@ -479,6 +481,7 @@ pub const WidgetKind = union(enum) {
         min_first: f32 = 120,
         min_second: f32 = 120,
         thickness: f32 = 6,
+        gap_thickness: f32 = 1,
         keyboard_step: f32 = 0.02,
         changed: bool = false,
     };
@@ -492,6 +495,11 @@ pub const WidgetKind = union(enum) {
     pub const ScrollArea = struct {
         scroll_x: f32 = 0,
         scroll_y: f32 = 0,
+    };
+
+    pub const Spacer = struct {
+        width: f32 = 0,
+        height: f32 = 0,
     };
 
     pub const TextInput = struct {

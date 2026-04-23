@@ -163,6 +163,7 @@ typedef enum {
     GOOP_WIDGET_SLIDER = 26,
     GOOP_WIDGET_SCROLL_AREA = 27,
     GOOP_WIDGET_TEXT_INPUT = 28,
+    GOOP_WIDGET_SPACER = 29,
 } goop_widget_kind_t;
 
 typedef struct {
@@ -325,6 +326,11 @@ typedef struct {
 } goop_text_input_widget_t;
 
 typedef struct {
+    float width;
+    float height;
+} goop_spacer_widget_t;
+
+typedef struct {
     uint8_t _reserved;
 } goop_unit_widget_t;
 
@@ -360,6 +366,7 @@ typedef struct {
         goop_slider_widget_t slider;
         goop_scroll_area_widget_t scroll_area;
         goop_text_input_widget_t text_input;
+        goop_spacer_widget_t spacer;
     } data;
 } goop_widget_t;
 
