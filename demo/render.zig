@@ -496,6 +496,10 @@ pub const Renderer = struct {
                 .text = text,
                 .width = if (text_align == .start) 0 else self.measureTextWidth(text, font_size),
             },
+            .wrap => return .{
+                .text = text,
+                .width = if (text_align == .start) 0 else self.measureTextWidth(text, font_size),
+            },
             .clip => return .{
                 .text = text,
                 .width = if (text_align == .start) 0 else self.measureTextWidth(text, font_size),

@@ -184,6 +184,7 @@ fn emitText(handle: widget.NodeHandle, txt: widget.WidgetKind.Text, resolved: st
             .sizing = .{
                 .width = switch (txt.overflow) {
                     .ellipsis, .clip => growSizing(),
+                    .wrap => growSizing(),
                     .visible => .{},
                 },
                 .height = .{},
@@ -209,8 +210,8 @@ fn emitText(handle: widget.NodeHandle, txt: widget.WidgetKind.Text, resolved: st
             .letterSpacing = 0,
             .lineHeight = 0,
             .wrapMode = switch (txt.overflow) {
-                .clip, .ellipsis => c.CLAY_TEXT_WRAP_NONE,
-                .visible => c.CLAY_TEXT_WRAP_WORDS,
+                .visible, .clip, .ellipsis => c.CLAY_TEXT_WRAP_NONE,
+                .wrap => c.CLAY_TEXT_WRAP_WORDS,
             },
             .textAlignment = c.CLAY_TEXT_ALIGN_LEFT,
         }),
@@ -388,13 +389,15 @@ fn emitTreeItem(
     const left_indent = @as(f32, @floatFromInt(depth)) * treeIndent(theme, resolved);
     var header_padding = resolved.padding;
     header_padding.left += left_indent + disclosureSlotWidth(resolved) + treeItemIconSlotWidth(item, theme, resolved);
+    const min_width = header_padding.left + header_padding.right +
+        measureTextDimensions(label, resolved.font_size, currentTextMeasureCtx()).width;
 
     c.Clay__OpenElement();
     c.Clay__ConfigureOpenElement(.{
         .id = nodeId(handle),
         .layout = .{
             .sizing = .{
-                .width = growSizing(),
+                .width = growSizingMin(min_width),
                 .height = fixedSizing(controlTextHeight(resolved)),
             },
             .padding = clayPadding(header_padding),
@@ -547,12 +550,15 @@ fn emitSelectable(
     selectable: widget.WidgetKind.Selectable,
     resolved: style_mod.ResolvedStyle,
 ) void {
+    const min_width = resolved.padding.left + resolved.padding.right +
+        measureTextDimensions(selectable.label, resolved.font_size, currentTextMeasureCtx()).width;
+
     c.Clay__OpenElement();
     c.Clay__ConfigureOpenElement(.{
         .id = nodeId(handle),
         .layout = .{
             .sizing = .{
-                .width = growSizing(),
+                .width = growSizingMin(min_width),
                 .height = fixedSizing(controlTextHeight(resolved)),
             },
             .padding = clayPadding(resolved.padding),
@@ -1523,11 +1529,11 @@ fn emitScrollArea(
         .floating = .{},
         .custom = .{},
         .clip = .{
-            .horizontal = true,
-            .vertical = true,
+            .horizontal = scroll.allow_horizontal_scroll,
+            .vertical = scroll.allow_vertical_scroll,
             .childOffset = .{
-                .x = -scroll.scroll_x,
-                .y = -scroll.scroll_y,
+                .x = -scroll.effectiveScrollX(),
+                .y = -scroll.effectiveScrollY(),
             },
         },
         .border = .{},
@@ -1608,6 +1614,13 @@ fn cornerRadiusAll(r: f32) c.Clay_CornerRadius {
 fn growSizing() c.Clay_SizingAxis {
     return .{
         .size = .{ .minMax = .{ .min = 0, .max = 0 } },
+        .type = c.CLAY__SIZING_TYPE_GROW,
+    };
+}
+
+fn growSizingMin(min: f32) c.Clay_SizingAxis {
+    return .{
+        .size = .{ .minMax = .{ .min = @max(min, 0), .max = 0 } },
         .type = c.CLAY__SIZING_TYPE_GROW,
     };
 }
@@ -2596,4 +2609,87 @@ test "ellipsized text grows to parent width instead of content width" {
     const line_rect = tree.getConst(line).layout_rect;
     const root_inner_w = root_rect.w - theme.padding.left - theme.padding.right;
     try std.testing.expectApproxEqAbs(root_inner_w, line_rect.w, 0.01);
+}
+
+test "wrapped text layout height matches paint line count for path boundaries" {
+    const theme = style_mod.Theme.default;
+    const allocator = std.testing.allocator;
+    const min_memory = c.Clay_MinMemorySize();
+    const arena = try allocator.alloc(u8, min_memory);
+    defer allocator.free(arena);
+
+    const clay_arena = c.Clay_Arena{
+        .capacity = min_memory,
+        .memory = arena.ptr,
+    };
+    _ = c.Clay_Initialize(clay_arena, .{
+        .width = 84,
+        .height = 240,
+    }, .{});
+    defer c.Clay_SetCurrentContext(null);
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{ .direction = .column } });
+    const text = try tree.addChild(root, .{ .text = .{
+        .content = "alpha/beta/gamma/delta",
+        .overflow = .wrap,
+    } });
+
+    run(&tree, theme, null);
+
+    var dl = try draw.generate(&tree, theme, allocator, null);
+    defer draw.freeDrawList(&dl, allocator);
+
+    var text_command_count: usize = 0;
+    for (dl.commands) |command| {
+        if (command == .text) text_command_count += 1;
+    }
+
+    try std.testing.expect(text_command_count > 1);
+    const line_h = textMetrics(theme.font_size, null).height;
+    try std.testing.expectApproxEqAbs(
+        @as(f32, @floatFromInt(text_command_count)) * line_h,
+        tree.getConst(text).layout_rect.h,
+        0.01,
+    );
+}
+
+test "wrapped text inside padded scroll area uses the visible content width" {
+    const theme = style_mod.Theme.default;
+    const allocator = std.testing.allocator;
+    const min_memory = c.Clay_MinMemorySize();
+    const arena = try allocator.alloc(u8, min_memory);
+    defer allocator.free(arena);
+
+    const clay_arena = c.Clay_Arena{
+        .capacity = min_memory,
+        .memory = arena.ptr,
+    };
+    _ = c.Clay_Initialize(clay_arena, .{
+        .width = 287,
+        .height = 320,
+    }, .{});
+    defer c.Clay_SetCurrentContext(null);
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{ .allow_horizontal_scroll = false } });
+    tree.get(scroll).style_override = .{ .padding = style_mod.Edges.symmetric(12, 12) };
+    const content = try tree.addChild(scroll, .{ .container = .{ .direction = .column } });
+    tree.get(content).style_override = .{ .padding = style_mod.Edges.all(0), .spacing = 8 };
+    const text = try tree.addChild(content, .{ .text = .{
+        .content = "Select a file to inspect it, or use Preview to skim folders and text files inline.",
+        .overflow = .wrap,
+    } });
+
+    run(&tree, theme, null);
+
+    const scroll_rect = tree.getConst(scroll).layout_rect;
+    const text_rect = tree.getConst(text).layout_rect;
+    const visible_width = scroll_rect.w - 24;
+    try std.testing.expect(text_rect.w <= visible_width + 0.01);
+    try std.testing.expect(text_rect.h > textMetrics(theme.font_size, null).height + 0.01);
 }

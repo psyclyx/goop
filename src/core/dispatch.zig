@@ -30,6 +30,8 @@ pub const GridDrop = struct {
     };
 };
 
+const ScrollbarAxis = enum { vertical, horizontal };
+
 pub const MouseState = struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -49,6 +51,7 @@ pub const MouseState = struct {
     drag_origin_secondary_value: f32 = 0,
     drag_origin_extent: f32 = 0,
     drag_column_index: ?u8 = null,
+    scroll_drag_axis: ScrollbarAxis = .vertical,
     /// The currently keyboard-focused widget, if any.
     focused: ?widget.NodeHandle = null,
     /// The widget currently hovered by the pointer, if any.
@@ -136,7 +139,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                     .drag_value => updateDragValue(tree, dt, mouse.x, mouse),
                     .splitter => updateSplitterRatio(tree, dt, mouse.x, mouse.y, mouse, theme),
                     .scroll_area => {
-                        if (updateScrollAreaDrag(tree, dt, mouse.y, mouse, theme)) mouse.layout_changed = true;
+                        if (updateScrollAreaDrag(tree, dt, mouse, theme)) mouse.layout_changed = true;
                     },
                     .table => {
                         if (updateTableColumns(tree, dt, mouse)) mouse.layout_changed = true;
@@ -185,13 +188,24 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
             const target = hittest.hitTestKind(tree, mouse.x, mouse.y, .scroll_area);
             if (target) |t| {
                 const node = tree.get(t);
-                const old_scroll_x = node.kind.scroll_area.scroll_x;
-                const old_scroll_y = node.kind.scroll_area.scroll_y;
+                const scroll = node.kind.scroll_area;
+                const old_scroll_x = scroll.scroll_x;
+                const old_scroll_y = scroll.scroll_y;
                 const viewport = node.layout_rect;
-                const extent = contentExtentForAppliedScroll(tree, t, old_scroll_x, old_scroll_y);
+                const extent = contentExtentForAppliedScroll(tree, t, scroll.effectiveScrollX(), scroll.effectiveScrollY());
+                const scroll_dx = if (scroll.allow_horizontal_scroll)
+                    if (mouse.shift_down and ms.dx == 0) ms.dy else ms.dx
+                else
+                    0;
+                const scroll_dy = if (scroll.allow_vertical_scroll)
+                    if (mouse.shift_down and ms.dx == 0) 0 else ms.dy
+                else
+                    0;
 
-                node.kind.scroll_area.scroll_x = std.math.clamp(old_scroll_x + ms.dx, 0, @max(extent.w - viewport.w, 0));
-                node.kind.scroll_area.scroll_y = std.math.clamp(old_scroll_y + ms.dy, 0, @max(extent.h - viewport.h, 0));
+                const max_x = if (scroll.allow_horizontal_scroll) @max(extent.w - viewport.w, 0) else 0;
+                const max_y = if (scroll.allow_vertical_scroll) @max(extent.h - viewport.h, 0) else 0;
+                node.kind.scroll_area.scroll_x = std.math.clamp(old_scroll_x + scroll_dx, 0, max_x);
+                node.kind.scroll_area.scroll_y = std.math.clamp(old_scroll_y + scroll_dy, 0, max_y);
             }
         },
         .focus => |f| {
@@ -984,9 +998,15 @@ fn rectsIntersect(a: draw.Rect, b: draw.Rect) bool {
 }
 
 const ScrollbarMetrics = struct {
+    axis: ScrollbarAxis,
     track: draw.Rect,
     thumb: draw.Rect,
-    max_scroll_y: f32,
+    max_scroll: f32,
+};
+
+const ScrollbarHit = struct {
+    handle: widget.NodeHandle,
+    metrics: ScrollbarMetrics,
 };
 
 fn verticalScrollbarMetrics(
@@ -996,33 +1016,107 @@ fn verticalScrollbarMetrics(
 ) ?ScrollbarMetrics {
     const node = tree.getConst(handle);
     if (node.kind != .scroll_area) return null;
+    const scroll = node.kind.scroll_area;
+    if (!scroll.allow_vertical_scroll) return null;
 
     const viewport = node.layout_rect;
-    const extent = contentExtentForAppliedScroll(tree, handle, node.kind.scroll_area.scroll_x, node.kind.scroll_area.scroll_y);
+    const extent = contentExtentForAppliedScroll(tree, handle, scroll.effectiveScrollX(), scroll.effectiveScrollY());
     if (extent.h <= viewport.h + 0.01) return null;
+    const has_horizontal_scrollbar = scroll.allow_horizontal_scroll and extent.w > viewport.w + 0.01;
 
     const resolved = node.style_override.resolve(theme);
     const scrollbar_inset: f32 = 2;
     const track_w = @max(resolved.thumb_width * 0.5, 6);
+    const horizontal_reserve = if (has_horizontal_scrollbar) track_w + scrollbar_inset else 0;
     const track = draw.Rect{
         .x = viewport.x + viewport.w - track_w - scrollbar_inset,
         .y = viewport.y + scrollbar_inset,
         .w = track_w,
-        .h = @max(viewport.h - scrollbar_inset * 2, 0),
+        .h = @max(viewport.h - scrollbar_inset * 2 - horizontal_reserve, 0),
     };
     const max_scroll_y = @max(extent.h - viewport.h, 0);
     const thumb_h = @max(track.h * (viewport.h / extent.h), @min(resolved.thumb_width * 1.5, track.h));
     const thumb_t = if (max_scroll_y > 0)
-        std.math.clamp(node.kind.scroll_area.scroll_y / max_scroll_y, 0, 1)
+        std.math.clamp(scroll.scroll_y / max_scroll_y, 0, 1)
     else
         0;
     const thumb_y = track.y + (track.h - thumb_h) * thumb_t;
 
     return .{
+        .axis = .vertical,
         .track = track,
         .thumb = .{ .x = track.x, .y = thumb_y, .w = track.w, .h = thumb_h },
-        .max_scroll_y = max_scroll_y,
+        .max_scroll = max_scroll_y,
     };
+}
+
+fn horizontalScrollbarMetrics(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    theme: style.Theme,
+) ?ScrollbarMetrics {
+    const node = tree.getConst(handle);
+    if (node.kind != .scroll_area) return null;
+    const scroll = node.kind.scroll_area;
+    if (!scroll.allow_horizontal_scroll) return null;
+
+    const viewport = node.layout_rect;
+    const extent = contentExtentForAppliedScroll(tree, handle, scroll.effectiveScrollX(), scroll.effectiveScrollY());
+    if (extent.w <= viewport.w + 0.01) return null;
+    const has_vertical_scrollbar = scroll.allow_vertical_scroll and extent.h > viewport.h + 0.01;
+
+    const resolved = node.style_override.resolve(theme);
+    const scrollbar_inset: f32 = 2;
+    const track_h = @max(resolved.thumb_width * 0.5, 6);
+    const vertical_reserve = if (has_vertical_scrollbar) track_h + scrollbar_inset else 0;
+    const track = draw.Rect{
+        .x = viewport.x + scrollbar_inset,
+        .y = viewport.y + viewport.h - track_h - scrollbar_inset,
+        .w = @max(viewport.w - scrollbar_inset * 2 - vertical_reserve, 0),
+        .h = track_h,
+    };
+    const max_scroll_x = @max(extent.w - viewport.w, 0);
+    const thumb_w = @max(track.w * (viewport.w / extent.w), @min(resolved.thumb_width * 1.5, track.w));
+    const thumb_t = if (max_scroll_x > 0)
+        std.math.clamp(scroll.scroll_x / max_scroll_x, 0, 1)
+    else
+        0;
+    const thumb_x = track.x + (track.w - thumb_w) * thumb_t;
+
+    return .{
+        .axis = .horizontal,
+        .track = track,
+        .thumb = .{ .x = thumb_x, .y = track.y, .w = thumb_w, .h = track.h },
+        .max_scroll = max_scroll_x,
+    };
+}
+
+fn scrollbarMetricsForAxis(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    axis: ScrollbarAxis,
+    theme: style.Theme,
+) ?ScrollbarMetrics {
+    return switch (axis) {
+        .vertical => verticalScrollbarMetrics(tree, handle, theme),
+        .horizontal => horizontalScrollbarMetrics(tree, handle, theme),
+    };
+}
+
+fn scrollbarHitAtPoint(
+    tree: *const widget.Tree,
+    x: f32,
+    y: f32,
+    theme: style.Theme,
+) ?ScrollbarHit {
+    const target = hittest.hitTestKind(tree, x, y, .scroll_area) orelse return null;
+    if (verticalScrollbarMetrics(tree, target, theme)) |metrics| {
+        if (hittest.pointInRect(x, y, metrics.track)) return .{ .handle = target, .metrics = metrics };
+    }
+    if (horizontalScrollbarMetrics(tree, target, theme)) |metrics| {
+        if (hittest.pointInRect(x, y, metrics.track)) return .{ .handle = target, .metrics = metrics };
+    }
+    return null;
 }
 
 fn scrollbarTargetAtPoint(
@@ -1031,17 +1125,20 @@ fn scrollbarTargetAtPoint(
     y: f32,
     theme: style.Theme,
 ) ?widget.NodeHandle {
-    const target = hittest.hitTestKind(tree, x, y, .scroll_area) orelse return null;
-    const metrics = verticalScrollbarMetrics(tree, target, theme) orelse return null;
-    if (!hittest.pointInRect(x, y, metrics.track)) return null;
-    return target;
+    return if (scrollbarHitAtPoint(tree, x, y, theme)) |hit| hit.handle else null;
 }
 
-fn scrollPositionForTrackPoint(metrics: ScrollbarMetrics, y: f32) f32 {
-    const usable = metrics.track.h - metrics.thumb.h;
-    if (usable <= 0 or metrics.max_scroll_y <= 0) return 0;
-    const t = std.math.clamp((y - metrics.track.y - metrics.thumb.h * 0.5) / usable, 0, 1);
-    return metrics.max_scroll_y * t;
+fn scrollPositionForTrackPoint(metrics: ScrollbarMetrics, x: f32, y: f32) f32 {
+    const usable = switch (metrics.axis) {
+        .vertical => metrics.track.h - metrics.thumb.h,
+        .horizontal => metrics.track.w - metrics.thumb.w,
+    };
+    if (usable <= 0 or metrics.max_scroll <= 0) return 0;
+    const t = switch (metrics.axis) {
+        .vertical => std.math.clamp((y - metrics.track.y - metrics.thumb.h * 0.5) / usable, 0, 1),
+        .horizontal => std.math.clamp((x - metrics.track.x - metrics.thumb.w * 0.5) / usable, 0, 1),
+    };
+    return metrics.max_scroll * t;
 }
 
 fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
@@ -1100,19 +1197,31 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
                 mouse.drag_origin_value = tree.getConst(t).kind.splitter.ratio;
             },
             .scroll_area => {
-                if (verticalScrollbarMetrics(tree, t, theme)) |metrics| {
-                    if (hittest.pointInRect(mouse.x, mouse.y, metrics.track)) {
-                        if (!hittest.pointInRect(mouse.x, mouse.y, metrics.thumb)) {
-                            const next = scrollPositionForTrackPoint(metrics, mouse.y);
-                            if (@abs(next - tree.getConst(t).kind.scroll_area.scroll_y) > 0.01) {
-                                tree.get(t).kind.scroll_area.scroll_y = next;
+                if (scrollbarHitAtPoint(tree, mouse.x, mouse.y, theme)) |hit| {
+                    if (hit.handle.eql(t)) {
+                        if (!hittest.pointInRect(mouse.x, mouse.y, hit.metrics.thumb)) {
+                            const next = scrollPositionForTrackPoint(hit.metrics, mouse.x, mouse.y);
+                            const scroll_area = &tree.get(t).kind.scroll_area;
+                            const current = switch (hit.metrics.axis) {
+                                .vertical => scroll_area.scroll_y,
+                                .horizontal => scroll_area.scroll_x,
+                            };
+                            if (@abs(next - current) > 0.01) {
+                                switch (hit.metrics.axis) {
+                                    .vertical => scroll_area.scroll_y = next,
+                                    .horizontal => scroll_area.scroll_x = next,
+                                }
                                 mouse.layout_changed = true;
                             }
                         }
                         mouse.drag_target = t;
                         mouse.drag_origin_x = mouse.x;
                         mouse.drag_origin_y = mouse.y;
-                        mouse.drag_origin_value = tree.getConst(t).kind.scroll_area.scroll_y;
+                        mouse.scroll_drag_axis = hit.metrics.axis;
+                        mouse.drag_origin_value = switch (hit.metrics.axis) {
+                            .vertical => tree.getConst(t).kind.scroll_area.scroll_y,
+                            .horizontal => tree.getConst(t).kind.scroll_area.scroll_x,
+                        };
                     }
                 }
             },
@@ -1399,19 +1508,32 @@ fn updateDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32, 
 fn updateScrollAreaDrag(
     tree: *widget.Tree,
     handle: widget.NodeHandle,
-    mouse_y: f32,
     mouse: *const MouseState,
     theme: style.Theme,
 ) bool {
-    const metrics = verticalScrollbarMetrics(tree, handle, theme) orelse return false;
-    const usable = metrics.track.h - metrics.thumb.h;
-    if (usable <= 0 or metrics.max_scroll_y <= 0) return false;
+    const metrics = scrollbarMetricsForAxis(tree, handle, mouse.scroll_drag_axis, theme) orelse return false;
+    const usable = switch (metrics.axis) {
+        .vertical => metrics.track.h - metrics.thumb.h,
+        .horizontal => metrics.track.w - metrics.thumb.w,
+    };
+    if (usable <= 0 or metrics.max_scroll <= 0) return false;
 
-    const delta_scroll = (mouse_y - mouse.drag_origin_y) * (metrics.max_scroll_y / usable);
-    const next = std.math.clamp(mouse.drag_origin_value + delta_scroll, 0, metrics.max_scroll_y);
+    const delta_px = switch (metrics.axis) {
+        .vertical => mouse.y - mouse.drag_origin_y,
+        .horizontal => mouse.x - mouse.drag_origin_x,
+    };
+    const delta_scroll = delta_px * (metrics.max_scroll / usable);
+    const next = std.math.clamp(mouse.drag_origin_value + delta_scroll, 0, metrics.max_scroll);
     const node = tree.get(handle);
-    if (@abs(next - node.kind.scroll_area.scroll_y) <= 0.01) return false;
-    node.kind.scroll_area.scroll_y = next;
+    const current = switch (metrics.axis) {
+        .vertical => node.kind.scroll_area.scroll_y,
+        .horizontal => node.kind.scroll_area.scroll_x,
+    };
+    if (@abs(next - current) <= 0.01) return false;
+    switch (metrics.axis) {
+        .vertical => node.kind.scroll_area.scroll_y = next,
+        .horizontal => node.kind.scroll_area.scroll_x = next,
+    }
     return true;
 }
 
@@ -1520,11 +1642,12 @@ fn syncPopupMenuHover(tree: *widget.Tree, popup: widget.NodeHandle, hovered: wid
 /// Uses children's layout rects from the previous frame.
 fn clampScroll(tree: *widget.Tree, handle: widget.NodeHandle) void {
     const node = tree.get(handle);
+    const scroll = node.kind.scroll_area;
     const viewport = node.layout_rect;
-    const extent = contentExtentForAppliedScroll(tree, handle, node.kind.scroll_area.scroll_x, node.kind.scroll_area.scroll_y);
+    const extent = contentExtentForAppliedScroll(tree, handle, scroll.effectiveScrollX(), scroll.effectiveScrollY());
 
-    const max_x = @max(extent.w - viewport.w, 0);
-    const max_y = @max(extent.h - viewport.h, 0);
+    const max_x = if (scroll.allow_horizontal_scroll) @max(extent.w - viewport.w, 0) else 0;
+    const max_y = if (scroll.allow_vertical_scroll) @max(extent.h - viewport.h, 0) else 0;
 
     node.kind.scroll_area.scroll_x = std.math.clamp(node.kind.scroll_area.scroll_x, 0, max_x);
     node.kind.scroll_area.scroll_y = std.math.clamp(node.kind.scroll_area.scroll_y, 0, max_y);
@@ -1538,7 +1661,7 @@ fn contentExtent(tree: *const widget.Tree, parent: widget.NodeHandle) struct { w
         parent_node.kind.scroll_area
     else
         widget.WidgetKind.ScrollArea{};
-    return contentExtentForAppliedScroll(tree, parent, scroll.scroll_x, scroll.scroll_y);
+    return contentExtentForAppliedScroll(tree, parent, scroll.effectiveScrollX(), scroll.effectiveScrollY());
 }
 
 fn contentExtentForAppliedScroll(
@@ -2984,6 +3107,42 @@ test "scroll area responds to mouse scroll" {
     try std.testing.expectApproxEqAbs(@as(f32, 30), tree.getConst(scroll).kind.scroll_area.scroll_y, 0.01);
 }
 
+test "shift mouse wheel scrolls horizontally" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{} });
+    const child = try tree.addChild(scroll, .{ .text = .{ .content = "wide content" } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 200 };
+    tree.get(child).layout_rect = .{ .x = 0, .y = 0, .w = 600, .h = 200 };
+
+    var mouse = MouseState{ .x = 150, .y = 100, .shift_down = true };
+
+    process(&tree, &.{.{ .mouse_scroll = .{ .dx = 0, .dy = 45 } }}, &mouse, style.Theme.default);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 45), tree.getConst(scroll).kind.scroll_area.scroll_x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(scroll).kind.scroll_area.scroll_y, 0.01);
+}
+
+test "disabled horizontal scroll ignores shift mouse wheel" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{ .allow_horizontal_scroll = false } });
+    const child = try tree.addChild(scroll, .{ .text = .{ .content = "wide content" } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 200 };
+    tree.get(child).layout_rect = .{ .x = 0, .y = 0, .w = 600, .h = 200 };
+
+    var mouse = MouseState{ .x = 150, .y = 100, .shift_down = true };
+
+    process(&tree, &.{.{ .mouse_scroll = .{ .dx = 0, .dy = 45 } }}, &mouse, style.Theme.default);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(scroll).kind.scroll_area.scroll_x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), tree.getConst(scroll).kind.scroll_area.scroll_y, 0.01);
+}
+
 test "scroll clamped to content bounds" {
     const allocator = std.testing.allocator;
     var tree = widget.Tree.init(allocator);
@@ -3083,6 +3242,53 @@ test "scrollbar thumb drag updates scroll position" {
     }, &mouse, theme);
 
     try std.testing.expect(tree.getConst(scroll).kind.scroll_area.scroll_y > 0);
+}
+
+test "horizontal scrollbar track click jumps scroll position" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{} });
+    const child = try tree.addChild(scroll, .{ .spacer = .{ .width = 300, .height = 80 } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 120, .h = 80 };
+    tree.get(child).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 80 };
+
+    const theme = style.Theme.default;
+    const metrics = horizontalScrollbarMetrics(&tree, scroll, theme).?;
+    var mouse = MouseState{};
+
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = metrics.track.x + metrics.track.w - 4, .y = metrics.track.y + metrics.track.h * 0.5 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = metrics.track.x + metrics.track.w - 4, .y = metrics.track.y + metrics.track.h * 0.5 } },
+    }, &mouse, theme);
+
+    try std.testing.expect(tree.getConst(scroll).kind.scroll_area.scroll_x > 0);
+}
+
+test "horizontal scrollbar thumb drag updates scroll position" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{} });
+    const child = try tree.addChild(scroll, .{ .spacer = .{ .width = 300, .height = 80 } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 120, .h = 80 };
+    tree.get(child).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 80 };
+
+    const theme = style.Theme.default;
+    const metrics = horizontalScrollbarMetrics(&tree, scroll, theme).?;
+    const thumb_center_x = metrics.thumb.x + metrics.thumb.w * 0.5;
+    const thumb_center_y = metrics.thumb.y + metrics.thumb.h * 0.5;
+    var mouse = MouseState{};
+
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = thumb_center_x, .y = thumb_center_y } },
+        .{ .mouse_move = .{ .x = thumb_center_x + 20, .y = thumb_center_y } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = thumb_center_x + 20, .y = thumb_center_y } },
+    }, &mouse, theme);
+
+    try std.testing.expect(tree.getConst(scroll).kind.scroll_area.scroll_x > 0);
 }
 
 test "tab cycles focus through focusable widgets" {

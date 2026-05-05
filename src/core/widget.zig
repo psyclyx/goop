@@ -501,6 +501,16 @@ pub const WidgetKind = union(enum) {
     pub const ScrollArea = struct {
         scroll_x: f32 = 0,
         scroll_y: f32 = 0,
+        allow_horizontal_scroll: bool = true,
+        allow_vertical_scroll: bool = true,
+
+        pub fn effectiveScrollX(self: ScrollArea) f32 {
+            return if (self.allow_horizontal_scroll) self.scroll_x else 0;
+        }
+
+        pub fn effectiveScrollY(self: ScrollArea) f32 {
+            return if (self.allow_vertical_scroll) self.scroll_y else 0;
+        }
     };
 
     pub const Spacer = struct {

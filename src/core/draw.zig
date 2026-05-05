@@ -26,6 +26,7 @@ pub const TextAlign = enum {
 
 pub const TextOverflow = enum {
     visible,
+    wrap,
     clip,
     ellipsis,
 };
@@ -439,9 +440,158 @@ fn emitText(
     resolved: style.ResolvedStyle,
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
-    _: ?*const layout.TextMeasureCtx,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    try appendTextCommand(commands, allocator, paintRect(node.layout_rect), txt.content, resolved.fg, resolved.font_size, .start, txt.overflow);
+    const bounds = paintRect(node.layout_rect);
+    if (txt.overflow == .wrap) {
+        try appendWrappedTextCommands(commands, allocator, bounds, txt.content, resolved.fg, resolved.font_size, text_ctx);
+    } else {
+        try appendTextCommand(commands, allocator, bounds, txt.content, resolved.fg, resolved.font_size, .start, txt.overflow);
+    }
+}
+
+fn appendWrappedTextCommands(
+    commands: *std.ArrayListUnmanaged(PaintCommand),
+    allocator: std.mem.Allocator,
+    bounds: Rect,
+    text: []const u8,
+    color: style.Color,
+    font_size: f32,
+    text_ctx: ?*const layout.TextMeasureCtx,
+) !void {
+    if (text.len == 0) return;
+    if (bounds.w <= 0.01) {
+        try appendTextCommand(commands, allocator, bounds, text, color, font_size, .start, .visible);
+        return;
+    }
+
+    const metrics = layout.textMetrics(font_size, text_ctx);
+    const line_h = @max(metrics.height, font_size);
+    var y = bounds.y;
+    var start: usize = 0;
+    while (start <= text.len) {
+        if (wrappedTextPastCull(y)) return;
+        const end = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
+        y = try appendWrappedParagraph(commands, allocator, bounds, y, line_h, text[start..end], color, font_size, text_ctx);
+        if (end == text.len) break;
+        if (end == start) y += line_h;
+        start = end + 1;
+    }
+}
+
+fn appendWrappedParagraph(
+    commands: *std.ArrayListUnmanaged(PaintCommand),
+    allocator: std.mem.Allocator,
+    bounds: Rect,
+    start_y: f32,
+    line_h: f32,
+    text: []const u8,
+    color: style.Color,
+    font_size: f32,
+    text_ctx: ?*const layout.TextMeasureCtx,
+) !f32 {
+    if (text.len == 0) return start_y;
+    var y = start_y;
+    var line_start: usize = 0;
+    var line_end: usize = 0;
+    var wrap_end: ?usize = null;
+    const wrap_width = bounds.w + @max(font_size * 0.25, 1);
+    const full_width = layout.measureTextDimensions(text, font_size, text_ctx).width;
+    if (full_width <= wrap_width) {
+        const trimmed_end = trimTrailingWhitespace(text);
+        if (trimmed_end > 0) {
+            try appendWrappedLineCommand(commands, allocator, bounds, y, line_h, text[0..trimmed_end], color, font_size);
+        }
+        return y + line_h;
+    }
+
+    var view = std.unicode.Utf8View.init(text) catch {
+        try appendWrappedLineCommand(commands, allocator, bounds, y, line_h, text, color, font_size);
+        return y + line_h;
+    };
+    var it = view.iterator();
+    while (it.nextCodepointSlice()) |slice| {
+        const offset = @intFromPtr(slice.ptr) - @intFromPtr(text.ptr);
+        const end = offset + slice.len;
+        const codepoint = std.unicode.utf8Decode(slice) catch 0;
+        const candidate = text[line_start..end];
+        const candidate_width = layout.measureTextDimensions(candidate, font_size, text_ctx).width;
+        if (candidate_width <= wrap_width or line_start == offset) {
+            line_end = end;
+            if (isTextWrapBoundary(codepoint)) wrap_end = end;
+            continue;
+        }
+
+        const chosen_end = wrap_end orelse if (isTextWrapBoundary(codepoint)) offset else {
+            line_end = end;
+            continue;
+        };
+        const trimmed_end = trimTrailingWhitespace(text[line_start..chosen_end]) + line_start;
+        const emitted_visible_line = trimmed_end > line_start;
+        if (trimmed_end > line_start) {
+            try appendWrappedLineCommand(commands, allocator, bounds, y, line_h, text[line_start..trimmed_end], color, font_size);
+            y += line_h;
+            if (wrappedTextPastCull(y)) return y;
+        }
+
+        line_start = if (emitted_visible_line) skipSoftWrapWhitespace(text, chosen_end) else chosen_end;
+        if (line_start >= end) {
+            line_end = line_start;
+            wrap_end = null;
+            continue;
+        }
+
+        line_end = end;
+        wrap_end = if (isTextWrapBoundary(codepoint)) end else null;
+    }
+
+    const trimmed_end = trimTrailingWhitespace(text[line_start..line_end]) + line_start;
+    if (trimmed_end > line_start) {
+        try appendWrappedLineCommand(commands, allocator, bounds, y, line_h, text[line_start..trimmed_end], color, font_size);
+        y += line_h;
+    }
+    return y;
+}
+
+fn appendWrappedLineCommand(
+    commands: *std.ArrayListUnmanaged(PaintCommand),
+    allocator: std.mem.Allocator,
+    bounds: Rect,
+    y: f32,
+    line_h: f32,
+    text: []const u8,
+    color: style.Color,
+    font_size: f32,
+) !void {
+    const line_bounds = Rect{ .x = bounds.x, .y = y, .w = bounds.w, .h = line_h };
+    if (active_paint_cull_rect) |cull_rect| {
+        if (!rectsIntersect(line_bounds, cull_rect)) return;
+    }
+    try appendTextCommand(commands, allocator, line_bounds, text, color, font_size, .start, .clip);
+}
+
+fn wrappedTextPastCull(y: f32) bool {
+    const cull_rect = active_paint_cull_rect orelse return false;
+    return y >= cull_rect.y + cull_rect.h;
+}
+
+fn isTextWrapBoundary(codepoint: u21) bool {
+    return switch (codepoint) {
+        ' ', '\t', '/', '\\', '-', '_', '.', ',' => true,
+        else => false,
+    };
+}
+
+fn trimTrailingWhitespace(text: []const u8) usize {
+    var end = text.len;
+    while (end > 0 and std.ascii.isWhitespace(text[end - 1])) end -= 1;
+    return end;
+}
+
+fn skipSoftWrapWhitespace(text: []const u8, start: usize) usize {
+    var index = start;
+    while (index < text.len and std.ascii.isWhitespace(text[index])) index += 1;
+    return index;
 }
 
 fn emitButton(
@@ -1681,26 +1831,25 @@ fn emitScrollArea(
     // Push clip
     try commands.append(allocator, .{ .clip = .{ .bounds = active_paint_cull_rect orelse rect } });
 
-    const previous_offset = active_paint_offset;
-    active_paint_offset = .{
-        .x = previous_offset.x - node.kind.scroll_area.scroll_x,
-        .y = previous_offset.y - node.kind.scroll_area.scroll_y,
-    };
-    defer active_paint_offset = previous_offset;
     try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     // Pop clip
     try commands.append(allocator, .{ .clip = .{ .bounds = null } });
 
     const extent = scrollContentExtent(tree, handle);
-    if (extent.h > rect.h + 0.01) {
+    const scroll = node.kind.scroll_area;
+    const has_vertical_scrollbar = scroll.allow_vertical_scroll and extent.h > rect.h + 0.01;
+    const has_horizontal_scrollbar = scroll.allow_horizontal_scroll and extent.w > rect.w + 0.01;
+
+    if (has_vertical_scrollbar) {
         const scrollbar_inset: f32 = 2;
         const track_w = @max(resolved.thumb_width * 0.5, 6);
+        const horizontal_reserve = if (has_horizontal_scrollbar) track_w + scrollbar_inset else 0;
         const track = Rect{
             .x = rect.x + rect.w - track_w - scrollbar_inset,
             .y = rect.y + scrollbar_inset,
             .w = track_w,
-            .h = @max(rect.h - scrollbar_inset * 2, 0),
+            .h = @max(rect.h - scrollbar_inset * 2 - horizontal_reserve, 0),
         };
         const thumb_h = @max(track.h * (rect.h / extent.h), @min(resolved.thumb_width * 1.5, track.h));
         const max_scroll = @max(extent.h - rect.h, 0);
@@ -1722,6 +1871,37 @@ fn emitScrollArea(
             .corner_radius = track.w * 0.5,
         } });
     }
+
+    if (has_horizontal_scrollbar) {
+        const scrollbar_inset: f32 = 2;
+        const track_h = @max(resolved.thumb_width * 0.5, 6);
+        const vertical_reserve = if (has_vertical_scrollbar) track_h + scrollbar_inset else 0;
+        const track = Rect{
+            .x = rect.x + scrollbar_inset,
+            .y = rect.y + rect.h - track_h - scrollbar_inset,
+            .w = @max(rect.w - scrollbar_inset * 2 - vertical_reserve, 0),
+            .h = track_h,
+        };
+        const thumb_w = @max(track.w * (rect.w / extent.w), @min(resolved.thumb_width * 1.5, track.w));
+        const max_scroll = @max(extent.w - rect.w, 0);
+        const thumb_t = if (max_scroll > 0) std.math.clamp(node.kind.scroll_area.scroll_x / max_scroll, 0, 1) else 0;
+        const thumb_x = track.x + (track.w - thumb_w) * thumb_t;
+
+        try commands.append(allocator, .{ .box = .{
+            .bounds = track,
+            .color = style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 64),
+            .border_color = style.Color.rgba(0, 0, 0, 0),
+            .border_width = 0,
+            .corner_radius = track.h * 0.5,
+        } });
+        try commands.append(allocator, .{ .box = .{
+            .bounds = .{ .x = thumb_x, .y = track.y, .w = thumb_w, .h = track.h },
+            .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 180),
+            .border_color = style.Color.rgba(0, 0, 0, 0),
+            .border_width = 0,
+            .corner_radius = track.h * 0.5,
+        } });
+    }
 }
 
 fn scrollContentExtent(tree: *const widget.Tree, handle: widget.NodeHandle) struct { w: f32, h: f32 } {
@@ -1735,8 +1915,8 @@ fn scrollContentExtent(tree: *const widget.Tree, handle: widget.NodeHandle) stru
     while (iter.next()) |child| {
         if (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip) continue;
         const r = tree.getConst(child).layout_rect;
-        max_x = @max(max_x, r.x + scroll.scroll_x + r.w);
-        max_y = @max(max_y, r.y + scroll.scroll_y + r.h);
+        max_x = @max(max_x, r.x + scroll.effectiveScrollX() + r.w);
+        max_y = @max(max_y, r.y + scroll.effectiveScrollY() + r.h);
     }
 
     return .{
@@ -3442,7 +3622,7 @@ test "scroll area emits clip commands" {
     try std.testing.expect(dl.commands[3].clip.bounds == null);
 }
 
-test "scroll area translates child paint commands by scroll offset" {
+test "scroll area paints child rects at their laid out scroll position" {
     const allocator = std.testing.allocator;
 
     var tree = widget.Tree.init(allocator);
@@ -3451,7 +3631,7 @@ test "scroll area translates child paint commands by scroll offset" {
     const scroll = try tree.addRoot(.{ .scroll_area = .{ .scroll_y = 20 } });
     const child = try tree.addChild(scroll, .{ .text = .{ .content = "inside" } });
     tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 80 };
-    tree.get(child).layout_rect = .{ .x = 8, .y = 30, .w = 40, .h = 14 };
+    tree.get(child).layout_rect = .{ .x = 8, .y = 10, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
     var dl = try generate(&tree, theme, allocator, null);
@@ -3539,6 +3719,125 @@ test "scroll area emits scrollbar thumb when content overflows" {
     try std.testing.expect(dl.commands[2] == .clip);
     try std.testing.expect(dl.commands[3] == .rect);
     try std.testing.expect(dl.commands[4] == .rect);
+}
+
+test "scroll area emits horizontal scrollbar thumb when content overflows width" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{ .scroll_x = 40 } });
+    const child = try tree.addChild(scroll, .{ .spacer = .{ .width = 300, .height = 40 } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 120, .h = 80 };
+    tree.get(child).layout_rect = .{ .x = -34, .y = 6, .w = 300, .h = 40 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 5), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[1] == .clip);
+    try std.testing.expect(dl.commands[2] == .clip);
+    try std.testing.expect(dl.commands[3] == .rect);
+    try std.testing.expect(dl.commands[4] == .rect);
+    try std.testing.expect(dl.commands[3].rect.bounds.w > dl.commands[3].rect.bounds.h);
+    try std.testing.expect(dl.commands[4].rect.bounds.w > dl.commands[4].rect.bounds.h);
+}
+
+test "scroll area omits disabled horizontal scrollbar when content overflows width" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{ .allow_horizontal_scroll = false } });
+    const child = try tree.addChild(scroll, .{ .spacer = .{ .width = 300, .height = 40 } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 120, .h = 80 };
+    tree.get(child).layout_rect = .{ .x = 6, .y = 6, .w = 300, .h = 40 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
+    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[1] == .clip);
+    try std.testing.expect(dl.commands[2] == .clip);
+}
+
+test "wrapped text paint commands wrap and preserve newlines" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const text = try tree.addRoot(.{ .text = .{ .content = "alpha beta\ngamma", .overflow = .wrap } });
+    tree.get(text).layout_rect = .{ .x = 0, .y = 0, .w = 50, .h = 80 };
+    tree.get(text).style_override = .{ .font_size = 16 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
+    try std.testing.expectEqualStrings("alpha", dl.commands[0].text.text);
+    try std.testing.expectEqualStrings("beta", dl.commands[1].text.text);
+    try std.testing.expectEqualStrings("gamma", dl.commands[2].text.text);
+}
+
+test "wrapped text paint commands preserve leading whitespace" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const text = try tree.addRoot(.{ .text = .{ .content = "  alpha\n\tbeta", .overflow = .wrap } });
+    tree.get(text).layout_rect = .{ .x = 0, .y = 0, .w = 200, .h = 80 };
+    tree.get(text).style_override = .{ .font_size = 16 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
+    try std.testing.expectEqualStrings("  alpha", dl.commands[0].text.text);
+    try std.testing.expectEqualStrings("\tbeta", dl.commands[1].text.text);
+}
+
+test "wrapped text culls lines outside scroll viewport" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{} });
+    const text = try tree.addChild(scroll, .{ .text = .{ .content = "before\nvisible-a\nvisible-b\nafter", .overflow = .wrap } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 180, .h = 20 };
+    tree.get(text).layout_rect = .{ .x = 4, .y = -10, .w = 140, .h = 40 };
+    tree.get(text).style_override = .{ .font_size = 10 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    var found_before = false;
+    var found_visible_a = false;
+    var found_visible_b = false;
+    var found_after = false;
+    for (dl.commands) |command| {
+        if (command != .text) continue;
+        if (std.mem.eql(u8, command.text.text, "before")) found_before = true;
+        if (std.mem.eql(u8, command.text.text, "visible-a")) found_visible_a = true;
+        if (std.mem.eql(u8, command.text.text, "visible-b")) found_visible_b = true;
+        if (std.mem.eql(u8, command.text.text, "after")) found_after = true;
+    }
+
+    try std.testing.expect(!found_before);
+    try std.testing.expect(found_visible_a);
+    try std.testing.expect(found_visible_b);
+    try std.testing.expect(!found_after);
 }
 
 test "text input emits bg and text" {

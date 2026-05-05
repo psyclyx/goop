@@ -1562,6 +1562,10 @@ Clay__MeasuredWord *Clay__AddMeasuredWord(Clay__MeasuredWord word, Clay__Measure
     }
 }
 
+bool Clay__CharIsTextWrapBoundary(char current) {
+    return current == ' ' || current == '\t' || current == '/' || current == '\\' || current == '-' || current == '_' || current == '.' || current == ',';
+}
+
 Clay__MeasureTextCacheItem *Clay__MeasureTextCached(Clay_String *text, Clay_TextElementConfig *config) {
     Clay_Context* context = Clay_GetCurrentContext();
     #ifndef CLAY_WASM
@@ -1655,17 +1659,19 @@ Clay__MeasureTextCacheItem *Clay__MeasureTextCached(Clay_String *text, Clay_Text
             return &Clay__MeasureTextCacheItem_DEFAULT;
         }
         char current = text->chars[end];
-        if (current == ' ' || current == '\n') {
+        if (Clay__CharIsTextWrapBoundary(current) || current == '\n') {
             int32_t length = end - start;
-            Clay_Dimensions dimensions = Clay__MeasureText(CLAY__INIT(Clay_StringSlice) { .length = length, .chars = &text->chars[start], .baseChars = text->chars }, config, context->measureTextUserData);
-            measured->minWidth = CLAY__MAX(dimensions.width, measured->minWidth);
-            measuredHeight = CLAY__MAX(measuredHeight, dimensions.height);
-            if (current == ' ') {
-                dimensions.width += spaceWidth;
+            if (Clay__CharIsTextWrapBoundary(current)) {
+                Clay_Dimensions dimensions = Clay__MeasureText(CLAY__INIT(Clay_StringSlice) { .length = length + 1, .chars = &text->chars[start], .baseChars = text->chars }, config, context->measureTextUserData);
+                measured->minWidth = CLAY__MAX(dimensions.width, measured->minWidth);
+                measuredHeight = CLAY__MAX(measuredHeight, dimensions.height);
                 previousWord = Clay__AddMeasuredWord(CLAY__INIT(Clay__MeasuredWord) { .startOffset = start, .length = length + 1, .width = dimensions.width, .next = -1 }, previousWord);
                 lineWidth += dimensions.width;
             }
             if (current == '\n') {
+                Clay_Dimensions dimensions = Clay__MeasureText(CLAY__INIT(Clay_StringSlice) { .length = length, .chars = &text->chars[start], .baseChars = text->chars }, config, context->measureTextUserData);
+                measured->minWidth = CLAY__MAX(dimensions.width, measured->minWidth);
+                measuredHeight = CLAY__MAX(measuredHeight, dimensions.height);
                 if (length > 0) {
                     previousWord = Clay__AddMeasuredWord(CLAY__INIT(Clay__MeasuredWord) { .startOffset = start, .length = length, .width = dimensions.width, .next = -1 }, previousWord);
                 }
@@ -2524,7 +2530,7 @@ void Clay__CalculateFinalLayout(void) {
             // measuredWord->length == 0 means a newline character
             else if (measuredWord->length == 0 || lineWidth + measuredWord->width > containerElement->dimensions.width) {
                 // Wrapped text lines list has overflowed, just render out the line
-                bool finalCharIsSpace = textElementData->text.chars[lineStartOffset + lineLengthChars - 1] == ' ';
+                bool finalCharIsSpace = textElementData->text.chars[lineStartOffset + lineLengthChars - 1] == ' ' || textElementData->text.chars[lineStartOffset + lineLengthChars - 1] == '\t';
                 Clay__WrappedTextLineArray_Add(&context->wrappedTextLines, CLAY__INIT(Clay__WrappedTextLine) { { lineWidth + (finalCharIsSpace ? -spaceWidth : 0), lineHeight }, { .length = lineLengthChars + (finalCharIsSpace ? -1 : 0), .chars = &textElementData->text.chars[lineStartOffset] } });
                 textElementData->wrappedLines.length++;
                 if (lineLengthChars == 0 || measuredWord->length == 0) {

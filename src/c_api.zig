@@ -311,6 +311,8 @@ const CSliderWidget = extern struct {
 const CScrollAreaWidget = extern struct {
     scroll_x: f32 = 0,
     scroll_y: f32 = 0,
+    disable_horizontal_scroll: bool = false,
+    disable_vertical_scroll: bool = false,
 };
 
 const CTextInputWidget = extern struct {
@@ -482,6 +484,7 @@ const CTextOverflow = enum(c_int) {
     visible = 0,
     clip = 1,
     ellipsis = 2,
+    wrap = 3,
 };
 
 const CIconKind = enum(c_int) {
@@ -941,6 +944,8 @@ fn buildWidgetKind(desc: CWidget) widget.WidgetKind {
         .scroll_area => .{ .scroll_area = .{
             .scroll_x = desc.data.scroll_area.scroll_x,
             .scroll_y = desc.data.scroll_area.scroll_y,
+            .allow_horizontal_scroll = !desc.data.scroll_area.disable_horizontal_scroll,
+            .allow_vertical_scroll = !desc.data.scroll_area.disable_vertical_scroll,
         } },
         .text_input => .{ .text_input = buildTextInput(desc.data.text_input) },
         .spacer => .{ .spacer = .{
@@ -1116,6 +1121,8 @@ fn updateWidgetKind(kind: *widget.WidgetKind, desc: CWidget) bool {
             if (desc.kind != .scroll_area) return false;
             scroll_area.scroll_x = desc.data.scroll_area.scroll_x;
             scroll_area.scroll_y = desc.data.scroll_area.scroll_y;
+            scroll_area.allow_horizontal_scroll = !desc.data.scroll_area.disable_horizontal_scroll;
+            scroll_area.allow_vertical_scroll = !desc.data.scroll_area.disable_vertical_scroll;
         },
         .text_input => |*text_input| {
             if (desc.kind != .text_input) return false;
@@ -1210,6 +1217,7 @@ fn convertDrawCommand(cmd: draw.DrawCommand) CDrawCommand {
                 },
                 .overflow = switch (text_cmd.overflow) {
                     .visible => .visible,
+                    .wrap => .wrap,
                     .clip => .clip,
                     .ellipsis => .ellipsis,
                 },

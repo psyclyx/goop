@@ -196,8 +196,8 @@ fn childHitState(node: *const widget.Node, state: HitState) HitState {
     const scroll = node.kind.scroll_area;
     const node_rect = translatedRect(node.layout_rect, state);
     return .{
-        .offset_x = state.offset_x - scroll.scroll_x,
-        .offset_y = state.offset_y - scroll.scroll_y,
+        .offset_x = state.offset_x - scroll.effectiveScrollX(),
+        .offset_y = state.offset_y - scroll.effectiveScrollY(),
         .clip = if (state.clip) |clip| intersectRects(clip, node_rect) else node_rect,
     };
 }
