@@ -180,6 +180,7 @@ const BrowserCommand = enum {
     toggle_status_bar,
     view_list,
     view_grid,
+    toggle_sort_directories,
     about,
 };
 
@@ -213,8 +214,8 @@ const BrowserEntry = struct {
         return switch (self.kind) {
             .directory => "Directory",
             .symlink => switch (self.target_kind orelse .other) {
-                .directory => "Symbolic link to folder",
-                .file => "Symbolic link to file",
+                .directory => "Symbolic link to Directory",
+                .file => "Symbolic link to File",
                 .symlink => "Symbolic link",
                 .other => if (self.target_path != null) "Broken symbolic link" else "Symbolic link",
             },
@@ -387,6 +388,7 @@ const State = struct {
     selection_anchor_index: ?usize = null,
     sort_column: BrowserSortColumn = .name,
     sort_direction: BrowserSortDirection = .ascending,
+    sort_directories_together: bool = true,
     view_mode: BrowserViewMode = .list,
     show_sidebar: bool = true,
     show_preview: bool = true,
@@ -396,6 +398,7 @@ const State = struct {
     detail_ratio: f32 = 0.72,
     preview_ratio: f32 = 0.58,
     table_column_weights: [4]f32 = .{ 0.50, 0.22, 0.16, 0.12 },
+    sidebar_scroll_x: f32 = 0,
     sidebar_scroll_y: f32 = 0,
     file_panel_scroll_y: f32 = 0,
     file_panel_viewport_width: f32 = 0,
@@ -467,11 +470,20 @@ const State = struct {
     menu_view_status_bar: ?goop.NodeHandle = null,
     menu_view_list: ?goop.NodeHandle = null,
     menu_view_grid: ?goop.NodeHandle = null,
+    menu_view_sort_directories: ?goop.NodeHandle = null,
     menu_go_back: ?goop.NodeHandle = null,
     menu_go_forward: ?goop.NodeHandle = null,
     menu_go_up: ?goop.NodeHandle = null,
     menu_go_home: ?goop.NodeHandle = null,
     menu_help_about: ?goop.NodeHandle = null,
+    context_popup: ?goop.NodeHandle = null,
+    context_open: ?goop.NodeHandle = null,
+    context_copy_path: ?goop.NodeHandle = null,
+    context_open_link_target: ?goop.NodeHandle = null,
+    context_visible: bool = false,
+    context_x: f32 = 0,
+    context_y: f32 = 0,
+    context_target_path: ?[]u8 = null,
     row_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
     name_cell_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
     grid_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
@@ -2088,11 +2100,16 @@ fn clearUiTracking(state: *State) void {
     state.menu_view_status_bar = null;
     state.menu_view_list = null;
     state.menu_view_grid = null;
+    state.menu_view_sort_directories = null;
     state.menu_go_back = null;
     state.menu_go_forward = null;
     state.menu_go_up = null;
     state.menu_go_home = null;
     state.menu_help_about = null;
+    state.context_popup = null;
+    state.context_open = null;
+    state.context_copy_path = null;
+    state.context_open_link_target = null;
     clearAssetTracking(state);
     state.place_handles.clearRetainingCapacity();
     state.folder_tree_handles.clearRetainingCapacity();
@@ -2129,6 +2146,7 @@ fn deinitBrowserState(state: *State) void {
     state.current_dir = &.{};
     freeOptionalOwnedSlice(&state.selected_path);
     freeOptionalOwnedSlice(&state.last_click_path);
+    freeOptionalOwnedSlice(&state.context_target_path);
 }
 
 fn trackUiString(state: *State, text: []u8) ![]const u8 {
@@ -2575,22 +2593,6 @@ fn sortDirectionLabel(direction: BrowserSortDirection) []const u8 {
     };
 }
 
-fn entryIconText(entry: BrowserEntry) []const u8 {
-    return switch (entry.kind) {
-        .directory => "\u{25A3}",
-        .symlink => "\u{2197}",
-        .other => "\u{25EB}",
-        .file => "\u{25A4}",
-    };
-}
-
-fn allocEntryNameLabel(state: *State, entry: BrowserEntry) ![]const u8 {
-    return allocUiString(state, "{s} {f}", .{
-        entryIconText(entry),
-        std.unicode.fmtUtf8(entry.name),
-    });
-}
-
 fn allocAssetEntryNameText(state: *State, entry: BrowserEntry) ![]const u8 {
     return allocAssetUiString(state, "{f}", .{
         std.unicode.fmtUtf8(entry.name),
@@ -2691,7 +2693,7 @@ fn sortFieldLess(state: *const State, a: BrowserEntry, b: BrowserEntry) bool {
 }
 
 fn browserEntryLessThan(state: *const State, a: BrowserEntry, b: BrowserEntry) bool {
-    if (a.isDirectory() != b.isDirectory()) return a.isDirectory();
+    if (state.sort_directories_together and a.isDirectory() != b.isDirectory()) return a.isDirectory();
     if (sortFieldLess(state, a, b)) return true;
     if (sortFieldLess(state, b, a)) return false;
     return std.ascii.lessThanIgnoreCase(a.name, b.name);
@@ -2722,6 +2724,11 @@ fn selectedEntryExists(state: *const State, path: []const u8) bool {
 fn setSelectedPath(state: *State, path: ?[]const u8) !void {
     freeOptionalOwnedSlice(&state.selected_path);
     if (path) |value| state.selected_path = try allocator.dupe(u8, value);
+}
+
+fn setContextTargetPath(state: *State, path: ?[]const u8) !void {
+    freeOptionalOwnedSlice(&state.context_target_path);
+    if (path) |value| state.context_target_path = try allocator.dupe(u8, value);
 }
 
 fn setLastClickPath(state: *State, path: ?[]const u8) !void {
@@ -3022,6 +3029,102 @@ fn selectedSymlinkDirectoryEntry(state: *const State) ?*const BrowserEntry {
     return if (entry.isSymlinkToDirectory()) entry else null;
 }
 
+fn entryForPath(state: *const State, path: []const u8) ?*const BrowserEntry {
+    for (state.entries.items) |*entry| {
+        if (std.mem.eql(u8, entry.path, path)) return entry;
+    }
+    return null;
+}
+
+fn contextTargetEntry(state: *const State) ?*const BrowserEntry {
+    const path = state.context_target_path orelse return null;
+    return entryForPath(state, path);
+}
+
+fn contextOpenEnabled(state: *const State) bool {
+    const path = state.context_target_path orelse return false;
+    const entry = entryForPath(state, path) orelse return true;
+    return entry.canEnter();
+}
+
+fn contextCopyPathEnabled(state: *const State) bool {
+    return state.context_target_path != null;
+}
+
+fn contextOpenLinkTargetEnabled(state: *const State) bool {
+    const entry = contextTargetEntry(state) orelse return false;
+    return entry.isSymlinkToDirectory();
+}
+
+fn contextClickPosition(state: *const State, ctx: *const goop.Context) struct { x: f32, y: f32 } {
+    if (ctx.lastSecondaryClick()) |click| {
+        return .{ .x = click.x, .y = click.y };
+    }
+    return .{ .x = state.mouse_x, .y = state.mouse_y };
+}
+
+fn showContextMenuForPath(state: *State, ctx: *goop.Context, path: []const u8) !void {
+    setTopMenuPopupVisible(state, ctx, null);
+    try setContextTargetPath(state, path);
+    const position = contextClickPosition(state, ctx);
+    state.context_x = position.x;
+    state.context_y = position.y;
+    state.context_visible = true;
+    ctx.invalidate();
+}
+
+fn hideContextMenu(state: *State, ctx: *goop.Context) void {
+    state.context_visible = false;
+    if (state.context_popup) |popup| {
+        if (ctx.isAlive(popup) and ctx.tree.getConst(popup).kind == .popup) {
+            ctx.tree.get(popup).kind.popup.visible = false;
+        }
+    }
+    ctx.invalidate();
+}
+
+fn syncContextPopupVisibleFromWidget(state: *State, ctx: *const goop.Context) void {
+    const popup = state.context_popup orelse return;
+    if (!ctx.isAlive(popup) or ctx.tree.getConst(popup).kind != .popup) return;
+    state.context_visible = ctx.tree.getConst(popup).kind.popup.visible;
+}
+
+fn selectEntryForContextMenu(state: *State, entry_index: usize) !void {
+    if (entry_index >= state.entries.items.len) return;
+    const entry = state.entries.items[entry_index];
+    if (!isPathSelected(state, entry.path)) {
+        clearSelectedPaths(state);
+        try appendSelectedPathIfMissing(state, entry.path);
+    }
+    try setSelectedPath(state, entry.path);
+    state.selection_anchor_index = entry_index;
+}
+
+fn openContextTarget(state: *State) !bool {
+    const path = state.context_target_path orelse return false;
+    if (entryForPath(state, path)) |entry| {
+        if (!entry.canEnter()) return false;
+        state.status_note = null;
+        return setCurrentDirectory(state, entry.navigationPath(), true);
+    }
+    state.status_note = null;
+    return setCurrentDirectory(state, path, true);
+}
+
+fn copyContextTargetPath(state: *State) !bool {
+    const path = state.context_target_path orelse return false;
+    try state.setClipboardSelection(path);
+    state.status_note = "Copied path to clipboard.";
+    return false;
+}
+
+fn openContextLinkTarget(state: *State) !bool {
+    const entry = contextTargetEntry(state) orelse return false;
+    if (!entry.isSymlinkToDirectory()) return false;
+    state.status_note = null;
+    return setCurrentDirectory(state, entry.target_path.?, true);
+}
+
 fn browserCommandChecked(state: *const State, command: BrowserCommand) bool {
     return switch (command) {
         .toggle_sidebar => state.show_sidebar,
@@ -3030,6 +3133,7 @@ fn browserCommandChecked(state: *const State, command: BrowserCommand) bool {
         .toggle_status_bar => state.show_status_bar,
         .view_list => state.view_mode == .list,
         .view_grid => state.view_mode == .grid,
+        .toggle_sort_directories => state.sort_directories_together,
         else => false,
     };
 }
@@ -3052,6 +3156,7 @@ fn browserCommandEnabled(state: *const State, command: BrowserCommand) bool {
         .toggle_status_bar,
         .view_list,
         .view_grid,
+        .toggle_sort_directories,
         .about,
         => true,
     };
@@ -3131,6 +3236,12 @@ fn runBrowserCommand(state: *State, command: BrowserCommand) !bool {
             state.view_mode = .grid;
             return true;
         },
+        .toggle_sort_directories => {
+            state.sort_directories_together = !state.sort_directories_together;
+            sortDirectoryEntries(state);
+            syncSelectionAnchor(state);
+            return true;
+        },
         .about => {
             state.status_note = "goop files: a Wayland/EGL/snail file manager demo.";
             return false;
@@ -3190,6 +3301,7 @@ fn captureSidebarScroll(state: *State, ctx: *goop.Context) void {
     if (!ctx.isAlive(handle)) return;
     const node = ctx.tree.getConst(handle);
     if (node.kind != .scroll_area) return;
+    state.sidebar_scroll_x = node.kind.scroll_area.scroll_x;
     state.sidebar_scroll_y = node.kind.scroll_area.scroll_y;
 }
 
@@ -3420,13 +3532,6 @@ fn isDetailWrapBoundary(codepoint: u21) bool {
     };
 }
 
-fn tokenIsSkippableAtLineStart(token: []const u8) bool {
-    for (token) |byte| {
-        if (!std.ascii.isWhitespace(byte)) return false;
-    }
-    return true;
-}
-
 fn flushDetailWrappedLine(out: *std.ArrayListUnmanaged(u8), line: *std.ArrayListUnmanaged(u8)) !void {
     if (line.items.len == 0) return;
     if (out.items.len > 0) try out.append(allocator, '\n');
@@ -3464,7 +3569,6 @@ fn appendDetailWrappedToken(
     text_ctx: *const goop.TextMeasureCtx,
 ) !void {
     if (token.len == 0) return;
-    if (line.items.len == 0 and tokenIsSkippableAtLineStart(token)) return;
 
     const previous_len = line.items.len;
     try line.appendSlice(allocator, token);
@@ -3473,7 +3577,6 @@ fn appendDetailWrappedToken(
     line.items.len = previous_len;
     if (previous_len > 0) {
         try flushDetailWrappedLine(out, line);
-        if (tokenIsSkippableAtLineStart(token)) return;
     }
 
     try appendDetailForcedWrappedToken(out, line, token, max_width, font_size, text_ctx);
@@ -3697,9 +3800,9 @@ fn buildGridAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
     for (state.entries.items[window.start..window.end]) |entry| {
         const item = try ctx.tree.addChild(state.asset_grid.?, .{ .grid_item = .{
             .label = try allocAssetUiEllipsizedUtf8Lossy(state, entry.name, uiPx(state, 104), ctx.theme.font_size),
-            .icon = entryIconText(entry),
             .selected = isPathSelected(state, entry.path),
         } });
+        ctx.tree.get(item).custom_draw = true;
         ctx.tree.get(item).style_override = .{
             .bg = if (entry.isDirectory())
                 .{ .r = 243, .g = 247, .b = 255, .a = 255 }
@@ -3867,7 +3970,7 @@ fn refreshAssetViewportIfNeeded(state: *State) !bool {
 fn browserEntryIconKind(entry: BrowserEntry) goop.IconKind {
     return switch (entry.kind) {
         .directory => .folder,
-        .symlink => .symlink,
+        .symlink => if (entry.target_kind == .directory) .folder else .file,
         else => .file,
     };
 }
@@ -3876,9 +3979,13 @@ fn browserEntryIconColor(theme: goop.Theme, entry: BrowserEntry, selected: bool)
     if (selected) return theme.accent;
     return switch (entry.kind) {
         .directory => .rgb(74, 120, 201),
-        .symlink => .rgb(44, 140, 134),
+        .symlink => if (entry.target_kind == .directory) .rgb(74, 120, 201) else .rgb(118, 127, 141),
         else => .rgb(118, 127, 141),
     };
+}
+
+fn browserEntryLinkBadgeColor(theme: goop.Theme, selected: bool) goop.Color {
+    return if (selected) theme.accent else .rgb(44, 140, 134);
 }
 
 fn iconRectInTableCell(state: *const State, cell_rect: goop.draw.Rect) goop.draw.Rect {
@@ -3910,11 +4017,42 @@ fn iconRectInGridItem(ctx: *goop.Context, handle: goop.NodeHandle) goop.draw.Rec
     };
 }
 
+fn symlinkBadgeRect(base: goop.draw.Rect) goop.draw.Rect {
+    const size = @max(@min(base.w, base.h) * 0.42, 7);
+    return .{
+        .x = base.x + base.w - size * 0.82,
+        .y = base.y + base.h - size * 0.82,
+        .w = size,
+        .h = size,
+    };
+}
+
+fn appendEntryIconCommands(
+    state: *State,
+    ctx: *goop.Context,
+    entry: BrowserEntry,
+    bounds: goop.draw.Rect,
+) !void {
+    const selected = isPathSelected(state, entry.path);
+    try state.composed_paint_commands.append(allocator, .{ .icon = .{
+        .bounds = bounds,
+        .kind = browserEntryIconKind(entry),
+        .color = browserEntryIconColor(ctx.theme, entry, selected),
+    } });
+    if (entry.kind == .symlink) {
+        try state.composed_paint_commands.append(allocator, .{ .icon = .{
+            .bounds = symlinkBadgeRect(bounds),
+            .kind = .symlink,
+            .color = browserEntryLinkBadgeColor(ctx.theme, selected),
+        } });
+    }
+}
+
 fn composeFileBrowserPaintList(state: *State, base: goop.PaintList) !goop.PaintList {
     const ctx = state.ctx orelse return base;
 
     state.composed_paint_commands.clearRetainingCapacity();
-    try state.composed_paint_commands.ensureTotalCapacity(allocator, base.commands.len + state.name_cell_handles.items.len);
+    try state.composed_paint_commands.ensureTotalCapacity(allocator, base.commands.len + state.name_cell_handles.items.len * 2 + state.grid_handles.items.len * 2);
 
     for (base.commands) |command| {
         switch (command) {
@@ -3930,11 +4068,23 @@ fn composeFileBrowserPaintList(state: *State, base: goop.PaintList) !goop.PaintL
                     const entry_index = state.asset_visible_start + index;
                     if (entry_index < state.entries.items.len) {
                         const entry = state.entries.items[entry_index];
-                        try state.composed_paint_commands.append(allocator, .{ .icon = .{
-                            .bounds = iconRectInTableCell(state, custom.bounds),
-                            .kind = browserEntryIconKind(entry),
-                            .color = browserEntryIconColor(ctx.theme, entry, isPathSelected(state, entry.path)),
-                        } });
+                        try appendEntryIconCommands(state, ctx, entry, iconRectInTableCell(state, custom.bounds));
+                    }
+                    continue;
+                }
+
+                matched_index = null;
+                for (state.grid_handles.items, 0..) |handle, index| {
+                    if (handle.eql(custom.handle)) {
+                        matched_index = index;
+                        break;
+                    }
+                }
+                if (matched_index) |index| {
+                    const entry_index = state.asset_visible_start + index;
+                    if (entry_index < state.entries.items.len) {
+                        const entry = state.entries.items[entry_index];
+                        try appendEntryIconCommands(state, ctx, entry, iconRectInGridItem(ctx, custom.handle));
                     }
                     continue;
                 }
@@ -4215,6 +4365,90 @@ test "file browser formats file sizes with correct units" {
     try std.testing.expectEqualStrings("", formatSizeText(buf[0..], .symlink, 4096, .directory));
 }
 
+test "file browser can sort directories with the active field" {
+    var state = State{
+        .sort_column = .modified,
+        .sort_direction = .descending,
+        .sort_directories_together = false,
+    };
+    const older_dir_name = try allocator.dupe(u8, "older-dir");
+    defer allocator.free(older_dir_name);
+    const older_dir_path = try allocator.dupe(u8, "/tmp/older-dir");
+    defer allocator.free(older_dir_path);
+    const newer_file_name = try allocator.dupe(u8, "newer.txt");
+    defer allocator.free(newer_file_name);
+    const newer_file_path = try allocator.dupe(u8, "/tmp/newer.txt");
+    defer allocator.free(newer_file_path);
+    const older_dir = BrowserEntry{
+        .name = older_dir_name,
+        .path = older_dir_path,
+        .kind = .directory,
+        .size_bytes = 0,
+        .modified_unix = 10,
+    };
+    const newer_file = BrowserEntry{
+        .name = newer_file_name,
+        .path = newer_file_path,
+        .kind = .file,
+        .size_bytes = 0,
+        .modified_unix = 20,
+    };
+
+    try std.testing.expect(browserEntryLessThan(&state, newer_file, older_dir));
+
+    state.sort_directories_together = true;
+    try std.testing.expect(browserEntryLessThan(&state, older_dir, newer_file));
+}
+
+test "file browser directory preview separates contents onto new lines" {
+    var state = State{};
+    var buffer: std.ArrayListUnmanaged(u8) = .empty;
+    defer buffer.deinit(allocator);
+
+    const folder_name = try allocator.dupe(u8, "folder");
+    defer allocator.free(folder_name);
+    const folder_path = try allocator.dupe(u8, "/tmp/folder");
+    defer allocator.free(folder_path);
+    const file_name = try allocator.dupe(u8, "file.txt");
+    defer allocator.free(file_name);
+    const file_path = try allocator.dupe(u8, "/tmp/file.txt");
+    defer allocator.free(file_path);
+    const entries = [_]BrowserEntry{
+        .{
+            .name = folder_name,
+            .path = folder_path,
+            .kind = .directory,
+            .size_bytes = 0,
+            .modified_unix = 0,
+        },
+        .{
+            .name = file_name,
+            .path = file_path,
+            .kind = .file,
+            .size_bytes = 0,
+            .modified_unix = 0,
+        },
+    };
+
+    try appendDirectoryPreviewSummary(&state, &buffer, "/tmp", entries[0..]);
+    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "Contents:\n- folder/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\n- file.txt") != null);
+}
+
+test "file browser directory preview is not framed like file content" {
+    var state = State{};
+    defer deinitBrowserState(&state);
+
+    state.current_dir = try allocator.dupe(u8, "/tmp");
+    const preview = try allocSelectionPreview(&state);
+    try std.testing.expect(!preview.framed);
+}
+
+test "file browser detects text preview content without an extension" {
+    try std.testing.expect(bytesLookLikeTextPreview("KEY=value\n  indented\n"));
+    try std.testing.expect(!bytesLookLikeTextPreview("prefix\x00suffix"));
+}
+
 test "file browser detail wrapper inserts line breaks for long names" {
     var state = State{};
     defer deinitBrowserState(&state);
@@ -4233,6 +4467,26 @@ test "file browser detail wrapper inserts line breaks for long names" {
         detailTitleFontSizePx(&state),
     );
     try std.testing.expect(std.mem.indexOfScalar(u8, wrapped, '\n') != null);
+}
+
+test "file browser detail wrapper preserves leading whitespace" {
+    var state = State{};
+    defer deinitBrowserState(&state);
+
+    const text_measure_ctx = goop.TextMeasureCtx{
+        .measureFn = &browserTestMeasureText,
+    };
+    state.text_measure_ctx = &text_measure_ctx;
+
+    const wrapped = try wrapTextOwnedForWidth(
+        &state,
+        try allocator.dupe(u8, "first\n    second"),
+        14,
+        400,
+    );
+    defer allocator.free(wrapped);
+
+    try std.testing.expect(std.mem.indexOf(u8, wrapped, "\n    second") != null);
 }
 
 test "file browser selection detail does not resize the list at ui scale 2" {
@@ -4545,33 +4799,22 @@ fn appendPreviewPrintLine(buffer: *std.ArrayListUnmanaged(u8), comptime fmt: []c
     try appendPreviewLine(buffer, line);
 }
 
-fn isTextPreviewablePath(path: []const u8) bool {
-    const ext = std.fs.path.extension(path);
-    return std.ascii.eqlIgnoreCase(ext, ".c") or
-        std.ascii.eqlIgnoreCase(ext, ".cpp") or
-        std.ascii.eqlIgnoreCase(ext, ".css") or
-        std.ascii.eqlIgnoreCase(ext, ".csv") or
-        std.ascii.eqlIgnoreCase(ext, ".h") or
-        std.ascii.eqlIgnoreCase(ext, ".hpp") or
-        std.ascii.eqlIgnoreCase(ext, ".html") or
-        std.ascii.eqlIgnoreCase(ext, ".ini") or
-        std.ascii.eqlIgnoreCase(ext, ".js") or
-        std.ascii.eqlIgnoreCase(ext, ".json") or
-        std.ascii.eqlIgnoreCase(ext, ".log") or
-        std.ascii.eqlIgnoreCase(ext, ".md") or
-        std.ascii.eqlIgnoreCase(ext, ".nix") or
-        std.ascii.eqlIgnoreCase(ext, ".py") or
-        std.ascii.eqlIgnoreCase(ext, ".sh") or
-        std.ascii.eqlIgnoreCase(ext, ".svg") or
-        std.ascii.eqlIgnoreCase(ext, ".toml") or
-        std.ascii.eqlIgnoreCase(ext, ".ts") or
-        std.ascii.eqlIgnoreCase(ext, ".tsx") or
-        std.ascii.eqlIgnoreCase(ext, ".txt") or
-        std.ascii.eqlIgnoreCase(ext, ".xml") or
-        std.ascii.eqlIgnoreCase(ext, ".yaml") or
-        std.ascii.eqlIgnoreCase(ext, ".yml") or
-        std.ascii.eqlIgnoreCase(ext, ".zig") or
-        std.ascii.eqlIgnoreCase(ext, ".zon");
+fn isPreviewTextControlByte(byte: u8) bool {
+    return switch (byte) {
+        '\t', '\n', '\r', 0x0c, 0x1b => true,
+        else => false,
+    };
+}
+
+fn bytesLookLikeTextPreview(bytes: []const u8) bool {
+    if (bytes.len == 0) return true;
+
+    for (bytes) |byte| {
+        if (byte == 0) return false;
+        if (byte < 0x20 and !isPreviewTextControlByte(byte)) return false;
+        if (byte == 0x7f) return false;
+    }
+    return true;
 }
 
 fn readFilePreviewBytesAlloc(io: std.Io, alloc: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
@@ -4669,13 +4912,19 @@ fn appendDirectoryPreviewSummary(
     if (listing.len > 0) {
         try appendPreviewLine(buffer, "");
         try appendPreviewLine(buffer, "Contents:");
-        try buffer.appendSlice(allocator, listing);
+        try appendPreviewLine(buffer, listing);
     }
 }
 
-fn allocSelectionPreviewText(state: *State) ![]const u8 {
+const SelectionPreview = struct {
+    text: []const u8,
+    framed: bool = false,
+};
+
+fn allocSelectionPreview(state: *State) !SelectionPreview {
     var buffer: std.ArrayListUnmanaged(u8) = .empty;
     defer buffer.deinit(allocator);
+    var framed = false;
 
     const selected_count = selectedPathCount(state);
     if (selected_count == 0) {
@@ -4735,30 +4984,37 @@ fn allocSelectionPreviewText(state: *State) ![]const u8 {
             else
                 null;
             try appendDirectoryPreviewSummary(state, &buffer, preview_path, loaded_entries);
-        } else if (isTextPreviewablePath(entry.previewPath())) {
+        } else {
             const preview_bytes = if (state.io) |io|
                 readFilePreviewBytesAlloc(io, allocator, entry.previewPath(), 8192) catch null
             else
                 null;
             if (preview_bytes) |bytes| {
                 defer allocator.free(bytes);
-                const lossy = try allocUtf8LossyOwned(bytes);
-                defer allocator.free(lossy);
-                try appendPreviewLine(&buffer, lossy);
-                if (bytes.len == 8192) {
+                if (bytesLookLikeTextPreview(bytes)) {
+                    framed = buffer.items.len == 0;
+                    if (bytes.len == 0) {
+                        try appendPreviewLine(&buffer, "Empty file.");
+                    } else {
+                        const lossy = try allocUtf8LossyOwned(bytes);
+                        defer allocator.free(lossy);
+                        try appendPreviewLine(&buffer, lossy);
+                    }
+                    if (bytes.len == 8192) {
+                        try appendPreviewLine(&buffer, "");
+                        try appendPreviewLine(&buffer, "Preview truncated.");
+                    }
+                } else {
+                    var size_buf: [24]u8 = undefined;
+                    const size_text = formatSizeText(size_buf[0..], entry.kind, entry.size_bytes, entry.target_kind);
+                    try appendPreviewLine(&buffer, entry.typeLabel());
+                    if (size_text.len > 0) try appendPreviewPrintLine(&buffer, "Size: {s}", .{size_text});
                     try appendPreviewLine(&buffer, "");
-                    try appendPreviewLine(&buffer, "Preview truncated.");
+                    try appendPreviewLine(&buffer, "Preview unavailable for non-text files.");
                 }
             } else {
                 try appendPreviewLine(&buffer, "Unable to read this file.");
             }
-        } else {
-            var size_buf: [24]u8 = undefined;
-            const size_text = formatSizeText(size_buf[0..], entry.kind, entry.size_bytes, entry.target_kind);
-            try appendPreviewLine(&buffer, entry.typeLabel());
-            if (size_text.len > 0) try appendPreviewPrintLine(&buffer, "Size: {s}", .{size_text});
-            try appendPreviewLine(&buffer, "");
-            try appendPreviewLine(&buffer, "Preview unavailable for this file type.");
         }
     }
 
@@ -4766,7 +5022,10 @@ fn allocSelectionPreviewText(state: *State) ![]const u8 {
         try appendPreviewLine(&buffer, "Preview unavailable.");
     }
 
-    return allocUiWrappedOwnedText(state, try allocator.dupe(u8, buffer.items), previewBodyFontSizePx(state));
+    return .{
+        .text = try allocUiWrappedOwnedText(state, try allocator.dupe(u8, buffer.items), previewBodyFontSizePx(state)),
+        .framed = framed,
+    };
 }
 
 fn addToolbarButton(state: *const State, ctx: *goop.Context, parent: goop.NodeHandle, label: []const u8, active: bool, enabled: bool) !goop.NodeHandle {
@@ -4795,6 +5054,40 @@ fn addMenuCommandItem(
     } });
     ctx.tree.get(handle).style_override = fileManagerMenuItemStyle(state);
     return handle;
+}
+
+fn addContextMenuItem(
+    state: *const State,
+    ctx: *goop.Context,
+    parent: goop.NodeHandle,
+    label: []const u8,
+    enabled: bool,
+) !goop.NodeHandle {
+    const handle = try ctx.tree.addChild(parent, .{ .menu_item = .{
+        .label = label,
+        .enabled = enabled,
+    } });
+    ctx.tree.get(handle).style_override = fileManagerMenuItemStyle(state);
+    return handle;
+}
+
+fn buildContextPopup(state: *State, ctx: *goop.Context) !void {
+    if (!state.context_visible) return;
+
+    const popup = try ctx.tree.addRoot(.{ .popup = .{
+        .placement = .absolute,
+        .x = state.context_x,
+        .y = state.context_y,
+        .visible = true,
+        .close_on_outside_click = true,
+        .z_index = 140,
+    } });
+    state.context_popup = popup;
+    ctx.tree.get(popup).style_override = fileManagerMenuPopupStyle(state);
+
+    state.context_open = try addContextMenuItem(state, ctx, popup, "Open", contextOpenEnabled(state));
+    state.context_copy_path = try addContextMenuItem(state, ctx, popup, "Copy Path", contextCopyPathEnabled(state));
+    state.context_open_link_target = try addContextMenuItem(state, ctx, popup, "Open Link Target", contextOpenLinkTargetEnabled(state));
 }
 
 fn fileManagerShellColor() goop.Color {
@@ -4901,7 +5194,7 @@ fn fileManagerMenuItemStyle(state: *const State) goop.Style {
 fn fileManagerSectionLabelStyle(state: *const State) goop.Style {
     return .{
         .fg = fileManagerMutedTextColor(),
-        .font_size = uiPx(state, 12),
+        .font_size = uiPx(state, 13),
     };
 }
 
@@ -4919,12 +5212,23 @@ fn fileManagerFolderTreeItemStyle(state: *const State) goop.Style {
     return .{
         .bg = .rgba(0, 0, 0, 0),
         .border_width = 0,
+        .font_size = uiPx(state, 14.5),
         .padding = .{
-            .top = uiPx(state, 2),
-            .right = uiPx(state, 4),
-            .bottom = uiPx(state, 2),
+            .top = uiPx(state, 3),
+            .right = uiPx(state, 6),
+            .bottom = uiPx(state, 3),
             .left = 0,
         },
+        .border_radius = uiPx(state, 3),
+    };
+}
+
+fn fileManagerPlaceItemStyle(state: *const State) goop.Style {
+    return .{
+        .bg = .rgba(0, 0, 0, 0),
+        .border_width = 0,
+        .font_size = uiPx(state, 14.5),
+        .padding = uiEdgesSymmetric(state, 6, 4),
         .border_radius = uiPx(state, 3),
     };
 }
@@ -4983,6 +5287,17 @@ fn fileManagerDetailContentStyle(state: *const State) goop.Style {
         .padding = uiEdgesAll(state, 0),
         .spacing = uiPx(state, 8),
         .border_radius = 0,
+    };
+}
+
+fn fileManagerPreviewFrameStyle(state: *const State) goop.Style {
+    return .{
+        .bg = .rgb(255, 255, 255),
+        .border = .rgb(214, 220, 228),
+        .border_width = 1,
+        .padding = uiEdgesSymmetric(state, 12, 10),
+        .spacing = 0,
+        .border_radius = uiPx(state, 6),
     };
 }
 
@@ -5118,6 +5433,9 @@ fn buildWidgetTree(state: *State) !void {
     if (state.ui_root) |root| {
         if (ctx.isAlive(root)) try ctx.removeWidget(root);
     }
+    if (state.context_popup) |popup| {
+        if (ctx.isAlive(popup)) try ctx.removeWidget(popup);
+    }
     clearUiTracking(state);
 
     state.ui_root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
@@ -5180,6 +5498,7 @@ fn buildWidgetTree(state: *State) !void {
             state.menu_view_status_bar = try addMenuCommandItem(state, ctx, popup, "Status Bar", .toggle_status_bar, "");
             state.menu_view_list = try addMenuCommandItem(state, ctx, popup, "List View", .view_list, "");
             state.menu_view_grid = try addMenuCommandItem(state, ctx, popup, "Grid View", .view_grid, "");
+            state.menu_view_sort_directories = try addMenuCommandItem(state, ctx, popup, "Sort Directories Together", .toggle_sort_directories, "");
         }
         {
             state.menu_go_button = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "Go" } });
@@ -5239,7 +5558,10 @@ fn buildWidgetTree(state: *State) !void {
         ctx.tree.get(sidebar_header).style_override = fileManagerPaneHeaderStyle(state);
         _ = try ctx.tree.addChild(sidebar_header, .{ .text = .{ .content = "Browse" } });
 
-        const sidebar_scroll = try ctx.tree.addChild(sidebar, .{ .scroll_area = .{ .scroll_y = state.sidebar_scroll_y } });
+        const sidebar_scroll = try ctx.tree.addChild(sidebar, .{ .scroll_area = .{
+            .scroll_x = state.sidebar_scroll_x,
+            .scroll_y = state.sidebar_scroll_y,
+        } });
         state.sidebar_scroll = sidebar_scroll;
         ctx.tree.get(sidebar_scroll).style_override = .{
             .bg = transparent,
@@ -5264,6 +5586,7 @@ fn buildWidgetTree(state: *State) !void {
                 .label = place.label,
                 .selected = std.mem.eql(u8, place.path, state.current_dir),
             } });
+            ctx.tree.get(handle).style_override = fileManagerPlaceItemStyle(state);
             try state.place_handles.append(allocator, handle);
         }
 
@@ -5359,7 +5682,7 @@ fn buildWidgetTree(state: *State) !void {
         ctx.tree.get(preview_header).style_override = fileManagerPaneHeaderStyle(state);
         _ = try ctx.tree.addChild(preview_header, .{ .text = .{ .content = "Preview" } });
 
-        const preview_scroll = try ctx.tree.addChild(panel, .{ .scroll_area = .{} });
+        const preview_scroll = try ctx.tree.addChild(panel, .{ .scroll_area = .{ .allow_horizontal_scroll = false } });
         ctx.tree.get(preview_scroll).style_override = .{
             .bg = transparent,
             .border_width = 0,
@@ -5368,11 +5691,17 @@ fn buildWidgetTree(state: *State) !void {
         };
         const preview_content = try ctx.tree.addChild(preview_scroll, .{ .container = .{ .direction = .column } });
         ctx.tree.get(preview_content).style_override = fileManagerDetailContentStyle(state);
+        const preview = try allocSelectionPreview(state);
+        const preview_text_parent = if (preview.framed) blk: {
+            const preview_frame = try ctx.tree.addChild(preview_content, .{ .container = .{ .direction = .column } });
+            ctx.tree.get(preview_frame).style_override = fileManagerPreviewFrameStyle(state);
+            break :blk preview_frame;
+        } else preview_content;
         _ = try addStyledDetailText(
             ctx,
-            preview_content,
-            try allocSelectionPreviewText(state),
-            .visible,
+            preview_text_parent,
+            preview.text,
+            .wrap,
             fileManagerPreviewBodyStyle(state),
         );
     }
@@ -5381,7 +5710,7 @@ fn buildWidgetTree(state: *State) !void {
         const detail_header = try ctx.tree.addChild(panel, .{ .toolbar = .{} });
         ctx.tree.get(detail_header).style_override = fileManagerPaneHeaderStyle(state);
         _ = try ctx.tree.addChild(detail_header, .{ .text = .{ .content = "Details" } });
-        const detail_scroll = try ctx.tree.addChild(panel, .{ .scroll_area = .{} });
+        const detail_scroll = try ctx.tree.addChild(panel, .{ .scroll_area = .{ .allow_horizontal_scroll = false } });
         ctx.tree.get(detail_scroll).style_override = .{
             .bg = transparent,
             .border_width = 0,
@@ -5410,18 +5739,18 @@ fn buildWidgetTree(state: *State) !void {
                 ctx,
                 detail_content,
                 try allocUiDetailWrappedUtf8Lossy(state, entry.name, detailTitleFontSizePx(state)),
-                .visible,
+                .wrap,
                 fileManagerDetailTitleStyle(state),
             );
-            _ = try addStyledDetailText(ctx, detail_content, meta_text, .visible, fileManagerDetailMetaStyle(state));
+            _ = try addStyledDetailText(ctx, detail_content, meta_text, .wrap, fileManagerDetailMetaStyle(state));
 
             const path_line = try std.fmt.allocPrint(allocator, "Path: {f}", .{std.unicode.fmtUtf8(entry.path)});
             defer allocator.free(path_line);
             _ = try addStyledDetailText(
                 ctx,
                 detail_content,
-                try allocUiEllipsizedUtf8Lossy(state, path_line, detailTextWrapWidthPx(state), detailCaptionFontSizePx(state)),
-                .ellipsis,
+                try allocUiDetailWrappedUtf8Lossy(state, path_line, detailCaptionFontSizePx(state)),
+                .wrap,
                 fileManagerDetailMetaStyle(state),
             );
             if (entry.target_path) |target_path| {
@@ -5430,8 +5759,8 @@ fn buildWidgetTree(state: *State) !void {
                 _ = try addStyledDetailText(
                     ctx,
                     detail_content,
-                    try allocUiEllipsizedUtf8Lossy(state, target_line, detailTextWrapWidthPx(state), detailCaptionFontSizePx(state)),
-                    .ellipsis,
+                    try allocUiDetailWrappedUtf8Lossy(state, target_line, detailCaptionFontSizePx(state)),
+                    .wrap,
                     fileManagerDetailMetaStyle(state),
                 );
             }
@@ -5444,7 +5773,7 @@ fn buildWidgetTree(state: *State) !void {
                     "Use Go or Open Link Target to follow this symbolic link."
                 else
                     "Text files preview inline here; other file types show a summary.",
-                .visible,
+                .wrap,
                 fileManagerDetailHintStyle(state),
             );
         } else if (selected_count > 1) {
@@ -5453,7 +5782,7 @@ fn buildWidgetTree(state: *State) !void {
                 ctx,
                 detail_content,
                 try allocUiString(state, "{d} items selected", .{selected_count}),
-                .visible,
+                .wrap,
                 fileManagerDetailTitleStyle(state),
             );
             const summary_text = if (selected_file_count > 0)
@@ -5467,7 +5796,7 @@ fn buildWidgetTree(state: *State) !void {
                     selected_directory_count,
                     selected_file_count,
                 });
-            _ = try addStyledDetailText(ctx, detail_content, summary_text, .visible, fileManagerDetailMetaStyle(state));
+            _ = try addStyledDetailText(ctx, detail_content, summary_text, .wrap, fileManagerDetailMetaStyle(state));
 
             if (state.selected_path) |selected_path| {
                 const active_line = try std.fmt.allocPrint(allocator, "Active: {f}", .{
@@ -5477,8 +5806,8 @@ fn buildWidgetTree(state: *State) !void {
                 _ = try addStyledDetailText(
                     ctx,
                     detail_content,
-                    try allocUiEllipsizedUtf8Lossy(state, active_line, detailTextWrapWidthPx(state), detailCaptionFontSizePx(state)),
-                    .ellipsis,
+                    try allocUiDetailWrappedUtf8Lossy(state, active_line, detailCaptionFontSizePx(state)),
+                    .wrap,
                     fileManagerDetailMetaStyle(state),
                 );
             }
@@ -5487,7 +5816,7 @@ fn buildWidgetTree(state: *State) !void {
                 ctx,
                 detail_content,
                 "Ctrl-click and Shift-click extend the current selection.",
-                .visible,
+                .wrap,
                 fileManagerDetailHintStyle(state),
             );
         } else {
@@ -5496,7 +5825,7 @@ fn buildWidgetTree(state: *State) !void {
                 ctx,
                 detail_content,
                 try allocUiDetailWrappedUtf8Lossy(state, directory_name, detailTitleFontSizePx(state)),
-                .visible,
+                .wrap,
                 fileManagerDetailTitleStyle(state),
             );
             _ = try addStyledDetailText(
@@ -5507,18 +5836,19 @@ fn buildWidgetTree(state: *State) !void {
                     directory_count,
                     file_count,
                 }),
-                .visible,
+                .wrap,
                 fileManagerDetailMetaStyle(state),
             );
             _ = try addStyledDetailText(
                 ctx,
                 detail_content,
-                try allocUiString(state, "Sort: {s}, {s} · View: {s}", .{
+                try allocUiString(state, "Sort: {s}, {s}{s} · View: {s}", .{
                     sortColumnLabel(state.sort_column),
                     sortDirectionLabel(state.sort_direction),
+                    if (state.sort_directories_together) ", directories together" else "",
                     browserViewModeLabel(state.view_mode),
                 }),
-                .visible,
+                .wrap,
                 fileManagerDetailMetaStyle(state),
             );
             const current_path_line = try std.fmt.allocPrint(allocator, "Path: {f}", .{std.unicode.fmtUtf8(state.current_dir)});
@@ -5526,15 +5856,15 @@ fn buildWidgetTree(state: *State) !void {
             _ = try addStyledDetailText(
                 ctx,
                 detail_content,
-                try allocUiEllipsizedUtf8Lossy(state, current_path_line, detailTextWrapWidthPx(state), detailCaptionFontSizePx(state)),
-                .ellipsis,
+                try allocUiDetailWrappedUtf8Lossy(state, current_path_line, detailCaptionFontSizePx(state)),
+                .wrap,
                 fileManagerDetailMetaStyle(state),
             );
             _ = try addStyledDetailText(
                 ctx,
                 detail_content,
                 "Select a file to inspect it, or use Preview to skim folders and text files inline.",
-                .visible,
+                .wrap,
                 fileManagerDetailHintStyle(state),
             );
         }
@@ -5564,6 +5894,8 @@ fn buildWidgetTree(state: *State) !void {
             ctx.tree.get(handle).style_override = fileManagerStatusTextStyle(state);
         }
     }
+
+    try buildContextPopup(state, ctx);
 }
 
 // ── Font loading ──
@@ -5800,6 +6132,7 @@ pub fn main(init: std.process.Init) !void {
         ctx.doLayout(&text_measure_ctx);
 
         ctx.processEvents();
+        syncContextPopupVisibleFromWidget(&state, &ctx);
         syncAddressInputFromWidget(&state, &ctx);
 
         var rebuild_ui = false;
@@ -5829,11 +6162,15 @@ pub fn main(init: std.process.Init) !void {
 
         if (state.asset_table) |h| if (ctx.tableSortChanged(h)) {
             if (ctx.tableSortedColumn(h)) |sorted_column| {
+                const previous_sort_column = state.sort_column;
                 state.sort_column = @enumFromInt(sorted_column);
                 state.sort_direction = switch (ctx.tableSortDirection(h).?) {
                     .ascending => .ascending,
                     .descending => .descending,
                 };
+                if (previous_sort_column != state.sort_column and state.sort_column == .modified) {
+                    state.sort_direction = .descending;
+                }
                 sortDirectoryEntries(&state);
                 syncSelectionAnchor(&state);
                 rebuild_ui = true;
@@ -5888,6 +6225,10 @@ pub fn main(init: std.process.Init) !void {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .view_grid) or rebuild_ui;
         };
+        if (state.menu_view_sort_directories) |h| if (ctx.wasClicked(h)) {
+            setTopMenuPopupVisible(&state, &ctx, null);
+            rebuild_ui = try runBrowserCommand(&state, .toggle_sort_directories) or rebuild_ui;
+        };
         if (state.menu_go_back) |h| if (ctx.wasClicked(h)) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .back) or rebuild_ui;
@@ -5907,6 +6248,19 @@ pub fn main(init: std.process.Init) !void {
         if (state.menu_help_about) |h| if (ctx.wasClicked(h)) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .about) or rebuild_ui;
+        };
+
+        if (state.context_open) |h| if (ctx.wasClicked(h)) {
+            hideContextMenu(&state, &ctx);
+            rebuild_ui = try openContextTarget(&state) or rebuild_ui;
+        };
+        if (state.context_copy_path) |h| if (ctx.wasClicked(h)) {
+            hideContextMenu(&state, &ctx);
+            rebuild_ui = try copyContextTargetPath(&state) or rebuild_ui;
+        };
+        if (state.context_open_link_target) |h| if (ctx.wasClicked(h)) {
+            hideContextMenu(&state, &ctx);
+            rebuild_ui = try openContextLinkTarget(&state) or rebuild_ui;
         };
 
         if (state.btn_back) |h| if (ctx.wasClicked(h)) {
@@ -5952,6 +6306,73 @@ pub fn main(init: std.process.Init) !void {
             const path = try addressInputPathAlloc(&state);
             defer allocator.free(path);
             rebuild_ui = try setCurrentDirectory(&state, path, true) or rebuild_ui;
+        }
+
+        var context_menu_opened = false;
+        for (state.place_handles.items, 0..) |handle, index| {
+            if (!ctx.wasSecondaryClicked(handle)) continue;
+            if (index >= state.places.items.len) continue;
+            try showContextMenuForPath(&state, &ctx, state.places.items[index].path);
+            context_menu_opened = true;
+            rebuild_ui = true;
+            break;
+        }
+
+        if (!context_menu_opened) {
+            for (state.folder_tree_handles.items, 0..) |handle, index| {
+                if (!ctx.wasSecondaryClicked(handle)) continue;
+                if (index >= state.folder_tree_paths.items.len) continue;
+                try showContextMenuForPath(&state, &ctx, state.folder_tree_paths.items[index]);
+                context_menu_opened = true;
+                rebuild_ui = true;
+                break;
+            }
+        }
+
+        if (!context_menu_opened) {
+            for (state.breadcrumb_handles.items, 0..) |handle, index| {
+                if (!ctx.wasSecondaryClicked(handle)) continue;
+                if (index >= state.breadcrumb_paths.items.len) continue;
+                try showContextMenuForPath(&state, &ctx, state.breadcrumb_paths.items[index]);
+                context_menu_opened = true;
+                rebuild_ui = true;
+                break;
+            }
+        }
+
+        if (!context_menu_opened) {
+            for (state.row_handles.items, 0..) |handle, index| {
+                if (!ctx.wasSecondaryClicked(handle)) continue;
+                const entry_index = state.asset_visible_start + index;
+                if (entry_index >= state.entries.items.len) continue;
+                try selectEntryForContextMenu(&state, entry_index);
+                try showContextMenuForPath(&state, &ctx, state.entries.items[entry_index].path);
+                context_menu_opened = true;
+                rebuild_ui = true;
+                break;
+            }
+        }
+
+        if (!context_menu_opened) {
+            for (state.grid_handles.items, 0..) |handle, index| {
+                if (!ctx.wasSecondaryClicked(handle)) continue;
+                const entry_index = state.asset_visible_start + index;
+                if (entry_index >= state.entries.items.len) continue;
+                try selectEntryForContextMenu(&state, entry_index);
+                try showContextMenuForPath(&state, &ctx, state.entries.items[entry_index].path);
+                context_menu_opened = true;
+                rebuild_ui = true;
+                break;
+            }
+        }
+
+        if (!context_menu_opened) {
+            if (state.file_panel_scroll) |handle| {
+                if (ctx.wasSecondaryClicked(handle)) {
+                    try showContextMenuForPath(&state, &ctx, state.current_dir);
+                    rebuild_ui = true;
+                }
+            }
         }
 
         for (state.place_handles.items, 0..) |handle, index| {
