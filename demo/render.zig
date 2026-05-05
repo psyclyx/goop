@@ -314,7 +314,7 @@ pub const Renderer = struct {
             .join = .round,
             .placement = .inside,
         };
-        const rect = scaledRect(icon.bounds, self.scale);
+        const rect = scaledSnappedRect(icon.bounds, self.scale);
         if (rect.w <= 0 or rect.h <= 0) return;
         const before = self.path_builder.shapeCount();
         appendIconPicture(&self.path_builder, icon.kind, rect, fill, stroke) catch return;
@@ -568,10 +568,16 @@ pub const Renderer = struct {
         const local = snail.Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
         switch (kind) {
             .folder => {
-                const tab = snail.Rect{ .x = local.w * 0.08, .y = local.h * 0.08, .w = local.w * 0.34, .h = local.h * 0.22 };
-                const body = snail.Rect{ .x = local.w * 0.05, .y = local.h * 0.22, .w = local.w * 0.9, .h = local.h * 0.63 };
-                try addBuilderRoundedRect(builder, tab, fill, null, local.h * 0.08, transform);
-                try addBuilderRoundedRect(builder, body, fill, null, local.h * 0.1, transform);
+                var path = snail.Path.init(builder.allocator);
+                defer path.deinit();
+                try path.moveTo(snail.Vec2.new(local.w * 0.07, local.h * 0.84));
+                try path.lineTo(snail.Vec2.new(local.w * 0.07, local.h * 0.18));
+                try path.lineTo(snail.Vec2.new(local.w * 0.35, local.h * 0.18));
+                try path.lineTo(snail.Vec2.new(local.w * 0.44, local.h * 0.28));
+                try path.lineTo(snail.Vec2.new(local.w * 0.93, local.h * 0.28));
+                try path.lineTo(snail.Vec2.new(local.w * 0.93, local.h * 0.84));
+                try path.close();
+                try builder.addPath(&path, fill, null, transform);
             },
             .file => {
                 const page = snail.Rect{ .x = local.w * 0.14, .y = local.h * 0.08, .w = local.w * 0.72, .h = local.h * 0.84 };
@@ -696,12 +702,16 @@ fn textXForBounds(bounds: goop.draw.Rect, text_width: f32, text_align: goop.Text
     };
 }
 
-fn scaledRect(rect: goop.draw.Rect, scale: f32) snail.Rect {
+fn scaledSnappedRect(rect: goop.draw.Rect, scale: f32) snail.Rect {
+    const x0 = @round(rect.x * scale);
+    const y0 = @round(rect.y * scale);
+    const x1 = @round((rect.x + rect.w) * scale);
+    const y1 = @round((rect.y + rect.h) * scale);
     return .{
-        .x = rect.x * scale,
-        .y = rect.y * scale,
-        .w = rect.w * scale,
-        .h = rect.h * scale,
+        .x = x0,
+        .y = y0,
+        .w = @max(x1 - x0, 0),
+        .h = @max(y1 - y0, 0),
     };
 }
 

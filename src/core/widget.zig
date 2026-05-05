@@ -88,8 +88,11 @@ pub const WidgetKind = union(enum) {
     pub const TreeItem = struct {
         label: []const u8,
         group: u32 = 0,
+        icon: ?draw.IconKind = null,
+        icon_color: ?style.Color = null,
         editable: bool = false,
         rename_trigger: RenameTrigger = .none,
+        has_children: bool = false,
         expanded: bool = true,
         selected: bool = false,
         editing: bool = false,

@@ -387,7 +387,7 @@ fn emitTreeItem(
     const depth = treeDepth(tree, handle);
     const left_indent = @as(f32, @floatFromInt(depth)) * treeIndent(theme, resolved);
     var header_padding = resolved.padding;
-    header_padding.left += left_indent + disclosureSlotWidth(resolved);
+    header_padding.left += left_indent + disclosureSlotWidth(resolved) + treeItemIconSlotWidth(item, theme, resolved);
 
     c.Clay__OpenElement();
     c.Clay__ConfigureOpenElement(.{
@@ -1946,6 +1946,11 @@ fn treeIndent(theme: style_mod.Theme, resolved: style_mod.ResolvedStyle) f32 {
 
 fn disclosureSlotWidth(resolved: style_mod.ResolvedStyle) f32 {
     return resolved.font_size + 4;
+}
+
+fn treeItemIconSlotWidth(item: widget.WidgetKind.TreeItem, theme: style_mod.Theme, resolved: style_mod.ResolvedStyle) f32 {
+    if (item.icon == null) return 0;
+    return @max(resolved.font_size, 10) + @max(theme.spacing * 0.5, 4);
 }
 
 fn selectedTabItem(tree: *const widget.Tree, parent: widget.NodeHandle) ?widget.NodeHandle {

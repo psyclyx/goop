@@ -188,7 +188,6 @@ fn generatePaintWithFloating(tree: *const widget.Tree, theme: style.Theme, alloc
                 try emitFloatingSubtrees(tree, tree.handleFromIndex(@intCast(i)), theme, &commands, allocator, text_ctx);
             }
         }
-
     }
 
     try emitDragGhosts(tree, theme, &commands, allocator, text_ctx);
@@ -594,10 +593,13 @@ fn emitTreeItem(
     const disclosure_x = rect.x + resolved.padding.left + indent;
     const disclosure_center_x = disclosure_x + slot_width * 0.5;
     const label_x = disclosure_x + slot_width;
-    const label_bounds = customTextBounds(rect, resolved, label_x, rect.x + rect.w - resolved.padding.right - label_x);
+    const icon_size = treeItemIconSize(item, rect, resolved);
+    const icon_gap = treeItemIconGap(item, theme);
+    const text_x = label_x + icon_size + icon_gap;
+    const label_bounds = customTextBounds(rect, resolved, text_x, rect.x + rect.w - resolved.padding.right - text_x);
     const label = if (item.editing) node.kind.tree_item.editor.content() else item.label;
     const has_parent = findTreeParent(tree, handle) != null;
-    const has_children = hasNonPopupChildren(tree, handle);
+    const has_children = treeItemHasChildren(tree, handle);
 
     try emitTreeGuides(tree, handle, rect, resolved, theme, disclosure_center_x, commands, allocator);
 
@@ -634,14 +636,26 @@ fn emitTreeItem(
             .corner_radius = 0,
         } });
     }
+    if (item.icon) |icon| {
+        try commands.append(allocator, .{ .icon = .{
+            .bounds = .{
+                .x = label_x,
+                .y = rect.y + (rect.h - icon_size) * 0.5,
+                .w = icon_size,
+                .h = icon_size,
+            },
+            .kind = icon,
+            .color = if (item.selected) theme.accent else item.icon_color orelse resolved.fg,
+        } });
+    }
 
     if (item.editing) {
         const editor = &node.kind.tree_item.editor;
 
         if (editor.hasSelection()) {
             const range = editor.selectionRange();
-            const sel_start_x = label_x + layout.textWidthUpTo(label, range.start, resolved.font_size, text_ctx);
-            const sel_end_x = label_x + layout.textWidthUpTo(label, range.end, resolved.font_size, text_ctx);
+            const sel_start_x = text_x + layout.textWidthUpTo(label, range.start, resolved.font_size, text_ctx);
+            const sel_end_x = text_x + layout.textWidthUpTo(label, range.end, resolved.font_size, text_ctx);
             try commands.append(allocator, .{ .box = .{
                 .bounds = .{ .x = sel_start_x, .y = label_bounds.y, .w = sel_end_x - sel_start_x, .h = label_bounds.h },
                 .color = theme.selection_bg,
@@ -655,7 +669,7 @@ fn emitTreeItem(
             try appendTextCommand(commands, allocator, label_bounds, label, resolved.fg, resolved.font_size, .start, .visible);
         }
 
-        const cursor_x = label_x + layout.textWidthUpTo(label, editor.cursor, resolved.font_size, text_ctx);
+        const cursor_x = text_x + layout.textWidthUpTo(label, editor.cursor, resolved.font_size, text_ctx);
         try commands.append(allocator, .{ .box = .{
             .bounds = .{ .x = cursor_x, .y = label_bounds.y, .w = 1, .h = label_bounds.h },
             .color = resolved.fg,
@@ -2072,10 +2086,10 @@ fn treeItemChrome(
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
         else if (item.drop_preview == .into)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
-        else if (has_custom_bg)
-            interactionBg(node, resolved, theme)
         else if (item.selected)
             theme.selection_bg
+        else if (has_custom_bg)
+            interactionBg(node, resolved, theme)
         else if (node.interaction.pressed)
             theme.bg_active
         else if (node.interaction.hovered)
@@ -2193,7 +2207,7 @@ fn emitTreeGuides(
     }
 
     const node = tree.getConst(handle);
-    if (node.kind.tree_item.expanded and hasNonPopupChildren(tree, handle)) {
+    if (node.kind.tree_item.expanded and treeItemHasChildren(tree, handle)) {
         try appendTreeGuideVertical(
             commands,
             allocator,
@@ -2548,6 +2562,23 @@ fn hasNonPopupChildren(tree: *const widget.Tree, handle: widget.NodeHandle) bool
         if (tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) return true;
     }
     return false;
+}
+
+fn treeItemHasChildren(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    const node = tree.getConst(handle);
+    if (node.kind == .tree_item and node.kind.tree_item.has_children) return true;
+    return hasNonPopupChildren(tree, handle);
+}
+
+fn treeItemIconSize(item: widget.WidgetKind.TreeItem, row_rect: Rect, resolved: style.ResolvedStyle) f32 {
+    if (item.icon == null) return 0;
+    const inner_h = @max(row_rect.h - resolved.padding.top - resolved.padding.bottom, 0);
+    return @min(@max(resolved.font_size, 10), inner_h);
+}
+
+fn treeItemIconGap(item: widget.WidgetKind.TreeItem, theme: style.Theme) f32 {
+    if (item.icon == null) return 0;
+    return @max(theme.spacing * 0.5, 4);
 }
 
 fn treeDepth(tree: *const widget.Tree, handle: widget.NodeHandle) u32 {

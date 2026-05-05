@@ -1150,6 +1150,9 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
             .tree_item => {
                 if (clickInTreeDisclosure(tree, t, mouse.x, theme)) {
                     toggleTreeItem(tree, t);
+                    tree.get(t).interaction.pressed = false;
+                    mouse.press_target = null;
+                    mouse.press_can_defer_drag = false;
                 } else if (tree.getConst(t).kind.tree_item.editing) {
                     dragTextEditorSelection(tree, t, mouse.x, theme, text_ctx);
                 } else {
@@ -2220,6 +2223,8 @@ fn clickInTreeLabel(tree: *const widget.Tree, handle: widget.NodeHandle, mouse_x
 }
 
 fn hasTreeItemChildren(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    const node = tree.getConst(handle);
+    if (node.kind == .tree_item and node.kind.tree_item.has_children) return true;
     var iter = tree.children(handle);
     while (iter.next()) |child| {
         if (tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) return true;
@@ -2331,12 +2336,22 @@ fn treeLabelX(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style.
     return treeDisclosureX(tree, handle, theme) + treeDisclosureWidth(tree, handle, theme);
 }
 
+fn treeTextX(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style.Theme) f32 {
+    const label_x = treeLabelX(tree, handle, theme);
+    const node = tree.getConst(handle);
+    if (node.kind != .tree_item or node.kind.tree_item.icon == null) return label_x;
+    const resolved = node.style_override.resolve(theme);
+    const inner_h = @max(node.layout_rect.h - resolved.padding.top - resolved.padding.bottom, 0);
+    const icon_size = @min(@max(resolved.font_size, 10), inner_h);
+    return label_x + icon_size + @max(theme.spacing * 0.5, 4);
+}
+
 fn textEditorTextX(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style.Theme) ?f32 {
     const node = tree.getConst(handle);
     const resolved = node.style_override.resolve(theme);
     return switch (node.kind) {
         .text_input => node.layout_rect.x + resolved.padding.left,
-        .tree_item => if (node.kind.tree_item.editing) treeLabelX(tree, handle, theme) else null,
+        .tree_item => if (node.kind.tree_item.editing) treeTextX(tree, handle, theme) else null,
         .drag_value => if (node.kind.drag_value.editing) node.layout_rect.x + resolved.padding.left else null,
         .spinbox => if (node.kind.spinbox.editing) spinBoxMiddleStart(tree, handle) + resolved.padding.left else null,
         else => null,
@@ -3559,7 +3574,8 @@ test "tree item toggles and keyboard navigation follows visible items" {
 
     var mouse = MouseState{};
 
-    // Click in the disclosure slot. This collapses the parent and still selects it.
+    // Click in the disclosure slot. This collapses the parent without also
+    // activating the row.
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 18, .y = 20 } },
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 18, .y = 20 } },
@@ -3567,7 +3583,8 @@ test "tree item toggles and keyboard navigation follows visible items" {
 
     try std.testing.expect(!tree.getConst(parent).kind.tree_item.expanded);
     try std.testing.expect(tree.getConst(parent).kind.tree_item.toggled);
-    try std.testing.expect(tree.getConst(parent).kind.tree_item.selected);
+    try std.testing.expect(!tree.getConst(parent).kind.tree_item.selected);
+    try std.testing.expect(!tree.getConst(parent).kind.tree_item.clicked);
 
     mouse.focused = parent;
     focus.syncFocusFlags(&tree, mouse.focused);
@@ -3606,6 +3623,32 @@ test "collapsed tree item can be reopened with the mouse" {
 
     process(&tree, &click, &mouse, style.Theme.default);
     try std.testing.expect(tree.getConst(parent).kind.tree_item.expanded);
+}
+
+test "lazy tree item can toggle without materialized child nodes" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const parent = try tree.addChild(root, .{ .tree_item = .{
+        .label = "Folder",
+        .has_children = true,
+        .expanded = false,
+    } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    tree.get(parent).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 26 };
+
+    var mouse = MouseState{};
+    process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 18, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 18, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(tree.getConst(parent).kind.tree_item.expanded);
+    try std.testing.expect(tree.getConst(parent).kind.tree_item.toggled);
+    try std.testing.expect(!tree.getConst(parent).kind.tree_item.clicked);
 }
 
 test "selected editable tree item can rename inline on click" {

@@ -396,6 +396,7 @@ const State = struct {
     detail_ratio: f32 = 0.72,
     preview_ratio: f32 = 0.58,
     table_column_weights: [4]f32 = .{ 0.50, 0.22, 0.16, 0.12 },
+    sidebar_scroll_y: f32 = 0,
     file_panel_scroll_y: f32 = 0,
     file_panel_viewport_width: f32 = 0,
     file_panel_viewport_height: f32 = 0,
@@ -429,6 +430,7 @@ const State = struct {
     nav_splitter: ?goop.NodeHandle = null,
     detail_splitter: ?goop.NodeHandle = null,
     preview_splitter: ?goop.NodeHandle = null,
+    sidebar_scroll: ?goop.NodeHandle = null,
     file_panel_scroll: ?goop.NodeHandle = null,
     asset_view_root: ?goop.NodeHandle = null,
     asset_table: ?goop.NodeHandle = null,
@@ -441,6 +443,7 @@ const State = struct {
     folder_tree_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
     breadcrumb_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
     folder_tree_paths: std.ArrayListUnmanaged([]u8) = .empty,
+    folder_tree_expanded_paths: std.ArrayListUnmanaged([]u8) = .empty,
     breadcrumb_paths: std.ArrayListUnmanaged([]u8) = .empty,
     menu_file_refresh: ?goop.NodeHandle = null,
     menu_file_button: ?goop.NodeHandle = null,
@@ -1941,6 +1944,63 @@ fn clearTrackedPaths(paths: *std.ArrayListUnmanaged([]u8)) void {
     paths.clearRetainingCapacity();
 }
 
+fn trackedPathIndex(paths: []const []u8, path: []const u8) ?usize {
+    for (paths, 0..) |candidate, index| {
+        if (std.mem.eql(u8, candidate, path)) return index;
+    }
+    return null;
+}
+
+fn isFolderTreePathExpanded(state: *const State, path: []const u8) bool {
+    return trackedPathIndex(state.folder_tree_expanded_paths.items, path) != null;
+}
+
+const FolderTreeExpansion = enum {
+    collapsed,
+    partial,
+    expanded,
+};
+
+fn folderTreeExpansion(state: *const State, path: []const u8) FolderTreeExpansion {
+    if (isFolderTreePathExpanded(state, path)) return .expanded;
+    if (std.mem.eql(u8, path, state.current_dir)) return .expanded;
+    if (pathHasDirectoryPrefix(state.current_dir, path)) return .partial;
+    return .collapsed;
+}
+
+fn setFolderTreePathExpanded(state: *State, path: []const u8, expanded: bool) !bool {
+    if (trackedPathIndex(state.folder_tree_expanded_paths.items, path)) |index| {
+        if (expanded) return false;
+        allocator.free(state.folder_tree_expanded_paths.swapRemove(index));
+        return true;
+    }
+    if (!expanded) return false;
+    try state.folder_tree_expanded_paths.append(allocator, try allocator.dupe(u8, path));
+    return true;
+}
+
+fn preserveFolderTreeContextForNavigation(state: *State, next_dir: []const u8) !void {
+    if (state.current_dir.len == 0) return;
+    if (std.mem.eql(u8, state.current_dir, next_dir)) return;
+    if (!pathHasDirectoryPrefix(state.current_dir, next_dir)) return;
+    _ = try setFolderTreePathExpanded(state, state.current_dir, true);
+}
+
+fn shouldRenderFolderTreeChildForExpansion(
+    state: *const State,
+    parent_expansion: FolderTreeExpansion,
+    index: usize,
+    child_path: []const u8,
+) bool {
+    return switch (parent_expansion) {
+        .collapsed => false,
+        .partial => pathHasDirectoryPrefix(state.current_dir, child_path),
+        .expanded => index < folder_tree_max_visible_children or
+            pathHasDirectoryPrefix(state.current_dir, child_path) or
+            isFolderTreePathExpanded(state, child_path),
+    };
+}
+
 fn clearPlaces(state: *State) void {
     for (state.places.items) |place| allocator.free(place.path);
     state.places.clearRetainingCapacity();
@@ -2004,6 +2064,7 @@ fn clearUiTracking(state: *State) void {
     state.nav_splitter = null;
     state.detail_splitter = null;
     state.preview_splitter = null;
+    state.sidebar_scroll = null;
     state.file_panel_scroll = null;
     state.menu_file_refresh = null;
     state.menu_file_button = null;
@@ -2055,6 +2116,8 @@ fn deinitBrowserState(state: *State) void {
     state.folder_tree_handles.deinit(allocator);
     state.breadcrumb_handles.deinit(allocator);
     state.folder_tree_paths.deinit(allocator);
+    clearTrackedPaths(&state.folder_tree_expanded_paths);
+    state.folder_tree_expanded_paths.deinit(allocator);
     state.breadcrumb_paths.deinit(allocator);
     state.row_handles.deinit(allocator);
     state.name_cell_handles.deinit(allocator);
@@ -2281,6 +2344,24 @@ fn collectFolderTreeChildren(io: std.Io, dir_path: []const u8, children: *std.Ar
     }
 
     std.mem.sort(FolderTreeChild, children.items, {}, folderTreeChildLessThan);
+}
+
+fn folderTreeDirectoryHasChildren(io: std.Io, dir_path: []const u8) bool {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true, .follow_symlinks = false }) catch return false;
+    defer dir.close(io);
+
+    var iter = dir.iterate();
+    while (iter.next(io) catch return false) |dir_entry| {
+        const name = dir_entry.name;
+        if (name.len == 0) continue;
+
+        const full_path = joinPath(allocator, dir_path, name) catch return false;
+        defer allocator.free(full_path);
+
+        const stat = std.Io.Dir.cwd().statFile(io, full_path, .{ .follow_symlinks = true }) catch continue;
+        if (browserEntryKind(stat.kind) == .directory) return true;
+    }
+    return false;
 }
 
 fn setAddressInputText(state: *State, text: []const u8) void {
@@ -2863,6 +2944,8 @@ fn setCurrentDirectory(state: *State, path: []const u8, push_history: bool) !boo
         return true;
     }
 
+    try preserveFolderTreeContextForNavigation(state, normalized);
+
     if (push_history) {
         while (state.history.items.len > state.history_index + 1) allocator.free(state.history.pop().?);
         try state.history.append(allocator, try allocator.dupe(u8, normalized));
@@ -3100,6 +3183,14 @@ fn captureFilePanelViewport(state: *State, ctx: *goop.Context) void {
     state.file_panel_scroll_y = node.kind.scroll_area.scroll_y;
     state.file_panel_viewport_width = node.layout_rect.w;
     state.file_panel_viewport_height = node.layout_rect.h;
+}
+
+fn captureSidebarScroll(state: *State, ctx: *goop.Context) void {
+    const handle = state.sidebar_scroll orelse return;
+    if (!ctx.isAlive(handle)) return;
+    const node = ctx.tree.getConst(handle);
+    if (node.kind != .scroll_area) return;
+    state.sidebar_scroll_y = node.kind.scroll_area.scroll_y;
 }
 
 fn browserViewportWidthEstimate(state: *const State) f32 {
@@ -4192,6 +4283,79 @@ test "file browser selection detail does not resize the list at ui scale 2" {
     try std.testing.expect(@abs(width_before - width_after) < 4);
 }
 
+test "folder tree derives partial ancestors and expanded current directory" {
+    var state = State{};
+    state.current_dir = try allocator.dupe(u8, "/home/user/project");
+    defer {
+        allocator.free(state.current_dir);
+        clearTrackedPaths(&state.folder_tree_expanded_paths);
+        state.folder_tree_expanded_paths.deinit(allocator);
+    }
+
+    try std.testing.expectEqual(FolderTreeExpansion.partial, folderTreeExpansion(&state, "/"));
+    try std.testing.expectEqual(FolderTreeExpansion.partial, folderTreeExpansion(&state, "/home"));
+    try std.testing.expectEqual(FolderTreeExpansion.partial, folderTreeExpansion(&state, "/home/user"));
+    try std.testing.expectEqual(FolderTreeExpansion.expanded, folderTreeExpansion(&state, "/home/user/project"));
+    try std.testing.expectEqual(FolderTreeExpansion.collapsed, folderTreeExpansion(&state, "/tmp"));
+
+    try std.testing.expect(shouldRenderFolderTreeChildForExpansion(&state, .partial, 900, "/home"));
+    try std.testing.expect(!shouldRenderFolderTreeChildForExpansion(&state, .partial, 0, "/tmp"));
+
+    try std.testing.expect(try setFolderTreePathExpanded(&state, "/tmp", true));
+    try std.testing.expectEqual(FolderTreeExpansion.expanded, folderTreeExpansion(&state, "/tmp"));
+    try std.testing.expect(shouldRenderFolderTreeChildForExpansion(&state, .expanded, 900, "/tmp"));
+}
+
+test "folder tree preserves previous current branch when navigating to ancestor" {
+    var state = State{};
+    state.current_dir = try allocator.dupe(u8, "/home/user/project/goop");
+    defer {
+        allocator.free(state.current_dir);
+        clearTrackedPaths(&state.folder_tree_expanded_paths);
+        state.folder_tree_expanded_paths.deinit(allocator);
+    }
+
+    try preserveFolderTreeContextForNavigation(&state, "/home/user/project");
+    try std.testing.expect(isFolderTreePathExpanded(&state, "/home/user/project/goop"));
+
+    allocator.free(state.current_dir);
+    state.current_dir = try allocator.dupe(u8, "/home/user/project");
+
+    try std.testing.expectEqual(FolderTreeExpansion.expanded, folderTreeExpansion(&state, "/home/user/project"));
+    try std.testing.expectEqual(FolderTreeExpansion.expanded, folderTreeExpansion(&state, "/home/user/project/goop"));
+    try std.testing.expect(shouldRenderFolderTreeChildForExpansion(&state, .expanded, 900, "/home/user/project/goop"));
+}
+
+test "sidebar scroll survives widget tree rebuild" {
+    var state = State{};
+    defer deinitBrowserState(&state);
+
+    const text_measure_ctx = goop.TextMeasureCtx{
+        .measureFn = &browserTestMeasureText,
+    };
+
+    var ctx = try goop.Context.init(allocator, .{
+        .width = 960,
+        .height = 720,
+        .theme = browserTestTheme(),
+    });
+    defer ctx.deinit();
+
+    state.current_dir = try allocator.dupe(u8, "/tmp");
+    state.text_measure_ctx = &text_measure_ctx;
+    state.ctx = &ctx;
+
+    try buildWidgetTree(&state);
+    ctx.doLayout(&text_measure_ctx);
+    const first_scroll = state.sidebar_scroll.?;
+    ctx.tree.get(first_scroll).kind.scroll_area.scroll_y = 73;
+
+    try buildWidgetTree(&state);
+    ctx.doLayout(&text_measure_ctx);
+    const second_scroll = state.sidebar_scroll.?;
+    try std.testing.expectApproxEqAbs(@as(f32, 73), ctx.tree.getConst(second_scroll).kind.scroll_area.scroll_y, 0.01);
+}
+
 test "browser list window keeps rendered body aligned with logical row offset" {
     var state = State{};
     defer state.entries.deinit(allocator);
@@ -4873,10 +5037,14 @@ fn addFolderTreeItem(
     label: []const u8,
     expanded: bool,
     selected: bool,
+    has_children: bool,
 ) !goop.NodeHandle {
     const handle = try ctx.tree.addChild(parent, .{ .tree_item = .{
         .label = label,
         .group = 91,
+        .icon = .folder,
+        .icon_color = .rgb(74, 120, 201),
+        .has_children = has_children,
         .expanded = expanded,
         .selected = selected,
     } });
@@ -4886,15 +5054,12 @@ fn addFolderTreeItem(
     return handle;
 }
 
-fn shouldRenderFolderTreeChild(index: usize, child_path: []const u8, current_dir: []const u8) bool {
-    return index < folder_tree_max_visible_children or pathHasDirectoryPrefix(current_dir, child_path);
-}
-
 fn buildFolderTreeBranch(
     state: *State,
     ctx: *goop.Context,
     parent: goop.NodeHandle,
     dir_path: []const u8,
+    parent_expansion: FolderTreeExpansion,
 ) !void {
     var children: std.ArrayListUnmanaged(FolderTreeChild) = .empty;
     defer {
@@ -4906,10 +5071,12 @@ fn buildFolderTreeBranch(
     try collectFolderTreeChildren(io, dir_path, &children);
 
     for (children.items, 0..) |child, index| {
-        if (!shouldRenderFolderTreeChild(index, child.path, state.current_dir)) continue;
+        if (!shouldRenderFolderTreeChildForExpansion(state, parent_expansion, index, child.path)) continue;
 
         const selected = std.mem.eql(u8, child.path, state.current_dir);
-        const expanded = selected or (!selected and pathHasDirectoryPrefix(state.current_dir, child.path));
+        const expansion = folderTreeExpansion(state, child.path);
+        const expanded = expansion != .collapsed;
+        const has_children = folderTreeDirectoryHasChildren(io, child.path);
         const handle = try addFolderTreeItem(
             state,
             ctx,
@@ -4918,8 +5085,9 @@ fn buildFolderTreeBranch(
             try allocUiUtf8Lossy(state, child.name),
             expanded,
             selected,
+            has_children,
         );
-        if (expanded) try buildFolderTreeBranch(state, ctx, handle, child.path);
+        if (expanded) try buildFolderTreeBranch(state, ctx, handle, child.path, expansion);
     }
 }
 
@@ -4927,16 +5095,18 @@ fn buildFolderTree(state: *State, ctx: *goop.Context, parent: goop.NodeHandle) !
     const tree_root = try ctx.tree.addChild(parent, .{ .container = .{ .direction = .column } });
     ctx.tree.get(tree_root).style_override = fileManagerFolderTreeStyle(state);
 
+    const root_expansion = folderTreeExpansion(state, "/");
     const root = try addFolderTreeItem(
         state,
         ctx,
         tree_root,
         "/",
         try folderTreeLabel(state, "/"),
-        true,
+        root_expansion != .collapsed,
         std.mem.eql(u8, state.current_dir, "/"),
+        if (state.io) |io| folderTreeDirectoryHasChildren(io, "/") else false,
     );
-    try buildFolderTreeBranch(state, ctx, root, "/");
+    if (root_expansion != .collapsed) try buildFolderTreeBranch(state, ctx, root, "/", root_expansion);
 }
 
 fn buildWidgetTree(state: *State) !void {
@@ -4944,6 +5114,7 @@ fn buildWidgetTree(state: *State) !void {
     const transparent = goop.Color.rgba(0, 0, 0, 0);
 
     captureFilePanelViewport(state, ctx);
+    captureSidebarScroll(state, ctx);
     if (state.ui_root) |root| {
         if (ctx.isAlive(root)) try ctx.removeWidget(root);
     }
@@ -5068,7 +5239,8 @@ fn buildWidgetTree(state: *State) !void {
         ctx.tree.get(sidebar_header).style_override = fileManagerPaneHeaderStyle(state);
         _ = try ctx.tree.addChild(sidebar_header, .{ .text = .{ .content = "Browse" } });
 
-        const sidebar_scroll = try ctx.tree.addChild(sidebar, .{ .scroll_area = .{} });
+        const sidebar_scroll = try ctx.tree.addChild(sidebar, .{ .scroll_area = .{ .scroll_y = state.sidebar_scroll_y } });
+        state.sidebar_scroll = sidebar_scroll;
         ctx.tree.get(sidebar_scroll).style_override = .{
             .bg = transparent,
             .border_width = 0,
@@ -5787,6 +5959,20 @@ pub fn main(init: std.process.Init) !void {
             if (index >= state.places.items.len) continue;
             rebuild_ui = try setCurrentDirectory(&state, state.places.items[index].path, true) or rebuild_ui;
             break;
+        }
+
+        for (state.folder_tree_handles.items, 0..) |handle, index| {
+            if (!ctx.treeItemToggled(handle)) continue;
+            if (index >= state.folder_tree_paths.items.len) continue;
+            const path = state.folder_tree_paths.items[index];
+            const previous_expansion = folderTreeExpansion(&state, path);
+            if (previous_expansion == .partial) {
+                rebuild_ui = try setFolderTreePathExpanded(&state, path, true) or rebuild_ui;
+            } else {
+                const expanded = ctx.isExpanded(handle);
+                rebuild_ui = try setFolderTreePathExpanded(&state, path, expanded) or rebuild_ui;
+                if (!expanded and std.mem.eql(u8, path, state.current_dir)) rebuild_ui = true;
+            }
         }
 
         for (state.folder_tree_handles.items, 0..) |handle, index| {
