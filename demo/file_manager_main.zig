@@ -4854,8 +4854,8 @@ fn fileManagerMenuBarStyle(state: *const State) goop.Style {
     return .{
         .bg = fileManagerChromeColor(),
         .border_width = 0,
-        .padding = uiEdgesSymmetric(state, 10, 7),
-        .spacing = uiPx(state, 4),
+        .padding = uiEdgesSymmetric(state, 6, 2),
+        .spacing = uiPx(state, 0),
         .border_radius = 0,
     };
 }
@@ -4864,8 +4864,8 @@ fn fileManagerMenuStyle(state: *const State) goop.Style {
     return .{
         .bg = .rgba(0, 0, 0, 0),
         .border_width = 0,
-        .padding = uiEdgesSymmetric(state, 8, 5),
-        .border_radius = uiPx(state, 4),
+        .padding = uiEdgesSymmetric(state, 6, 2),
+        .border_radius = uiPx(state, 2),
     };
 }
 
@@ -4873,8 +4873,8 @@ fn fileManagerMenuRootButtonStyle(state: *const State) goop.Style {
     return .{
         .bg = .rgba(0, 0, 0, 0),
         .border_width = 0,
-        .padding = uiEdgesSymmetric(state, 8, 5),
-        .border_radius = uiPx(state, 4),
+        .padding = uiEdgesSymmetric(state, 6, 2),
+        .border_radius = uiPx(state, 2),
     };
 }
 
