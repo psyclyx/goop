@@ -277,6 +277,9 @@ typedef struct {
 
 typedef struct {
     goop_string_t label;
+    goop_string_t shortcut;
+    bool checked;
+    bool disabled;
 } goop_menu_item_widget_t;
 
 typedef struct {

@@ -267,6 +267,9 @@ const CMenuWidget = extern struct {
 
 const CMenuItemWidget = extern struct {
     label: CStr = .{},
+    shortcut: CStr = .{},
+    checked: bool = false,
+    disabled: bool = false,
 };
 
 const CDragValueWidget = extern struct {
@@ -897,7 +900,12 @@ fn buildWidgetKind(desc: CWidget) widget.WidgetKind {
             .y = desc.data.tooltip.y,
             .z_index = desc.data.tooltip.z_index,
         } },
-        .menu_item => .{ .menu_item = .{ .label = fromCStr(desc.data.menu_item.label) } },
+        .menu_item => .{ .menu_item = .{
+            .label = fromCStr(desc.data.menu_item.label),
+            .shortcut = fromCStr(desc.data.menu_item.shortcut),
+            .checked = desc.data.menu_item.checked,
+            .enabled = !desc.data.menu_item.disabled,
+        } },
         .drag_value => .{ .drag_value = .{
             .value = desc.data.drag_value.value,
             .min = desc.data.drag_value.min,
@@ -1059,6 +1067,9 @@ fn updateWidgetKind(kind: *widget.WidgetKind, desc: CWidget) bool {
         .menu_item => |*menu_item| {
             if (desc.kind != .menu_item) return false;
             menu_item.label = fromCStr(desc.data.menu_item.label);
+            menu_item.shortcut = fromCStr(desc.data.menu_item.shortcut);
+            menu_item.checked = desc.data.menu_item.checked;
+            menu_item.enabled = !desc.data.menu_item.disabled;
         },
         .drag_value => |*drag_value| {
             if (desc.kind != .drag_value) return false;
@@ -1775,10 +1786,38 @@ test "c api smoke" {
     try std.testing.expect(draw_list.len > 0);
 }
 
+test "c api menu item exposes checked state and defaults to enabled" {
+    const opts = CContextOptions{ .width = 320, .height = 200 };
+    const ctx = goop_context_create(&opts) orelse return error.OutOfMemory;
+    defer goop_context_destroy(ctx);
+
+    var popup: CHandle = .{};
+    try std.testing.expect(goop_context_add_root(ctx, &CWidget{
+        .kind = .popup,
+        .data = .{ .popup = .{} },
+    }, &popup));
+
+    var item: CHandle = .{};
+    try std.testing.expect(goop_context_add_child(ctx, popup, &CWidget{
+        .kind = .menu_item,
+        .data = .{ .menu_item = .{
+            .label = toCStr("Sidebar"),
+            .shortcut = toCStr("Ctrl+B"),
+            .checked = true,
+        } },
+    }, &item));
+
+    const internal = ctx.ctx.tree.getConst(handleFromC(item)).kind.menu_item;
+    try std.testing.expect(internal.enabled);
+    try std.testing.expectEqualStrings("Ctrl+B", internal.shortcut);
+    try std.testing.expect(goop_context_is_checked(ctx, item));
+}
+
 test "c header parses" {
     const c = @cImport({
         @cInclude("goop.h");
     });
     try std.testing.expect(@sizeOf(c.goop_node_handle_t) == @sizeOf(CHandle));
+    try std.testing.expect(@sizeOf(c.goop_menu_item_widget_t) == @sizeOf(CMenuItemWidget));
     try std.testing.expect(@sizeOf(c.goop_widget_t) > 0);
 }

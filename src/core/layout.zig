@@ -917,9 +917,9 @@ fn emitPopup(
     c.Clay__ConfigureOpenElement(.{
         .id = nodeId(handle),
         .layout = .{
-            .sizing = popupSizing(tree, handle),
+            .sizing = popupSizing(tree, handle, resolved, theme),
             .padding = clayPadding(resolved.padding),
-            .childGap = @intFromFloat(theme.spacing),
+            .childGap = @intFromFloat(resolved.spacing),
             .childAlignment = .{},
             .layoutDirection = c.CLAY_TOP_TO_BOTTOM,
         },
@@ -1031,19 +1031,6 @@ fn emitMenuItem(
         .border = .{},
         .userData = null,
     });
-    c.Clay__OpenTextElement(
-        clayString(if (item.checked) "✓" else ""),
-        c.Clay__StoreTextElementConfig(.{
-            .userData = null,
-            .textColor = clayColor(text_color),
-            .fontId = 0,
-            .fontSize = @intFromFloat(resolved.font_size),
-            .letterSpacing = 0,
-            .lineHeight = 0,
-            .wrapMode = c.CLAY_TEXT_WRAP_NONE,
-            .textAlignment = c.CLAY_TEXT_ALIGN_LEFT,
-        }),
-    );
     c.Clay__CloseElement();
 
     c.Clay__OpenElement();
@@ -1625,6 +1612,13 @@ fn growSizing() c.Clay_SizingAxis {
     };
 }
 
+fn fitSizingMin(min: f32) c.Clay_SizingAxis {
+    return .{
+        .size = .{ .minMax = .{ .min = @max(min, 0), .max = 0 } },
+        .type = c.CLAY__SIZING_TYPE_FIT,
+    };
+}
+
 fn fixedSizing(px: f32) c.Clay_SizingAxis {
     return .{
         .size = .{ .minMax = .{ .min = px, .max = px } },
@@ -1916,17 +1910,70 @@ fn splitterGapThickness(splitter: widget.WidgetKind.Splitter) f32 {
     return @max(@min(splitter.gap_thickness, splitter.thickness), 1);
 }
 
-fn popupSizing(tree: *const widget.Tree, handle: widget.NodeHandle) c.Clay_Sizing {
+fn popupSizing(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    resolved: style_mod.ResolvedStyle,
+    theme: style_mod.Theme,
+) c.Clay_Sizing {
+    var min_width = popupMenuContentMinWidth(tree, handle, resolved, theme) orelse 0;
     if (tree.getConst(handle).parent) |parent_handle| {
         const parent = tree.getConst(parent_handle);
         if (parent.kind == .dropdown and parent.layout_rect.w > 0) {
-            return .{
-                .width = fixedSizing(parent.layout_rect.w),
-                .height = .{},
-            };
+            min_width = @max(min_width, parent.layout_rect.w);
         }
     }
+    if (min_width > 0) {
+        return .{
+            .width = fitSizingMin(min_width),
+            .height = .{},
+        };
+    }
     return .{};
+}
+
+fn popupMenuContentMinWidth(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    resolved: style_mod.ResolvedStyle,
+    theme: style_mod.Theme,
+) ?f32 {
+    var width: f32 = 0;
+    var found_menu_item = false;
+    const text_ctx = currentTextMeasureCtx();
+
+    var iter = tree.children(handle);
+    while (iter.next()) |child| {
+        const child_node = tree.getConst(child);
+        if (child_node.kind != .menu_item) continue;
+        found_menu_item = true;
+
+        const item_resolved = child_node.style_override.resolve(theme);
+        const has_submenu = directPopupChild(tree, child) != null;
+        width = @max(width, menuItemContentMinWidth(child_node.kind.menu_item, item_resolved, has_submenu, text_ctx));
+    }
+
+    if (!found_menu_item) return null;
+    return width + resolved.padding.left + resolved.padding.right;
+}
+
+fn menuItemContentMinWidth(
+    item: widget.WidgetKind.MenuItem,
+    resolved: style_mod.ResolvedStyle,
+    has_submenu: bool,
+    text_ctx: ?*const TextMeasureCtx,
+) f32 {
+    const reserve_width = @max(resolved.font_size, 12);
+    const gap = @max(resolved.padding.left * 0.75, 6);
+    const label_width = measureTextDimensions(item.label, resolved.font_size, text_ctx).width;
+
+    var width = resolved.padding.left + resolved.padding.right + reserve_width + gap + label_width;
+    if (item.shortcut.len > 0) {
+        const shortcut_text_width = measureTextDimensions(item.shortcut, resolved.font_size, text_ctx).width;
+        width += gap + @max(shortcut_text_width + gap, reserve_width);
+    }
+    if (has_submenu) width += gap + reserve_width;
+    return width;
 }
 
 fn treeDepth(tree: *const widget.Tree, handle: widget.NodeHandle) u32 {
@@ -2321,6 +2368,51 @@ test "popup layout is clamped into the viewport" {
     const popup_rect = tree.getConst(popup).layout_rect;
     try std.testing.expect(popup_rect.x + popup_rect.w <= root_rect.x + root_rect.w + 0.01);
     try std.testing.expect(popup_rect.y + popup_rect.h <= root_rect.y + root_rect.h + 0.01);
+}
+
+test "menu popup layout reserves intrinsic item width" {
+    const allocator = std.testing.allocator;
+    const min_memory = c.Clay_MinMemorySize();
+    const arena = try allocator.alloc(u8, min_memory);
+    defer allocator.free(arena);
+
+    const clay_arena = c.Clay_Arena{
+        .capacity = min_memory,
+        .memory = arena.ptr,
+    };
+    _ = c.Clay_Initialize(clay_arena, .{
+        .width = 500,
+        .height = 240,
+    }, .{});
+    defer c.Clay_SetCurrentContext(null);
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const bar = try tree.addChild(root, .{ .menu_bar = .{} });
+    const file = try tree.addChild(bar, .{ .menu = .{ .label = "File" } });
+    const popup = try tree.addChild(file, .{ .popup = .{ .placement = .below_start } });
+    _ = try tree.addChild(popup, .{ .menu_item = .{
+        .label = "Open Link Target",
+        .shortcut = "Ctrl+Shift+O",
+        .checked = true,
+    } });
+
+    const theme = style_mod.Theme.default;
+    run(&tree, theme, null);
+
+    const popup_rect = tree.getConst(popup).layout_rect;
+    const popup_resolved = tree.getConst(popup).style_override.resolve(theme);
+    const item_resolved = (style_mod.Style{}).resolve(theme);
+    const expected_width = popup_resolved.padding.left + popup_resolved.padding.right +
+        menuItemContentMinWidth(.{
+            .label = "Open Link Target",
+            .shortcut = "Ctrl+Shift+O",
+            .checked = true,
+        }, item_resolved, false, null);
+
+    try std.testing.expect(popup_rect.w >= expected_width - 0.01);
 }
 
 test "splitter layout assigns both panes" {

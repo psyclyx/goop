@@ -398,7 +398,12 @@ pub const Context = struct {
 
     /// Check if a checkbox is currently checked.
     pub fn isChecked(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.checkbox.checked;
+        const node = self.tree.getConst(handle);
+        return switch (node.kind) {
+            .checkbox => node.kind.checkbox.checked,
+            .menu_item => node.kind.menu_item.checked,
+            else => false,
+        };
     }
 
     /// Check if a radio button is currently selected.

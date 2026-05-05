@@ -1164,7 +1164,7 @@ fn emitMenu(
     const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
-        .color = if (menuPopupVisible(tree, handle))
+        .color = if (menuHasActiveFill(tree, handle, node))
             theme.bg_active
         else
             interactionBg(node, resolved, theme),
@@ -1251,7 +1251,20 @@ fn emitMenuItem(
 
     const check_bounds = customTextBounds(rect, resolved, rect.x + resolved.padding.left, reserve_width);
     if (item.checked) {
-        try appendTextCommand(commands, allocator, check_bounds, "✓", text_color, resolved.font_size, .start, .visible);
+        const indicator_size = @max(@min(@min(check_bounds.w, check_bounds.h) * 0.45, resolved.font_size * 0.5), 4);
+        const indicator_bounds = Rect{
+            .x = check_bounds.x + (check_bounds.w - indicator_size) * 0.5,
+            .y = check_bounds.y + (check_bounds.h - indicator_size) * 0.5,
+            .w = indicator_size,
+            .h = indicator_size,
+        };
+        try commands.append(allocator, .{ .box = .{
+            .bounds = indicator_bounds,
+            .color = text_color,
+            .border_color = text_color,
+            .border_width = 0,
+            .corner_radius = indicator_size * 0.5,
+        } });
     }
 
     var label_right = rectRight(rect) - resolved.padding.right;
@@ -1870,6 +1883,22 @@ fn directPopupChild(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget
 fn menuPopupVisible(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     const popup = directPopupChild(tree, handle) orelse return false;
     return popupShouldDraw(tree, popup);
+}
+
+fn menuHasActiveFill(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node) bool {
+    if (menuPopupVisible(tree, handle)) return true;
+    if (!node.interaction.hovered) return false;
+
+    const parent_handle = node.parent orelse return false;
+    const parent = tree.getConst(parent_handle);
+    if (parent.kind != .menu_bar) return false;
+
+    var iter = tree.children(parent_handle);
+    while (iter.next()) |child| {
+        const popup = directPopupChild(tree, child) orelse continue;
+        if (popupShouldDraw(tree, popup)) return true;
+    }
+    return false;
 }
 
 fn emitMenuArrow(
@@ -2752,6 +2781,84 @@ test "popup paint can be split from main paint" {
     try std.testing.expect(popup_paint.commands[0] == .box);
     try std.testing.expectApproxEqAbs(@as(f32, 0), popup_paint.commands[0].box.bounds.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 0), popup_paint.commands[0].box.bounds.y, 0.01);
+}
+
+test "checked menu item emits checked indicator" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const item = try tree.addChild(root, .{ .menu_item = .{
+        .label = "Sidebar",
+        .checked = true,
+    } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 140, .h = 36 };
+    tree.get(item).layout_rect = .{ .x = 0, .y = 0, .w = 140, .h = 28 };
+
+    const theme = style.Theme.default;
+    var paint = try generatePaint(&tree, theme, allocator, null);
+    defer freePaintList(&paint, allocator);
+
+    var found_indicator = false;
+    for (paint.commands) |command| {
+        if (command != .box) continue;
+        const box = command.box;
+        if (box.bounds.w > 0 and box.bounds.w < 10 and box.bounds.h > 0 and box.bounds.h < 10) {
+            found_indicator = true;
+            try std.testing.expectEqual(theme.fg, box.color);
+        }
+    }
+    try std.testing.expect(found_indicator);
+}
+
+test "hovered top-level menu uses active fill while menu bar is open" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const bar = try tree.addChild(root, .{ .menu_bar = .{} });
+    const file = try tree.addChild(bar, .{ .menu = .{ .label = "File" } });
+    const file_popup = try tree.addChild(file, .{ .popup = .{
+        .placement = .below_start,
+        .visible = true,
+    } });
+    const edit = try tree.addChild(bar, .{ .menu = .{ .label = "Edit" } });
+    _ = try tree.addChild(edit, .{ .popup = .{
+        .placement = .below_start,
+        .visible = false,
+    } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 320, .h = 160 };
+    tree.get(bar).layout_rect = .{ .x = 0, .y = 0, .w = 320, .h = 24 };
+    tree.get(file).layout_rect = .{ .x = 4, .y = 2, .w = 42, .h = 20 };
+    tree.get(file_popup).layout_rect = .{ .x = 4, .y = 24, .w = 120, .h = 28 };
+    tree.get(file).interaction.focused = true;
+    tree.get(edit).layout_rect = .{ .x = 46, .y = 2, .w = 42, .h = 20 };
+    tree.get(edit).interaction.hovered = true;
+
+    const theme = style.Theme.default;
+    var paint = try generatePaintWithoutFloating(&tree, theme, allocator, null);
+    defer freePaintList(&paint, allocator);
+
+    var found_edit_box = false;
+    for (paint.commands) |command| {
+        if (command != .box) continue;
+        const box = command.box;
+        if (box.bounds.x == tree.getConst(edit).layout_rect.x and
+            box.bounds.y == tree.getConst(edit).layout_rect.y and
+            box.bounds.w == tree.getConst(edit).layout_rect.w and
+            box.bounds.h == tree.getConst(edit).layout_rect.h)
+        {
+            found_edit_box = true;
+            try std.testing.expectEqual(theme.bg_active, box.color);
+        }
+    }
+    try std.testing.expect(found_edit_box);
 }
 
 test "table cells emit custom draw commands after text contents" {
