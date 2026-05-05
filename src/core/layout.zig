@@ -787,6 +787,7 @@ fn emitMenuBar(
     });
     emitChildrenSkippingPopups(tree, handle, theme);
     emitPopupChildren(tree, handle, theme);
+    c.Clay__CloseElement();
 }
 
 fn emitToolbar(
@@ -898,7 +899,6 @@ fn emitMenu(
             .textAlignment = c.CLAY_TEXT_ALIGN_LEFT,
         }),
     );
-    c.Clay__CloseElement();
 
     emitPopupChildren(tree, handle, theme);
     c.Clay__CloseElement();

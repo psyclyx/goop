@@ -5579,8 +5579,12 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        // Dispatch events — use poll with timeout when --timeout is set
-        if (state.timeout_ns != null) {
+        // Dispatch events. Pending redraws must not block here; the first
+        // frame callback is only requested after the first render below.
+        if (state.needs_redraw and !state.frame_pending) {
+            _ = wl.wl_display_dispatch_pending(display);
+            _ = wl.wl_display_flush(display);
+        } else if (state.timeout_ns != null) {
             // Non-blocking: flush + prepare read, poll with 100ms timeout, then read
             while (wl.wl_display_prepare_read(display) != 0)
                 _ = wl.wl_display_dispatch_pending(display);
