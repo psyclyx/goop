@@ -2469,7 +2469,7 @@ fn formatSizeText(buffer: []u8, kind: BrowserEntryKind, size_bytes: u64, target_
     if (kind == .directory or target_kind == .directory) return "";
     if (size_bytes < 1024) return std.fmt.bufPrint(buffer, "{} B", .{size_bytes}) catch "";
 
-    const units = [_][]const u8{ "KB", "MB", "GB", "TB" };
+    const units = [_][]const u8{ "B", "KB", "MB", "GB", "TB" };
     var scaled = @as(f64, @floatFromInt(size_bytes));
     var unit_index: usize = 0;
     while (scaled >= 1024 and unit_index + 1 < units.len) : (unit_index += 1) {
@@ -4110,6 +4110,18 @@ fn initBrowserListTestState(state: *State, ctx: *goop.Context, text_measure_ctx:
     if (try refreshAssetViewportIfNeeded(state)) {
         ctx.doLayout(text_measure_ctx);
     }
+}
+
+test "file browser formats file sizes with correct units" {
+    var buf: [24]u8 = undefined;
+
+    try std.testing.expectEqualStrings("0 B", formatSizeText(buf[0..], .file, 0, null));
+    try std.testing.expectEqualStrings("1023 B", formatSizeText(buf[0..], .file, 1023, null));
+    try std.testing.expectEqualStrings("1.0 KB", formatSizeText(buf[0..], .file, 1024, null));
+    try std.testing.expectEqualStrings("1.5 KB", formatSizeText(buf[0..], .file, 1536, null));
+    try std.testing.expectEqualStrings("1.0 MB", formatSizeText(buf[0..], .file, 1024 * 1024, null));
+    try std.testing.expectEqualStrings("", formatSizeText(buf[0..], .directory, 4096, null));
+    try std.testing.expectEqualStrings("", formatSizeText(buf[0..], .symlink, 4096, .directory));
 }
 
 test "file browser detail wrapper inserts line breaks for long names" {
