@@ -484,6 +484,14 @@ const State = struct {
     context_x: f32 = 0,
     context_y: f32 = 0,
     context_target_path: ?[]u8 = null,
+    rename_input_handle: ?goop.NodeHandle = null,
+    rename_path: ?[]u8 = null,
+    rename_input: goop.widget.WidgetKind.TextInput = .{},
+    rename_commit_requested: bool = false,
+    rename_cancel_requested: bool = false,
+    primary_release_pending: bool = false,
+    primary_release_x: f32 = 0,
+    primary_release_y: f32 = 0,
     row_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
     name_cell_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
     grid_handles: std.ArrayListUnmanaged(goop.NodeHandle) = .empty,
@@ -1750,10 +1758,16 @@ fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, serial: u32, _: u32, key:
             ctx.tree.getConst(handle).kind == .text_input
         else
             false;
+        const focused_is_rename_input = if (focused_handle) |handle|
+            if (state.rename_input_handle) |rename_handle| handle.eql(rename_handle) else false
+        else
+            false;
 
         switch (evdevToKeycode(scancode)) {
             .enter => {
-                if (state.address_input_handle) |handle| {
+                if (focused_is_rename_input) {
+                    state.rename_commit_requested = true;
+                } else if (state.address_input_handle) |handle| {
                     if (ctx.isAlive(handle) and ctx.tree.getConst(handle).interaction.focused) {
                         state.address_submit_requested = true;
                     }
@@ -1765,7 +1779,9 @@ fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, serial: u32, _: u32, key:
                 }
             },
             .escape => {
-                if (!focused_is_text_input) {
+                if (state.rename_path != null) {
+                    state.rename_cancel_requested = true;
+                } else if (!focused_is_text_input) {
                     state.pending_command = .clear_selection;
                 }
             },
@@ -1835,6 +1851,11 @@ fn pointerButton(data: ?*anyopaque, _: ?*wl.wl_pointer, serial: u32, time_ms: u3
     // Use last known mouse position from Wayland pointer events
     const mx = state.mouse_x;
     const my = state.mouse_y;
+    if (goop_button == .left and goop_state == .released) {
+        state.primary_release_pending = true;
+        state.primary_release_x = mx;
+        state.primary_release_y = my;
+    }
     ctx.pushEvent(.{ .mouse_button = .{
         .button = goop_button,
         .state = goop_state,
@@ -2037,6 +2058,7 @@ fn clearAssetTracking(state: *State) void {
     state.asset_table = null;
     state.asset_table_body = null;
     state.asset_grid = null;
+    state.rename_input_handle = null;
     state.asset_visible_start = 0;
     state.asset_visible_end = 0;
     state.asset_visible_columns = 0;
@@ -2050,6 +2072,7 @@ fn clearAssetBodyTracking(state: *State) void {
     state.asset_view_root = null;
     state.asset_table_body = null;
     state.asset_grid = null;
+    state.rename_input_handle = null;
     state.asset_visible_start = 0;
     state.asset_visible_end = 0;
     state.asset_visible_columns = 0;
@@ -2110,6 +2133,7 @@ fn clearUiTracking(state: *State) void {
     state.context_open = null;
     state.context_copy_path = null;
     state.context_open_link_target = null;
+    state.rename_input_handle = null;
     clearAssetTracking(state);
     state.place_handles.clearRetainingCapacity();
     state.folder_tree_handles.clearRetainingCapacity();
@@ -2147,6 +2171,7 @@ fn deinitBrowserState(state: *State) void {
     freeOptionalOwnedSlice(&state.selected_path);
     freeOptionalOwnedSlice(&state.last_click_path);
     freeOptionalOwnedSlice(&state.context_target_path);
+    freeOptionalOwnedSlice(&state.rename_path);
 }
 
 fn trackUiString(state: *State, text: []u8) ![]const u8 {
@@ -2397,6 +2422,13 @@ fn syncAddressInputFromWidget(state: *State, ctx: *goop.Context) void {
     if (!ctx.isAlive(handle)) return;
     if (ctx.tree.getConst(handle).kind != .text_input) return;
     state.address_input = ctx.tree.getConst(handle).kind.text_input;
+}
+
+fn syncRenameInputFromWidget(state: *State, ctx: *goop.Context) void {
+    const handle = state.rename_input_handle orelse return;
+    if (!ctx.isAlive(handle)) return;
+    if (ctx.tree.getConst(handle).kind != .text_input) return;
+    state.rename_input = ctx.tree.getConst(handle).kind.text_input;
 }
 
 fn addressInputPathAlloc(state: *const State) ![]u8 {
@@ -2736,6 +2768,91 @@ fn setLastClickPath(state: *State, path: ?[]const u8) !void {
     if (path) |value| state.last_click_path = try allocator.dupe(u8, value);
 }
 
+fn clearRenameState(state: *State) void {
+    freeOptionalOwnedSlice(&state.rename_path);
+    state.rename_input = .{};
+    state.rename_input_handle = null;
+    state.rename_commit_requested = false;
+    state.rename_cancel_requested = false;
+}
+
+fn isRenamingPath(state: *const State, path: []const u8) bool {
+    const rename_path = state.rename_path orelse return false;
+    return std.mem.eql(u8, rename_path, path);
+}
+
+fn beginRenameEntry(state: *State, ctx: *goop.Context, entry: BrowserEntry) !void {
+    clearRenameState(state);
+    state.rename_path = try allocator.dupe(u8, entry.path);
+    state.rename_input = .{};
+    state.rename_input.insertSlice(entry.name);
+    state.rename_input.selection_anchor = 0;
+    state.rename_input.cursor = state.rename_input.len;
+    state.status_note = null;
+    ctx.invalidate();
+}
+
+fn cancelActiveRename(state: *State) bool {
+    if (state.rename_path == null) return false;
+    clearRenameState(state);
+    state.status_note = null;
+    return true;
+}
+
+const RenameFinish = enum {
+    inactive,
+    closed,
+    blocked,
+};
+
+fn validRenameFileName(name: []const u8) bool {
+    return name.len > 0 and
+        std.mem.indexOfScalar(u8, name, '/') == null and
+        std.mem.indexOfScalar(u8, name, 0) == null;
+}
+
+fn commitActiveRename(state: *State) !RenameFinish {
+    const old_path = state.rename_path orelse return .inactive;
+    const new_name = state.rename_input.content();
+    if (!validRenameFileName(new_name)) {
+        state.status_note = "File names cannot be empty or contain '/'.";
+        return .blocked;
+    }
+
+    if (std.mem.eql(u8, new_name, std.fs.path.basename(old_path))) {
+        clearRenameState(state);
+        state.status_note = null;
+        return .closed;
+    }
+
+    const new_path = try joinPath(allocator, state.current_dir, new_name);
+    defer allocator.free(new_path);
+
+    const io = state.io orelse {
+        state.status_note = "Unable to rename this file.";
+        return .blocked;
+    };
+    if (std.Io.Dir.cwd().statFile(io, new_path, .{ .follow_symlinks = false })) |_| {
+        state.status_note = "A file with that name already exists.";
+        return .blocked;
+    } else |_| {}
+
+    std.Io.Dir.renameAbsolute(old_path, new_path, io) catch {
+        state.status_note = "Unable to rename this file.";
+        return .blocked;
+    };
+
+    clearSelectedPaths(state);
+    try appendSelectedPathIfMissing(state, new_path);
+    try setSelectedPath(state, new_path);
+    freeOptionalOwnedSlice(&state.last_click_path);
+    state.last_click_ms = 0;
+    clearRenameState(state);
+    try loadDirectoryEntries(state);
+    state.status_note = "Renamed file.";
+    return .closed;
+}
+
 fn currentPrimaryClickTimestampMs(ctx: *const goop.Context, io: std.Io) u64 {
     const event_ms = ctx.lastPrimaryPressTimestampMs();
     if (event_ms != 0) return event_ms;
@@ -3032,6 +3149,13 @@ fn selectedSymlinkDirectoryEntry(state: *const State) ?*const BrowserEntry {
 fn entryForPath(state: *const State, path: []const u8) ?*const BrowserEntry {
     for (state.entries.items) |*entry| {
         if (std.mem.eql(u8, entry.path, path)) return entry;
+    }
+    return null;
+}
+
+fn entryIndexForPath(state: *const State, path: []const u8) ?usize {
+    for (state.entries.items, 0..) |entry, index| {
+        if (std.mem.eql(u8, entry.path, path)) return index;
     }
     return null;
 }
@@ -3460,7 +3584,7 @@ fn addNameHeaderCell(state: *const State, ctx: *goop.Context, row: goop.NodeHand
     _ = try ctx.tree.addChild(cell, .{ .text = .{ .content = text, .overflow = .ellipsis } });
 }
 
-fn addNameCell(state: *const State, ctx: *goop.Context, row: goop.NodeHandle, text: []const u8) !goop.NodeHandle {
+fn addNameCell(state: *State, ctx: *goop.Context, row: goop.NodeHandle, entry: BrowserEntry) !goop.NodeHandle {
     const cell = try ctx.tree.addChild(row, .{ .table_cell = .{} });
     ctx.tree.get(cell).style_override = .{
         .border_width = browserTableDividerWidthPx(state),
@@ -3472,7 +3596,17 @@ fn addNameCell(state: *const State, ctx: *goop.Context, row: goop.NodeHandle, te
         },
     };
     ctx.tree.get(cell).custom_draw = true;
-    _ = try ctx.tree.addChild(cell, .{ .text = .{ .content = text, .overflow = .ellipsis } });
+    if (isRenamingPath(state, entry.path)) {
+        const input = try ctx.tree.addChild(cell, .{ .text_input = state.rename_input });
+        ctx.tree.get(input).style_override = fileManagerRenameInputStyle(state);
+        state.rename_input_handle = input;
+        focusWidget(ctx, input);
+    } else {
+        _ = try ctx.tree.addChild(cell, .{ .text = .{
+            .content = try allocAssetEntryNameText(state, entry),
+            .overflow = .ellipsis,
+        } });
+    }
     return cell;
 }
 
@@ -3737,7 +3871,7 @@ fn buildListAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
             .border_width = browserTableDividerWidthPx(state),
         };
         try state.row_handles.append(allocator, row);
-        try state.name_cell_handles.append(allocator, try addNameCell(state, ctx, row, try allocAssetEntryNameText(state, entry)));
+        try state.name_cell_handles.append(allocator, try addNameCell(state, ctx, row, entry));
         try addTextCell(state, ctx, row, try allocAssetFormattedTimestamp(state, entry.modified_unix));
         try addTextCell(state, ctx, row, entry.typeLabel());
         try addTextCell(state, ctx, row, try allocAssetFormattedSize(state, entry.kind, entry.size_bytes, entry.target_kind));
@@ -4132,12 +4266,76 @@ fn debugWidgetKindName(kind: goop.widget.WidgetKind) []const u8 {
     };
 }
 
+fn focusWidget(ctx: *goop.Context, handle: goop.NodeHandle) void {
+    for (ctx.tree.nodes.items) |*node| {
+        if (node.alive) node.interaction.focused = false;
+    }
+    if (ctx.isAlive(handle)) {
+        ctx.tree.get(handle).interaction.focused = true;
+        ctx.runtime.mouse.focused = handle;
+    } else {
+        ctx.runtime.mouse.focused = null;
+    }
+}
+
 fn focusedNodeHandle(ctx: *const goop.Context) ?goop.NodeHandle {
     for (ctx.tree.nodes.items, 0..) |node, index| {
         if (!node.alive or !node.interaction.focused) continue;
         return ctx.tree.handleFromIndex(@intCast(index));
     }
     return null;
+}
+
+fn entryNameTextRect(state: *const State, ctx: *const goop.Context, visible_index: usize, entry: BrowserEntry) ?goop.draw.Rect {
+    if (visible_index >= state.name_cell_handles.items.len) return null;
+    const cell = state.name_cell_handles.items[visible_index];
+    if (!ctx.isAlive(cell)) return null;
+
+    const node = ctx.tree.getConst(cell);
+    const resolved = node.style_override.resolve(ctx.theme);
+    const rect = node.layout_rect;
+    const x = rect.x + resolved.padding.left;
+    const available_w = @max(rect.w - resolved.padding.left - resolved.padding.right, 0);
+    const measured_w = goop.layout.measureTextDimensions(entry.name, ctx.theme.font_size, state.text_measure_ctx).width;
+    return .{
+        .x = x,
+        .y = rect.y + resolved.padding.top,
+        .w = @min(measured_w, available_w),
+        .h = @max(rect.h - resolved.padding.top - resolved.padding.bottom, 0),
+    };
+}
+
+fn pointInRect(x: f32, y: f32, rect: goop.draw.Rect) bool {
+    return x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h;
+}
+
+fn pointHitsEntryNameText(state: *const State, ctx: *const goop.Context, visible_index: usize, entry: BrowserEntry, x: f32, y: f32) bool {
+    const rect = entryNameTextRect(state, ctx, visible_index, entry) orelse return false;
+    return pointInRect(x, y, rect);
+}
+
+fn pointHitsVisibleAssetItem(state: *const State, ctx: *const goop.Context, x: f32, y: f32) bool {
+    for (state.row_handles.items) |handle| {
+        if (!ctx.isAlive(handle)) continue;
+        if (pointInRect(x, y, ctx.tree.getConst(handle).layout_rect)) return true;
+    }
+    for (state.grid_handles.items) |handle| {
+        if (!ctx.isAlive(handle)) continue;
+        if (pointInRect(x, y, ctx.tree.getConst(handle).layout_rect)) return true;
+    }
+    return false;
+}
+
+fn pointInFilePanelBlankSpace(state: *const State, ctx: *const goop.Context, x: f32, y: f32) bool {
+    const scroll_handle = state.file_panel_scroll orelse return false;
+    if (!ctx.isAlive(scroll_handle)) return false;
+    const rect = ctx.tree.getConst(scroll_handle).layout_rect;
+    if (!pointInRect(x, y, rect)) return false;
+
+    const scrollbar_reserve = @max(ctx.theme.thumb_width, uiPx(state, 16));
+    if (x >= rect.x + rect.w - scrollbar_reserve) return false;
+    if (y >= rect.y + rect.h - scrollbar_reserve) return false;
+    return !pointHitsVisibleAssetItem(state, ctx, x, y);
 }
 
 fn collectRowCellWidths(ctx: *const goop.Context, row_handle: ?goop.NodeHandle) [4]f32 {
@@ -4487,6 +4685,95 @@ test "file browser detail wrapper preserves leading whitespace" {
     defer allocator.free(wrapped);
 
     try std.testing.expect(std.mem.indexOf(u8, wrapped, "\n    second") != null);
+}
+
+test "file browser selected name text click starts inline rename" {
+    var state = State{};
+    defer deinitBrowserState(&state);
+
+    const text_measure_ctx = goop.TextMeasureCtx{
+        .measureFn = &browserTestMeasureText,
+    };
+
+    var ctx = try goop.Context.init(allocator, .{
+        .width = 960,
+        .height = 720,
+        .theme = browserTestTheme(),
+    });
+    defer ctx.deinit();
+
+    state.logical_width = 960;
+    state.logical_height = 720;
+    state.current_dir = try allocator.dupe(u8, "/tmp");
+    state.text_measure_ctx = &text_measure_ctx;
+    state.ctx = &ctx;
+    try state.entries.append(allocator, .{
+        .name = try allocator.dupe(u8, "rename-me"),
+        .path = try allocator.dupe(u8, "/tmp/rename-me"),
+        .kind = .file,
+        .size_bytes = 12,
+        .modified_unix = 0,
+    });
+    try appendSelectedPathIfMissing(&state, state.entries.items[0].path);
+    try setSelectedPath(&state, state.entries.items[0].path);
+
+    try buildWidgetTree(&state);
+    ctx.doLayout(&text_measure_ctx);
+    if (try refreshAssetViewportIfNeeded(&state)) ctx.doLayout(&text_measure_ctx);
+
+    const name_rect = entryNameTextRect(&state, &ctx, 0, state.entries.items[0]).?;
+    try std.testing.expect(pointHitsEntryNameText(&state, &ctx, 0, state.entries.items[0], name_rect.x + 1, name_rect.y + name_rect.h * 0.5));
+    try beginRenameEntry(&state, &ctx, state.entries.items[0]);
+    try buildWidgetTree(&state);
+    ctx.doLayout(&text_measure_ctx);
+
+    const input = state.rename_input_handle orelse return error.TestUnexpectedResult;
+    try std.testing.expect(ctx.tree.getConst(input).interaction.focused);
+    try std.testing.expectEqualStrings("rename-me", ctx.tree.getConst(input).kind.text_input.content());
+}
+
+test "file browser blank asset space can clear selection" {
+    var state = State{};
+    defer deinitBrowserState(&state);
+
+    const text_measure_ctx = goop.TextMeasureCtx{
+        .measureFn = &browserTestMeasureText,
+    };
+
+    var ctx = try goop.Context.init(allocator, .{
+        .width = 960,
+        .height = 720,
+        .theme = browserTestTheme(),
+    });
+    defer ctx.deinit();
+
+    state.logical_width = 960;
+    state.logical_height = 720;
+    state.current_dir = try allocator.dupe(u8, "/tmp");
+    state.text_measure_ctx = &text_measure_ctx;
+    state.ctx = &ctx;
+    try state.entries.append(allocator, .{
+        .name = try allocator.dupe(u8, "only-file"),
+        .path = try allocator.dupe(u8, "/tmp/only-file"),
+        .kind = .file,
+        .size_bytes = 12,
+        .modified_unix = 0,
+    });
+    try appendSelectedPathIfMissing(&state, state.entries.items[0].path);
+    try setSelectedPath(&state, state.entries.items[0].path);
+
+    try buildWidgetTree(&state);
+    ctx.doLayout(&text_measure_ctx);
+    if (try refreshAssetViewportIfNeeded(&state)) ctx.doLayout(&text_measure_ctx);
+
+    const scroll_rect = ctx.tree.getConst(state.file_panel_scroll.?).layout_rect;
+    const row_rect = ctx.tree.getConst(state.row_handles.items[0]).layout_rect;
+    const blank_x = scroll_rect.x + 24;
+    const blank_y = row_rect.y + row_rect.h + 24;
+
+    try std.testing.expect(pointInFilePanelBlankSpace(&state, &ctx, blank_x, blank_y));
+    try std.testing.expect(clearSelectionState(&state));
+    try std.testing.expectEqual(@as(usize, 0), state.selected_paths.items.len);
 }
 
 test "file browser selection detail does not resize the list at ui scale 2" {
@@ -5140,6 +5427,17 @@ fn fileManagerTextInputStyle(state: *const State) goop.Style {
         .border_width = uiPx(state, 1),
         .padding = uiEdgesSymmetric(state, 10, 6),
         .border_radius = uiPx(state, 5),
+    };
+}
+
+fn fileManagerRenameInputStyle(state: *const State) goop.Style {
+    return .{
+        .bg = .rgb(255, 255, 255),
+        .fg = fileManagerTheme(state).fg,
+        .border = fileManagerTheme(state).accent,
+        .border_width = uiPx(state, 1),
+        .padding = uiEdgesSymmetric(state, 4, 1),
+        .border_radius = uiPx(state, 3),
     };
 }
 
@@ -6134,8 +6432,21 @@ pub fn main(init: std.process.Init) !void {
         ctx.processEvents();
         syncContextPopupVisibleFromWidget(&state, &ctx);
         syncAddressInputFromWidget(&state, &ctx);
+        syncRenameInputFromWidget(&state, &ctx);
 
         var rebuild_ui = false;
+
+        if (state.rename_cancel_requested) {
+            state.rename_cancel_requested = false;
+            rebuild_ui = cancelActiveRename(&state) or rebuild_ui;
+        }
+        if (state.rename_commit_requested) {
+            state.rename_commit_requested = false;
+            switch (try commitActiveRename(&state)) {
+                .inactive => {},
+                .closed, .blocked => rebuild_ui = true,
+            }
+        }
 
         if (state.nav_splitter) |h| if (ctx.splitterChanged(h)) {
             state.nav_ratio = ctx.splitterRatio(h);
@@ -6410,44 +6721,109 @@ pub fn main(init: std.process.Init) !void {
             break;
         }
 
+        var asset_primary_handled = false;
         for (state.row_handles.items, 0..) |handle, index| {
             if (!ctx.wasClicked(handle)) continue;
-            const entry_index = state.asset_visible_start + index;
+            asset_primary_handled = true;
+            var entry_index = state.asset_visible_start + index;
             if (entry_index >= state.entries.items.len) continue;
 
             const entry = state.entries.items[entry_index];
+            if (!state.ctrl_down and !state.shift_down and isPathSelected(&state, entry.path) and
+                pointHitsEntryNameText(&state, &ctx, index, entry, state.primary_release_x, state.primary_release_y))
+            {
+                try beginRenameEntry(&state, &ctx, entry);
+                rebuild_ui = true;
+                break;
+            }
+
+            const clicked_path = try allocator.dupe(u8, entry.path);
+            defer allocator.free(clicked_path);
+            if (state.rename_path != null) {
+                switch (try commitActiveRename(&state)) {
+                    .inactive => {},
+                    .closed => {
+                        rebuild_ui = true;
+                        entry_index = entryIndexForPath(&state, clicked_path) orelse break;
+                    },
+                    .blocked => {
+                        rebuild_ui = true;
+                        break;
+                    },
+                }
+            }
+
+            const selected_entry = state.entries.items[entry_index];
             const click_ms = currentPrimaryClickTimestampMs(&ctx, init.io);
-            const repeated_click = isRepeatedEntryClick(&state, &entry, click_ms);
+            const repeated_click = isRepeatedEntryClick(&state, &selected_entry, click_ms);
 
             try applyEntrySelectionClick(&state, entry_index);
-            try setLastClickPath(&state, entry.path);
+            try setLastClickPath(&state, selected_entry.path);
             state.last_click_ms = click_ms;
             rebuild_ui = true;
 
-            if (repeated_click and entry.canEnter()) {
-                rebuild_ui = try setCurrentDirectory(&state, entry.navigationPath(), true) or rebuild_ui;
+            if (repeated_click and selected_entry.canEnter()) {
+                rebuild_ui = try setCurrentDirectory(&state, selected_entry.navigationPath(), true) or rebuild_ui;
             }
             break;
         }
 
         for (state.grid_handles.items, 0..) |handle, index| {
             if (!ctx.wasClicked(handle)) continue;
-            const entry_index = state.asset_visible_start + index;
+            asset_primary_handled = true;
+            var entry_index = state.asset_visible_start + index;
             if (entry_index >= state.entries.items.len) continue;
 
             const entry = state.entries.items[entry_index];
+            const clicked_path = try allocator.dupe(u8, entry.path);
+            defer allocator.free(clicked_path);
+            if (state.rename_path != null) {
+                switch (try commitActiveRename(&state)) {
+                    .inactive => {},
+                    .closed => {
+                        rebuild_ui = true;
+                        entry_index = entryIndexForPath(&state, clicked_path) orelse break;
+                    },
+                    .blocked => {
+                        rebuild_ui = true;
+                        break;
+                    },
+                }
+            }
+
+            const selected_entry = state.entries.items[entry_index];
             const click_ms = currentPrimaryClickTimestampMs(&ctx, init.io);
-            const repeated_click = isRepeatedEntryClick(&state, &entry, click_ms);
+            const repeated_click = isRepeatedEntryClick(&state, &selected_entry, click_ms);
 
             try applyEntrySelectionClick(&state, entry_index);
-            try setLastClickPath(&state, entry.path);
+            try setLastClickPath(&state, selected_entry.path);
             state.last_click_ms = click_ms;
             rebuild_ui = true;
 
-            if (repeated_click and entry.canEnter()) {
-                rebuild_ui = try setCurrentDirectory(&state, entry.navigationPath(), true) or rebuild_ui;
+            if (repeated_click and selected_entry.canEnter()) {
+                rebuild_ui = try setCurrentDirectory(&state, selected_entry.navigationPath(), true) or rebuild_ui;
             }
             break;
+        }
+
+        if (state.primary_release_pending) {
+            defer state.primary_release_pending = false;
+            if (!asset_primary_handled and pointInFilePanelBlankSpace(&state, &ctx, state.primary_release_x, state.primary_release_y)) {
+                var rename_blocks_deselect = false;
+                if (state.rename_path != null) {
+                    switch (try commitActiveRename(&state)) {
+                        .inactive => {},
+                        .closed => rebuild_ui = true,
+                        .blocked => {
+                            rebuild_ui = true;
+                            rename_blocks_deselect = true;
+                        },
+                    }
+                }
+                if (!rename_blocks_deselect) {
+                    rebuild_ui = clearSelectionState(&state) or rebuild_ui;
+                }
+            }
         }
 
         if (rebuild_ui) {
