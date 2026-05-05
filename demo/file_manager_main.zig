@@ -277,6 +277,24 @@ const browser_name_icon_inset_left: f32 = 4;
 const browser_name_text_inset_left: f32 = 28;
 const folder_tree_max_visible_children: usize = 128;
 
+const PopupSurface = struct {
+    owner: *State,
+    handle: goop.NodeHandle,
+    surface: *wl.wl_surface,
+    xdg_surface: *wl.xdg_surface,
+    xdg_popup: *wl.xdg_popup,
+    egl_window: *wl.wl_egl_window,
+    egl_surface: egl.EGLSurface,
+    rect: goop.draw.Rect,
+    buffer_width: u32,
+    buffer_height: u32,
+    parent_popup: ?goop.NodeHandle,
+    configured: bool = false,
+    configured_width: u32 = 0,
+    configured_height: u32 = 0,
+    next: ?*PopupSurface = null,
+};
+
 fn envFlag(env: *const std.process.Environ.Map, name: []const u8) bool {
     const raw = env.get(name) orelse return false;
     const value = std.mem.trim(u8, raw, " \t\r\n");
@@ -330,11 +348,14 @@ const State = struct {
     xdg_surface: ?*wl.xdg_surface = null,
     xdg_toplevel: ?*wl.xdg_toplevel = null,
     egl_window: ?*wl.wl_egl_window = null,
+    popup_surfaces: ?*PopupSurface = null,
     pointer: ?*wl.wl_pointer = null,
     cursor_theme: ?*wl.wl_cursor_theme = null,
     cursor_theme_scale: u32 = 0,
     pointer_enter_serial: u32 = 0,
     pointer_inside: bool = false,
+    pointer_surface_offset_x: f32 = 0,
+    pointer_surface_offset_y: f32 = 0,
     cursor_kind: CursorKind = .default,
     keyboard: ?*wl.wl_keyboard = null,
     data_device: ?*wl.wl_data_device = null,
@@ -346,6 +367,7 @@ const State = struct {
 
     // EGL
     egl_display: egl.EGLDisplay = egl.EGL_NO_DISPLAY,
+    egl_config: egl.EGLConfig = null,
     egl_surface: egl.EGLSurface = egl.EGL_NO_SURFACE,
     egl_context: egl.EGLContext = egl.EGL_NO_CONTEXT,
 
@@ -692,6 +714,7 @@ const State = struct {
             }
         }
         if (changed) {
+            self.destroyAllPopupSurfaces();
             if (self.egl_window) |window| {
                 wl.wl_egl_window_resize(window, @intCast(self.buffer_width), @intCast(self.buffer_height), 0, 0);
             }
@@ -718,6 +741,72 @@ const State = struct {
         if (self.cursor_theme) |theme| wl.wl_cursor_theme_destroy(theme);
         self.cursor_theme = null;
         self.cursor_theme_scale = 0;
+    }
+
+    fn popupSurfaceForHandle(self: *State, handle: goop.NodeHandle) ?*PopupSurface {
+        var it = self.popup_surfaces;
+        while (it) |popup| : (it = popup.next) {
+            if (popup.handle.eql(handle)) return popup;
+        }
+        return null;
+    }
+
+    fn popupSurfaceForWlSurface(self: *State, surface: ?*wl.wl_surface) ?*PopupSurface {
+        const target = surface orelse return null;
+        var it = self.popup_surfaces;
+        while (it) |popup| : (it = popup.next) {
+            if (popup.surface == target) return popup;
+        }
+        return null;
+    }
+
+    fn destroyPopupSurface(self: *State, target: *PopupSurface) void {
+        var descendant_it = self.popup_surfaces;
+        while (descendant_it) |popup| {
+            const next = popup.next;
+            if (popup != target and self.popupSurfaceDescendsFrom(popup, target.handle)) {
+                self.destroyPopupSurface(popup);
+            }
+            descendant_it = next;
+        }
+
+        if (self.popup_surfaces == target) {
+            self.popup_surfaces = target.next;
+        } else {
+            var it = self.popup_surfaces;
+            while (it) |popup| : (it = popup.next) {
+                if (popup.next == target) {
+                    popup.next = target.next;
+                    break;
+                }
+            }
+        }
+
+        if (self.egl_display != egl.EGL_NO_DISPLAY and self.egl_surface != egl.EGL_NO_SURFACE) {
+            _ = egl.eglMakeCurrent(self.egl_display, self.egl_surface, self.egl_surface, self.egl_context);
+        }
+        if (target.egl_surface != egl.EGL_NO_SURFACE) _ = egl.eglDestroySurface(self.egl_display, target.egl_surface);
+        wl.wl_egl_window_destroy(target.egl_window);
+        wl.xdg_popup_destroy(target.xdg_popup);
+        wl.xdg_surface_destroy(target.xdg_surface);
+        wl.wl_surface_destroy(target.surface);
+        allocator.destroy(target);
+    }
+
+    fn popupSurfaceDescendsFrom(self: *State, popup: *const PopupSurface, ancestor: goop.NodeHandle) bool {
+        var current = popup.parent_popup;
+        while (current) |handle| {
+            if (handle.eql(ancestor)) return true;
+            const parent = self.popupSurfaceForHandle(handle) orelse return false;
+            current = parent.parent_popup;
+        }
+        return false;
+    }
+
+    fn destroyAllPopupSurfaces(self: *State) void {
+        while (self.popup_surfaces) |popup| {
+            self.destroyPopupSurface(popup);
+        }
     }
 };
 
@@ -999,6 +1088,313 @@ fn xdgToplevelConfigure(data: ?*anyopaque, _: ?*wl.xdg_toplevel, width: i32, hei
 fn xdgToplevelClose(data: ?*anyopaque, _: ?*wl.xdg_toplevel) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
     state.running = false;
+}
+
+const popup_xdg_surface_listener = wl.xdg_surface_listener{
+    .configure = &popupXdgSurfaceConfigure,
+};
+
+const xdg_popup_listener = wl.xdg_popup_listener{
+    .configure = &xdgPopupConfigure,
+    .popup_done = &xdgPopupDone,
+    .repositioned = &xdgPopupRepositioned,
+};
+
+fn popupXdgSurfaceConfigure(data: ?*anyopaque, xdg_surface: ?*wl.xdg_surface, serial: u32) callconv(.c) void {
+    const popup: *PopupSurface = @ptrCast(@alignCast(data));
+    wl.xdg_surface_ack_configure(xdg_surface, serial);
+    popup.configured = true;
+    popup.owner.needs_redraw = true;
+}
+
+fn xdgPopupConfigure(data: ?*anyopaque, _: ?*wl.xdg_popup, _: i32, _: i32, width: i32, height: i32) callconv(.c) void {
+    const popup: *PopupSurface = @ptrCast(@alignCast(data));
+    if (width > 0 and height > 0) {
+        popup.configured_width = @intCast(width);
+        popup.configured_height = @intCast(height);
+        resizePopupBuffer(popup.owner, popup, popup.configured_width, popup.configured_height);
+    }
+    popup.owner.needs_redraw = true;
+}
+
+fn xdgPopupDone(data: ?*anyopaque, _: ?*wl.xdg_popup) callconv(.c) void {
+    const popup: *PopupSurface = @ptrCast(@alignCast(data));
+    const state = popup.owner;
+    if (state.ctx) |ctx| {
+        if (ctx.isAlive(popup.handle) and ctx.tree.getConst(popup.handle).kind == .popup) {
+            ctx.tree.get(popup.handle).kind.popup.visible = false;
+            ctx.invalidate();
+        }
+    }
+    state.destroyPopupSurface(popup);
+    state.needs_redraw = true;
+}
+
+fn xdgPopupRepositioned(_: ?*anyopaque, _: ?*wl.xdg_popup, _: u32) callconv(.c) void {}
+
+const PopupParentInfo = struct {
+    xdg_surface: *wl.xdg_surface,
+    parent_popup: ?goop.NodeHandle,
+    parent_origin_x: f32,
+    parent_origin_y: f32,
+    parent_width: f32,
+    parent_height: f32,
+    anchor_rect: goop.draw.Rect,
+};
+
+fn syncNativePopupSurfaces(state: *State, ctx: *goop.Context) !void {
+    var it = state.popup_surfaces;
+    while (it) |popup| {
+        const next = popup.next;
+        if (!popupNeedsNativeSurface(ctx, popup.handle)) {
+            state.destroyPopupSurface(popup);
+        }
+        it = next;
+    }
+
+    for (ctx.tree.nodes.items, 0..) |node, i| {
+        if (!node.alive or node.kind != .popup) continue;
+        const handle = ctx.tree.handleFromIndex(@intCast(i));
+        if (!popupNeedsNativeSurface(ctx, handle)) continue;
+        const rect = ctx.tree.getConst(handle).layout_rect;
+        const parent_info = popupParentInfo(state, ctx, handle) orelse continue;
+        if (state.popupSurfaceForHandle(handle)) |popup| {
+            if (!rectsNearlyEqual(popup.rect, rect) or optionalHandleChanged(popup.parent_popup, parent_info.parent_popup)) {
+                state.destroyPopupSurface(popup);
+                _ = try createNativePopupSurface(state, ctx, handle, parent_info);
+            }
+        } else {
+            _ = try createNativePopupSurface(state, ctx, handle, parent_info);
+        }
+    }
+}
+
+fn popupNeedsNativeSurface(ctx: *const goop.Context, handle: goop.NodeHandle) bool {
+    if (!ctx.isAlive(handle)) return false;
+    const node = ctx.tree.getConst(handle);
+    if (node.kind != .popup or !node.kind.popup.visible) return false;
+    return node.layout_rect.w > 0 and node.layout_rect.h > 0;
+}
+
+fn popupParentInfo(state: *State, ctx: *goop.Context, popup_handle: goop.NodeHandle) ?PopupParentInfo {
+    const popup_node = ctx.tree.getConst(popup_handle);
+    const parent_xdg_surface = state.xdg_surface orelse return null;
+    const owner_handle = popup_node.parent;
+
+    var info = PopupParentInfo{
+        .xdg_surface = parent_xdg_surface,
+        .parent_popup = null,
+        .parent_origin_x = 0,
+        .parent_origin_y = 0,
+        .parent_width = @floatFromInt(state.logical_width),
+        .parent_height = @floatFromInt(state.logical_height),
+        .anchor_rect = .{
+            .x = popup_node.layout_rect.x,
+            .y = popup_node.layout_rect.y,
+            .w = 1,
+            .h = 1,
+        },
+    };
+
+    if (owner_handle) |owner| {
+        if (ancestorPopupForOwner(&ctx.tree, owner)) |ancestor_popup| {
+            const native_parent = state.popupSurfaceForHandle(ancestor_popup) orelse return null;
+            if (!native_parent.configured) return null;
+            const parent_rect = ctx.tree.getConst(ancestor_popup).layout_rect;
+            info.xdg_surface = native_parent.xdg_surface;
+            info.parent_popup = ancestor_popup;
+            info.parent_origin_x = parent_rect.x;
+            info.parent_origin_y = parent_rect.y;
+            info.parent_width = parent_rect.w;
+            info.parent_height = parent_rect.h;
+        }
+
+        const owner_rect = ctx.tree.getConst(owner).layout_rect;
+        info.anchor_rect = .{
+            .x = owner_rect.x - info.parent_origin_x,
+            .y = owner_rect.y - info.parent_origin_y,
+            .w = @max(owner_rect.w, 1),
+            .h = @max(owner_rect.h, 1),
+        };
+    }
+
+    return info;
+}
+
+fn ancestorPopupForOwner(tree: *const goop.Tree, owner: goop.NodeHandle) ?goop.NodeHandle {
+    var current: ?goop.NodeHandle = owner;
+    while (current) |handle| {
+        const parent = tree.getConst(handle).parent orelse return null;
+        if (tree.getConst(parent).kind == .popup) return parent;
+        current = parent;
+    }
+    return null;
+}
+
+fn createNativePopupSurface(state: *State, ctx: *goop.Context, handle: goop.NodeHandle, parent_info: PopupParentInfo) !*PopupSurface {
+    const compositor = state.compositor orelse return error.NoCompositor;
+    const wm_base = state.wm_base orelse return error.NoXdgWmBase;
+    const rect = ctx.tree.getConst(handle).layout_rect;
+    const logical_width = ceilPositiveU32(rect.w);
+    const logical_height = ceilPositiveU32(rect.h);
+    const buffer_width = logical_width * state.buffer_scale;
+    const buffer_height = logical_height * state.buffer_scale;
+
+    const positioner = wl.xdg_wm_base_create_positioner(wm_base) orelse return error.NoPositioner;
+    defer wl.xdg_positioner_destroy(positioner);
+    wl.xdg_positioner_set_size(positioner, @intCast(logical_width), @intCast(logical_height));
+    wl.xdg_positioner_set_anchor_rect(
+        positioner,
+        roundI32(parent_info.anchor_rect.x),
+        roundI32(parent_info.anchor_rect.y),
+        @intCast(ceilPositiveU32(parent_info.anchor_rect.w)),
+        @intCast(ceilPositiveU32(parent_info.anchor_rect.h)),
+    );
+    setPopupPositionerPlacement(positioner, ctx.tree.getConst(handle).kind.popup);
+    wl.xdg_positioner_set_parent_size(positioner, @intCast(ceilPositiveU32(parent_info.parent_width)), @intCast(ceilPositiveU32(parent_info.parent_height)));
+    wl.xdg_positioner_set_constraint_adjustment(positioner, popupConstraintAdjustment());
+
+    const surface = wl.wl_compositor_create_surface(compositor) orelse return error.NoSurface;
+    errdefer wl.wl_surface_destroy(surface);
+    if (state.compositor_version >= 3) {
+        wl.wl_surface_set_buffer_scale(surface, @intCast(state.buffer_scale));
+    }
+    const xdg_surface = wl.xdg_wm_base_get_xdg_surface(wm_base, surface) orelse return error.NoXdgSurface;
+    errdefer wl.xdg_surface_destroy(xdg_surface);
+
+    const xdg_popup = wl.xdg_surface_get_popup(xdg_surface, parent_info.xdg_surface, positioner) orelse return error.NoXdgPopup;
+    errdefer wl.xdg_popup_destroy(xdg_popup);
+
+    const egl_window = wl.wl_egl_window_create(surface, @intCast(buffer_width), @intCast(buffer_height)) orelse return error.EglWindowCreateFailed;
+    errdefer wl.wl_egl_window_destroy(egl_window);
+    const egl_surface = egl.eglCreateWindowSurface(state.egl_display, state.egl_config, @intFromPtr(egl_window), null) orelse return error.EglCreateSurfaceFailed;
+    errdefer _ = egl.eglDestroySurface(state.egl_display, egl_surface);
+
+    const popup = try allocator.create(PopupSurface);
+    popup.* = .{
+        .owner = state,
+        .handle = handle,
+        .surface = surface,
+        .xdg_surface = xdg_surface,
+        .xdg_popup = xdg_popup,
+        .egl_window = egl_window,
+        .egl_surface = egl_surface,
+        .rect = rect,
+        .buffer_width = buffer_width,
+        .buffer_height = buffer_height,
+        .parent_popup = parent_info.parent_popup,
+        .configured_width = logical_width,
+        .configured_height = logical_height,
+        .next = state.popup_surfaces,
+    };
+    state.popup_surfaces = popup;
+
+    _ = wl.xdg_surface_add_listener(xdg_surface, &popup_xdg_surface_listener, popup);
+    _ = wl.xdg_popup_add_listener(xdg_popup, &xdg_popup_listener, popup);
+    wl.wl_surface_commit(surface);
+    state.needs_redraw = true;
+    return popup;
+}
+
+fn setPopupPositionerPlacement(positioner: *wl.xdg_positioner, popup: goop.widget.WidgetKind.Popup) void {
+    const AnchorGravity = struct {
+        anchor: u32,
+        gravity: u32,
+    };
+    const anchor_gravity = switch (popup.placement) {
+        .absolute => AnchorGravity{
+            .anchor = wl.XDG_POSITIONER_ANCHOR_TOP_LEFT,
+            .gravity = wl.XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT,
+        },
+        .below_start => AnchorGravity{
+            .anchor = wl.XDG_POSITIONER_ANCHOR_BOTTOM_LEFT,
+            .gravity = wl.XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT,
+        },
+        .below_end => AnchorGravity{
+            .anchor = wl.XDG_POSITIONER_ANCHOR_BOTTOM_RIGHT,
+            .gravity = wl.XDG_POSITIONER_GRAVITY_BOTTOM_LEFT,
+        },
+        .right_start => AnchorGravity{
+            .anchor = wl.XDG_POSITIONER_ANCHOR_TOP_RIGHT,
+            .gravity = wl.XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT,
+        },
+    };
+    wl.xdg_positioner_set_anchor(positioner, anchor_gravity.anchor);
+    wl.xdg_positioner_set_gravity(positioner, anchor_gravity.gravity);
+    if (popup.placement != .absolute and (popup.x != 0 or popup.y != 0)) {
+        wl.xdg_positioner_set_offset(positioner, roundI32(popup.x), roundI32(popup.y));
+    }
+}
+
+fn popupConstraintAdjustment() u32 {
+    return @as(u32, @intCast(wl.XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X)) |
+        @as(u32, @intCast(wl.XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y)) |
+        @as(u32, @intCast(wl.XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_X)) |
+        @as(u32, @intCast(wl.XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y));
+}
+
+fn resizePopupBuffer(state: *State, popup: *PopupSurface, logical_width: u32, logical_height: u32) void {
+    const buffer_width = logical_width * state.buffer_scale;
+    const buffer_height = logical_height * state.buffer_scale;
+    if (buffer_width == popup.buffer_width and buffer_height == popup.buffer_height) return;
+    wl.wl_egl_window_resize(popup.egl_window, @intCast(buffer_width), @intCast(buffer_height), 0, 0);
+    popup.buffer_width = buffer_width;
+    popup.buffer_height = buffer_height;
+}
+
+fn renderNativePopupSurfaces(state: *State, renderer: *render.Renderer) !void {
+    const ctx = state.ctx orelse return;
+    var it = state.popup_surfaces;
+    while (it) |popup| : (it = popup.next) {
+        if (!popup.configured or !popupNeedsNativeSurface(ctx, popup.handle)) continue;
+
+        var popup_paint_list = try goop.draw.generatePaintForPopup(&ctx.tree, popup.handle, ctx.theme, allocator, state.text_measure_ctx);
+        defer goop.draw.freePaintList(&popup_paint_list, allocator);
+
+        if (egl.eglMakeCurrent(state.egl_display, popup.egl_surface, popup.egl_surface, state.egl_context) == 0) return error.EglMakeCurrentFailed;
+        const previous_clear = renderer.clear_color;
+        renderer.clear_color = .{ 0, 0, 0, 0 };
+        renderer.beginFrame(popup.buffer_width, popup.buffer_height, @floatFromInt(state.buffer_scale));
+        renderer.renderPaintList(popup_paint_list);
+        renderer.clear_color = previous_clear;
+        _ = egl.eglSwapBuffers(state.egl_display, popup.egl_surface);
+    }
+
+    if (state.egl_surface != egl.EGL_NO_SURFACE) {
+        if (egl.eglMakeCurrent(state.egl_display, state.egl_surface, state.egl_surface, state.egl_context) == 0) return error.EglMakeCurrentFailed;
+    }
+}
+
+fn rootPointerX(state: *const State, sx: wl.wl_fixed_t) f32 {
+    return state.pointer_surface_offset_x + fixedToF32(sx);
+}
+
+fn rootPointerY(state: *const State, sy: wl.wl_fixed_t) f32 {
+    return state.pointer_surface_offset_y + fixedToF32(sy);
+}
+
+fn ceilPositiveU32(value: f32) u32 {
+    if (!std.math.isFinite(value) or value <= 1) return 1;
+    return @intFromFloat(@ceil(value));
+}
+
+fn roundI32(value: f32) i32 {
+    if (!std.math.isFinite(value)) return 0;
+    return @intFromFloat(@round(value));
+}
+
+fn optionalHandleChanged(a: ?goop.NodeHandle, b: ?goop.NodeHandle) bool {
+    if (a == null and b == null) return false;
+    if (a == null or b == null) return true;
+    return !a.?.eql(b.?);
+}
+
+fn rectsNearlyEqual(a: goop.draw.Rect, b: goop.draw.Rect) bool {
+    return nearlyEqual(a.x, b.x) and nearlyEqual(a.y, b.y) and nearlyEqual(a.w, b.w) and nearlyEqual(a.h, b.h);
+}
+
+fn nearlyEqual(a: f32, b: f32) bool {
+    return @abs(a - b) < 0.5;
 }
 
 fn ensureDataDevice(state: *State, data: ?*anyopaque) void {
@@ -1376,12 +1772,19 @@ fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, serial: u32, _: u32, key:
     state.needs_redraw = true;
 }
 
-fn pointerEnter(data: ?*anyopaque, _: ?*wl.wl_pointer, serial: u32, _: ?*wl.wl_surface, sx: wl.wl_fixed_t, sy: wl.wl_fixed_t) callconv(.c) void {
+fn pointerEnter(data: ?*anyopaque, _: ?*wl.wl_pointer, serial: u32, surface: ?*wl.wl_surface, sx: wl.wl_fixed_t, sy: wl.wl_fixed_t) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
     state.pointer_enter_serial = serial;
     state.pointer_inside = true;
-    state.mouse_x = fixedToF32(sx);
-    state.mouse_y = fixedToF32(sy);
+    if (state.popupSurfaceForWlSurface(surface)) |popup| {
+        state.pointer_surface_offset_x = popup.rect.x;
+        state.pointer_surface_offset_y = popup.rect.y;
+    } else {
+        state.pointer_surface_offset_x = 0;
+        state.pointer_surface_offset_y = 0;
+    }
+    state.mouse_x = rootPointerX(state, sx);
+    state.mouse_y = rootPointerY(state, sy);
     updatePointerCursor(state);
 }
 
@@ -1393,8 +1796,8 @@ fn pointerLeave(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: ?*wl.wl_surfac
 
 fn pointerMotion(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, sx: wl.wl_fixed_t, sy: wl.wl_fixed_t) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
-    const x = fixedToF32(sx);
-    const y = fixedToF32(sy);
+    const x = rootPointerX(state, sx);
+    const y = rootPointerY(state, sy);
     state.mouse_x = x;
     state.mouse_y = y;
     if (state.ctx) |ctx| ctx.pushEvent(.{ .mouse_move = .{ .x = x, .y = y } }) catch {};
@@ -1488,6 +1891,7 @@ fn initEgl(state: *State, display: *wl.wl_display) !void {
     var config: egl.EGLConfig = null;
     var num_configs: egl.EGLint = 0;
     if (egl.eglChooseConfig(state.egl_display, &attribs, &config, 1, &num_configs) == 0) return error.EglChooseConfigFailed;
+    state.egl_config = config;
 
     if (egl.eglBindAPI(egl.EGL_OPENGL_API) == 0) return error.EglBindApiFailed;
 
@@ -4558,11 +4962,11 @@ fn buildWidgetTree(state: *State) !void {
     const selected_count = selectedPathCount(state);
 
     {
-        const menu_bar = try ctx.tree.addChild(root, .{ .toolbar = .{} });
+        const menu_bar = try ctx.tree.addChild(root, .{ .menu_bar = .{} });
         ctx.tree.get(menu_bar).style_override = fileManagerMenuBarStyle(state);
         {
-            state.menu_file_button = try ctx.tree.addChild(menu_bar, .{ .button = .{ .label = "File" } });
-            ctx.tree.get(state.menu_file_button.?).style_override = fileManagerMenuRootButtonStyle(state);
+            state.menu_file_button = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "File" } });
+            ctx.tree.get(state.menu_file_button.?).style_override = fileManagerMenuStyle(state);
             const popup = try ctx.tree.addChild(state.menu_file_button.?, .{ .popup = .{ .placement = .below_start, .visible = false } });
             state.menu_file_popup = popup;
             ctx.tree.get(popup).style_override = fileManagerMenuPopupStyle(state);
@@ -4572,8 +4976,8 @@ fn buildWidgetTree(state: *State) !void {
             state.menu_file_quit = try addMenuCommandItem(state, ctx, popup, "Quit", .quit, "");
         }
         {
-            state.menu_edit_button = try ctx.tree.addChild(menu_bar, .{ .button = .{ .label = "Edit" } });
-            ctx.tree.get(state.menu_edit_button.?).style_override = fileManagerMenuRootButtonStyle(state);
+            state.menu_edit_button = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "Edit" } });
+            ctx.tree.get(state.menu_edit_button.?).style_override = fileManagerMenuStyle(state);
             const popup = try ctx.tree.addChild(state.menu_edit_button.?, .{ .popup = .{ .placement = .below_start, .visible = false } });
             state.menu_edit_popup = popup;
             ctx.tree.get(popup).style_override = fileManagerMenuPopupStyle(state);
@@ -4581,8 +4985,8 @@ fn buildWidgetTree(state: *State) !void {
             state.menu_edit_clear_selection = try addMenuCommandItem(state, ctx, popup, "Clear Selection", .clear_selection, "Esc");
         }
         {
-            state.menu_view_button = try ctx.tree.addChild(menu_bar, .{ .button = .{ .label = "View" } });
-            ctx.tree.get(state.menu_view_button.?).style_override = fileManagerMenuRootButtonStyle(state);
+            state.menu_view_button = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "View" } });
+            ctx.tree.get(state.menu_view_button.?).style_override = fileManagerMenuStyle(state);
             const popup = try ctx.tree.addChild(state.menu_view_button.?, .{ .popup = .{ .placement = .below_start, .visible = false } });
             state.menu_view_popup = popup;
             ctx.tree.get(popup).style_override = fileManagerMenuPopupStyle(state);
@@ -4594,8 +4998,8 @@ fn buildWidgetTree(state: *State) !void {
             state.menu_view_grid = try addMenuCommandItem(state, ctx, popup, "Grid View", .view_grid, "");
         }
         {
-            state.menu_go_button = try ctx.tree.addChild(menu_bar, .{ .button = .{ .label = "Go" } });
-            ctx.tree.get(state.menu_go_button.?).style_override = fileManagerMenuRootButtonStyle(state);
+            state.menu_go_button = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "Go" } });
+            ctx.tree.get(state.menu_go_button.?).style_override = fileManagerMenuStyle(state);
             const popup = try ctx.tree.addChild(state.menu_go_button.?, .{ .popup = .{ .placement = .below_start, .visible = false } });
             state.menu_go_popup = popup;
             ctx.tree.get(popup).style_override = fileManagerMenuPopupStyle(state);
@@ -4605,8 +5009,8 @@ fn buildWidgetTree(state: *State) !void {
             state.menu_go_home = try addMenuCommandItem(state, ctx, popup, "Home", .home, "");
         }
         {
-            state.menu_help_button = try ctx.tree.addChild(menu_bar, .{ .button = .{ .label = "Help" } });
-            ctx.tree.get(state.menu_help_button.?).style_override = fileManagerMenuRootButtonStyle(state);
+            state.menu_help_button = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "Help" } });
+            ctx.tree.get(state.menu_help_button.?).style_override = fileManagerMenuStyle(state);
             const popup = try ctx.tree.addChild(state.menu_help_button.?, .{ .popup = .{ .placement = .below_start, .visible = false } });
             state.menu_help_popup = popup;
             ctx.tree.get(popup).style_override = fileManagerMenuPopupStyle(state);
@@ -5247,22 +5651,6 @@ pub fn main(init: std.process.Init) !void {
             }
         };
 
-        if (state.menu_file_button) |h| if (ctx.wasClicked(h)) {
-            toggleTopMenuPopup(&state, &ctx, state.menu_file_popup);
-        };
-        if (state.menu_edit_button) |h| if (ctx.wasClicked(h)) {
-            toggleTopMenuPopup(&state, &ctx, state.menu_edit_popup);
-        };
-        if (state.menu_view_button) |h| if (ctx.wasClicked(h)) {
-            toggleTopMenuPopup(&state, &ctx, state.menu_view_popup);
-        };
-        if (state.menu_go_button) |h| if (ctx.wasClicked(h)) {
-            toggleTopMenuPopup(&state, &ctx, state.menu_go_popup);
-        };
-        if (state.menu_help_button) |h| if (ctx.wasClicked(h)) {
-            toggleTopMenuPopup(&state, &ctx, state.menu_help_popup);
-        };
-
         if (state.menu_file_refresh) |h| if (ctx.wasClicked(h)) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .refresh) or rebuild_ui;
@@ -5451,16 +5839,18 @@ pub fn main(init: std.process.Init) !void {
         }
         debugLogFilePanelLayout(&state);
         updatePointerCursor(&state);
-        var base_paint_list = try ctx.generatePaintList();
-        defer ctx.freePaintList(&base_paint_list);
-        if (try ensureAtlasForPaintList(&text_atlas, &renderer, base_paint_list)) {
+        var atlas_paint_list = try goop.draw.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx);
+        defer goop.draw.freePaintList(&atlas_paint_list, allocator);
+        if (try ensureAtlasForPaintList(&text_atlas, &renderer, atlas_paint_list)) {
             const updated_metrics = fontLineMetrics(&text_atlas);
             text_measure.ascent_units = updated_metrics.ascent;
             text_measure.descent_units = updated_metrics.descent;
             ctx.setDimensions(state.logical_width, state.logical_height);
             ctx.doLayout(&text_measure_ctx);
-            base_paint_list = try ctx.generatePaintList();
         }
+        try syncNativePopupSurfaces(&state, &ctx);
+        var base_paint_list = try goop.draw.generatePaintWithoutFloating(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx);
+        defer goop.draw.freePaintList(&base_paint_list, allocator);
         const paint_list = try composeFileBrowserPaintList(&state, base_paint_list);
 
         renderer.beginFrame(state.buffer_width, state.buffer_height, @floatFromInt(state.buffer_scale));
@@ -5470,9 +5860,11 @@ pub fn main(init: std.process.Init) !void {
         // registered before the surface commit that eglSwapBuffers triggers.
         requestFrame(&state);
         _ = egl.eglSwapBuffers(state.egl_display, state.egl_surface);
+        try renderNativePopupSurfaces(&state, &renderer);
     }
 
     // Clean up xkb state
+    state.destroyAllPopupSurfaces();
     state.destroyAllDataOffers();
     state.destroyAllOutputs();
     state.destroyClipboardSource();

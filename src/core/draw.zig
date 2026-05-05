@@ -137,6 +137,31 @@ pub const DrawList = struct {
 
 /// Generate semantic paint commands from a laid-out widget tree.
 pub fn generatePaint(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !PaintList {
+    return generatePaintWithFloating(tree, theme, allocator, text_ctx, true);
+}
+
+pub fn generatePaintWithoutFloating(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !PaintList {
+    return generatePaintWithFloating(tree, theme, allocator, text_ctx, false);
+}
+
+pub fn generatePaintForPopup(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !PaintList {
+    var commands: std.ArrayListUnmanaged(PaintCommand) = .empty;
+    errdefer commands.deinit(allocator);
+    const previous_cull_rect = active_paint_cull_rect;
+    const previous_offset = active_paint_offset;
+    defer active_paint_cull_rect = previous_cull_rect;
+    defer active_paint_offset = previous_offset;
+
+    const rect = tree.getConst(handle).layout_rect;
+    active_paint_cull_rect = null;
+    active_paint_offset = .{ .x = -rect.x, .y = -rect.y };
+
+    try emitNode(tree, handle, theme, &commands, allocator, text_ctx, true);
+
+    return .{ .commands = try commands.toOwnedSlice(allocator) };
+}
+
+fn generatePaintWithFloating(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, include_floating: bool) !PaintList {
     var commands: std.ArrayListUnmanaged(PaintCommand) = .empty;
     errdefer commands.deinit(allocator);
     const previous_cull_rect = active_paint_cull_rect;
@@ -156,11 +181,14 @@ pub fn generatePaint(tree: *const widget.Tree, theme: style.Theme, allocator: st
         }
     }
 
-    for (tree.nodes.items, 0..) |node, i| {
-        if (!node.alive) continue;
-        if (node.parent == null) {
-            try emitFloatingSubtrees(tree, tree.handleFromIndex(@intCast(i)), theme, &commands, allocator, text_ctx);
+    if (include_floating) {
+        for (tree.nodes.items, 0..) |node, i| {
+            if (!node.alive) continue;
+            if (node.parent == null) {
+                try emitFloatingSubtrees(tree, tree.handleFromIndex(@intCast(i)), theme, &commands, allocator, text_ctx);
+            }
         }
+
     }
 
     try emitDragGhosts(tree, theme, &commands, allocator, text_ctx);
@@ -2658,6 +2686,41 @@ test "custom draw commands are emitted before floating popups" {
     try std.testing.expect(dl.commands[6] == .rect);
     try std.testing.expect(dl.commands[6].rect.bounds.x == tree.getConst(popup).layout_rect.x);
     try std.testing.expect(dl.commands[6].rect.bounds.y == tree.getConst(popup).layout_rect.y);
+}
+
+test "popup paint can be split from main paint" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const menu = try tree.addChild(root, .{ .menu = .{ .label = "File" } });
+    const popup = try tree.addChild(menu, .{ .popup = .{
+        .placement = .below_start,
+        .visible = true,
+    } });
+    const item = try tree.addChild(popup, .{ .menu_item = .{ .label = "Open" } });
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    tree.get(menu).layout_rect = .{ .x = 10, .y = 8, .w = 48, .h = 24 };
+    tree.get(popup).layout_rect = .{ .x = 10, .y = 32, .w = 144, .h = 30 };
+    tree.get(item).layout_rect = .{ .x = 10, .y = 32, .w = 144, .h = 30 };
+
+    var main_paint = try generatePaintWithoutFloating(&tree, style.Theme.default, allocator, null);
+    defer freePaintList(&main_paint, allocator);
+    for (main_paint.commands) |command| {
+        if (command == .box) {
+            try std.testing.expect(command.box.bounds.y < tree.getConst(popup).layout_rect.y);
+        }
+    }
+
+    var popup_paint = try generatePaintForPopup(&tree, popup, style.Theme.default, allocator, null);
+    defer freePaintList(&popup_paint, allocator);
+    try std.testing.expect(popup_paint.commands.len >= 3);
+    try std.testing.expect(popup_paint.commands[0] == .box);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), popup_paint.commands[0].box.bounds.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), popup_paint.commands[0].box.bounds.y, 0.01);
 }
 
 test "table cells emit custom draw commands after text contents" {
