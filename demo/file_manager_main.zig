@@ -1027,7 +1027,8 @@ fn registryGlobal(data: ?*anyopaque, registry: ?*wl.wl_registry, name: u32, inte
     } else if (std.mem.eql(u8, iface, "wl_shm")) {
         state.shm = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_shm_interface, @min(version, 1)));
     } else if (std.mem.eql(u8, iface, "xdg_wm_base")) {
-        state.wm_base = @ptrCast(wl.wl_registry_bind(registry, name, &wl.xdg_wm_base_interface, @min(version, 2)));
+        const xdg_wm_base_version: u32 = @intCast(wl.xdg_wm_base_interface.version);
+        state.wm_base = @ptrCast(wl.wl_registry_bind(registry, name, &wl.xdg_wm_base_interface, @min(version, xdg_wm_base_version)));
         _ = wl.xdg_wm_base_add_listener(state.wm_base, &wm_base_listener, data);
     } else if (std.mem.eql(u8, iface, "wl_seat")) {
         state.seat = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_seat_interface, @min(version, 5)));
