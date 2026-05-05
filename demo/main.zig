@@ -2,6 +2,7 @@ const std = @import("std");
 const goop = @import("goop");
 const snail = @import("snail");
 const render = @import("render.zig");
+const posix = std.posix;
 
 const wl = @cImport({
     @cInclude("wayland-client.h");
@@ -17,13 +18,6 @@ const egl = @cImport({
     @cInclude("EGL/egl.h");
 });
 
-const posix = @cImport({
-    @cInclude("poll.h");
-    @cInclude("time.h");
-    @cInclude("unistd.h");
-    @cInclude("sys/mman.h");
-});
-
 const allocator = std.heap.page_allocator;
 const clipboard_mime_utf8 = "text/plain;charset=utf-8";
 const clipboard_mime_utf8_string = "UTF8_STRING";
@@ -32,19 +26,10 @@ const clipboard_mime_text = "text/plain";
 /// Snail-based text measurement adapter for goop.
 const SnailTextCtx = struct {
     allocator: std.mem.Allocator,
-    font: *const snail.Font,
-    atlas: *const snail.Atlas,
-    measure_buf: []f32,
+    text_atlas: *const snail.TextAtlas,
     scratch_buf: []u8,
     ascent_units: f32,
     descent_units: f32,
-
-    fn ensureMeasureCapacity(self: *SnailTextCtx, glyph_capacity: usize) !void {
-        const needed = @max(glyph_capacity, 64) * snail.FLOATS_PER_GLYPH;
-        if (self.measure_buf.len >= needed) return;
-        const next_len = std.math.ceilPowerOfTwo(usize, needed) catch needed;
-        self.measure_buf = try self.allocator.realloc(self.measure_buf, next_len);
-    }
 
     fn ensureScratchCapacity(self: *SnailTextCtx, byte_len: usize) !void {
         if (self.scratch_buf.len >= byte_len) return;
@@ -103,13 +88,9 @@ const OutputState = struct {
 fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) goop.TextDimensions {
     const ctx: *SnailTextCtx = @ptrCast(@alignCast(user_data));
     const sanitized = ctx.sanitizeUtf8Lossy(text);
-    const scale = font_size / @as(f32, @floatFromInt(ctx.font.unitsPerEm()));
-    const glyphs = @max(std.unicode.utf8CountCodepoints(sanitized) catch sanitized.len, 1);
-    const width = blk: {
-        ctx.ensureMeasureCapacity(glyphs) catch break :blk SnailTextCtx.fallbackWidth(sanitized, font_size);
-        var probe = snail.Batch.init(ctx.measure_buf);
-        break :blk probe.addString(ctx.atlas, ctx.font, sanitized, 0, 0, font_size, .{ 1, 1, 1, 1 });
-    };
+    const units_per_em = ctx.text_atlas.unitsPerEm() catch 1000;
+    const scale = font_size / @as(f32, @floatFromInt(units_per_em));
+    const width = ctx.text_atlas.measureText(.{}, sanitized, font_size) catch SnailTextCtx.fallbackWidth(sanitized, font_size);
 
     return .{
         .width = width,
@@ -119,24 +100,14 @@ fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) go
     };
 }
 
-fn readBigI16(data: []const u8, offset: usize) ?i16 {
-    if (offset + 2 > data.len) return null;
-    return std.mem.readInt(i16, data[offset..][0..2], .big);
-}
-
-fn fontLineMetrics(font: *const snail.Font) struct { ascent: f32, descent: f32 } {
-    const inner = font.inner;
-    if (inner.hhea_offset != 0) {
-        const ascent = readBigI16(inner.data, inner.hhea_offset + 4) orelse @as(i16, @intCast(inner.units_per_em));
-        const descent = readBigI16(inner.data, inner.hhea_offset + 6) orelse 0;
-        return .{
-            .ascent = @floatFromInt(ascent),
-            .descent = @floatFromInt(@abs(descent)),
-        };
-    }
+fn fontLineMetrics(text_atlas: *const snail.TextAtlas) struct { ascent: f32, descent: f32 } {
+    const metrics = text_atlas.lineMetrics() catch {
+        const units_per_em = text_atlas.unitsPerEm() catch 1000;
+        return .{ .ascent = @floatFromInt(units_per_em), .descent = 0 };
+    };
     return .{
-        .ascent = @floatFromInt(inner.units_per_em),
-        .descent = 0,
+        .ascent = @floatFromInt(metrics.ascent),
+        .descent = @floatFromInt(@abs(metrics.descent)),
     };
 }
 
@@ -148,24 +119,21 @@ fn isPrintableTextCodepoint(codepoint: u32) bool {
     return true;
 }
 
-fn ensureAtlasForPaintList(atlas: *snail.Atlas, renderer: *render.Renderer, paint_list: goop.PaintList) !bool {
+fn ensureAtlasForPaintList(text_atlas: *snail.TextAtlas, renderer: *render.Renderer, paint_list: goop.PaintList) !bool {
     var changed = false;
     for (paint_list.commands) |command| {
         if (command != .text) continue;
         const text = command.text.text;
         if (text.len == 0) continue;
 
-        const next = if (comptime @hasDecl(snail.Atlas, "extendText"))
-            try atlas.extendText(text)
-        else
-            try atlas.extendGlyphsForText(text);
-        if (next) |next_atlas| {
-            _ = snail.replaceAtlas(atlas, next_atlas);
+        if (try text_atlas.ensureText(.{}, text)) |next_atlas| {
+            text_atlas.deinit();
+            text_atlas.* = next_atlas;
             changed = true;
         }
     }
 
-    if (changed) renderer.uploadAtlas(atlas);
+    if (changed) renderer.uploadAtlas(text_atlas);
     return changed;
 }
 
@@ -182,7 +150,7 @@ const State = struct {
     needs_redraw: bool = true,
     frame_pending: bool = false,
     timeout_ns: ?u64 = null,
-    start_time: posix.struct_timespec = .{ .tv_sec = 0, .tv_nsec = 0 },
+    start_time_ns: u64 = 0,
 
     // Wayland globals
     display: ?*wl.wl_display = null,
@@ -313,23 +281,23 @@ const State = struct {
         const offer = self.selection_offer orelse return;
         const mime = preferredOfferMime(offer) orelse return;
 
-        var fds: [2]i32 = undefined;
-        if (posix.pipe(&fds) != 0) return error.PipeFailed;
-        errdefer _ = posix.close(fds[0]);
-        errdefer _ = posix.close(fds[1]);
+        var fds: [2]posix.fd_t = undefined;
+        if (posix.system.pipe(&fds) != 0) return error.PipeFailed;
+        errdefer closeFd(fds[0]);
+        errdefer closeFd(fds[1]);
 
         wl.wl_data_offer_receive(offer.offer, mime, fds[1]);
-        _ = posix.close(fds[1]);
+        closeFd(fds[1]);
         if (self.display) |display| _ = wl.wl_display_flush(display);
 
         self.clipboard_buf.clearRetainingCapacity();
         var chunk: [4096]u8 = undefined;
         while (true) {
-            const read_count = posix.read(fds[0], &chunk, chunk.len);
-            if (read_count <= 0) break;
-            try self.clipboard_buf.appendSlice(allocator, chunk[0..@intCast(read_count)]);
+            const read_count = posix.read(fds[0], &chunk) catch break;
+            if (read_count == 0) break;
+            try self.clipboard_buf.appendSlice(allocator, chunk[0..read_count]);
         }
-        _ = posix.close(fds[0]);
+        closeFd(fds[0]);
     }
 
     fn setClipboardBuffer(self: *State, text: []const u8) !void {
@@ -504,10 +472,14 @@ fn preferredOfferMime(offer: *const DataOfferState) ?[*:0]const u8 {
     return null;
 }
 
-fn writeAll(fd: i32, bytes: []const u8) void {
+fn closeFd(fd: posix.fd_t) void {
+    _ = posix.system.close(fd);
+}
+
+fn writeAll(fd: posix.fd_t, bytes: []const u8) void {
     var written: usize = 0;
     while (written < bytes.len) {
-        const chunk = posix.write(fd, bytes.ptr + written, bytes.len - written);
+        const chunk = posix.system.write(fd, bytes[written..].ptr, bytes.len - written);
         if (chunk <= 0) return;
         written += @intCast(chunk);
     }
@@ -727,7 +699,7 @@ fn noopDataSourceAction(_: ?*anyopaque, _: ?*wl.wl_data_source, _: u32) callconv
 
 fn dataSourceSend(data: ?*anyopaque, _: ?*wl.wl_data_source, _: [*c]const u8, fd: i32) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
-    defer _ = posix.close(fd);
+    defer closeFd(fd);
     if (state.clipboard_buf.items.len == 0) return;
     writeAll(fd, state.clipboard_buf.items);
 }
@@ -815,7 +787,7 @@ const keyboard_listener = wl.wl_keyboard_listener{
 
 fn keymapHandler(data: ?*anyopaque, _: ?*wl.wl_keyboard, format: u32, fd: i32, size: u32) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
-    defer _ = posix.close(fd);
+    defer closeFd(fd);
 
     if (format != wl.WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) return;
 
@@ -824,10 +796,16 @@ fn keymapHandler(data: ?*anyopaque, _: ?*wl.wl_keyboard, format: u32, fd: i32, s
         if (state.xkb_ctx == null) return;
     }
 
-    const ptr = posix.mmap(null, size, posix.PROT_READ, posix.MAP_SHARED, fd, 0);
-    if (ptr == posix.MAP_FAILED) return;
-    const map_str: [*]const u8 = @ptrCast(ptr);
-    defer _ = posix.munmap(@ptrCast(@constCast(map_str)), size);
+    const mapped = posix.mmap(
+        null,
+        size,
+        .{ .READ = true },
+        .{ .TYPE = .SHARED },
+        fd,
+        0,
+    ) catch return;
+    defer posix.munmap(mapped);
+    const map_str: [*]const u8 = @ptrCast(mapped.ptr);
 
     if (state.xkb_state) |s| xkb.xkb_state_unref(s);
     if (state.xkb_keymap) |k| xkb.xkb_keymap_unref(k);
@@ -1290,19 +1268,14 @@ fn buildWidgetTree(state: *State) !void {
 
 // ── Font loading ──
 
-const c_io = @cImport({
-    @cInclude("stdio.h");
-    @cInclude("stdlib.h");
-});
-
-fn loadFont(alloc: std.mem.Allocator) ![]u8 {
-    if (fontPathFromEnv()) |path| {
-        return readFile(alloc, path);
+fn loadFont(alloc: std.mem.Allocator, env: *const std.process.Environ.Map, io: std.Io) ![]u8 {
+    if (fontPathFromEnv(env)) |path| {
+        return readFile(alloc, io, path);
     }
 
-    if (try fontPathFromFontconfig(alloc)) |path| {
+    if (try fontPathFromFontconfig(alloc, io)) |path| {
         defer alloc.free(path);
-        if (readFile(alloc, path)) |font_data| {
+        if (readFile(alloc, io, path)) |font_data| {
             return font_data;
         } else |_| {}
     }
@@ -1313,34 +1286,38 @@ fn loadFont(alloc: std.mem.Allocator) ![]u8 {
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
     };
     for (fallback_paths) |path| {
-        return readFile(alloc, path) catch continue;
+        return readFile(alloc, io, path) catch continue;
     }
 
     std.debug.print("font not found; set GOOP_DEMO_FONT_PATH to a TTF file\n", .{});
     return error.FontNotFound;
 }
 
-fn fontPathFromEnv() ?[]const u8 {
-    const raw = c_io.getenv("GOOP_DEMO_FONT_PATH") orelse return null;
-    return std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
+fn fontPathFromEnv(env: *const std.process.Environ.Map) ?[]const u8 {
+    return env.get("GOOP_DEMO_FONT_PATH");
 }
 
-fn fontPathFromFontconfig(alloc: std.mem.Allocator) !?[]u8 {
+fn fontPathFromFontconfig(alloc: std.mem.Allocator, io: std.Io) !?[]u8 {
     const patterns = [_][]const u8{
         "Noto Sans:style=Regular",
         "sans-serif:style=Regular",
     };
 
     for (patterns) |pattern| {
-        var command_buf: [256]u8 = undefined;
-        const command = try std.fmt.bufPrintZ(&command_buf, "fc-match -f '%{{file}}\\n' '{s}'", .{pattern});
+        const result = std.process.run(alloc, io, .{
+            .argv = &.{ "fc-match", "-f", "%{file}\n", pattern },
+            .stdout_limit = .limited(4096),
+            .stderr_limit = .limited(4096),
+        }) catch continue;
+        defer alloc.free(result.stdout);
+        defer alloc.free(result.stderr);
 
-        const pipe = c_io.popen(command.ptr, "r") orelse continue;
-        defer _ = c_io.pclose(pipe);
+        switch (result.term) {
+            .exited => |code| if (code != 0) continue,
+            else => continue,
+        }
 
-        var buf: [4096]u8 = undefined;
-        const raw = c_io.fgets(&buf, @intCast(buf.len), pipe) orelse continue;
-        const line = std.mem.trimEnd(u8, std.mem.span(@as([*:0]const u8, @ptrCast(raw))), "\r\n");
+        const line = std.mem.trimEnd(u8, result.stdout, "\r\n");
         if (line.len == 0) continue;
         return @as(?[]u8, try alloc.dupe(u8, line));
     }
@@ -1348,46 +1325,27 @@ fn fontPathFromFontconfig(alloc: std.mem.Allocator) !?[]u8 {
     return null;
 }
 
-fn readFile(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
-    var path_z: [1024]u8 = undefined;
-    if (path.len >= path_z.len) return error.PathTooLong;
-    @memcpy(path_z[0..path.len], path);
-    path_z[path.len] = 0;
-    const fp = c_io.fopen(&path_z, "rb") orelse return error.FileNotFound;
-    defer _ = c_io.fclose(fp);
-    _ = c_io.fseek(fp, 0, c_io.SEEK_END);
-    const tell = c_io.ftell(fp);
-    if (tell < 0) return error.ReadFailed;
-    const size: usize = @intCast(tell);
-    _ = c_io.fseek(fp, 0, c_io.SEEK_SET);
-    const buf = try alloc.alloc(u8, size);
-    errdefer alloc.free(buf);
-    const read = c_io.fread(buf.ptr, 1, size, fp);
-    if (read != size) {
-        alloc.free(buf);
-        return error.ReadFailed;
-    }
-    std.debug.print("loaded font: {s} ({} bytes)\n", .{ path, size });
+fn readFile(alloc: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
+    const buf = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(256 * 1024 * 1024));
+    std.debug.print("loaded font: {s} ({} bytes)\n", .{ path, buf.len });
     return buf;
 }
 
 // ── Main ──
 
-fn parseTimeout() ?u64 {
-    const raw = c_io.getenv("GOOP_DEMO_TIMEOUT") orelse return null;
-    const val = std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
+fn parseTimeout(env: *const std.process.Environ.Map) ?u64 {
+    const val = env.get("GOOP_DEMO_TIMEOUT") orelse return null;
     const secs = std.fmt.parseFloat(f64, val) catch return null;
     if (secs <= 0) return null;
     return @intFromFloat(secs * @as(f64, @floatFromInt(std.time.ns_per_s)));
 }
 
-fn getMonotonicNs() u64 {
-    var ts: posix.struct_timespec = undefined;
-    _ = posix.clock_gettime(posix.CLOCK_MONOTONIC, &ts);
-    return @intCast(@as(i128, ts.tv_sec) * std.time.ns_per_s + ts.tv_nsec);
+fn getMonotonicNs(io: std.Io) u64 {
+    const ns = std.Io.Clock.awake.now(io).nanoseconds;
+    return if (ns <= 0) 0 else @intCast(ns);
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     // Connect to Wayland
     const display = wl.wl_display_connect(null) orelse {
         std.debug.print("failed to connect to wayland display\n", .{});
@@ -1397,12 +1355,12 @@ pub fn main() !void {
 
     var state = State{};
     state.display = display;
-    state.timeout_ns = parseTimeout();
+    state.timeout_ns = parseTimeout(init.environ_map);
     if (state.timeout_ns) |t| {
         std.debug.print("demo will exit after {d:.1}s\n", .{@as(f64, @floatFromInt(t)) / std.time.ns_per_s});
     }
     if (state.timeout_ns != null) {
-        _ = posix.clock_gettime(posix.CLOCK_MONOTONIC, &state.start_time);
+        state.start_time_ns = getMonotonicNs(init.io);
     }
 
     // Bind globals
@@ -1430,32 +1388,23 @@ pub fn main() !void {
     defer deinitEgl(&state);
 
     // Load font
-    const font_data = loadFont(allocator) catch |err| {
+    const font_data = loadFont(allocator, init.environ_map, init.io) catch |err| {
         std.debug.print("failed to load font: {}\n", .{err});
         return err;
     };
     defer allocator.free(font_data);
 
-    var font = try snail.Font.init(font_data);
-    defer font.deinit();
+    var text_atlas = try snail.TextAtlas.init(allocator, &.{.{ .data = font_data }});
+    defer text_atlas.deinit();
 
-    // Build glyph atlas for printable ASCII
-    var codepoints: [95]u32 = undefined;
-    for (0..95) |i| codepoints[i] = @intCast(32 + i);
-    var atlas = try snail.Atlas.init(allocator, &font, &codepoints);
-    defer atlas.deinit();
-
-    const line_metrics = fontLineMetrics(&font);
+    const line_metrics = fontLineMetrics(&text_atlas);
     var text_measure = SnailTextCtx{
         .allocator = allocator,
-        .font = &font,
-        .atlas = &atlas,
-        .measure_buf = try allocator.alloc(f32, 64 * snail.FLOATS_PER_GLYPH),
+        .text_atlas = &text_atlas,
         .scratch_buf = try allocator.alloc(u8, 64),
         .ascent_units = line_metrics.ascent,
         .descent_units = line_metrics.descent,
     };
-    defer allocator.free(text_measure.measure_buf);
     defer allocator.free(text_measure.scratch_buf);
     const text_measure_ctx = goop.TextMeasureCtx{
         .measureFn = &snailMeasureText,
@@ -1470,7 +1419,7 @@ pub fn main() !void {
     try buildWidgetTree(&state);
 
     // GL renderer (with snail text support)
-    var renderer = try render.Renderer.init(state.buffer_width, state.buffer_height, &font, &atlas);
+    var renderer = try render.Renderer.init(state.buffer_width, state.buffer_height, &text_atlas);
     defer renderer.deinit();
 
     std.debug.print("goop demo running (logical {}x{}, scale {}, buffer {}x{})\n", .{
@@ -1485,9 +1434,8 @@ pub fn main() !void {
     while (state.running) {
         // Check timeout
         if (state.timeout_ns) |t| {
-            const now = getMonotonicNs();
-            const start = @as(u64, @intCast(@as(i128, state.start_time.tv_sec) * std.time.ns_per_s + state.start_time.tv_nsec));
-            const elapsed = now - start;
+            const now = getMonotonicNs(init.io);
+            const elapsed = now - state.start_time_ns;
             if (elapsed >= t) {
                 std.debug.print("demo timeout reached, exiting\n", .{});
                 break;
@@ -1501,18 +1449,17 @@ pub fn main() !void {
                 _ = wl.wl_display_dispatch_pending(display);
             _ = wl.wl_display_flush(display);
 
-            var pfd = posix.pollfd{
+            var pfd = [_]posix.pollfd{.{
                 .fd = wl.wl_display_get_fd(display),
-                .events = posix.POLLIN,
+                .events = posix.POLL.IN,
                 .revents = 0,
-            };
-            const poll_ret = posix.poll(&pfd, 1, 100);
+            }};
+            const poll_ret = posix.poll(&pfd, 100) catch break;
             if (poll_ret > 0) {
                 _ = wl.wl_display_read_events(display);
                 _ = wl.wl_display_dispatch_pending(display);
             } else {
                 wl.wl_display_cancel_read(display);
-                if (poll_ret < 0) break;
             }
         } else {
             // No timeout — block until events arrive
@@ -1675,7 +1622,10 @@ pub fn main() !void {
         // Render
         var paint_list = try ctx.generatePaintList();
         defer ctx.freePaintList(&paint_list);
-        if (try ensureAtlasForPaintList(&atlas, &renderer, paint_list)) {
+        if (try ensureAtlasForPaintList(&text_atlas, &renderer, paint_list)) {
+            const updated_metrics = fontLineMetrics(&text_atlas);
+            text_measure.ascent_units = updated_metrics.ascent;
+            text_measure.descent_units = updated_metrics.descent;
             ctx.setDimensions(state.logical_width, state.logical_height);
             ctx.doLayout(&text_measure_ctx);
             paint_list = try ctx.generatePaintList();

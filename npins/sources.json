@@ -1,24 +1,10 @@
 {
   "pins": {
-    "flake-compat": {
-      "type": "Git",
-      "repository": {
-        "type": "Forgejo",
-        "server": "https://git.lix.systems/",
-        "owner": "lix-project",
-        "repo": "flake-compat"
-      },
-      "branch": "main",
-      "submodules": false,
-      "revision": "549f2762aebeff29a2e5ece7a7dc0f955281a1d1",
-      "url": "https://git.lix.systems/lix-project/flake-compat/archive/549f2762aebeff29a2e5ece7a7dc0f955281a1d1.tar.gz",
-      "hash": "sha256-NKw96t+BgHIYzHUjkTK95FqYRVKB8DHpVhefWSz/kTw="
-    },
     "nixpkgs-unstable": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre981196.b86751bc4085/nixexprs.tar.xz",
-      "hash": "sha256-mBqzkn7oJti2hqeO8iTbDxKw+1ifxpP53feQ0CEXies="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre991389.73c703c22422/nixexprs.tar.xz",
+      "hash": "sha256-bA5oJv7j54PubdUbBlLCwdoK29G2+9sLnc8dDqLQ9YE="
     },
     "snail": {
       "type": "Git",
@@ -29,22 +15,9 @@
       },
       "branch": "main",
       "submodules": false,
-      "revision": "d655dcba2a85198dfe12b99138b612d4bef7b899",
-      "url": "https://github.com/psyclyx/snail/archive/d655dcba2a85198dfe12b99138b612d4bef7b899.tar.gz",
-      "hash": "sha256-Agc+QtTm8Fed+hFkwdk7RSDCfNwGozvQ3SagysGZpV0="
-    },
-    "zig-overlay": {
-      "type": "Git",
-      "repository": {
-        "type": "GitHub",
-        "owner": "mitchellh",
-        "repo": "zig-overlay"
-      },
-      "branch": "main",
-      "submodules": false,
-      "revision": "768501ac4c8f737fa1f315d697e15741f7ceb7bb",
-      "url": "https://github.com/mitchellh/zig-overlay/archive/768501ac4c8f737fa1f315d697e15741f7ceb7bb.tar.gz",
-      "hash": "sha256-T9CaGsOqOeXDAAA8y/IrWUK6/u/W3hFun1JWJs2lGCI="
+      "revision": "9825c5bd654e5b9202b017fdf5946bf566cdb840",
+      "url": "https://github.com/psyclyx/snail/archive/9825c5bd654e5b9202b017fdf5946bf566cdb840.tar.gz",
+      "hash": "sha256-udO5V1qEEmNubFKgUT8lYvAkw8Nm+Jpv/ielhIgQovo="
     }
   },
   "version": 7

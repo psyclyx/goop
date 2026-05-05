@@ -10,8 +10,8 @@
     },
     .dependencies = .{
         .snail = .{
-            .url = "https://github.com/psyclyx/snail/archive/d655dcba2a85198dfe12b99138b612d4bef7b899.tar.gz",
-            .hash = "snail-0.0.1-vw75SHDqUwCCEUXoBB6JfR3kuh-JN3dkI71uzzF5KpPI",
+            .url = "https://github.com/psyclyx/snail/archive/9825c5bd654e5b9202b017fdf5946bf566cdb840.tar.gz",
+            .hash = "snail-0.4.1-vw75SE6UagBhwNwI3IRNOn1i9ehrmDJLcPup7TXS_91C",
         },
     },
 }

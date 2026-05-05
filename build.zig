@@ -5,8 +5,13 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // ── Snail (GPU text rendering) ──
-    const snail_dep = b.dependency("snail", .{});
-    const snail_mod = @import("snail").module(snail_dep.builder, target, optimize);
+    const snail_dep = b.dependency("snail", .{
+        .target = target,
+        .optimize = optimize,
+        .@"c-api" = false,
+        .@"cpu-renderer" = false,
+    });
+    const snail_mod = snail_dep.module("snail");
 
     // ── Core goop module ──
     const goop_mod = b.createModule(.{

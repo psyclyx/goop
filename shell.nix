@@ -1,14 +1,10 @@
 let
   sources = import ./npins;
-  flake-compat = import sources.flake-compat;
-  zig-flake = (flake-compat {src = sources.zig-overlay;}).defaultNix;
-  pkgs = import sources.nixpkgs-unstable {
-    overlays = [zig-flake.overlays.default];
-  };
+  pkgs = import sources.nixpkgs-unstable {};
 in
   pkgs.mkShell {
     packages = with pkgs; [
-      zigpkgs."0.16.0"
+      zig_0_16
       pkg-config
       fontconfig
       libGL

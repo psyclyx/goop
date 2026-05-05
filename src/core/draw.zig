@@ -234,7 +234,7 @@ fn emitNode(
     if (!in_floating_subtree and (node.kind == .popup or node.kind == .tooltip)) return;
     if (!in_floating_subtree) {
         if (active_paint_cull_rect) |cull_rect| {
-            if (!rectsIntersect(node_rect, cull_rect)) return;
+            if (!rectsIntersect(node_rect, cull_rect) and !shouldTraverseCulledNode(tree, handle)) return;
         }
     }
     const resolved = node.style_override.resolve(theme);
@@ -589,11 +589,15 @@ fn emitTreeItem(
         try emitTreeDisclosure(disclosure_x, rect, resolved, theme, item.expanded, commands, allocator);
     }
     if (has_children or has_parent) {
+        const connector_start_x = if (has_parent)
+            treeParentGuideCenterX(rect, resolved, theme, depth)
+        else
+            disclosure_center_x;
         try commands.append(allocator, .{ .box = .{
             .bounds = .{
-                .x = disclosure_center_x,
+                .x = connector_start_x,
                 .y = rect.y + rect.h * 0.5,
-                .w = @max(label_x - disclosure_center_x - 3, 1),
+                .w = @max(label_x - connector_start_x - 3, 1),
                 .h = 1,
             },
             .color = theme.tree_guide,
@@ -1182,9 +1186,15 @@ fn emitMenuItem(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
-    _: ?*const layout.TextMeasureCtx,
+    text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const has_popup = directPopupChild(tree, handle) != null;
+    const text_color = if (item.enabled)
+        resolved.fg
+    else
+        style.Color.rgba(resolved.fg.r, resolved.fg.g, resolved.fg.b, 120);
+    const reserve_width = @max(resolved.font_size, 12);
+    const gap = @max(resolved.padding.left * 0.75, 6);
     const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
@@ -1196,11 +1206,45 @@ fn emitMenuItem(
         .border_width = 0,
         .corner_radius = resolved.border_radius,
     } });
-    const item_bounds = defaultTextBounds(rect, resolved);
-    try appendTextCommand(commands, allocator, item_bounds, item.label, resolved.fg, resolved.font_size, .start, .visible);
-    if (has_popup) {
-        try emitMenuArrow(rect, resolved, commands, allocator, resolved.fg);
+
+    const check_bounds = customTextBounds(rect, resolved, rect.x + resolved.padding.left, reserve_width);
+    if (item.checked) {
+        try appendTextCommand(commands, allocator, check_bounds, "✓", text_color, resolved.font_size, .start, .visible);
     }
+
+    var label_right = rectRight(rect) - resolved.padding.right;
+    if (has_popup) label_right -= reserve_width;
+
+    const shortcut_width = if (item.shortcut.len > 0)
+        @max(layout.measureTextDimensions(item.shortcut, resolved.font_size, text_ctx).width + gap, reserve_width)
+    else
+        0;
+    if (shortcut_width > 0) label_right -= shortcut_width + gap;
+
+    const label_left = check_bounds.x + reserve_width + gap;
+    const label_bounds = customTextBounds(rect, resolved, label_left, @max(label_right - label_left, 0));
+    try appendTextCommand(commands, allocator, label_bounds, item.label, text_color, resolved.font_size, .start, .ellipsis);
+
+    if (item.shortcut.len > 0) {
+        const shortcut_bounds = customTextBounds(
+            rect,
+            resolved,
+            label_right + gap,
+            shortcut_width - gap,
+        );
+        try appendTextCommand(commands, allocator, shortcut_bounds, item.shortcut, text_color, resolved.font_size, .end, .visible);
+    }
+
+    if (has_popup) {
+        const arrow_bounds = customTextBounds(
+            rect,
+            resolved,
+            rectRight(rect) - resolved.padding.right - reserve_width,
+            reserve_width,
+        );
+        try appendTextCommand(commands, allocator, arrow_bounds, "›", text_color, resolved.font_size, .end, .visible);
+    }
+
     try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
 }
 
@@ -2076,53 +2120,85 @@ fn emitTreeGuides(
         if (ancestor_node.kind == .tree_item) {
             ancestor_depth -= 1;
             if (hasNextTreeSibling(tree, ancestor_handle)) {
-                try commands.append(allocator, .{ .box = .{
-                    .bounds = .{
-                        .x = treeGuideCenterX(row_rect, resolved, theme, ancestor_depth),
-                        .y = row_rect.y,
-                        .w = 1,
-                        .h = row_rect.h,
-                    },
-                    .color = theme.tree_guide,
-                    .border_color = theme.tree_guide,
-                    .border_width = 0,
-                    .corner_radius = 0,
-                } });
+                try appendTreeGuideVertical(
+                    commands,
+                    allocator,
+                    theme,
+                    treeGuideCenterX(row_rect, resolved, theme, ancestor_depth),
+                    row_rect.y,
+                    row_rect.y + row_rect.h,
+                );
             }
         }
         ancestor = ancestor_node.parent;
     }
 
-    if (findTreeParent(tree, handle) != null) {
-        try commands.append(allocator, .{ .box = .{
-            .bounds = .{
-                .x = disclosure_center_x,
-                .y = row_rect.y,
-                .w = 1,
-                .h = row_rect.h * 0.5,
-            },
-            .color = theme.tree_guide,
-            .border_color = theme.tree_guide,
-            .border_width = 0,
-            .corner_radius = 0,
-        } });
+    if (findTreeParent(tree, handle)) |parent_handle| {
+        const parent_rect = paintRect(tree.getConst(parent_handle).layout_rect);
+        const parent_bottom_y = parent_rect.y + parent_rect.h;
+        const row_center_y = row_rect.y + row_rect.h * 0.5;
+        const parent_guide_x = treeParentGuideCenterX(row_rect, resolved, theme, treeDepth(tree, handle));
+        const start_y = if (previousTreeSibling(tree, handle) != null)
+            row_rect.y
+        else
+            @min(parent_bottom_y, row_rect.y);
+        try appendTreeGuideVertical(
+            commands,
+            allocator,
+            theme,
+            parent_guide_x,
+            start_y,
+            row_center_y,
+        );
+
+        if (nextTreeSibling(tree, handle)) |next_handle| {
+            const next_rect = paintRect(tree.getConst(next_handle).layout_rect);
+            try appendTreeGuideVertical(
+                commands,
+                allocator,
+                theme,
+                parent_guide_x,
+                row_center_y,
+                next_rect.y + next_rect.h * 0.5,
+            );
+        }
     }
 
     const node = tree.getConst(handle);
     if (node.kind.tree_item.expanded and hasNonPopupChildren(tree, handle)) {
-        try commands.append(allocator, .{ .box = .{
-            .bounds = .{
-                .x = disclosure_center_x,
-                .y = row_rect.y + row_rect.h * 0.5,
-                .w = 1,
-                .h = row_rect.h * 0.5,
-            },
-            .color = theme.tree_guide,
-            .border_color = theme.tree_guide,
-            .border_width = 0,
-            .corner_radius = 0,
-        } });
+        try appendTreeGuideVertical(
+            commands,
+            allocator,
+            theme,
+            disclosure_center_x,
+            row_rect.y + row_rect.h * 0.5,
+            row_rect.y + row_rect.h,
+        );
     }
+}
+
+fn appendTreeGuideVertical(
+    commands: *std.ArrayListUnmanaged(PaintCommand),
+    allocator: std.mem.Allocator,
+    theme: style.Theme,
+    x: f32,
+    y0: f32,
+    y1: f32,
+) !void {
+    const top = @min(y0, y1);
+    const bottom = @max(y0, y1);
+    try commands.append(allocator, .{ .box = .{
+        .bounds = .{
+            .x = x,
+            .y = top,
+            .w = 1,
+            .h = @max(bottom - top, 1),
+        },
+        .color = theme.tree_guide,
+        .border_color = theme.tree_guide,
+        .border_width = 0,
+        .corner_radius = 0,
+    } });
 }
 
 fn emitTreeDisclosure(
@@ -2183,13 +2259,27 @@ fn emitTreeDisclosure(
 }
 
 fn hasNextTreeSibling(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    return nextTreeSibling(tree, handle) != null;
+}
+
+fn nextTreeSibling(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
     var sibling = tree.getConst(handle).next_sibling;
     while (sibling) |next_handle| {
         const next_node = tree.getConst(next_handle);
-        if (next_node.kind != .popup and next_node.kind != .tooltip) return true;
+        if (next_node.kind != .popup and next_node.kind != .tooltip) return next_handle;
         sibling = next_node.next_sibling;
     }
-    return false;
+    return null;
+}
+
+fn previousTreeSibling(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
+    var sibling = tree.getConst(handle).prev_sibling;
+    while (sibling) |previous_handle| {
+        const previous_node = tree.getConst(previous_handle);
+        if (previous_node.kind != .popup and previous_node.kind != .tooltip) return previous_handle;
+        sibling = previous_node.prev_sibling;
+    }
+    return null;
 }
 
 fn treeGuideCenterX(
@@ -2200,6 +2290,15 @@ fn treeGuideCenterX(
 ) f32 {
     const indent = @as(f32, @floatFromInt(depth)) * treeIndent(theme, resolved);
     return row_rect.x + resolved.padding.left + indent + disclosureSlotWidth(resolved) * 0.5;
+}
+
+fn treeParentGuideCenterX(
+    row_rect: Rect,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    depth: u32,
+) f32 {
+    return treeGuideCenterX(row_rect, resolved, theme, if (depth == 0) 0 else depth - 1);
 }
 
 fn findTreeParent(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
@@ -2282,6 +2381,22 @@ fn emitFloatingSubtrees(
         if (node.kind == .tab_item and !node.kind.tab_item.selected) continue;
         try emitFloatingSubtrees(tree, child, theme, commands, allocator, text_ctx);
     }
+}
+
+fn shouldTraverseCulledNode(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    const node = tree.getConst(handle);
+    switch (node.kind) {
+        .tree_item => |item| if (!item.expanded) return false,
+        .tab_item => |item| if (!item.selected) return false,
+        else => {},
+    }
+
+    var iter = tree.children(handle);
+    while (iter.next()) |child| {
+        const child_kind = tree.getConst(child).kind;
+        if (child_kind != .popup and child_kind != .tooltip) return true;
+    }
+    return false;
 }
 
 fn emitDragGhosts(
@@ -2715,16 +2830,21 @@ test "expanded tree item emits disclosure and child guides" {
         .label = "Camera",
         .group = 1,
     } });
+    const sibling = try tree.addChild(parent, .{ .tree_item = .{
+        .label = "Light",
+        .group = 1,
+    } });
 
-    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 240, .h = 80 };
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 240, .h = 130 };
     tree.get(parent).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 26 };
-    tree.get(child).layout_rect = .{ .x = 10, .y = 36, .w = 220, .h = 26 };
+    tree.get(child).layout_rect = .{ .x = 10, .y = 50, .w = 220, .h = 26 };
+    tree.get(sibling).layout_rect = .{ .x = 10, .y = 90, .w = 220, .h = 26 };
 
     const theme = style.Theme.default;
     var dl = try generate(&tree, theme, allocator, null);
     defer freeDrawList(&dl, allocator);
 
-    try std.testing.expectEqual(@as(usize, 9), dl.commands.len);
+    try std.testing.expectEqual(@as(usize, 13), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .rect); // root bg
     try std.testing.expect(dl.commands[1] == .rect); // parent downward guide
     try std.testing.expect(dl.commands[2] == .rect); // disclosure box
@@ -2732,8 +2852,25 @@ test "expanded tree item emits disclosure and child guides" {
     try std.testing.expect(dl.commands[4] == .rect); // parent connector
     try std.testing.expect(dl.commands[5] == .text); // parent label
     try std.testing.expect(dl.commands[6] == .rect); // child vertical guide
-    try std.testing.expect(dl.commands[7] == .rect); // child connector
-    try std.testing.expect(dl.commands[8] == .text); // child label
+    try std.testing.expect(dl.commands[7] == .rect); // child sibling guide
+    try std.testing.expect(dl.commands[8] == .rect); // child connector
+    try std.testing.expect(dl.commands[9] == .text); // child label
+    try std.testing.expect(dl.commands[10] == .rect); // sibling vertical guide
+    try std.testing.expect(dl.commands[11] == .rect); // sibling connector
+    try std.testing.expect(dl.commands[12] == .text); // sibling label
+
+    const child_guide = dl.commands[6].rect.bounds;
+    try std.testing.expectApproxEqAbs(@as(f32, 25), child_guide.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 36), child_guide.y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 27), child_guide.h, 0.01);
+
+    const sibling_guide = dl.commands[7].rect.bounds;
+    try std.testing.expectApproxEqAbs(child_guide.x, sibling_guide.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 63), sibling_guide.y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 40), sibling_guide.h, 0.01);
+
+    const child_connector = dl.commands[8].rect.bounds;
+    try std.testing.expectApproxEqAbs(child_guide.x, child_connector.x, 0.01);
 }
 
 test "drag value emits bg and formatted text" {
@@ -3150,6 +3287,34 @@ test "scroll area omits fully offscreen children" {
     try std.testing.expect(dl.commands[3] == .clip);
     try std.testing.expect(dl.commands[4] == .rect);
     try std.testing.expect(dl.commands[5] == .rect);
+}
+
+test "scroll area still paints visible tree children when expanded parent row is offscreen" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{} });
+    const parent = try tree.addChild(scroll, .{ .tree_item = .{ .label = "Root", .expanded = true } });
+    const child = try tree.addChild(parent, .{ .tree_item = .{ .label = "Child" } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 160, .h = 40 };
+    tree.get(parent).layout_rect = .{ .x = 0, .y = -30, .w = 150, .h = 20 };
+    tree.get(child).layout_rect = .{ .x = 0, .y = 4, .w = 150, .h = 20 };
+
+    const theme = style.Theme.default;
+    var dl = try generate(&tree, theme, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    var found_child_label = false;
+    for (dl.commands) |command| {
+        if (command == .text and std.mem.eql(u8, command.text.text, "Child")) {
+            found_child_label = true;
+            break;
+        }
+    }
+
+    try std.testing.expect(found_child_label);
 }
 
 test "scroll area emits scrollbar thumb when content overflows" {

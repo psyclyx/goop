@@ -787,7 +787,6 @@ fn emitMenuBar(
     });
     emitChildrenSkippingPopups(tree, handle, theme);
     emitPopupChildren(tree, handle, theme);
-    c.Clay__CloseElement();
 }
 
 fn emitToolbar(
@@ -902,6 +901,7 @@ fn emitMenu(
     c.Clay__CloseElement();
 
     emitPopupChildren(tree, handle, theme);
+    c.Clay__CloseElement();
 }
 
 fn emitPopup(
@@ -977,10 +977,13 @@ fn emitMenuItem(
     resolved: style_mod.ResolvedStyle,
     theme: style_mod.Theme,
 ) void {
-    var padding = resolved.padding;
-    if (directPopupChild(tree, handle) != null) {
-        padding.right += resolved.font_size;
-    }
+    const has_submenu = directPopupChild(tree, handle) != null;
+    const text_color = if (item.enabled)
+        resolved.fg
+    else
+        style_mod.Color.rgba(resolved.fg.r, resolved.fg.g, resolved.fg.b, 120);
+    const reserve_width = @max(resolved.font_size, 12);
+
     c.Clay__OpenElement();
     c.Clay__ConfigureOpenElement(.{
         .id = nodeId(handle),
@@ -989,8 +992,8 @@ fn emitMenuItem(
                 .width = growSizing(),
                 .height = fixedSizing(controlTextHeight(resolved)),
             },
-            .padding = clayPadding(padding),
-            .childGap = 0,
+            .padding = clayPadding(resolved.padding),
+            .childGap = @intFromFloat(@max(resolved.padding.left * 0.75, 6)),
             .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
             .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
         },
@@ -1004,11 +1007,35 @@ fn emitMenuItem(
         .border = .{},
         .userData = null,
     });
+
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = .{},
+        .layout = .{
+            .sizing = .{
+                .width = fixedSizing(reserve_width),
+                .height = .{},
+            },
+            .padding = .{},
+            .childGap = 0,
+            .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
+            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
+        },
+        .backgroundColor = .{},
+        .cornerRadius = .{},
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
     c.Clay__OpenTextElement(
-        clayString(item.label),
+        clayString(if (item.checked) "✓" else ""),
         c.Clay__StoreTextElementConfig(.{
             .userData = null,
-            .textColor = clayColor(resolved.fg),
+            .textColor = clayColor(text_color),
             .fontId = 0,
             .fontSize = @intFromFloat(resolved.font_size),
             .letterSpacing = 0,
@@ -1019,7 +1046,78 @@ fn emitMenuItem(
     );
     c.Clay__CloseElement();
 
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = .{},
+        .layout = .{
+            .sizing = .{
+                .width = growSizing(),
+                .height = .{},
+            },
+            .padding = .{},
+            .childGap = 0,
+            .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
+            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
+        },
+        .backgroundColor = .{},
+        .cornerRadius = .{},
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
+    c.Clay__OpenTextElement(
+        clayString(item.label),
+        c.Clay__StoreTextElementConfig(.{
+            .userData = null,
+            .textColor = clayColor(text_color),
+            .fontId = 0,
+            .fontSize = @intFromFloat(resolved.font_size),
+            .letterSpacing = 0,
+            .lineHeight = 0,
+            .wrapMode = c.CLAY_TEXT_WRAP_NONE,
+            .textAlignment = c.CLAY_TEXT_ALIGN_LEFT,
+        }),
+    );
+    c.Clay__CloseElement();
+
+    if (item.shortcut.len > 0) {
+        c.Clay__OpenTextElement(
+            clayString(item.shortcut),
+            c.Clay__StoreTextElementConfig(.{
+                .userData = null,
+                .textColor = clayColor(text_color),
+                .fontId = 0,
+                .fontSize = @intFromFloat(resolved.font_size),
+                .letterSpacing = 0,
+                .lineHeight = 0,
+                .wrapMode = c.CLAY_TEXT_WRAP_NONE,
+                .textAlignment = c.CLAY_TEXT_ALIGN_RIGHT,
+            }),
+        );
+    }
+
+    if (has_submenu) {
+        c.Clay__OpenTextElement(
+            clayString("›"),
+            c.Clay__StoreTextElementConfig(.{
+                .userData = null,
+                .textColor = clayColor(text_color),
+                .fontId = 0,
+                .fontSize = @intFromFloat(resolved.font_size),
+                .letterSpacing = 0,
+                .lineHeight = 0,
+                .wrapMode = c.CLAY_TEXT_WRAP_NONE,
+                .textAlignment = c.CLAY_TEXT_ALIGN_RIGHT,
+            }),
+        );
+    }
+
     emitPopupChildren(tree, handle, theme);
+    c.Clay__CloseElement();
 }
 
 fn emitDragValue(handle: widget.NodeHandle, drag_value: *const widget.WidgetKind.DragValue, resolved: style_mod.ResolvedStyle) void {

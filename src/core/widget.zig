@@ -370,6 +370,9 @@ pub const WidgetKind = union(enum) {
 
     pub const MenuItem = struct {
         label: []const u8,
+        shortcut: []const u8 = "",
+        checked: bool = false,
+        enabled: bool = true,
         clicked: bool = false,
     };
 

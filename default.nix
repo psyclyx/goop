@@ -1,76 +1,56 @@
 let
   sources = import ./npins;
-  flake-compat = import sources.flake-compat;
-  zig-flake = (flake-compat { src = sources.zig-overlay; }).defaultNix;
-  pkgs = import sources.nixpkgs-unstable {
-    overlays = [ zig-flake.overlays.default ];
-  };
-
-  zig = pkgs.zigpkgs."0.16.0";
-
-  runtimeLibs = with pkgs; [
-    harfbuzz
-    libGL
-    libglvnd
-    stdenv.cc.cc.lib
-    wayland
-    libxkbcommon
+  pkgs = import sources.nixpkgs-unstable {};
+  zig = pkgs.zig_0_16;
+  deps = pkgs.linkFarm "zig-packages" [
+    {
+      name = "snail-0.4.1-vw75SE6UagBhwNwI3IRNOn1i9ehrmDJLcPup7TXS_91C";
+      path = sources.snail;
+    }
   ];
 
-  allBuildInputs = runtimeLibs ++ (with pkgs; [ wayland-protocols ]);
-
-  filteredSrc = pkgs.lib.fileset.toSource {
+  src = pkgs.lib.fileset.toSource {
     root = ./.;
     fileset = pkgs.lib.fileset.unions [
       ./src
       ./demo
+      ./include
       ./vendor
       ./build.zig
       ./build.zig.zon
     ];
   };
 
-  common = {
+  goop = pkgs.stdenv.mkDerivation {
     pname = "goop";
     version = "0.0.1";
-    src = filteredSrc;
+    inherit src;
 
-    nativeBuildInputs = with pkgs; [
+    strictDeps = true;
+
+    nativeBuildInputs = [
       zig
-      pkg-config
-      autoPatchelfHook
+      pkgs.pkg-config
     ];
 
-    buildInputs = allBuildInputs;
+    buildInputs = with pkgs; [
+      harfbuzz
+      libGL
+      libglvnd
+      libxkbcommon
+      wayland
+      wayland-protocols
+    ];
+
+    zigBuildFlags = [
+      "--system"
+      "${deps}"
+    ];
   };
 
-  lib = pkgs.stdenv.mkDerivation (common // {
-    buildPhase = ''
-      export XDG_CACHE_HOME="$TMPDIR/.cache"
-      zig build build-lib --fork=${sources.snail} -Doptimize=ReleaseFast
-    '';
-
-    installPhase = ''
-      mkdir -p $out/lib
-      cp zig-out/lib/* $out/lib/
-    '';
-  });
-
-  demo = pkgs.stdenv.mkDerivation (common // {
-    pname = "goop-demo";
-
-    buildPhase = ''
-      export XDG_CACHE_HOME="$TMPDIR/.cache"
-      zig build build-demo --fork=${sources.snail} -Doptimize=ReleaseFast
-    '';
-
-    installPhase = ''
-      mkdir -p $out/bin
-      cp zig-out/bin/goop-demo $out/bin/goop-demo
-    '';
-  });
-
 in {
-  inherit lib demo;
-  default = lib;
+  inherit goop;
+  lib = goop;
+  demo = goop;
+  default = goop;
 }

@@ -1636,6 +1636,7 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
             toggleOwnedPopup(tree, handle, null);
         },
         .menu_item => {
+            if (!node.kind.menu_item.enabled) return;
             node.interaction.primary_clicked = true;
             node.kind.menu_item.clicked = true;
             if (directPopupChild(tree, handle) != null) {

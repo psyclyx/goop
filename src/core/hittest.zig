@@ -3,6 +3,12 @@ const widget = @import("widget.zig");
 const draw = @import("draw.zig");
 const style = @import("style.zig");
 
+const HitState = struct {
+    offset_x: f32 = 0,
+    offset_y: f32 = 0,
+    clip: ?draw.Rect = null,
+};
+
 /// Find the topmost interactive widget at (x, y), giving floating popup
 /// subtrees precedence over the regular layout tree.
 pub fn hitTest(tree: *const widget.Tree, x: f32, y: f32) ?widget.NodeHandle {
@@ -10,7 +16,7 @@ pub fn hitTest(tree: *const widget.Tree, x: f32, y: f32) ?widget.NodeHandle {
 
     for (tree.nodes.items, 0..) |node, i| {
         if (!node.alive or node.parent != null or node.kind == .popup or node.kind == .tooltip) continue;
-        if (hitTestSubtree(tree, tree.handleFromIndex(@intCast(i)), x, y, null, false)) |found| {
+        if (hitTestSubtree(tree, tree.handleFromIndex(@intCast(i)), x, y, null, false, .{})) |found| {
             result = found;
         }
     }
@@ -31,7 +37,7 @@ pub fn hitTestKind(tree: *const widget.Tree, x: f32, y: f32, kind_tag: std.meta.
 
     for (tree.nodes.items, 0..) |node, i| {
         if (!node.alive or node.parent != null or node.kind == .popup or node.kind == .tooltip) continue;
-        if (hitTestSubtree(tree, tree.handleFromIndex(@intCast(i)), x, y, kind_tag, false)) |found| {
+        if (hitTestSubtree(tree, tree.handleFromIndex(@intCast(i)), x, y, kind_tag, false, .{})) |found| {
             result = found;
         }
     }
@@ -89,7 +95,7 @@ fn hitTestFloatingSubtrees(
     if (!isVisible(tree, handle)) return null;
     const node = tree.getConst(handle);
     if (node.kind == .popup) {
-        return hitTestSubtree(tree, handle, x, y, kind_tag, true);
+        return hitTestSubtree(tree, handle, x, y, kind_tag, true, .{});
     }
     if (node.kind == .tooltip) return null;
 
@@ -112,22 +118,27 @@ fn hitTestSubtree(
     y: f32,
     kind_tag: ?std.meta.Tag(widget.WidgetKind),
     in_floating_subtree: bool,
+    state: HitState,
 ) ?widget.NodeHandle {
     if (!isVisible(tree, handle)) return null;
     const node = tree.getConst(handle);
     if (!in_floating_subtree and (node.kind == .popup or node.kind == .tooltip)) return null;
+    if (state.clip) |clip| {
+        if (!pointInRect(x, y, clip)) return null;
+    }
 
     var result: ?widget.NodeHandle = null;
-    if ((kind_tag == null or node.kind == kind_tag.?) and isInteractive(node.kind) and pointHitsWidget(tree, handle, x, y)) {
+    if ((kind_tag == null or node.kind == kind_tag.?) and isInteractive(node.kind) and pointHitsWidget(tree, handle, x, y, state)) {
         result = handle;
     }
 
+    const child_state = childHitState(node, state);
     var iter = tree.children(handle);
     while (iter.next()) |child| {
         if (!in_floating_subtree and (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip)) continue;
         if (node.kind == .tree_item and !node.kind.tree_item.expanded and tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) continue;
         if (node.kind == .tab_item and !node.kind.tab_item.selected) continue;
-        if (hitTestSubtree(tree, child, x, y, kind_tag, in_floating_subtree)) |found| {
+        if (hitTestSubtree(tree, child, x, y, kind_tag, in_floating_subtree, child_state)) |found| {
             result = found;
         }
     }
@@ -162,18 +173,54 @@ fn tooltipVisible(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     return (owner.interaction.hovered or owner.interaction.focused) and node.layout_rect.w > 0 and node.layout_rect.h > 0;
 }
 
-fn pointHitsWidget(tree: *const widget.Tree, handle: widget.NodeHandle, x: f32, y: f32) bool {
+fn pointHitsWidget(tree: *const widget.Tree, handle: widget.NodeHandle, x: f32, y: f32, state: HitState) bool {
     const node = tree.getConst(handle);
+    const local_x = x - state.offset_x;
+    const local_y = y - state.offset_y;
     return switch (node.kind) {
-        .table => widget.tableResizeHandleIndexAtPoint(tree, handle, x, y) != null or
-            widget.tableHeaderCellIndexAtPoint(tree, handle, x, y) != null,
-        .table_row => widget.tableRowSelectable(tree, handle) and pointInRect(x, y, node.layout_rect),
+        .table => widget.tableResizeHandleIndexAtPoint(tree, handle, local_x, local_y) != null or
+            widget.tableHeaderCellIndexAtPoint(tree, handle, local_x, local_y) != null,
+        .table_row => widget.tableRowSelectable(tree, handle) and pointInRect(local_x, local_y, node.layout_rect),
         .splitter => {
             const resolved = node.style_override.resolve(style.Theme.default);
             const divider = splitterDividerRect(node.layout_rect, node.kind.splitter, resolved);
-            return pointInRect(x, y, splitterHandleRect(divider, node.kind.splitter));
+            return pointInRect(local_x, local_y, splitterHandleRect(divider, node.kind.splitter));
         },
-        else => pointInRect(x, y, node.layout_rect),
+        else => pointInRect(local_x, local_y, node.layout_rect),
+    };
+}
+
+fn childHitState(node: *const widget.Node, state: HitState) HitState {
+    if (node.kind != .scroll_area) return state;
+
+    const scroll = node.kind.scroll_area;
+    const node_rect = translatedRect(node.layout_rect, state);
+    return .{
+        .offset_x = state.offset_x - scroll.scroll_x,
+        .offset_y = state.offset_y - scroll.scroll_y,
+        .clip = if (state.clip) |clip| intersectRects(clip, node_rect) else node_rect,
+    };
+}
+
+fn translatedRect(rect: draw.Rect, state: HitState) draw.Rect {
+    return .{
+        .x = rect.x + state.offset_x,
+        .y = rect.y + state.offset_y,
+        .w = rect.w,
+        .h = rect.h,
+    };
+}
+
+fn intersectRects(a: draw.Rect, b: draw.Rect) draw.Rect {
+    const x0 = @max(a.x, b.x);
+    const y0 = @max(a.y, b.y);
+    const x1 = @min(a.x + a.w, b.x + b.w);
+    const y1 = @min(a.y + a.h, b.y + b.h);
+    return .{
+        .x = x0,
+        .y = y0,
+        .w = @max(x1 - x0, 0),
+        .h = @max(y1 - y0, 0),
     };
 }
 
@@ -258,4 +305,35 @@ test "floating popup subtree wins hit testing over regular content" {
     tree.get(item).layout_rect = .{ .x = 0, .y = 0, .w = 140, .h = 30 };
 
     try std.testing.expect(hitTest(&tree, 30, 20).?.eql(item));
+}
+
+test "scroll area hit testing follows visual child offset" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{ .scroll_y = 40 } });
+    const button = try tree.addChild(scroll, .{ .button = .{ .label = "Scrolled" } });
+
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 200, .h = 80 };
+    tree.get(button).layout_rect = .{ .x = 10, .y = 60, .w = 100, .h = 24 };
+
+    try std.testing.expect(hitTest(&tree, 20, 30).?.eql(button));
+    try std.testing.expect(hitTestKind(&tree, 20, 30, .button).?.eql(button));
+    try std.testing.expect(hitTestKind(&tree, 20, 70, .button) == null);
+}
+
+test "scroll area clips hit testing to viewport" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{ .scroll_y = 40 } });
+    const button = try tree.addChild(scroll, .{ .button = .{ .label = "Clipped" } });
+
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 200, .h = 40 };
+    tree.get(button).layout_rect = .{ .x = 10, .y = 70, .w = 100, .h = 24 };
+
+    try std.testing.expect(hitTestKind(&tree, 20, 35, .button).?.eql(button));
+    try std.testing.expect(hitTestKind(&tree, 20, 45, .button) == null);
 }

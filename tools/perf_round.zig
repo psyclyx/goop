@@ -2,11 +2,6 @@ const std = @import("std");
 const goop = @import("goop");
 const snail = @import("snail");
 const render = @import("goop_demo_render");
-const c = @cImport({
-    @cInclude("time.h");
-    @cInclude("stdio.h");
-    @cInclude("stdlib.h");
-});
 const egl = @cImport({
     @cInclude("EGL/egl.h");
     @cInclude("EGL/eglext.h");
@@ -37,52 +32,40 @@ const SceneSummary = struct {
 const SnailResources = struct {
     allocator: std.mem.Allocator,
     font_data: []u8,
-    font: snail.Font,
-    atlas: snail.Atlas,
+    text_atlas: snail.TextAtlas,
 
-    fn init(allocator: std.mem.Allocator) !SnailResources {
-        const font_data = try loadDemoFont(allocator);
+    fn init(allocator: std.mem.Allocator, env: *const std.process.Environ.Map, io: std.Io) !SnailResources {
+        const font_data = try loadDemoFont(allocator, env, io);
         errdefer allocator.free(font_data);
 
-        var font = try snail.Font.init(font_data);
-        errdefer font.deinit();
-
-        var codepoints: [95]u32 = undefined;
-        for (0..95) |i| codepoints[i] = @intCast(32 + i);
-        var atlas = try snail.Atlas.init(allocator, &font, &codepoints);
-        errdefer atlas.deinit();
+        var text_atlas = try snail.TextAtlas.init(allocator, &.{.{ .data = font_data }});
+        errdefer text_atlas.deinit();
 
         return .{
             .allocator = allocator,
             .font_data = font_data,
-            .font = font,
-            .atlas = atlas,
+            .text_atlas = text_atlas,
         };
     }
 
     fn deinit(self: *SnailResources) void {
-        self.atlas.deinit();
-        self.font.deinit();
+        self.text_atlas.deinit();
         self.allocator.free(self.font_data);
     }
 };
 
 const SnailTextCtx = struct {
     allocator: std.mem.Allocator,
-    font: *const snail.Font,
-    atlas: *const snail.Atlas,
-    measure_buf: []f32,
+    text_atlas: *const snail.TextAtlas,
     scratch_buf: []u8,
     ascent_units: f32,
     descent_units: f32,
 
     fn init(allocator: std.mem.Allocator, resources: *const SnailResources) !SnailTextCtx {
-        const metrics = fontLineMetrics(&resources.font);
+        const metrics = fontLineMetrics(&resources.text_atlas);
         return .{
             .allocator = allocator,
-            .font = &resources.font,
-            .atlas = &resources.atlas,
-            .measure_buf = try allocator.alloc(f32, 64 * snail.FLOATS_PER_GLYPH),
+            .text_atlas = &resources.text_atlas,
             .scratch_buf = try allocator.alloc(u8, 64),
             .ascent_units = metrics.ascent,
             .descent_units = metrics.descent,
@@ -90,15 +73,7 @@ const SnailTextCtx = struct {
     }
 
     fn deinit(self: *SnailTextCtx) void {
-        self.allocator.free(self.measure_buf);
         self.allocator.free(self.scratch_buf);
-    }
-
-    fn ensureMeasureCapacity(self: *SnailTextCtx, glyph_capacity: usize) !void {
-        const needed = @max(glyph_capacity, 64) * snail.FLOATS_PER_GLYPH;
-        if (self.measure_buf.len >= needed) return;
-        const next_len = std.math.ceilPowerOfTwo(usize, needed) catch needed;
-        self.measure_buf = try self.allocator.realloc(self.measure_buf, next_len);
     }
 
     fn ensureScratchCapacity(self: *SnailTextCtx, byte_len: usize) !void {
@@ -210,7 +185,11 @@ const OffscreenSurface = struct {
     }
 };
 
-pub fn main() !void {
+var bench_io: ?std.Io = null;
+
+pub fn main(init: std.process.Init) !void {
+    bench_io = init.io;
+
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -224,7 +203,7 @@ pub fn main() !void {
 
     std.debug.print("\n", .{});
 
-    var snail_resources = try SnailResources.init(std.heap.page_allocator);
+    var snail_resources = try SnailResources.init(std.heap.page_allocator, init.environ_map, init.io);
     defer snail_resources.deinit();
 
     var text_measure = try SnailTextCtx.init(std.heap.page_allocator, &snail_resources);
@@ -313,7 +292,7 @@ fn runRenderSuite(label: []const u8, ctx: *goop.Context, config: BenchConfig, te
     var offscreen = try OffscreenSurface.init(config.width, config.height);
     defer offscreen.deinit();
 
-    var renderer = try render.Renderer.init(config.width, config.height, &snail_resources.font, &snail_resources.atlas);
+    var renderer = try render.Renderer.init(config.width, config.height, &snail_resources.text_atlas);
     defer renderer.deinit();
 
     try prepareContext(ctx, config, text_ctx, snail_resources, &renderer);
@@ -348,7 +327,7 @@ fn prepareContext(ctx: *goop.Context, config: BenchConfig, text_ctx: ?*const goo
 fn stabilizeAtlas(ctx: *goop.Context, config: BenchConfig, text_ctx: *const goop.TextMeasureCtx, snail_resources: *SnailResources, renderer: ?*render.Renderer) !void {
     while (true) {
         const paint_list = try ctx.generatePaintList();
-        if (!try ensureAtlasForPaintList(&snail_resources.atlas, renderer, paint_list)) break;
+        if (!try ensureAtlasForPaintList(&snail_resources.text_atlas, renderer, paint_list)) break;
         ctx.setDimensions(config.width, config.height);
         ctx.doLayout(text_ctx);
     }
@@ -522,37 +501,30 @@ fn benchFrameRegenAndRender(ctx: *goop.Context, renderer: *render.Renderer, conf
     return monotonicNs() - start_ns;
 }
 
-fn ensureAtlasForPaintList(atlas: *snail.Atlas, renderer: ?*render.Renderer, paint_list: goop.PaintList) !bool {
+fn ensureAtlasForPaintList(text_atlas: *snail.TextAtlas, renderer: ?*render.Renderer, paint_list: goop.PaintList) !bool {
     var changed = false;
     for (paint_list.commands) |command| {
         if (command != .text) continue;
         const text = command.text.text;
         if (text.len == 0) continue;
 
-        const next = if (comptime @hasDecl(snail.Atlas, "extendText"))
-            try atlas.extendText(text)
-        else
-            try atlas.extendGlyphsForText(text);
-        if (next) |next_atlas| {
-            _ = snail.replaceAtlas(atlas, next_atlas);
+        if (try text_atlas.ensureText(.{}, text)) |next_atlas| {
+            text_atlas.deinit();
+            text_atlas.* = next_atlas;
             changed = true;
         }
     }
 
-    if (changed and renderer != null) renderer.?.uploadAtlas(atlas);
+    if (changed and renderer != null) renderer.?.uploadAtlas(text_atlas);
     return changed;
 }
 
 fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) goop.TextDimensions {
     const ctx: *SnailTextCtx = @ptrCast(@alignCast(user_data));
     const sanitized = ctx.sanitizeUtf8Lossy(text);
-    const scale = font_size / @as(f32, @floatFromInt(ctx.font.unitsPerEm()));
-    const glyphs = @max(std.unicode.utf8CountCodepoints(sanitized) catch sanitized.len, 1);
-    const width = blk: {
-        ctx.ensureMeasureCapacity(glyphs) catch break :blk SnailTextCtx.fallbackWidth(sanitized, font_size);
-        var probe = snail.Batch.init(ctx.measure_buf);
-        break :blk probe.addString(ctx.atlas, ctx.font, sanitized, 0, 0, font_size, .{ 1, 1, 1, 1 });
-    };
+    const units_per_em = ctx.text_atlas.unitsPerEm() catch 1000;
+    const scale = font_size / @as(f32, @floatFromInt(units_per_em));
+    const width = ctx.text_atlas.measureText(.{}, sanitized, font_size) catch SnailTextCtx.fallbackWidth(sanitized, font_size);
 
     return .{
         .width = width,
@@ -589,14 +561,14 @@ fn hasExtension(exts: []const u8, needle: []const u8) bool {
     return false;
 }
 
-fn loadDemoFont(alloc: std.mem.Allocator) ![]u8 {
-    if (fontPathFromEnv()) |path| {
-        return readFile(alloc, path);
+fn loadDemoFont(alloc: std.mem.Allocator, env: *const std.process.Environ.Map, io: std.Io) ![]u8 {
+    if (fontPathFromEnv(env)) |path| {
+        return readFile(alloc, io, path);
     }
 
-    if (try fontPathFromFontconfig(alloc)) |path| {
+    if (try fontPathFromFontconfig(alloc, io)) |path| {
         defer alloc.free(path);
-        return readFile(alloc, path);
+        return readFile(alloc, io, path);
     }
 
     const fallback_paths = [_][]const u8{
@@ -605,34 +577,38 @@ fn loadDemoFont(alloc: std.mem.Allocator) ![]u8 {
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
     };
     for (fallback_paths) |path| {
-        return readFile(alloc, path) catch continue;
+        return readFile(alloc, io, path) catch continue;
     }
 
     std.debug.print("font not found; set GOOP_DEMO_FONT_PATH to a TTF file\n", .{});
     return error.FontNotFound;
 }
 
-fn fontPathFromEnv() ?[]const u8 {
-    const raw = c.getenv("GOOP_DEMO_FONT_PATH") orelse return null;
-    return std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
+fn fontPathFromEnv(env: *const std.process.Environ.Map) ?[]const u8 {
+    return env.get("GOOP_DEMO_FONT_PATH");
 }
 
-fn fontPathFromFontconfig(alloc: std.mem.Allocator) !?[]u8 {
+fn fontPathFromFontconfig(alloc: std.mem.Allocator, io: std.Io) !?[]u8 {
     const patterns = [_][]const u8{
         "Noto Sans:style=Regular",
         "sans-serif:style=Regular",
     };
 
     for (patterns) |pattern| {
-        var command_buf: [256]u8 = undefined;
-        const command = try std.fmt.bufPrintZ(&command_buf, "fc-match -f '%{{file}}\\n' '{s}'", .{pattern});
+        const result = std.process.run(alloc, io, .{
+            .argv = &.{ "fc-match", "-f", "%{file}\n", pattern },
+            .stdout_limit = .limited(4096),
+            .stderr_limit = .limited(4096),
+        }) catch continue;
+        defer alloc.free(result.stdout);
+        defer alloc.free(result.stderr);
 
-        const pipe = c.popen(command.ptr, "r") orelse continue;
-        defer _ = c.pclose(pipe);
+        switch (result.term) {
+            .exited => |code| if (code != 0) continue,
+            else => continue,
+        }
 
-        var buf: [4096]u8 = undefined;
-        const raw = c.fgets(&buf, @intCast(buf.len), pipe) orelse continue;
-        const line = std.mem.trimEnd(u8, std.mem.span(@as([*:0]const u8, @ptrCast(raw))), "\r\n");
+        const line = std.mem.trimEnd(u8, result.stdout, "\r\n");
         if (line.len == 0) continue;
         return try alloc.dupe(u8, line);
     }
@@ -640,48 +616,20 @@ fn fontPathFromFontconfig(alloc: std.mem.Allocator) !?[]u8 {
     return null;
 }
 
-fn readFile(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
-    var path_z: [1024]u8 = undefined;
-    if (path.len >= path_z.len) return error.PathTooLong;
-    @memcpy(path_z[0..path.len], path);
-    path_z[path.len] = 0;
-
-    const fp = c.fopen(&path_z, "rb") orelse return error.FileNotFound;
-    defer _ = c.fclose(fp);
-
-    _ = c.fseek(fp, 0, c.SEEK_END);
-    const tell = c.ftell(fp);
-    if (tell < 0) return error.ReadFailed;
-    const size: usize = @intCast(tell);
-    _ = c.fseek(fp, 0, c.SEEK_SET);
-
-    const buf = try alloc.alloc(u8, size);
-    errdefer alloc.free(buf);
-
-    const read = c.fread(buf.ptr, 1, size, fp);
-    if (read != size) return error.ReadFailed;
-    std.debug.print("loaded font: {s} ({} bytes)\n", .{ path, size });
+fn readFile(alloc: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
+    const buf = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(256 * 1024 * 1024));
+    std.debug.print("loaded font: {s} ({} bytes)\n", .{ path, buf.len });
     return buf;
 }
 
-fn readBigI16(data: []const u8, offset: usize) ?i16 {
-    if (offset + 2 > data.len) return null;
-    return std.mem.readInt(i16, data[offset..][0..2], .big);
-}
-
-fn fontLineMetrics(font: *const snail.Font) struct { ascent: f32, descent: f32 } {
-    const inner = font.inner;
-    if (inner.hhea_offset != 0) {
-        const ascent = readBigI16(inner.data, inner.hhea_offset + 4) orelse @as(i16, @intCast(inner.units_per_em));
-        const descent = readBigI16(inner.data, inner.hhea_offset + 6) orelse 0;
-        return .{
-            .ascent = @floatFromInt(ascent),
-            .descent = @floatFromInt(@abs(descent)),
-        };
-    }
+fn fontLineMetrics(text_atlas: *const snail.TextAtlas) struct { ascent: f32, descent: f32 } {
+    const metrics = text_atlas.lineMetrics() catch {
+        const units_per_em = text_atlas.unitsPerEm() catch 1000;
+        return .{ .ascent = @floatFromInt(units_per_em), .descent = 0 };
+    };
     return .{
-        .ascent = @floatFromInt(inner.units_per_em),
-        .descent = 0,
+        .ascent = @floatFromInt(metrics.ascent),
+        .descent = @floatFromInt(@abs(metrics.descent)),
     };
 }
 
@@ -707,9 +655,9 @@ fn labelf(alloc: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![]
 }
 
 fn monotonicNs() u64 {
-    var ts: c.struct_timespec = undefined;
-    _ = c.clock_gettime(c.CLOCK_MONOTONIC, &ts);
-    return @as(u64, @intCast(ts.tv_sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.tv_nsec));
+    const io = bench_io orelse unreachable;
+    const ns = std.Io.Clock.awake.now(io).nanoseconds;
+    return if (ns <= 0) 0 else @intCast(ns);
 }
 
 fn buildExplorerWorkload(ctx: *goop.Context, alloc: std.mem.Allocator, table_rows: usize) !void {

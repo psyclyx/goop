@@ -78,6 +78,18 @@ pub const Runtime = struct {
     /// Queue an input event for processing.
     pub fn pushEvent(self: *Runtime, ev: Event) !void {
         switch (ev) {
+            .mouse_move => |move| {
+                if (self.events.items.len > 0) {
+                    const last = &self.events.items[self.events.items.len - 1];
+                    switch (last.*) {
+                        .mouse_move => {
+                            last.* = .{ .mouse_move = move };
+                            return;
+                        },
+                        else => {},
+                    }
+                }
+            },
             .mouse_scroll => |scroll| {
                 if (self.events.items.len > 0) {
                     const last = &self.events.items[self.events.items.len - 1];
@@ -225,6 +237,11 @@ pub const Runtime = struct {
     /// Get the most recent completed grid-item drop that occurred this frame, if any.
     pub fn lastGridDrop(self: *const Runtime) ?GridDrop {
         return self.mouse.last_grid_drop;
+    }
+
+    /// Get the timestamp from the most recent primary-button press event.
+    pub fn lastPrimaryPressTimestampMs(self: *const Runtime) u64 {
+        return self.mouse.last_click_time_ms;
     }
 
     /// Remove a widget and its entire subtree from the tree.
@@ -611,6 +628,11 @@ pub const Context = struct {
         return self.runtime.lastGridDrop();
     }
 
+    /// Get the timestamp from the most recent primary-button press event.
+    pub fn lastPrimaryPressTimestampMs(self: *const Context) u64 {
+        return self.runtime.lastPrimaryPressTimestampMs();
+    }
+
     /// Remove a widget and its entire subtree from the tree.
     /// The handle becomes invalid after this call.
     pub fn removeWidget(self: *Context, handle: NodeHandle) !void {
@@ -851,6 +873,24 @@ test "runtime coalesces consecutive mouse scroll events" {
     try runtime.pushEvent(.{ .mouse_scroll = .{ .dx = 5, .dy = 10 } });
     try std.testing.expectEqual(@as(usize, 3), runtime.events.items.len);
     try std.testing.expectApproxEqAbs(@as(f32, 10), runtime.events.items[2].mouse_scroll.dy, 0.01);
+}
+
+test "runtime coalesces consecutive mouse move events" {
+    var runtime = try Runtime.init(std.testing.allocator, .{ .width = 320, .height = 240 });
+    defer runtime.deinit();
+
+    try runtime.pushEvent(.{ .mouse_move = .{ .x = 10, .y = 20 } });
+    try runtime.pushEvent(.{ .mouse_move = .{ .x = 30, .y = 40 } });
+    try std.testing.expectEqual(@as(usize, 1), runtime.events.items.len);
+    try std.testing.expectApproxEqAbs(@as(f32, 30), runtime.events.items[0].mouse_move.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 40), runtime.events.items[0].mouse_move.y, 0.01);
+
+    try runtime.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 30, .y = 40 } });
+    try runtime.pushEvent(.{ .mouse_move = .{ .x = 50, .y = 60 } });
+    try runtime.pushEvent(.{ .mouse_move = .{ .x = 70, .y = 80 } });
+    try std.testing.expectEqual(@as(usize, 3), runtime.events.items.len);
+    try std.testing.expectApproxEqAbs(@as(f32, 70), runtime.events.items[2].mouse_move.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 80), runtime.events.items[2].mouse_move.y, 0.01);
 }
 
 test "setDimensions dirties layout" {
