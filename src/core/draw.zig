@@ -177,7 +177,7 @@ fn generatePaintWithFloating(tree: *const widget.Tree, theme: style.Theme, alloc
         if (node.parent == null) {
             const handle = tree.handleFromIndex(@intCast(i));
             if (node.kind != .popup and node.kind != .tooltip) {
-                try emitNode(tree, handle, theme, &commands, allocator, text_ctx, false);
+                try emitRootNode(tree, handle, theme, &commands, allocator, text_ctx);
             }
         }
     }
@@ -194,6 +194,24 @@ fn generatePaintWithFloating(tree: *const widget.Tree, theme: style.Theme, alloc
     try emitDragGhosts(tree, theme, &commands, allocator, text_ctx);
 
     return .{ .commands = try commands.toOwnedSlice(allocator) };
+}
+
+fn emitRootNode(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(PaintCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+) std.mem.Allocator.Error!void {
+    const previous_cull_rect = active_paint_cull_rect;
+    active_paint_cull_rect = if (previous_cull_rect) |cull_rect|
+        intersectRects(cull_rect, paintRect(tree.getConst(handle).layout_rect))
+    else
+        paintRect(tree.getConst(handle).layout_rect);
+    defer active_paint_cull_rect = previous_cull_rect;
+
+    try emitNode(tree, handle, theme, commands, allocator, text_ctx, false);
 }
 
 pub fn freePaintList(paint_list: *PaintList, allocator: std.mem.Allocator) void {
@@ -262,7 +280,7 @@ fn emitNode(
     if (!in_floating_subtree and (node.kind == .popup or node.kind == .tooltip)) return;
     if (!in_floating_subtree) {
         if (active_paint_cull_rect) |cull_rect| {
-            if (!rectsIntersect(node_rect, cull_rect) and !shouldTraverseCulledNode(tree, handle)) return;
+            if (node_rect.w > 0 and node_rect.h > 0 and !rectsIntersect(node_rect, cull_rect) and !shouldTraverseCulledNode(tree, handle)) return;
         }
     }
     const resolved = node.style_override.resolve(theme);
@@ -2707,11 +2725,13 @@ fn emitFloatingSubtrees(
 fn shouldTraverseCulledNode(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     const node = tree.getConst(handle);
     switch (node.kind) {
-        .tree_item => |item| if (!item.expanded) return false,
-        .tab_item => |item| if (!item.selected) return false,
-        else => {},
+        .tree_item => |item| return item.expanded and hasNonFloatingChild(tree, handle),
+        .tab_item => |item| return item.selected and hasNonFloatingChild(tree, handle),
+        else => return false,
     }
+}
 
+fn hasNonFloatingChild(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     var iter = tree.children(handle);
     while (iter.next()) |child| {
         const child_kind = tree.getConst(child).kind;
@@ -3754,6 +3774,33 @@ test "scroll area omits fully offscreen children" {
     try std.testing.expect(dl.commands[3] == .clip);
     try std.testing.expect(dl.commands[4] == .rect);
     try std.testing.expect(dl.commands[5] == .rect);
+}
+
+test "root paint culls fully offscreen children" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const visible = try tree.addChild(root, .{ .text = .{ .content = "visible" } });
+    const hidden = try tree.addChild(root, .{ .text = .{ .content = "hidden" } });
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 120, .h = 40 };
+    tree.get(visible).layout_rect = .{ .x = 8, .y = 10, .w = 44, .h = 14 };
+    tree.get(hidden).layout_rect = .{ .x = 8, .y = 64, .w = 40, .h = 14 };
+
+    var dl = try generate(&tree, style.Theme.default, allocator, null);
+    defer freeDrawList(&dl, allocator);
+
+    var found_visible = false;
+    var found_hidden = false;
+    for (dl.commands) |command| {
+        if (command != .text) continue;
+        found_visible = found_visible or std.mem.eql(u8, command.text.text, "visible");
+        found_hidden = found_hidden or std.mem.eql(u8, command.text.text, "hidden");
+    }
+    try std.testing.expect(found_visible);
+    try std.testing.expect(!found_hidden);
 }
 
 test "scroll area still paints visible tree children when expanded parent row is offscreen" {

@@ -13,6 +13,7 @@ const DrawCommand = goop.DrawCommand;
 const DrawList = goop.DrawList;
 const PaintCommand = goop.PaintCommand;
 const PaintList = goop.PaintList;
+const Rect = goop.draw.Rect;
 
 const Scissor = struct { x: i32, y: i32, w: i32, h: i32 };
 
@@ -29,6 +30,78 @@ const FrameRun = struct {
     }
 };
 
+const PaintCacheKey = struct {
+    commands_ptr: usize = 0,
+    commands_len: usize = 0,
+    fingerprint: u64 = 0,
+    viewport_w: u32 = 0,
+    viewport_h: u32 = 0,
+    scale_bits: u32 = 0,
+
+    fn eql(a: PaintCacheKey, b: PaintCacheKey) bool {
+        return a.commands_ptr == b.commands_ptr and
+            a.commands_len == b.commands_len and
+            a.fingerprint == b.fingerprint and
+            a.viewport_w == b.viewport_w and
+            a.viewport_h == b.viewport_h and
+            a.scale_bits == b.scale_bits;
+    }
+};
+
+const CachedRun = struct {
+    kind: RunKind,
+    clip: ?Scissor,
+    scene: snail.PreparedScene,
+
+    fn deinit(self: *CachedRun) void {
+        self.scene.deinit();
+        self.* = undefined;
+    }
+};
+
+const PaintFrameCache = struct {
+    valid: bool = false,
+    key: PaintCacheKey = .{},
+    candidate_valid: bool = false,
+    candidate_key: PaintCacheKey = .{},
+    path_resources: ?snail.PreparedResources = null,
+    path_picture: ?*snail.PathPicture = null,
+    runs: std.ArrayListUnmanaged(CachedRun) = .empty,
+
+    fn clear(self: *PaintFrameCache) void {
+        for (self.runs.items) |*run| run.deinit();
+        self.runs.clearRetainingCapacity();
+        if (self.path_resources) |*prepared| {
+            prepared.deinit();
+            self.path_resources = null;
+        }
+        if (self.path_picture) |picture| {
+            picture.deinit();
+            render_allocator.destroy(picture);
+            self.path_picture = null;
+        }
+        self.valid = false;
+        self.key = .{};
+        self.candidate_valid = false;
+        self.candidate_key = .{};
+    }
+
+    fn deinit(self: *PaintFrameCache) void {
+        self.clear();
+        self.runs.deinit(render_allocator);
+        self.* = undefined;
+    }
+
+    fn shouldPrepare(self: *PaintFrameCache, key: PaintCacheKey) bool {
+        return self.candidate_valid and self.candidate_key.eql(key);
+    }
+
+    fn rememberCandidate(self: *PaintFrameCache, key: PaintCacheKey) void {
+        self.candidate_key = key;
+        self.candidate_valid = true;
+    }
+};
+
 pub const Renderer = struct {
     viewport_w: f32,
     viewport_h: f32,
@@ -36,6 +109,8 @@ pub const Renderer = struct {
     clear_color: [4]f32,
     scissor_stack: [16]Scissor = undefined,
     scissor_depth: u32 = 0,
+    logical_clip_stack: [16]Rect = undefined,
+    logical_clip_depth: u32 = 0,
 
     // Snail text state
     text_renderer: snail.GlRenderer,
@@ -54,6 +129,7 @@ pub const Renderer = struct {
     scratch_buf: []u8,
     text_atlas: *const snail.TextAtlas,
     text_resources: ?snail.PreparedResources = null,
+    paint_cache: PaintFrameCache = .{},
     ascent_units: f32,
     descent_units: f32,
 
@@ -106,6 +182,7 @@ pub const Renderer = struct {
 
     pub fn deinit(self: *Renderer) void {
         self.clearSceneObjects();
+        self.paint_cache.deinit();
         if (self.text_resources) |*prepared| {
             prepared.deinit();
             self.text_resources = null;
@@ -124,6 +201,7 @@ pub const Renderer = struct {
 
     pub fn uploadAtlas(self: *Renderer, text_atlas: *const snail.TextAtlas) void {
         self.clearSceneObjects();
+        self.paint_cache.clear();
         self.text_atlas = text_atlas;
         self.text_builder.deinit();
         self.text_builder = snail.TextBlobBuilder.init(self.frameAllocator(), text_atlas);
@@ -152,11 +230,23 @@ pub const Renderer = struct {
         self.text_resources = next;
     }
 
+    fn drawOptions(self: *const Renderer) snail.DrawOptions {
+        return .{
+            .mvp = snail.Mat4.ortho(0, self.viewport_w, self.viewport_h, 0, -1, 1),
+            .target = .{
+                .pixel_width = self.viewport_w,
+                .pixel_height = self.viewport_h,
+                .subpixel_order = .none,
+            },
+        };
+    }
+
     pub fn beginFrame(self: *Renderer, w: u32, h: u32, scale: f32) void {
         self.viewport_w = @floatFromInt(w);
         self.viewport_h = @floatFromInt(h);
         self.scale = scale;
         self.scissor_depth = 0;
+        self.logical_clip_depth = 0;
         gl.glViewport(0, 0, @intCast(w), @intCast(h));
         gl.glClearColor(self.clear_color[0], self.clear_color[1], self.clear_color[2], self.clear_color[3]);
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
@@ -171,13 +261,13 @@ pub const Renderer = struct {
         for (draw_list.commands) |cmd| {
             switch (cmd) {
                 .rect => |r| {
-                    self.addRect(r);
+                    if (self.commandVisible(r.bounds)) self.addRect(r);
                 },
                 .text => |t| {
-                    self.addText(t);
+                    if (self.commandVisible(t.bounds)) self.addText(t);
                 },
                 .icon => |icon| {
-                    self.addIcon(icon);
+                    if (self.commandVisible(icon.bounds)) self.addIcon(icon);
                 },
                 .clip => |c| {
                     self.finishSegment() catch {
@@ -198,23 +288,30 @@ pub const Renderer = struct {
             self.clearSceneObjects();
             return;
         };
-        self.drawSegments();
+        self.drawSegments(null);
         self.clearSceneObjects();
         gl.glDisable(gl.GL_SCISSOR_TEST);
     }
 
     pub fn renderPaintList(self: *Renderer, paint_list: PaintList) void {
+        const cache_key = self.paintCacheKey(paint_list);
+        if (self.drawCachedPaintFrame(cache_key)) {
+            gl.glDisable(gl.GL_SCISSOR_TEST);
+            return;
+        }
+        const prepare_cache = self.paint_cache.shouldPrepare(cache_key);
+
         self.clearSceneObjects();
         for (paint_list.commands) |cmd| {
             switch (cmd) {
                 .box => |box| {
-                    self.addRect(box);
+                    if (self.commandVisible(box.bounds)) self.addRect(box);
                 },
                 .text => |text| {
-                    self.addText(text);
+                    if (self.commandVisible(text.bounds)) self.addText(text);
                 },
                 .icon => |icon| {
-                    self.addIcon(icon);
+                    if (self.commandVisible(icon.bounds)) self.addIcon(icon);
                 },
                 .clip => |clip| {
                     self.finishSegment() catch {
@@ -235,7 +332,8 @@ pub const Renderer = struct {
             self.clearSceneObjects();
             return;
         };
-        self.drawSegments();
+        self.drawSegments(if (prepare_cache) cache_key else null);
+        self.paint_cache.rememberCandidate(cache_key);
         self.clearSceneObjects();
         gl.glDisable(gl.GL_SCISSOR_TEST);
     }
@@ -265,14 +363,7 @@ pub const Renderer = struct {
 
     fn drawScene(self: *Renderer, prepared: *const snail.PreparedResources, scene: *const snail.Scene) void {
         if (scene.commandCount() == 0) return;
-        const options = snail.DrawOptions{
-            .mvp = snail.Mat4.ortho(0, self.viewport_w, self.viewport_h, 0, -1, 1),
-            .target = .{
-                .pixel_width = self.viewport_w,
-                .pixel_height = self.viewport_h,
-                .subpixel_order = .none,
-            },
-        };
+        const options = self.drawOptions();
         const word_count = @max(snail.DrawList.estimate(scene, options), 1);
         const segment_count = @max(snail.DrawList.estimateSegments(scene, options), 1);
         self.draw_words.resize(render_allocator, word_count) catch return;
@@ -281,6 +372,11 @@ pub const Renderer = struct {
         var draw = snail.DrawList.init(self.draw_words.items, self.draw_segments.items);
         draw.addScene(prepared, scene, options) catch return;
         self.text_renderer.draw(prepared, draw.slice(), options) catch {};
+    }
+
+    fn drawPreparedScene(self: *Renderer, prepared: *const snail.PreparedResources, scene: *const snail.PreparedScene) bool {
+        self.text_renderer.drawPrepared(prepared, scene, self.drawOptions()) catch return false;
+        return true;
     }
 
     fn addRect(self: *Renderer, r: anytype) void {
@@ -361,23 +457,26 @@ pub const Renderer = struct {
 
     fn updateClip(self: *Renderer, c_cmd: anytype) void {
         if (c_cmd.bounds) |bounds| {
-            if (self.scissor_depth < self.scissor_stack.len) {
-                const x0: i32 = @intFromFloat(@floor(bounds.x * self.scale));
-                const y0: i32 = @intFromFloat(@floor(bounds.y * self.scale));
-                const x1: i32 = @intFromFloat(@ceil((bounds.x + bounds.w) * self.scale));
-                const y1: i32 = @intFromFloat(@ceil((bounds.y + bounds.h) * self.scale));
-                const vh: i32 = @intFromFloat(self.viewport_h);
-                self.scissor_stack[self.scissor_depth] = .{
-                    .x = @max(0, x0),
-                    .y = @max(0, vh - y1),
-                    .w = @max(0, x1 - x0),
-                    .h = @max(0, y1 - y0),
-                };
+            if (self.scissor_depth < self.scissor_stack.len and self.logical_clip_depth < self.logical_clip_stack.len) {
+                const scissor = self.scissorForBounds(bounds);
+                self.scissor_stack[self.scissor_depth] = if (self.scissor_depth == 0)
+                    scissor
+                else
+                    intersectScissors(self.scissor_stack[self.scissor_depth - 1], scissor);
                 self.scissor_depth += 1;
+
+                self.logical_clip_stack[self.logical_clip_depth] = if (self.logical_clip_depth == 0)
+                    intersectRects(self.viewportLogicalRect(), bounds)
+                else
+                    intersectRects(self.logical_clip_stack[self.logical_clip_depth - 1], bounds);
+                self.logical_clip_depth += 1;
             }
         } else {
             if (self.scissor_depth > 0) {
                 self.scissor_depth -= 1;
+            }
+            if (self.logical_clip_depth > 0) {
+                self.logical_clip_depth -= 1;
             }
         }
     }
@@ -385,6 +484,75 @@ pub const Renderer = struct {
     fn currentClip(self: *const Renderer) ?Scissor {
         if (self.scissor_depth == 0) return null;
         return self.scissor_stack[self.scissor_depth - 1];
+    }
+
+    fn currentLogicalClip(self: *const Renderer) Rect {
+        if (self.logical_clip_depth == 0) return self.viewportLogicalRect();
+        return self.logical_clip_stack[self.logical_clip_depth - 1];
+    }
+
+    fn commandVisible(self: *const Renderer, bounds: Rect) bool {
+        return rectsIntersect(bounds, self.currentLogicalClip());
+    }
+
+    fn viewportLogicalRect(self: *const Renderer) Rect {
+        const inv_scale = if (self.scale > 0) 1.0 / self.scale else 1.0;
+        return .{
+            .x = 0,
+            .y = 0,
+            .w = self.viewport_w * inv_scale,
+            .h = self.viewport_h * inv_scale,
+        };
+    }
+
+    fn scissorForBounds(self: *const Renderer, bounds: Rect) Scissor {
+        const x0: i32 = @intFromFloat(@floor(bounds.x * self.scale));
+        const y0: i32 = @intFromFloat(@floor(bounds.y * self.scale));
+        const x1: i32 = @intFromFloat(@ceil((bounds.x + bounds.w) * self.scale));
+        const y1: i32 = @intFromFloat(@ceil((bounds.y + bounds.h) * self.scale));
+        const vw: i32 = @intFromFloat(self.viewport_w);
+        const vh: i32 = @intFromFloat(self.viewport_h);
+        const clipped_x0 = std.math.clamp(x0, 0, vw);
+        const clipped_y0 = std.math.clamp(y0, 0, vh);
+        const clipped_x1 = std.math.clamp(x1, 0, vw);
+        const clipped_y1 = std.math.clamp(y1, 0, vh);
+        return .{
+            .x = clipped_x0,
+            .y = vh - clipped_y1,
+            .w = @max(0, clipped_x1 - clipped_x0),
+            .h = @max(0, clipped_y1 - clipped_y0),
+        };
+    }
+
+    fn intersectScissors(a: Scissor, b: Scissor) Scissor {
+        const x0 = @max(a.x, b.x);
+        const y0 = @max(a.y, b.y);
+        const x1 = @min(a.x + a.w, b.x + b.w);
+        const y1 = @min(a.y + a.h, b.y + b.h);
+        return .{
+            .x = x0,
+            .y = y0,
+            .w = @max(0, x1 - x0),
+            .h = @max(0, y1 - y0),
+        };
+    }
+
+    fn rectsIntersect(a: Rect, b: Rect) bool {
+        if (a.w <= 0 or a.h <= 0 or b.w <= 0 or b.h <= 0) return false;
+        return a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h;
+    }
+
+    fn intersectRects(a: Rect, b: Rect) Rect {
+        const x0 = @max(a.x, b.x);
+        const y0 = @max(a.y, b.y);
+        const x1 = @min(a.x + a.w, b.x + b.w);
+        const y1 = @min(a.y + a.h, b.y + b.h);
+        return .{
+            .x = x0,
+            .y = y0,
+            .w = @max(x1 - x0, 0),
+            .h = @max(y1 - y0, 0),
+        };
     }
 
     fn applySegmentClip(clip: ?Scissor) void {
@@ -441,7 +609,7 @@ pub const Renderer = struct {
         self.frame_text_blob_initialized = true;
     }
 
-    fn drawSegments(self: *Renderer) void {
+    fn drawSegments(self: *Renderer, cache_key: ?PaintCacheKey) void {
         self.prepareFrameTextBlob() catch return;
         var path_resources = self.prepareFramePathResources() catch return;
         defer if (path_resources) |*prepared| prepared.deinit();
@@ -460,6 +628,198 @@ pub const Renderer = struct {
                 },
             }
         }
+
+        if (cache_key) |key| {
+            self.buildPaintFrameCache(key) catch {
+                self.paint_cache.clear();
+            };
+        }
+    }
+
+    fn buildPaintFrameCache(self: *Renderer, key: PaintCacheKey) !void {
+        self.paint_cache.clear();
+        self.paint_cache.key = key;
+        self.paint_cache.rememberCandidate(key);
+        if (self.runs.items.len == 0) {
+            self.paint_cache.valid = true;
+            return;
+        }
+
+        var cache_picture: ?*snail.PathPicture = null;
+        if (self.path_builder.shapeCount() > 0) {
+            const picture = try render_allocator.create(snail.PathPicture);
+            errdefer render_allocator.destroy(picture);
+            picture.* = try self.path_builder.freeze(render_allocator);
+            errdefer picture.deinit();
+            cache_picture = picture;
+        }
+        errdefer if (cache_picture) |picture| {
+            picture.deinit();
+            render_allocator.destroy(picture);
+        };
+
+        var path_resources: ?snail.PreparedResources = null;
+        if (cache_picture) |picture| {
+            var resource_entries: [1]snail.ResourceSet.Entry = undefined;
+            var resources = snail.ResourceSet.init(&resource_entries);
+            try resources.putPathPicture(.goop_frame_paths, picture);
+            path_resources = try self.text_renderer.uploadResourcesBlocking(render_allocator, &resources);
+        }
+        errdefer if (path_resources) |*prepared| prepared.deinit();
+
+        for (self.runs.items) |*run| {
+            try self.cachePreparedRun(run, if (path_resources) |*prepared| prepared else null, cache_picture);
+        }
+
+        self.paint_cache.path_resources = path_resources;
+        self.paint_cache.path_picture = cache_picture;
+        self.paint_cache.valid = true;
+    }
+
+    fn cachePreparedRun(
+        self: *Renderer,
+        run: *const FrameRun,
+        path_resources: ?*const snail.PreparedResources,
+        cache_picture: ?*snail.PathPicture,
+    ) !void {
+        const prepared = switch (run.kind) {
+            .path => path_resources orelse return error.MissingPathResources,
+            .text => if (self.text_resources) |*resources| resources else return error.MissingTextResources,
+        };
+
+        var scene = snail.Scene.init(self.frameAllocator());
+        defer scene.deinit();
+        for (run.scene.commands.items) |source_command| {
+            var command = source_command;
+            switch (command) {
+                .path => |*path| path.picture = cache_picture orelse return error.MissingPathPicture,
+                .text => {},
+            }
+            try scene.commands.append(scene.allocator, command);
+        }
+        if (scene.commandCount() == 0) return;
+
+        const prepared_scene = try snail.PreparedScene.initOwned(render_allocator, prepared, &scene, self.drawOptions());
+        errdefer {
+            var mutable = prepared_scene;
+            mutable.deinit();
+        }
+        try self.paint_cache.runs.append(render_allocator, .{
+            .kind = run.kind,
+            .clip = run.clip,
+            .scene = prepared_scene,
+        });
+    }
+
+    fn drawCachedPaintFrame(self: *Renderer, key: PaintCacheKey) bool {
+        if (!self.paint_cache.valid or !self.paint_cache.key.eql(key)) return false;
+
+        for (self.paint_cache.runs.items) |*run| {
+            applySegmentClip(run.clip);
+            switch (run.kind) {
+                .path => {
+                    const prepared = if (self.paint_cache.path_resources) |*resources| resources else return false;
+                    if (!self.drawPreparedScene(prepared, &run.scene)) {
+                        self.paint_cache.clear();
+                        return false;
+                    }
+                },
+                .text => {
+                    const prepared = if (self.text_resources) |*resources| resources else return false;
+                    if (!self.drawPreparedScene(prepared, &run.scene)) {
+                        self.paint_cache.clear();
+                        return false;
+                    }
+                },
+            }
+        }
+        return true;
+    }
+
+    fn paintCacheKey(self: *const Renderer, paint_list: PaintList) PaintCacheKey {
+        return .{
+            .commands_ptr = @intFromPtr(paint_list.commands.ptr),
+            .commands_len = paint_list.commands.len,
+            .fingerprint = fingerprintPaintList(paint_list),
+            .viewport_w = @intFromFloat(self.viewport_w),
+            .viewport_h = @intFromFloat(self.viewport_h),
+            .scale_bits = @bitCast(self.scale),
+        };
+    }
+
+    fn fingerprintPaintList(paint_list: PaintList) u64 {
+        var h: u64 = 0x676f6f705f706169;
+        h = mixHash(h, paint_list.commands.len);
+        for (paint_list.commands) |command| {
+            switch (command) {
+                .box => |box| {
+                    h = mixHash(h, 1);
+                    h = hashRect(h, box.bounds);
+                    h = hashColor(h, box.color);
+                    h = hashColor(h, box.border_color);
+                    h = hashF32(h, box.border_width);
+                    h = hashF32(h, box.corner_radius);
+                },
+                .text => |text| {
+                    h = mixHash(h, 2);
+                    h = hashRect(h, text.bounds);
+                    h = mixHash(h, text.text.len);
+                    h = mixHash(h, std.hash.Wyhash.hash(0x746578745f706169, text.text));
+                    h = hashColor(h, text.color);
+                    h = hashF32(h, text.font_size);
+                    h = mixHash(h, @intFromEnum(text.text_align));
+                    h = mixHash(h, @intFromEnum(text.overflow));
+                },
+                .clip => |clip| {
+                    h = mixHash(h, 3);
+                    if (clip.bounds) |bounds| {
+                        h = mixHash(h, 1);
+                        h = hashRect(h, bounds);
+                    } else {
+                        h = mixHash(h, 0);
+                    }
+                },
+                .icon => |icon| {
+                    h = mixHash(h, 4);
+                    h = hashRect(h, icon.bounds);
+                    h = mixHash(h, @intFromEnum(icon.kind));
+                    h = hashColor(h, icon.color);
+                },
+                .custom => |custom| {
+                    h = mixHash(h, 5);
+                    h = mixHash(h, custom.handle.index);
+                    h = mixHash(h, custom.handle.generation);
+                    h = hashRect(h, custom.bounds);
+                },
+            }
+        }
+        return h;
+    }
+
+    fn hashRect(h: u64, rect: Rect) u64 {
+        var next = hashF32(h, rect.x);
+        next = hashF32(next, rect.y);
+        next = hashF32(next, rect.w);
+        next = hashF32(next, rect.h);
+        return next;
+    }
+
+    fn hashColor(h: u64, color: goop.Color) u64 {
+        const rgba_bits: u64 =
+            @as(u64, color.r) |
+            (@as(u64, color.g) << 8) |
+            (@as(u64, color.b) << 16) |
+            (@as(u64, color.a) << 24);
+        return mixHash(h, rgba_bits);
+    }
+
+    fn hashF32(h: u64, value: f32) u64 {
+        return mixHash(h, @as(u32, @bitCast(value)));
+    }
+
+    fn mixHash(h: u64, value: anytype) u64 {
+        const v: u64 = @intCast(value);
+        return h ^ (v +% 0x9e3779b97f4a7c15 +% (h << 6) +% (h >> 2));
     }
 
     fn colorToVec4(c: goop.Color) [4]f32 {
