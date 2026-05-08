@@ -23,6 +23,8 @@ const allocator = std.heap.page_allocator;
 const clipboard_mime_utf8 = "text/plain;charset=utf-8";
 const clipboard_mime_utf8_string = "UTF8_STRING";
 const clipboard_mime_text = "text/plain";
+const dnd_mime_uri_list = "text/uri-list";
+const dnd_mime_gnome_copied_files = "x-special/gnome-copied-files";
 
 /// Snail-based text measurement adapter for goop.
 const SnailTextCtx = struct {
@@ -169,6 +171,12 @@ const BrowserCommand = enum {
     up,
     home,
     refresh,
+    copy,
+    cut,
+    paste,
+    delete,
+    rename,
+    move_parent,
     copy_path,
     open_link_target,
     quit,
@@ -182,6 +190,11 @@ const BrowserCommand = enum {
     view_grid,
     toggle_sort_directories,
     about,
+};
+
+const FileClipboardAction = enum {
+    copy,
+    cut,
 };
 
 const BrowserEntryKind = enum {
@@ -341,6 +354,7 @@ const State = struct {
     seat: ?*wl.wl_seat = null,
     shm: ?*wl.wl_shm = null,
     data_device_manager: ?*wl.wl_data_device_manager = null,
+    data_device_manager_version: u32 = 0,
     outputs: ?*OutputState = null,
 
     // Wayland surface chain
@@ -361,10 +375,12 @@ const State = struct {
     keyboard: ?*wl.wl_keyboard = null,
     data_device: ?*wl.wl_data_device = null,
     clipboard_source: ?*wl.wl_data_source = null,
+    drag_source: ?*wl.wl_data_source = null,
     selection_offer: ?*DataOfferState = null,
     drag_offer: ?*DataOfferState = null,
     data_offers: ?*DataOfferState = null,
     last_input_serial: u32 = 0,
+    last_pointer_button_serial: u32 = 0,
 
     // EGL
     egl_display: egl.EGLDisplay = egl.EGL_NO_DISPLAY,
@@ -462,6 +478,12 @@ const State = struct {
     menu_file_copy_path: ?goop.NodeHandle = null,
     menu_file_open_target: ?goop.NodeHandle = null,
     menu_file_quit: ?goop.NodeHandle = null,
+    menu_edit_copy: ?goop.NodeHandle = null,
+    menu_edit_cut: ?goop.NodeHandle = null,
+    menu_edit_paste: ?goop.NodeHandle = null,
+    menu_edit_delete: ?goop.NodeHandle = null,
+    menu_edit_rename: ?goop.NodeHandle = null,
+    menu_edit_move_parent: ?goop.NodeHandle = null,
     menu_edit_select_all: ?goop.NodeHandle = null,
     menu_edit_clear_selection: ?goop.NodeHandle = null,
     menu_view_sidebar: ?goop.NodeHandle = null,
@@ -478,6 +500,12 @@ const State = struct {
     menu_help_about: ?goop.NodeHandle = null,
     context_popup: ?goop.NodeHandle = null,
     context_open: ?goop.NodeHandle = null,
+    context_copy: ?goop.NodeHandle = null,
+    context_cut: ?goop.NodeHandle = null,
+    context_paste: ?goop.NodeHandle = null,
+    context_delete: ?goop.NodeHandle = null,
+    context_rename: ?goop.NodeHandle = null,
+    context_move_parent: ?goop.NodeHandle = null,
     context_copy_path: ?goop.NodeHandle = null,
     context_open_link_target: ?goop.NodeHandle = null,
     context_visible: bool = false,
@@ -489,6 +517,9 @@ const State = struct {
     rename_input: goop.widget.WidgetKind.TextInput = .{},
     rename_commit_requested: bool = false,
     rename_cancel_requested: bool = false,
+    asset_selection_rebuild_pending: bool = false,
+    asset_drag_source_path: ?[]u8 = null,
+    asset_drop_target_path: ?[]u8 = null,
     primary_release_pending: bool = false,
     primary_release_x: f32 = 0,
     primary_release_y: f32 = 0,
@@ -521,6 +552,12 @@ const State = struct {
 
     // Clipboard text for self-owned selections and the most recent external paste.
     clipboard_buf: std.ArrayListUnmanaged(u8) = .empty,
+    clipboard_uri_list_buf: std.ArrayListUnmanaged(u8) = .empty,
+    clipboard_gnome_files_buf: std.ArrayListUnmanaged(u8) = .empty,
+    clipboard_file_action: ?FileClipboardAction = null,
+    drag_uri_list_buf: std.ArrayListUnmanaged(u8) = .empty,
+    drag_plain_buf: std.ArrayListUnmanaged(u8) = .empty,
+    drag_gnome_files_buf: std.ArrayListUnmanaged(u8) = .empty,
 
     fn clipboard(self: *State) goop.Clipboard {
         return .{
@@ -536,7 +573,7 @@ const State = struct {
             if (self.clipboard_buf.items.len == 0) return null;
             return self.clipboard_buf.items;
         }
-        self.fetchClipboardSelection() catch return null;
+        self.fetchClipboardSelection(false) catch return null;
         if (self.clipboard_buf.items.len == 0) return null;
         return self.clipboard_buf.items;
     }
@@ -547,6 +584,7 @@ const State = struct {
     }
 
     fn setClipboardSelection(self: *State, text: []const u8) !void {
+        self.clearClipboardFilePayload();
         try self.setClipboardBuffer(text);
         if (self.data_device_manager == null or self.data_device == null or self.last_input_serial == 0) return;
 
@@ -562,9 +600,28 @@ const State = struct {
         if (self.display) |display| _ = wl.wl_display_flush(display);
     }
 
-    fn fetchClipboardSelection(self: *State) !void {
+    fn setFileClipboardSelection(self: *State, paths: []const []const u8, action: FileClipboardAction) !void {
+        if (paths.len == 0) return;
+        try self.setClipboardFilePayload(paths, action);
+        if (self.data_device_manager == null or self.data_device == null or self.last_input_serial == 0) return;
+
+        self.destroyClipboardSource();
+
+        const source = wl.wl_data_device_manager_create_data_source(self.data_device_manager) orelse return;
+        self.clipboard_source = source;
+        _ = wl.wl_data_source_add_listener(source, &data_source_listener, self);
+        wl.wl_data_source_offer(source, dnd_mime_uri_list);
+        wl.wl_data_source_offer(source, dnd_mime_gnome_copied_files);
+        wl.wl_data_source_offer(source, clipboard_mime_utf8);
+        wl.wl_data_source_offer(source, clipboard_mime_utf8_string);
+        wl.wl_data_source_offer(source, clipboard_mime_text);
+        wl.wl_data_device_set_selection(self.data_device, source, self.last_input_serial);
+        if (self.display) |display| _ = wl.wl_display_flush(display);
+    }
+
+    fn fetchClipboardSelection(self: *State, prefer_files: bool) !void {
         const offer = self.selection_offer orelse return;
-        const mime = preferredOfferMime(offer) orelse return;
+        const mime = (if (prefer_files) preferredFileOfferMime(offer) else preferredTextOfferMime(offer)) orelse return;
 
         var fds: [2]posix.fd_t = undefined;
         if (posix.system.pipe(&fds) != 0) return error.PipeFailed;
@@ -588,6 +645,82 @@ const State = struct {
     fn setClipboardBuffer(self: *State, text: []const u8) !void {
         self.clipboard_buf.clearRetainingCapacity();
         try self.clipboard_buf.appendSlice(allocator, text);
+    }
+
+    fn clearClipboardFilePayload(self: *State) void {
+        self.clipboard_uri_list_buf.clearRetainingCapacity();
+        self.clipboard_gnome_files_buf.clearRetainingCapacity();
+        self.clipboard_file_action = null;
+    }
+
+    fn setClipboardFilePayload(self: *State, paths: []const []const u8, action: FileClipboardAction) !void {
+        self.clipboard_buf.clearRetainingCapacity();
+        self.clipboard_uri_list_buf.clearRetainingCapacity();
+        self.clipboard_gnome_files_buf.clearRetainingCapacity();
+        self.clipboard_file_action = action;
+
+        try self.clipboard_gnome_files_buf.appendSlice(allocator, if (action == .cut) "cut\n" else "copy\n");
+        for (paths) |path| {
+            try appendFileUri(&self.clipboard_uri_list_buf, path, "\r\n");
+            try appendFileUri(&self.clipboard_gnome_files_buf, path, "\n");
+            try self.clipboard_buf.appendSlice(allocator, path);
+            try self.clipboard_buf.append(allocator, '\n');
+        }
+    }
+
+    fn clearDragPayload(self: *State) void {
+        self.drag_uri_list_buf.clearRetainingCapacity();
+        self.drag_plain_buf.clearRetainingCapacity();
+        self.drag_gnome_files_buf.clearRetainingCapacity();
+    }
+
+    fn setDragPayloadPaths(self: *State, paths: []const []const u8) !void {
+        self.clearDragPayload();
+        try self.drag_gnome_files_buf.appendSlice(allocator, "copy\n");
+        for (paths) |path| {
+            try appendFileUri(&self.drag_uri_list_buf, path, "\r\n");
+            try appendFileUri(&self.drag_gnome_files_buf, path, "\n");
+            try self.drag_plain_buf.appendSlice(allocator, path);
+            try self.drag_plain_buf.append(allocator, '\n');
+        }
+    }
+
+    fn destroyDragSource(self: *State) void {
+        if (self.drag_source) |source| {
+            wl.wl_data_source_destroy(source);
+            self.drag_source = null;
+        }
+        self.clearDragPayload();
+    }
+
+    fn clearFinishedDragSource(self: *State, source: ?*wl.wl_data_source) void {
+        if (self.drag_source != source) return;
+        self.drag_source = null;
+        self.clearDragPayload();
+    }
+
+    fn startWaylandFileDrag(self: *State, paths: []const []const u8) !bool {
+        if (paths.len == 0) return false;
+        if (self.drag_source != null) return false;
+        if (self.data_device_manager == null or self.data_device == null or self.surface == null) return false;
+        const serial = if (self.last_pointer_button_serial != 0) self.last_pointer_button_serial else self.last_input_serial;
+        if (serial == 0) return false;
+
+        try self.setDragPayloadPaths(paths);
+        const source = wl.wl_data_device_manager_create_data_source(self.data_device_manager) orelse return false;
+        errdefer wl.wl_data_source_destroy(source);
+
+        self.drag_source = source;
+        _ = wl.wl_data_source_add_listener(source, &data_source_listener, self);
+        wl.wl_data_source_offer(source, dnd_mime_uri_list);
+        wl.wl_data_source_offer(source, dnd_mime_gnome_copied_files);
+        wl.wl_data_source_offer(source, clipboard_mime_text);
+        if (self.data_device_manager_version >= 3) {
+            wl.wl_data_source_set_actions(source, wl.WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY);
+        }
+        wl.wl_data_device_start_drag(self.data_device, source, self.surface, null, serial);
+        if (self.display) |display| _ = wl.wl_display_flush(display);
+        return true;
     }
 
     fn addDataOffer(self: *State, offer: *wl.wl_data_offer) !void {
@@ -935,17 +1068,94 @@ const DataOfferState = struct {
     offers_text_utf8: bool = false,
     offers_utf8_string: bool = false,
     offers_text_plain: bool = false,
+    offers_uri_list: bool = false,
+    offers_gnome_copied_files: bool = false,
 };
 
 fn offerSupportsMime(mime: []const u8, expected: []const u8) bool {
     return std.mem.eql(u8, mime, expected);
 }
 
-fn preferredOfferMime(offer: *const DataOfferState) ?[*:0]const u8 {
+fn preferredFileOfferMime(offer: *const DataOfferState) ?[*:0]const u8 {
+    if (offer.offers_gnome_copied_files) return dnd_mime_gnome_copied_files;
+    if (offer.offers_uri_list) return dnd_mime_uri_list;
+    return null;
+}
+
+fn preferredTextOfferMime(offer: *const DataOfferState) ?[*:0]const u8 {
     if (offer.offers_text_utf8) return clipboard_mime_utf8;
     if (offer.offers_utf8_string) return clipboard_mime_utf8_string;
     if (offer.offers_text_plain) return clipboard_mime_text;
     return null;
+}
+
+fn appendFileUri(buffer: *std.ArrayListUnmanaged(u8), path: []const u8, line_end: []const u8) !void {
+    try buffer.appendSlice(allocator, "file://");
+    for (path) |byte| {
+        if (uriPathByteCanPass(byte)) {
+            try buffer.append(allocator, byte);
+        } else {
+            const hex = "0123456789ABCDEF";
+            try buffer.append(allocator, '%');
+            try buffer.append(allocator, hex[byte >> 4]);
+            try buffer.append(allocator, hex[byte & 0x0f]);
+        }
+    }
+    try buffer.appendSlice(allocator, line_end);
+}
+
+fn uriPathByteCanPass(byte: u8) bool {
+    return switch (byte) {
+        'A'...'Z', 'a'...'z', '0'...'9', '/', '-', '.', '_', '~' => true,
+        else => false,
+    };
+}
+
+fn appendClipboardPathFromFileUri(paths: *std.ArrayListUnmanaged([]u8), line: []const u8) !void {
+    const trimmed = std.mem.trimEnd(u8, line, "\r");
+    if (trimmed.len == 0 or trimmed[0] == '#') return;
+    if (!std.mem.startsWith(u8, trimmed, "file://")) return;
+
+    var uri_path = trimmed["file://".len..];
+    if (std.mem.startsWith(u8, uri_path, "localhost/")) {
+        uri_path = uri_path["localhost".len..];
+    }
+    if (uri_path.len == 0 or uri_path[0] != '/') return;
+
+    const decoded = try percentDecodeAlloc(allocator, uri_path);
+    errdefer allocator.free(decoded);
+    try paths.append(allocator, decoded);
+}
+
+fn percentDecodeAlloc(alloc: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out = try std.ArrayListUnmanaged(u8).initCapacity(alloc, text.len);
+    errdefer out.deinit(alloc);
+
+    var index: usize = 0;
+    while (index < text.len) {
+        if (text[index] == '%' and index + 2 < text.len) {
+            if (hexValue(text[index + 1])) |hi| {
+                if (hexValue(text[index + 2])) |lo| {
+                    try out.append(alloc, (hi << 4) | lo);
+                    index += 3;
+                    continue;
+                }
+            }
+        }
+        try out.append(alloc, text[index]);
+        index += 1;
+    }
+
+    return out.toOwnedSlice(alloc);
+}
+
+fn hexValue(byte: u8) ?u8 {
+    return switch (byte) {
+        '0'...'9' => byte - '0',
+        'a'...'f' => byte - 'a' + 10,
+        'A'...'F' => byte - 'A' + 10,
+        else => null,
+    };
 }
 
 fn closeFd(fd: posix.fd_t) void {
@@ -1058,7 +1268,8 @@ fn registryGlobal(data: ?*anyopaque, registry: ?*wl.wl_registry, name: u32, inte
         _ = wl.wl_seat_add_listener(state.seat, &seat_listener, data);
         ensureDataDevice(state, data);
     } else if (std.mem.eql(u8, iface, "wl_data_device_manager")) {
-        state.data_device_manager = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_data_device_manager_interface, @min(version, 3)));
+        state.data_device_manager_version = @min(version, 3);
+        state.data_device_manager = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_data_device_manager_interface, state.data_device_manager_version));
         ensureDataDevice(state, data);
     } else if (std.mem.eql(u8, iface, "wl_output")) {
         const output = @as(?*wl.wl_output, @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_output_interface, @min(version, 4)))) orelse return;
@@ -1539,6 +1750,10 @@ fn dataOfferOffer(data: ?*anyopaque, _: ?*wl.wl_data_offer, mime_type: [*c]const
         offer.offers_utf8_string = true;
     } else if (offerSupportsMime(mime, clipboard_mime_text)) {
         offer.offers_text_plain = true;
+    } else if (offerSupportsMime(mime, dnd_mime_uri_list)) {
+        offer.offers_uri_list = true;
+    } else if (offerSupportsMime(mime, dnd_mime_gnome_copied_files)) {
+        offer.offers_gnome_copied_files = true;
     }
 }
 
@@ -1550,26 +1765,63 @@ const data_source_listener = wl.wl_data_source_listener{
     .send = &dataSourceSend,
     .cancelled = &dataSourceCancelled,
     .dnd_drop_performed = &noopDataSourceDropPerformed,
-    .dnd_finished = &noopDataSourceFinished,
+    .dnd_finished = &dataSourceFinished,
     .action = &noopDataSourceAction,
 };
 
 fn noopDataSourceTarget(_: ?*anyopaque, _: ?*wl.wl_data_source, _: [*c]const u8) callconv(.c) void {}
 fn noopDataSourceDropPerformed(_: ?*anyopaque, _: ?*wl.wl_data_source) callconv(.c) void {}
-fn noopDataSourceFinished(_: ?*anyopaque, _: ?*wl.wl_data_source) callconv(.c) void {}
+fn dataSourceFinished(data: ?*anyopaque, source: ?*wl.wl_data_source) callconv(.c) void {
+    const state: *State = @ptrCast(@alignCast(data));
+    const was_drag_source = state.drag_source == source;
+    if (was_drag_source) {
+        state.clearFinishedDragSource(source);
+        if (state.ctx) |ctx| ctx.cancelPointerGesture();
+        state.needs_redraw = true;
+    }
+    if (source) |finished_source| wl.wl_data_source_destroy(finished_source);
+}
 fn noopDataSourceAction(_: ?*anyopaque, _: ?*wl.wl_data_source, _: u32) callconv(.c) void {}
 
-fn dataSourceSend(data: ?*anyopaque, _: ?*wl.wl_data_source, _: [*c]const u8, fd: i32) callconv(.c) void {
+fn dataSourceSend(data: ?*anyopaque, source: ?*wl.wl_data_source, mime_type: [*c]const u8, fd: i32) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
     defer closeFd(fd);
+    if (state.drag_source == source) {
+        const mime = std.mem.span(@as([*:0]const u8, @ptrCast(mime_type)));
+        if (std.mem.eql(u8, mime, dnd_mime_uri_list)) {
+            writeAll(fd, state.drag_uri_list_buf.items);
+        } else if (std.mem.eql(u8, mime, dnd_mime_gnome_copied_files)) {
+            writeAll(fd, state.drag_gnome_files_buf.items);
+        } else {
+            writeAll(fd, state.drag_plain_buf.items);
+        }
+        return;
+    }
+    if (state.clipboard_source == source and state.clipboard_file_action != null) {
+        const mime = std.mem.span(@as([*:0]const u8, @ptrCast(mime_type)));
+        if (std.mem.eql(u8, mime, dnd_mime_uri_list)) {
+            writeAll(fd, state.clipboard_uri_list_buf.items);
+        } else if (std.mem.eql(u8, mime, dnd_mime_gnome_copied_files)) {
+            writeAll(fd, state.clipboard_gnome_files_buf.items);
+        } else {
+            writeAll(fd, state.clipboard_buf.items);
+        }
+        return;
+    }
     if (state.clipboard_buf.items.len == 0) return;
     writeAll(fd, state.clipboard_buf.items);
 }
 
 fn dataSourceCancelled(data: ?*anyopaque, source: ?*wl.wl_data_source) callconv(.c) void {
     const state: *State = @ptrCast(@alignCast(data));
-    if (state.clipboard_source == source) state.clipboard_source = null;
-    if (source) |clipboard_source| wl.wl_data_source_destroy(clipboard_source);
+    if (state.clipboard_source == source) {
+        state.clipboard_source = null;
+    } else if (state.drag_source == source) {
+        state.clearFinishedDragSource(source);
+        if (state.ctx) |ctx| ctx.cancelPointerGesture();
+        state.needs_redraw = true;
+    }
+    if (source) |cancelled_source| wl.wl_data_source_destroy(cancelled_source);
 }
 
 const data_device_listener = wl.wl_data_device_listener{
@@ -1778,6 +2030,31 @@ fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, serial: u32, _: u32, key:
                     state.pending_command = .select_all;
                 }
             },
+            .c => {
+                if (state.ctrl_down and !focused_is_text_input) {
+                    state.pending_command = .copy;
+                }
+            },
+            .x => {
+                if (state.ctrl_down and !focused_is_text_input) {
+                    state.pending_command = .cut;
+                }
+            },
+            .v => {
+                if (state.ctrl_down and !focused_is_text_input) {
+                    state.pending_command = .paste;
+                }
+            },
+            .delete => {
+                if (!focused_is_text_input) {
+                    state.pending_command = .delete;
+                }
+            },
+            .up => {
+                if (state.ctrl_down and state.shift_down and !focused_is_text_input) {
+                    state.pending_command = .move_parent;
+                }
+            },
             .escape => {
                 if (state.rename_path != null) {
                     state.rename_cancel_requested = true;
@@ -1847,6 +2124,9 @@ fn pointerButton(data: ?*anyopaque, _: ?*wl.wl_pointer, serial: u32, time_ms: u3
         else => return,
     };
     const goop_state: goop.Event.MouseButton.ButtonState = if (btn_state == 1) .pressed else .released;
+    if (goop_button == .left and goop_state == .pressed) {
+        state.last_pointer_button_serial = serial;
+    }
 
     // Use last known mouse position from Wayland pointer events
     const mx = state.mouse_x;
@@ -2115,6 +2395,12 @@ fn clearUiTracking(state: *State) void {
     state.menu_file_copy_path = null;
     state.menu_file_open_target = null;
     state.menu_file_quit = null;
+    state.menu_edit_copy = null;
+    state.menu_edit_cut = null;
+    state.menu_edit_paste = null;
+    state.menu_edit_delete = null;
+    state.menu_edit_rename = null;
+    state.menu_edit_move_parent = null;
     state.menu_edit_select_all = null;
     state.menu_edit_clear_selection = null;
     state.menu_view_sidebar = null;
@@ -2131,6 +2417,12 @@ fn clearUiTracking(state: *State) void {
     state.menu_help_about = null;
     state.context_popup = null;
     state.context_open = null;
+    state.context_copy = null;
+    state.context_cut = null;
+    state.context_paste = null;
+    state.context_delete = null;
+    state.context_rename = null;
+    state.context_move_parent = null;
     state.context_copy_path = null;
     state.context_open_link_target = null;
     state.rename_input_handle = null;
@@ -2939,9 +3231,10 @@ fn syncSelectedPathsFromTable(state: *State, ctx: *goop.Context, handle: goop.No
     while (iter.next()) |child| {
         const node = ctx.tree.getConst(child);
         if (node.kind != .table_row or node.kind.table_row.header) continue;
-        if (row_index >= state.entries.items.len) break;
+        const entry_index = state.asset_visible_start + row_index;
+        if (entry_index >= state.entries.items.len) break;
         if (node.kind.table_row.selected) {
-            try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[row_index].path));
+            try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[entry_index].path));
         }
         row_index += 1;
     }
@@ -2957,14 +3250,360 @@ fn syncSelectedPathsFromGrid(state: *State, ctx: *goop.Context, handle: goop.Nod
     while (iter.next()) |child| {
         const node = ctx.tree.getConst(child);
         if (node.kind != .grid_item) continue;
-        if (item_index >= state.entries.items.len) break;
+        const entry_index = state.asset_visible_start + item_index;
+        if (entry_index >= state.entries.items.len) break;
         if (node.kind.grid_item.selected) {
-            try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[item_index].path));
+            try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[entry_index].path));
         }
         item_index += 1;
     }
 
     try syncPrimarySelection(state);
+}
+
+fn visibleEntryIndexForHandle(handles: []const goop.NodeHandle, handle: goop.NodeHandle, visible_start: usize, entry_count: usize) ?usize {
+    for (handles, 0..) |candidate, visible_index| {
+        if (!candidate.eql(handle)) continue;
+        const entry_index = visible_start + visible_index;
+        if (entry_index >= entry_count) return null;
+        return entry_index;
+    }
+    return null;
+}
+
+fn pathIsSameOrInside(parent: []const u8, child: []const u8) bool {
+    if (std.mem.eql(u8, parent, child)) return true;
+    if (parent.len == 0 or child.len <= parent.len) return false;
+    if (!std.mem.startsWith(u8, child, parent)) return false;
+    return if (std.mem.eql(u8, parent, "/"))
+        child[0] == '/'
+    else
+        child[parent.len] == '/';
+}
+
+fn moveDestinationPath(source_path: []const u8, target_dir: []const u8) ![]u8 {
+    return joinPath(allocator, target_dir, std.fs.path.basename(source_path));
+}
+
+const MovePreflight = enum {
+    movable,
+    noop,
+    blocked,
+};
+
+fn preflightMovePathToDirectory(state: *State, source_path: []const u8, target_dir: []const u8) !MovePreflight {
+    if (pathIsSameOrInside(source_path, target_dir)) {
+        state.status_note = "Cannot move a folder into itself.";
+        return .blocked;
+    }
+
+    const destination = try moveDestinationPath(source_path, target_dir);
+    defer allocator.free(destination);
+
+    if (std.mem.eql(u8, source_path, destination)) return .noop;
+
+    const io = state.io orelse {
+        state.status_note = "Unable to move files.";
+        return .blocked;
+    };
+    if (std.Io.Dir.cwd().statFile(io, destination, .{ .follow_symlinks = false })) |_| {
+        state.status_note = "A file with that name already exists in the target folder.";
+        return .blocked;
+    } else |_| {}
+
+    return .movable;
+}
+
+fn renamePathIntoDirectory(state: *State, source_path: []const u8, target_dir: []const u8) !bool {
+    const destination = try moveDestinationPath(source_path, target_dir);
+    defer allocator.free(destination);
+    if (std.mem.eql(u8, source_path, destination)) return false;
+
+    const io = state.io orelse {
+        state.status_note = "Unable to move files.";
+        return false;
+    };
+    std.Io.Dir.renameAbsolute(source_path, destination, io) catch {
+        state.status_note = "Unable to move files.";
+        return false;
+    };
+    return true;
+}
+
+fn movePathsToDirectory(state: *State, paths: []const []const u8, target_dir: []const u8) !bool {
+    var movable_count: usize = 0;
+
+    for (paths) |path| {
+        switch (try preflightMovePathToDirectory(state, path, target_dir)) {
+            .movable => movable_count += 1,
+            .noop => {},
+            .blocked => return false,
+        }
+    }
+
+    if (movable_count == 0) {
+        state.status_note = "Already in that folder.";
+        return false;
+    }
+
+    var moved_count: usize = 0;
+    for (paths) |path| {
+        if (try renamePathIntoDirectory(state, path, target_dir)) {
+            moved_count += 1;
+        } else if (state.status_note != null) {
+            break;
+        }
+    }
+
+    if (moved_count == 0) return false;
+
+    clearSelectedPaths(state);
+    freeOptionalOwnedSlice(&state.selected_path);
+    freeOptionalOwnedSlice(&state.last_click_path);
+    state.last_click_ms = 0;
+    state.selection_anchor_index = null;
+    try loadDirectoryEntries(state);
+    state.status_note = if (moved_count == 1) "Moved 1 item." else "Moved items.";
+    return true;
+}
+
+fn moveDropPathsToDirectory(state: *State, source_path: []const u8, target_dir: []const u8) !bool {
+    if (isPathSelected(state, source_path) and state.selected_paths.items.len > 0) {
+        return movePathsToDirectory(state, state.selected_paths.items, target_dir);
+    }
+
+    const single_path = [_][]const u8{source_path};
+    return movePathsToDirectory(state, single_path[0..], target_dir);
+}
+
+fn preflightCopyPathToDirectory(state: *State, source_path: []const u8, target_dir: []const u8) !bool {
+    if (pathIsSameOrInside(source_path, target_dir)) {
+        state.status_note = "Cannot copy a folder into itself.";
+        return false;
+    }
+
+    const destination = try moveDestinationPath(source_path, target_dir);
+    defer allocator.free(destination);
+
+    const io = state.io orelse {
+        state.status_note = "Unable to copy files.";
+        return false;
+    };
+    if (std.Io.Dir.cwd().statFile(io, destination, .{ .follow_symlinks = false })) |_| {
+        state.status_note = "A file with that name already exists in the target folder.";
+        return false;
+    } else |_| {}
+
+    return true;
+}
+
+fn copyPathToDirectory(state: *State, source_path: []const u8, target_dir: []const u8) ![]u8 {
+    const destination = try moveDestinationPath(source_path, target_dir);
+    errdefer allocator.free(destination);
+
+    const io = state.io orelse {
+        state.status_note = "Unable to copy files.";
+        return error.IoUnavailable;
+    };
+    try copyPathAbsolute(io, source_path, destination);
+    return destination;
+}
+
+fn copyPathAbsolute(io: std.Io, source_path: []const u8, destination: []const u8) anyerror!void {
+    const stat = try std.Io.Dir.cwd().statFile(io, source_path, .{ .follow_symlinks = false });
+    switch (stat.kind) {
+        .directory => try copyDirectoryAbsolute(io, source_path, destination),
+        .sym_link => try copySymlinkAbsolute(io, source_path, destination),
+        else => try std.Io.Dir.copyFileAbsolute(source_path, destination, io, .{ .replace = false }),
+    }
+}
+
+fn copyDirectoryAbsolute(io: std.Io, source_path: []const u8, destination: []const u8) anyerror!void {
+    try std.Io.Dir.createDirAbsolute(io, destination, .default_dir);
+    var dir = try std.Io.Dir.cwd().openDir(io, source_path, .{ .iterate = true, .follow_symlinks = false });
+    defer dir.close(io);
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        const child_source = try joinPath(allocator, source_path, entry.name);
+        defer allocator.free(child_source);
+        const child_destination = try joinPath(allocator, destination, entry.name);
+        defer allocator.free(child_destination);
+        try copyPathAbsolute(io, child_source, child_destination);
+    }
+}
+
+fn copySymlinkAbsolute(io: std.Io, source_path: []const u8, destination: []const u8) anyerror!void {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = try std.Io.Dir.readLinkAbsolute(io, source_path, &buf);
+    const target = buf[0..len];
+    var is_directory = false;
+    if (resolveSymlinkTargetAlloc(io, allocator, source_path)) |resolved| {
+        defer allocator.free(resolved);
+        const target_stat = std.Io.Dir.cwd().statFile(io, resolved, .{ .follow_symlinks = true }) catch null;
+        if (target_stat) |stat| is_directory = stat.kind == .directory;
+    } else |_| {}
+    try std.Io.Dir.cwd().symLink(io, target, destination, .{ .is_directory = is_directory });
+}
+
+fn copyPathsToDirectory(state: *State, paths: []const []const u8, target_dir: []const u8) !bool {
+    if (paths.len == 0) return false;
+    for (paths) |path| {
+        if (!try preflightCopyPathToDirectory(state, path, target_dir)) return false;
+    }
+
+    var copied_paths: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        clearTrackedPaths(&copied_paths);
+        copied_paths.deinit(allocator);
+    }
+
+    for (paths) |path| {
+        const copied = copyPathToDirectory(state, path, target_dir) catch {
+            state.status_note = "Unable to copy files.";
+            return false;
+        };
+        try copied_paths.append(allocator, copied);
+    }
+
+    if (std.mem.eql(u8, target_dir, state.current_dir)) {
+        clearSelectedPaths(state);
+        for (copied_paths.items) |path| try appendSelectedPathIfMissing(state, path);
+        try syncPrimarySelection(state);
+        try loadDirectoryEntries(state);
+    }
+
+    state.status_note = if (copied_paths.items.len == 1) "Copied 1 item." else "Copied items.";
+    return true;
+}
+
+fn deletePaths(state: *State, paths: []const []const u8) !bool {
+    if (paths.len == 0) return false;
+    const io = state.io orelse {
+        state.status_note = "Unable to delete files.";
+        return false;
+    };
+
+    var deleted_count: usize = 0;
+    for (paths) |path| {
+        std.Io.Dir.cwd().deleteTree(io, path) catch {
+            state.status_note = "Unable to delete files.";
+            return false;
+        };
+        deleted_count += 1;
+    }
+
+    clearSelectedPaths(state);
+    freeOptionalOwnedSlice(&state.selected_path);
+    freeOptionalOwnedSlice(&state.last_click_path);
+    state.last_click_ms = 0;
+    state.selection_anchor_index = null;
+    try loadDirectoryEntries(state);
+    state.status_note = if (deleted_count == 1) "Deleted 1 item." else "Deleted items.";
+    return true;
+}
+
+fn handleAssetTableDrop(state: *State, drop: goop.TableDrop) !bool {
+    if (drop.position != .row) return false;
+    const source_index = visibleEntryIndexForHandle(state.row_handles.items, drop.source, state.asset_visible_start, state.entries.items.len) orelse return false;
+    const target_index = visibleEntryIndexForHandle(state.row_handles.items, drop.target, state.asset_visible_start, state.entries.items.len) orelse return false;
+    if (source_index == target_index) return false;
+
+    const source_path = state.entries.items[source_index].path;
+    const target_entry = state.entries.items[target_index];
+    if (!target_entry.canEnter()) {
+        state.status_note = "Drop files on a directory.";
+        return true;
+    }
+
+    return moveDropPathsToDirectory(state, source_path, target_entry.navigationPath());
+}
+
+fn handleAssetGridDrop(state: *State, drop: goop.GridDrop) !bool {
+    if (drop.position != .item) return false;
+    const source_index = visibleEntryIndexForHandle(state.grid_handles.items, drop.source, state.asset_visible_start, state.entries.items.len) orelse return false;
+    const target_index = visibleEntryIndexForHandle(state.grid_handles.items, drop.target, state.asset_visible_start, state.entries.items.len) orelse return false;
+    if (source_index == target_index) return false;
+
+    const source_path = state.entries.items[source_index].path;
+    const target_entry = state.entries.items[target_index];
+    if (!target_entry.canEnter()) {
+        state.status_note = "Drop files on a directory.";
+        return true;
+    }
+
+    return moveDropPathsToDirectory(state, source_path, target_entry.navigationPath());
+}
+
+fn assetPathForDragSource(state: *const State, source: goop.NodeHandle) ?[]const u8 {
+    if (visibleEntryIndexForHandle(state.row_handles.items, source, state.asset_visible_start, state.entries.items.len)) |index| {
+        return state.entries.items[index].path;
+    }
+    if (visibleEntryIndexForHandle(state.grid_handles.items, source, state.asset_visible_start, state.entries.items.len)) |index| {
+        return state.entries.items[index].path;
+    }
+    return null;
+}
+
+fn borrowedDropDestinationPath(state: *const State, target: goop.NodeHandle) ?[]const u8 {
+    for (state.place_handles.items, 0..) |handle, index| {
+        if (handle.eql(target) and index < state.places.items.len) return state.places.items[index].path;
+    }
+    for (state.folder_tree_handles.items, 0..) |handle, index| {
+        if (handle.eql(target) and index < state.folder_tree_paths.items.len) return state.folder_tree_paths.items[index];
+    }
+    for (state.breadcrumb_handles.items, 0..) |handle, index| {
+        if (handle.eql(target) and index < state.breadcrumb_paths.items.len) return state.breadcrumb_paths.items[index];
+    }
+    return null;
+}
+
+fn handleAssetWidgetDrop(state: *State, drop: goop.WidgetDrop) !bool {
+    const source_path = assetPathForDragSource(state, drop.source) orelse return false;
+
+    if (state.btn_up) |up| {
+        if (up.eql(drop.target)) {
+            const parent = try parentPathAlloc(allocator, state.current_dir);
+            defer if (parent) |path| allocator.free(path);
+            const parent_path = parent orelse return false;
+            return moveDropPathsToDirectory(state, source_path, parent_path);
+        }
+    }
+
+    const target_dir = borrowedDropDestinationPath(state, drop.target) orelse return false;
+    return moveDropPathsToDirectory(state, source_path, target_dir);
+}
+
+fn maybeStartWaylandAssetDrag(state: *State, ctx: *goop.Context) !bool {
+    if (state.drag_source != null) return false;
+    if (!ctx.runtime.mouse.left_down) return false;
+    const drag_target = ctx.runtime.mouse.drag_target orelse return false;
+    const pointer_outside_window = !state.pointer_inside or
+        ctx.runtime.mouse.x < 0 or
+        ctx.runtime.mouse.y < 0 or
+        ctx.runtime.mouse.x >= @as(f32, @floatFromInt(state.logical_width)) or
+        ctx.runtime.mouse.y >= @as(f32, @floatFromInt(state.logical_height));
+    if (!pointer_outside_window) return false;
+
+    const entry_index = switch (state.view_mode) {
+        .list => visibleEntryIndexForHandle(state.row_handles.items, drag_target, state.asset_visible_start, state.entries.items.len),
+        .grid => visibleEntryIndexForHandle(state.grid_handles.items, drag_target, state.asset_visible_start, state.entries.items.len),
+    } orelse return false;
+
+    const source_path = state.entries.items[entry_index].path;
+    const started = if (isPathSelected(state, source_path) and state.selected_paths.items.len > 0)
+        try state.startWaylandFileDrag(state.selected_paths.items)
+    else blk: {
+        const single_path = [_][]const u8{source_path};
+        break :blk try state.startWaylandFileDrag(single_path[0..]);
+    };
+
+    if (started) {
+        ctx.cancelPointerGesture();
+        state.asset_selection_rebuild_pending = false;
+        state.needs_redraw = true;
+    }
+    return started;
 }
 
 fn loadDirectoryEntries(state: *State) !void {
@@ -3249,6 +3888,143 @@ fn openContextLinkTarget(state: *State) !bool {
     return setCurrentDirectory(state, entry.target_path.?, true);
 }
 
+fn selectionFileCommandEnabled(state: *const State) bool {
+    return state.selected_paths.items.len > 0;
+}
+
+fn renameSelectionEnabled(state: *const State) bool {
+    return state.selected_paths.items.len == 1 and selectedEntry(state) != null;
+}
+
+fn moveSelectionToParentEnabled(state: *const State) bool {
+    return selectionFileCommandEnabled(state) and !std.mem.eql(u8, state.current_dir, "/");
+}
+
+fn fileClipboardAvailable(state: *const State) bool {
+    if (state.clipboard_file_action != null and state.clipboard_buf.items.len > 0) return true;
+    const offer = state.selection_offer orelse return false;
+    return preferredFileOfferMime(offer) != null;
+}
+
+fn targetPathCanAcceptPaste(state: *const State, path: []const u8) bool {
+    if (!fileClipboardAvailable(state)) return false;
+    if (entryForPath(state, path)) |entry| return entry.canEnter();
+    const io = state.io orelse return false;
+    ensureDirectoryOpenable(io, path) catch return false;
+    return true;
+}
+
+fn contextSelectionCommandEnabled(state: *const State) bool {
+    const path = state.context_target_path orelse return false;
+    return entryForPath(state, path) != null and state.selected_paths.items.len > 0;
+}
+
+fn contextRenameEnabled(state: *const State) bool {
+    const path = state.context_target_path orelse return false;
+    return entryForPath(state, path) != null and renameSelectionEnabled(state);
+}
+
+fn contextMoveParentEnabled(state: *const State) bool {
+    const path = state.context_target_path orelse return false;
+    return entryForPath(state, path) != null and moveSelectionToParentEnabled(state);
+}
+
+fn contextPasteEnabled(state: *const State) bool {
+    const path = state.context_target_path orelse return false;
+    return targetPathCanAcceptPaste(state, path);
+}
+
+fn copyOrCutSelection(state: *State, action: FileClipboardAction) !bool {
+    if (state.selected_paths.items.len == 0) return false;
+    try state.setFileClipboardSelection(state.selected_paths.items, action);
+    state.status_note = if (action == .cut) "Cut files to clipboard." else "Copied files to clipboard.";
+    return false;
+}
+
+fn collectClipboardFilePaths(state: *State, paths: *std.ArrayListUnmanaged([]u8)) !?FileClipboardAction {
+    clearTrackedPaths(paths);
+
+    if (state.clipboard_file_action) |action| {
+        var lines = std.mem.splitScalar(u8, state.clipboard_buf.items, '\n');
+        while (lines.next()) |line| {
+            const path = std.mem.trimEnd(u8, line, "\r");
+            if (path.len == 0) continue;
+            try paths.append(allocator, try allocator.dupe(u8, path));
+        }
+        return if (paths.items.len > 0) action else null;
+    }
+
+    const offer = state.selection_offer orelse return null;
+    const mime = preferredFileOfferMime(offer) orelse return null;
+    try state.fetchClipboardSelection(true);
+
+    var action: FileClipboardAction = .copy;
+    var lines = std.mem.splitScalar(u8, state.clipboard_buf.items, '\n');
+    if (std.mem.eql(u8, std.mem.span(mime), dnd_mime_gnome_copied_files)) {
+        const first = lines.next() orelse return null;
+        const command = std.mem.trimEnd(u8, first, "\r");
+        action = if (std.mem.eql(u8, command, "cut")) .cut else .copy;
+    }
+
+    while (lines.next()) |line| {
+        try appendClipboardPathFromFileUri(paths, line);
+    }
+
+    return if (paths.items.len > 0) action else null;
+}
+
+fn pasteFilesToDirectory(state: *State, target_dir: []const u8) !bool {
+    var paths: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        clearTrackedPaths(&paths);
+        paths.deinit(allocator);
+    }
+
+    const action = (try collectClipboardFilePaths(state, &paths)) orelse {
+        state.status_note = "Clipboard does not contain files.";
+        return false;
+    };
+
+    const changed = switch (action) {
+        .copy => try copyPathsToDirectory(state, paths.items, target_dir),
+        .cut => try movePathsToDirectory(state, paths.items, target_dir),
+    };
+    if (changed and action == .cut and state.clipboard_file_action != null) {
+        state.destroyClipboardSource();
+        state.clearClipboardFilePayload();
+    }
+    return changed;
+}
+
+fn pasteContextTarget(state: *State) !bool {
+    const path = state.context_target_path orelse return false;
+    const target_dir = if (entryForPath(state, path)) |entry| blk: {
+        if (!entry.canEnter()) return false;
+        break :blk entry.navigationPath();
+    } else path;
+    return pasteFilesToDirectory(state, target_dir);
+}
+
+fn deleteSelection(state: *State) !bool {
+    if (state.selected_paths.items.len == 0) return false;
+    return deletePaths(state, state.selected_paths.items);
+}
+
+fn moveSelectionToParent(state: *State) !bool {
+    if (!moveSelectionToParentEnabled(state)) return false;
+    const parent = try parentPathAlloc(allocator, state.current_dir);
+    defer if (parent) |path| allocator.free(path);
+    const parent_path = parent orelse return false;
+    return movePathsToDirectory(state, state.selected_paths.items, parent_path);
+}
+
+fn beginRenameSelection(state: *State, ctx: *goop.Context) !bool {
+    if (!renameSelectionEnabled(state)) return false;
+    const entry = selectedEntry(state) orelse return false;
+    try beginRenameEntry(state, ctx, entry.*);
+    return true;
+}
+
 fn browserCommandChecked(state: *const State, command: BrowserCommand) bool {
     return switch (command) {
         .toggle_sidebar => state.show_sidebar,
@@ -3269,6 +4045,10 @@ fn browserCommandEnabled(state: *const State, command: BrowserCommand) bool {
         .up => !std.mem.eql(u8, state.current_dir, "/"),
         .home => homePath(state) != null,
         .refresh => true,
+        .copy, .cut, .delete => selectionFileCommandEnabled(state),
+        .paste => fileClipboardAvailable(state),
+        .rename => renameSelectionEnabled(state),
+        .move_parent => moveSelectionToParentEnabled(state),
         .copy_path => true,
         .open_link_target => selectedSymlinkDirectoryEntry(state) != null,
         .quit => true,
@@ -3312,6 +4092,12 @@ fn runBrowserCommand(state: *State, command: BrowserCommand) !bool {
             try refreshCurrentDirectory(state);
             return true;
         },
+        .copy => return copyOrCutSelection(state, .copy),
+        .cut => return copyOrCutSelection(state, .cut),
+        .paste => return pasteFilesToDirectory(state, state.current_dir),
+        .delete => return deleteSelection(state),
+        .rename => return false,
+        .move_parent => return moveSelectionToParent(state),
         .copy_path => {
             try state.setClipboardSelection(selectedPathForClipboard(state));
             state.status_note = "Copied path to clipboard.";
@@ -3844,10 +4630,6 @@ fn buildListAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
     state.asset_visible_end = window.end;
     state.asset_visible_columns = 0;
 
-    if (window.top_spacer > 0) {
-        _ = try ctx.tree.addChild(scroll_handle, .{ .spacer = .{ .height = window.top_spacer } });
-    }
-
     state.asset_table_body = try ctx.tree.addChild(scroll_handle, .{ .table = .{
         .columns = 4,
         .striped = false,
@@ -3858,7 +4640,19 @@ fn buildListAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
     ctx.tree.get(state.asset_table_body.?).style_override = .{
         .bg = .{ .r = 255, .g = 255, .b = 255, .a = 255 },
         .border_width = 0,
-        .padding = goop.style.Edges.all(0),
+        .padding = blk: {
+            const gap = ctx.theme.spacing;
+            const top = if (window.top_spacer > 0) window.top_spacer + gap else 0;
+            const bottom = if (window.bottom_spacer > 0) window.bottom_spacer + gap else 0;
+            const rendered_height = browserListRowHeight(state) * @as(f32, @floatFromInt(window.end - window.start));
+            const filler = @max(viewport_height - top - rendered_height - bottom, 0);
+            break :blk goop.style.Edges{
+                .top = top,
+                .right = 0,
+                .bottom = bottom + filler,
+                .left = 0,
+            };
+        },
         .border_radius = 0,
     };
     applyAssetTableColumns(&ctx.tree.get(state.asset_table_body.?).kind.table, state);
@@ -3875,10 +4669,6 @@ fn buildListAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
         try addTextCell(state, ctx, row, try allocAssetFormattedTimestamp(state, entry.modified_unix));
         try addTextCell(state, ctx, row, entry.typeLabel());
         try addTextCell(state, ctx, row, try allocAssetFormattedSize(state, entry.kind, entry.size_bytes, entry.target_kind));
-    }
-
-    if (window.bottom_spacer > 0) {
-        _ = try ctx.tree.addChild(scroll_handle, .{ .spacer = .{ .height = window.bottom_spacer } });
     }
 
     scrollDebug(state, "build list scroll={d:.2} viewport_h={d:.2} window=[{}..{}) rows={} spacers=({d:.2},{d:.2})", .{
@@ -3905,12 +4695,9 @@ fn buildGridAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
         .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
         .border_width = 0,
         .padding = goop.style.Edges.all(0),
+        .spacing = 0,
         .border_radius = 0,
     };
-
-    if (window.top_spacer > 0) {
-        _ = try ctx.tree.addChild(state.asset_view_root.?, .{ .spacer = .{ .height = window.top_spacer } });
-    }
 
     state.asset_grid = try ctx.tree.addChild(state.asset_view_root.?, .{ .grid_selector = .{
         .selection_mode = .multiple,
@@ -3923,9 +4710,28 @@ fn buildGridAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
         .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
         .border_width = 0,
         .padding = .{
-            .top = 0,
+            .top = blk: {
+                const gap = ctx.theme.spacing;
+                break :blk if (window.top_spacer > 0) window.top_spacer + gap else 0;
+            },
             .right = browserGridPaddingHPx(state),
-            .bottom = 0,
+            .bottom = blk: {
+                const gap = ctx.theme.spacing;
+                const bottom = if (window.bottom_spacer > 0) window.bottom_spacer + gap else 0;
+                const rendered_count = window.end - window.start;
+                const rendered_rows = if (rendered_count == 0)
+                    @as(usize, 0)
+                else
+                    (rendered_count + window.columns - 1) / window.columns;
+                const rendered_height = if (rendered_rows == 0)
+                    @as(f32, 0)
+                else
+                    browserGridItemHeightPx(state) * @as(f32, @floatFromInt(rendered_rows)) +
+                        browserGridRowGapPx(state) * @as(f32, @floatFromInt(rendered_rows - 1));
+                const top = if (window.top_spacer > 0) window.top_spacer + gap else 0;
+                const filler = @max(viewport_height - top - rendered_height - bottom, 0);
+                break :blk bottom + filler;
+            },
             .left = browserGridPaddingHPx(state),
         },
         .border_radius = 0,
@@ -3951,10 +4757,6 @@ fn buildGridAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
             .border_radius = uiPx(state, 10),
         };
         try state.grid_handles.append(allocator, item);
-    }
-
-    if (window.bottom_spacer > 0) {
-        _ = try ctx.tree.addChild(state.asset_view_root.?, .{ .spacer = .{ .height = window.bottom_spacer } });
     }
 
     scrollDebug(state, "build grid scroll={d:.2} viewport=({d:.2},{d:.2}) window=[{}..{}) cols={} spacers=({d:.2},{d:.2})", .{
@@ -4019,6 +4821,7 @@ fn refreshAssetViewportIfNeeded(state: *State) !bool {
     if (!ctx.isAlive(scroll_handle)) return false;
 
     const previous_scroll_y = state.file_panel_scroll_y;
+    const previous_viewport_height = state.file_panel_viewport_height;
     const previous_visible_start = state.asset_visible_start;
     const previous_visible_end = state.asset_visible_end;
     const previous_visible_columns = state.asset_visible_columns;
@@ -4038,14 +4841,16 @@ fn refreshAssetViewportIfNeeded(state: *State) !bool {
         .list => {
             const asset_alive = if (state.asset_table_body) |body| ctx.isAlive(body) else false;
             const window = browserListWindow(state, viewport_height);
+            const viewport_height_changed = @abs(previous_viewport_height - viewport_height) > 0.01;
             const scroll_clamped = @abs(current_scroll_y - window.scroll_y) > 0.01;
             if (scroll_clamped) {
                 ctx.tree.get(scroll_handle).kind.scroll_area.scroll_y = window.scroll_y;
                 state.file_panel_scroll_y = window.scroll_y;
             }
-            const needs_rebuild = !asset_alive or state.asset_visible_start != window.start or state.asset_visible_end != window.end;
+            const needs_rebuild = !asset_alive or viewport_height_changed or state.asset_visible_start != window.start or state.asset_visible_end != window.end;
             if (needs_rebuild or scroll_clamped or @abs(previous_scroll_y - current_scroll_y) > 0.01) {
-                scrollDebug(state, "refresh list viewport_h={d:.2} scroll={d:.2}->{d:.2} prev_window=[{}..{}) next_window=[{}..{}) alive={} rebuild={} clamp={}", .{
+                scrollDebug(state, "refresh list viewport_h={d:.2}->{d:.2} scroll={d:.2}->{d:.2} prev_window=[{}..{}) next_window=[{}..{}) alive={} rebuild={} clamp={}", .{
+                    previous_viewport_height,
                     viewport_height,
                     previous_scroll_y,
                     current_scroll_y,
@@ -4067,15 +4872,17 @@ fn refreshAssetViewportIfNeeded(state: *State) !bool {
         .grid => {
             const asset_alive = if (state.asset_view_root) |root| ctx.isAlive(root) else false;
             const window = browserGridWindow(state, viewport_width, viewport_height);
+            const viewport_height_changed = @abs(previous_viewport_height - viewport_height) > 0.01;
             const scroll_clamped = @abs(current_scroll_y - window.scroll_y) > 0.01;
             if (scroll_clamped) {
                 ctx.tree.get(scroll_handle).kind.scroll_area.scroll_y = window.scroll_y;
                 state.file_panel_scroll_y = window.scroll_y;
             }
-            const needs_rebuild = !asset_alive or state.asset_visible_start != window.start or state.asset_visible_end != window.end or state.asset_visible_columns != window.columns;
+            const needs_rebuild = !asset_alive or viewport_height_changed or state.asset_visible_start != window.start or state.asset_visible_end != window.end or state.asset_visible_columns != window.columns;
             if (needs_rebuild or scroll_clamped or @abs(previous_scroll_y - current_scroll_y) > 0.01) {
-                scrollDebug(state, "refresh grid viewport=({d:.2},{d:.2}) scroll={d:.2}->{d:.2} prev_window=[{}..{})/{} next_window=[{}..{})/{} alive={} rebuild={} clamp={}", .{
+                scrollDebug(state, "refresh grid viewport=({d:.2},{d:.2}->{d:.2}) scroll={d:.2}->{d:.2} prev_window=[{}..{})/{} next_window=[{}..{})/{} alive={} rebuild={} clamp={}", .{
                     viewport_width,
+                    previous_viewport_height,
                     viewport_height,
                     previous_scroll_y,
                     current_scroll_y,
@@ -4647,6 +5454,14 @@ test "file browser detects text preview content without an extension" {
     try std.testing.expect(!bytesLookLikeTextPreview("prefix\x00suffix"));
 }
 
+test "file browser formats drag paths as file URIs" {
+    var buffer: std.ArrayListUnmanaged(u8) = .empty;
+    defer buffer.deinit(allocator);
+
+    try appendFileUri(&buffer, "/tmp/a file#1.txt", "\r\n");
+    try std.testing.expectEqualStrings("file:///tmp/a%20file%231.txt\r\n", buffer.items);
+}
+
 test "file browser detail wrapper inserts line breaks for long names" {
     var state = State{};
     defer deinitBrowserState(&state);
@@ -4771,9 +5586,139 @@ test "file browser blank asset space can clear selection" {
     const blank_x = scroll_rect.x + 24;
     const blank_y = row_rect.y + row_rect.h + 24;
 
+    const body_rect = ctx.tree.getConst(state.asset_table_body.?).layout_rect;
+    try std.testing.expect(pointInRect(blank_x, blank_y, body_rect));
     try std.testing.expect(pointInFilePanelBlankSpace(&state, &ctx, blank_x, blank_y));
     try std.testing.expect(clearSelectionState(&state));
     try std.testing.expectEqual(@as(usize, 0), state.selected_paths.items.len);
+}
+
+test "file browser blank asset space starts marquee before any selection" {
+    var state = State{};
+    defer deinitBrowserState(&state);
+
+    const text_measure_ctx = goop.TextMeasureCtx{
+        .measureFn = &browserTestMeasureText,
+    };
+
+    var ctx = try goop.Context.init(allocator, .{
+        .width = 960,
+        .height = 720,
+        .theme = browserTestTheme(),
+    });
+    defer ctx.deinit();
+
+    state.logical_width = 960;
+    state.logical_height = 720;
+    state.current_dir = try allocator.dupe(u8, "/tmp");
+    state.text_measure_ctx = &text_measure_ctx;
+    state.ctx = &ctx;
+    try state.entries.append(allocator, .{
+        .name = try allocator.dupe(u8, "only-file"),
+        .path = try allocator.dupe(u8, "/tmp/only-file"),
+        .kind = .file,
+        .size_bytes = 12,
+        .modified_unix = 0,
+    });
+
+    try buildWidgetTree(&state);
+    ctx.doLayout(&text_measure_ctx);
+    if (try refreshAssetViewportIfNeeded(&state)) ctx.doLayout(&text_measure_ctx);
+
+    const scroll_rect = ctx.tree.getConst(state.file_panel_scroll.?).layout_rect;
+    const row_rect = ctx.tree.getConst(state.row_handles.items[0]).layout_rect;
+    const blank_x = scroll_rect.x + 24;
+    const blank_y = row_rect.y + row_rect.h + 24;
+    const row_x = row_rect.x + 24;
+    const row_y = row_rect.y + row_rect.h * 0.5;
+
+    const body_rect = ctx.tree.getConst(state.asset_table_body.?).layout_rect;
+    try std.testing.expect(pointInRect(blank_x, blank_y, body_rect));
+    try std.testing.expect(pointInFilePanelBlankSpace(&state, &ctx, blank_x, blank_y));
+
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = blank_x, .y = blank_y } });
+    try ctx.pushEvent(.{ .mouse_move = .{ .x = row_x, .y = row_y } });
+    ctx.processEvents();
+
+    try std.testing.expect(ctx.tree.getConst(state.asset_table_body.?).kind.table.marquee_active);
+    try std.testing.expect(ctx.tree.getConst(state.row_handles.items[0]).kind.table_row.selected);
+}
+
+test "file browser list refresh grows blank marquee hit area with viewport" {
+    var state = State{};
+    defer deinitBrowserState(&state);
+
+    const text_measure_ctx = goop.TextMeasureCtx{
+        .measureFn = &browserTestMeasureText,
+    };
+
+    var ctx = try goop.Context.init(allocator, .{
+        .width = 960,
+        .height = 360,
+        .theme = browserTestTheme(),
+    });
+    defer ctx.deinit();
+
+    state.logical_width = 960;
+    state.logical_height = 360;
+    state.current_dir = try allocator.dupe(u8, "/tmp");
+    state.text_measure_ctx = &text_measure_ctx;
+    state.ctx = &ctx;
+    try state.entries.append(allocator, .{
+        .name = try allocator.dupe(u8, "only-file"),
+        .path = try allocator.dupe(u8, "/tmp/only-file"),
+        .kind = .file,
+        .size_bytes = 12,
+        .modified_unix = 0,
+    });
+
+    try buildWidgetTree(&state);
+    ctx.doLayout(&text_measure_ctx);
+    if (try refreshAssetViewportIfNeeded(&state)) ctx.doLayout(&text_measure_ctx);
+
+    state.logical_height = 720;
+    ctx.setDimensions(960, 720);
+    ctx.doLayout(&text_measure_ctx);
+
+    try std.testing.expect(try refreshAssetViewportIfNeeded(&state));
+    ctx.doLayout(&text_measure_ctx);
+
+    const scroll_rect = ctx.tree.getConst(state.file_panel_scroll.?).layout_rect;
+    const body_rect = ctx.tree.getConst(state.asset_table_body.?).layout_rect;
+    const blank_x = scroll_rect.x + 24;
+    const blank_y = scroll_rect.y + scroll_rect.h - 48;
+    try std.testing.expect(pointInRect(blank_x, blank_y, body_rect));
+    try std.testing.expect(pointInFilePanelBlankSpace(&state, &ctx, blank_x, blank_y));
+}
+
+test "file browser syncs toolkit selection from visible entry window" {
+    var state = State{};
+    defer deinitBrowserState(&state);
+    try appendBrowserTestEntries(&state, 8);
+    state.asset_visible_start = 3;
+
+    var ctx = try goop.Context.init(allocator, .{
+        .width = 640,
+        .height = 480,
+        .theme = browserTestTheme(),
+    });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    const table = try ctx.tree.addChild(root, .{ .table = .{ .selection_mode = .multiple } });
+    _ = try ctx.tree.addChild(table, .{ .table_row = .{} });
+    _ = try ctx.tree.addChild(table, .{ .table_row = .{ .selected = true } });
+    try syncSelectedPathsFromTable(&state, &ctx, table);
+    try std.testing.expectEqual(@as(usize, 1), state.selected_paths.items.len);
+    try std.testing.expectEqualStrings("/tmp/entry-004.txt", state.selected_paths.items[0]);
+
+    clearSelectedPaths(&state);
+    const grid = try ctx.tree.addChild(root, .{ .grid_selector = .{ .selection_mode = .multiple } });
+    _ = try ctx.tree.addChild(grid, .{ .grid_item = .{ .label = "a" } });
+    _ = try ctx.tree.addChild(grid, .{ .grid_item = .{ .label = "b", .selected = true } });
+    try syncSelectedPathsFromGrid(&state, &ctx, grid);
+    try std.testing.expectEqual(@as(usize, 1), state.selected_paths.items.len);
+    try std.testing.expectEqualStrings("/tmp/entry-004.txt", state.selected_paths.items[0]);
 }
 
 test "file browser selection detail does not resize the list at ui scale 2" {
@@ -5373,6 +6318,12 @@ fn buildContextPopup(state: *State, ctx: *goop.Context) !void {
     ctx.tree.get(popup).style_override = fileManagerMenuPopupStyle(state);
 
     state.context_open = try addContextMenuItem(state, ctx, popup, "Open", contextOpenEnabled(state));
+    state.context_copy = try addContextMenuItem(state, ctx, popup, "Copy", contextSelectionCommandEnabled(state));
+    state.context_cut = try addContextMenuItem(state, ctx, popup, "Cut", contextSelectionCommandEnabled(state));
+    state.context_paste = try addContextMenuItem(state, ctx, popup, "Paste", contextPasteEnabled(state));
+    state.context_delete = try addContextMenuItem(state, ctx, popup, "Delete", contextSelectionCommandEnabled(state));
+    state.context_rename = try addContextMenuItem(state, ctx, popup, "Rename", contextRenameEnabled(state));
+    state.context_move_parent = try addContextMenuItem(state, ctx, popup, "Move to Parent Directory", contextMoveParentEnabled(state));
     state.context_copy_path = try addContextMenuItem(state, ctx, popup, "Copy Path", contextCopyPathEnabled(state));
     state.context_open_link_target = try addContextMenuItem(state, ctx, popup, "Open Link Target", contextOpenLinkTargetEnabled(state));
 }
@@ -5662,6 +6613,7 @@ fn addFolderTreeItem(
         .selected = selected,
     } });
     ctx.tree.get(handle).style_override = fileManagerFolderTreeItemStyle(state);
+    ctx.setDropTarget(handle, true);
     try state.folder_tree_handles.append(allocator, handle);
     try state.folder_tree_paths.append(allocator, try allocator.dupe(u8, path));
     return handle;
@@ -5781,6 +6733,12 @@ fn buildWidgetTree(state: *State) !void {
             const popup = try ctx.tree.addChild(state.menu_edit_button.?, .{ .popup = .{ .placement = .below_start, .visible = false } });
             state.menu_edit_popup = popup;
             ctx.tree.get(popup).style_override = fileManagerMenuPopupStyle(state);
+            state.menu_edit_copy = try addMenuCommandItem(state, ctx, popup, "Copy", .copy, "Ctrl+C");
+            state.menu_edit_cut = try addMenuCommandItem(state, ctx, popup, "Cut", .cut, "Ctrl+X");
+            state.menu_edit_paste = try addMenuCommandItem(state, ctx, popup, "Paste", .paste, "Ctrl+V");
+            state.menu_edit_delete = try addMenuCommandItem(state, ctx, popup, "Delete", .delete, "Del");
+            state.menu_edit_rename = try addMenuCommandItem(state, ctx, popup, "Rename", .rename, "");
+            state.menu_edit_move_parent = try addMenuCommandItem(state, ctx, popup, "Move to Parent Directory", .move_parent, "Ctrl+Shift+Up");
             state.menu_edit_select_all = try addMenuCommandItem(state, ctx, popup, "Select All", .select_all, "Ctrl+A");
             state.menu_edit_clear_selection = try addMenuCommandItem(state, ctx, popup, "Clear Selection", .clear_selection, "Esc");
         }
@@ -5824,6 +6782,7 @@ fn buildWidgetTree(state: *State) !void {
     state.btn_back = try addToolbarCommandButton(state, ctx, toolbar, "Back", .back);
     state.btn_forward = try addToolbarCommandButton(state, ctx, toolbar, "Forward", .forward);
     state.btn_up = try addToolbarCommandButton(state, ctx, toolbar, "Up", .up);
+    if (browserCommandEnabled(state, .up)) ctx.setDropTarget(state.btn_up.?, true);
     state.btn_home = try addToolbarCommandButton(state, ctx, toolbar, "Home", .home);
     state.btn_refresh = try addToolbarCommandButton(state, ctx, toolbar, "Refresh", .refresh);
     _ = try ctx.tree.addChild(toolbar, .{ .spacer = .{ .width = uiPx(state, 6) } });
@@ -5885,6 +6844,7 @@ fn buildWidgetTree(state: *State) !void {
                 .selected = std.mem.eql(u8, place.path, state.current_dir),
             } });
             ctx.tree.get(handle).style_override = fileManagerPlaceItemStyle(state);
+            ctx.setDropTarget(handle, true);
             try state.place_handles.append(allocator, handle);
         }
 
@@ -5946,6 +6906,7 @@ fn buildWidgetTree(state: *State) !void {
     ctx.tree.get(breadcrumb_bar).style_override = fileManagerPaneHeaderStyle(state);
     const root_button = try ctx.tree.addChild(breadcrumb_bar, .{ .button = .{ .label = "/" } });
     ctx.tree.get(root_button).style_override = fileManagerToolbarButtonStyle(state, false, true);
+    ctx.setDropTarget(root_button, true);
     try state.breadcrumb_handles.append(allocator, root_button);
     try state.breadcrumb_paths.append(allocator, try allocator.dupe(u8, "/"));
     if (!std.mem.eql(u8, state.current_dir, "/")) {
@@ -5956,6 +6917,7 @@ fn buildWidgetTree(state: *State) !void {
             const segment = state.current_dir[start..end];
             const handle = try ctx.tree.addChild(breadcrumb_bar, .{ .button = .{ .label = try allocUiUtf8Lossy(state, segment) } });
             ctx.tree.get(handle).style_override = fileManagerToolbarButtonStyle(state, false, true);
+            ctx.setDropTarget(handle, true);
             try state.breadcrumb_handles.append(allocator, handle);
             try state.breadcrumb_paths.append(allocator, try allocator.dupe(u8, state.current_dir[0..end]));
             start = end + 1;
@@ -6433,6 +7395,7 @@ pub fn main(init: std.process.Init) !void {
         syncContextPopupVisibleFromWidget(&state, &ctx);
         syncAddressInputFromWidget(&state, &ctx);
         syncRenameInputFromWidget(&state, &ctx);
+        _ = try maybeStartWaylandAssetDrag(&state, &ctx);
 
         var rebuild_ui = false;
 
@@ -6504,6 +7467,30 @@ pub fn main(init: std.process.Init) !void {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .quit) or rebuild_ui;
         };
+        if (state.menu_edit_copy) |h| if (ctx.wasClicked(h)) {
+            setTopMenuPopupVisible(&state, &ctx, null);
+            rebuild_ui = try runBrowserCommand(&state, .copy) or rebuild_ui;
+        };
+        if (state.menu_edit_cut) |h| if (ctx.wasClicked(h)) {
+            setTopMenuPopupVisible(&state, &ctx, null);
+            rebuild_ui = try runBrowserCommand(&state, .cut) or rebuild_ui;
+        };
+        if (state.menu_edit_paste) |h| if (ctx.wasClicked(h)) {
+            setTopMenuPopupVisible(&state, &ctx, null);
+            rebuild_ui = try runBrowserCommand(&state, .paste) or rebuild_ui;
+        };
+        if (state.menu_edit_delete) |h| if (ctx.wasClicked(h)) {
+            setTopMenuPopupVisible(&state, &ctx, null);
+            rebuild_ui = try runBrowserCommand(&state, .delete) or rebuild_ui;
+        };
+        if (state.menu_edit_rename) |h| if (ctx.wasClicked(h)) {
+            setTopMenuPopupVisible(&state, &ctx, null);
+            rebuild_ui = try beginRenameSelection(&state, &ctx) or rebuild_ui;
+        };
+        if (state.menu_edit_move_parent) |h| if (ctx.wasClicked(h)) {
+            setTopMenuPopupVisible(&state, &ctx, null);
+            rebuild_ui = try runBrowserCommand(&state, .move_parent) or rebuild_ui;
+        };
         if (state.menu_edit_select_all) |h| if (ctx.wasClicked(h)) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .select_all) or rebuild_ui;
@@ -6564,6 +7551,30 @@ pub fn main(init: std.process.Init) !void {
         if (state.context_open) |h| if (ctx.wasClicked(h)) {
             hideContextMenu(&state, &ctx);
             rebuild_ui = try openContextTarget(&state) or rebuild_ui;
+        };
+        if (state.context_copy) |h| if (ctx.wasClicked(h)) {
+            hideContextMenu(&state, &ctx);
+            rebuild_ui = try runBrowserCommand(&state, .copy) or rebuild_ui;
+        };
+        if (state.context_cut) |h| if (ctx.wasClicked(h)) {
+            hideContextMenu(&state, &ctx);
+            rebuild_ui = try runBrowserCommand(&state, .cut) or rebuild_ui;
+        };
+        if (state.context_paste) |h| if (ctx.wasClicked(h)) {
+            hideContextMenu(&state, &ctx);
+            rebuild_ui = try pasteContextTarget(&state) or rebuild_ui;
+        };
+        if (state.context_delete) |h| if (ctx.wasClicked(h)) {
+            hideContextMenu(&state, &ctx);
+            rebuild_ui = try runBrowserCommand(&state, .delete) or rebuild_ui;
+        };
+        if (state.context_rename) |h| if (ctx.wasClicked(h)) {
+            hideContextMenu(&state, &ctx);
+            rebuild_ui = try beginRenameSelection(&state, &ctx) or rebuild_ui;
+        };
+        if (state.context_move_parent) |h| if (ctx.wasClicked(h)) {
+            hideContextMenu(&state, &ctx);
+            rebuild_ui = try runBrowserCommand(&state, .move_parent) or rebuild_ui;
         };
         if (state.context_copy_path) |h| if (ctx.wasClicked(h)) {
             hideContextMenu(&state, &ctx);
@@ -6686,6 +7697,49 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        var asset_primary_handled = false;
+        if (ctx.lastWidgetDrop()) |drop| {
+            asset_primary_handled = true;
+            if (state.rename_path != null) {
+                switch (try commitActiveRename(&state)) {
+                    .inactive => {},
+                    .closed => rebuild_ui = true,
+                    .blocked => rebuild_ui = true,
+                }
+            }
+            if (state.rename_path == null) {
+                rebuild_ui = try handleAssetWidgetDrop(&state, drop) or rebuild_ui;
+            }
+        }
+
+        if (ctx.lastTableDrop()) |drop| {
+            asset_primary_handled = true;
+            if (state.rename_path != null) {
+                switch (try commitActiveRename(&state)) {
+                    .inactive => {},
+                    .closed => rebuild_ui = true,
+                    .blocked => rebuild_ui = true,
+                }
+            }
+            if (state.rename_path == null) {
+                rebuild_ui = try handleAssetTableDrop(&state, drop) or rebuild_ui;
+            }
+        }
+
+        if (ctx.lastGridDrop()) |drop| {
+            asset_primary_handled = true;
+            if (state.rename_path != null) {
+                switch (try commitActiveRename(&state)) {
+                    .inactive => {},
+                    .closed => rebuild_ui = true,
+                    .blocked => rebuild_ui = true,
+                }
+            }
+            if (state.rename_path == null) {
+                rebuild_ui = try handleAssetGridDrop(&state, drop) or rebuild_ui;
+            }
+        }
+
         for (state.place_handles.items, 0..) |handle, index| {
             if (!ctx.wasClicked(handle)) continue;
             if (index >= state.places.items.len) continue;
@@ -6721,7 +7775,6 @@ pub fn main(init: std.process.Init) !void {
             break;
         }
 
-        var asset_primary_handled = false;
         for (state.row_handles.items, 0..) |handle, index| {
             if (!ctx.wasClicked(handle)) continue;
             asset_primary_handled = true;
@@ -6806,6 +7859,66 @@ pub fn main(init: std.process.Init) !void {
             break;
         }
 
+        if (!asset_primary_handled) {
+            var selection_widget_changed = false;
+            const selection_drag_active = ctx.runtime.mouse.left_down;
+            if (state.view_mode == .list) {
+                if (state.asset_table_body) |table| {
+                    if (ctx.isAlive(table) and ctx.tableSelectionChanged(table)) {
+                        selection_widget_changed = true;
+                        if (state.rename_path != null) {
+                            switch (try commitActiveRename(&state)) {
+                                .inactive => {},
+                                .closed => rebuild_ui = true,
+                                .blocked => {
+                                    rebuild_ui = true;
+                                    selection_widget_changed = false;
+                                },
+                            }
+                        }
+                        if (selection_widget_changed) {
+                            try syncSelectedPathsFromTable(&state, &ctx, table);
+                            if (selection_drag_active) {
+                                state.asset_selection_rebuild_pending = true;
+                            } else {
+                                rebuild_ui = true;
+                            }
+                        }
+                    }
+                }
+            } else if (state.view_mode == .grid) {
+                if (state.asset_grid) |grid| {
+                    if (ctx.isAlive(grid) and ctx.gridSelectorChanged(grid)) {
+                        selection_widget_changed = true;
+                        if (state.rename_path != null) {
+                            switch (try commitActiveRename(&state)) {
+                                .inactive => {},
+                                .closed => rebuild_ui = true,
+                                .blocked => {
+                                    rebuild_ui = true;
+                                    selection_widget_changed = false;
+                                },
+                            }
+                        }
+                        if (selection_widget_changed) {
+                            try syncSelectedPathsFromGrid(&state, &ctx, grid);
+                            if (selection_drag_active) {
+                                state.asset_selection_rebuild_pending = true;
+                            } else {
+                                rebuild_ui = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if (selection_widget_changed) asset_primary_handled = true;
+        }
+
+        if (!ctx.runtime.mouse.left_down and state.asset_selection_rebuild_pending) {
+            state.asset_selection_rebuild_pending = false;
+            rebuild_ui = true;
+        }
+
         if (state.primary_release_pending) {
             defer state.primary_release_pending = false;
             if (!asset_primary_handled and pointInFilePanelBlankSpace(&state, &ctx, state.primary_release_x, state.primary_release_y)) {
@@ -6867,9 +7980,15 @@ pub fn main(init: std.process.Init) !void {
     state.destroyAllPopupSurfaces();
     state.destroyAllDataOffers();
     state.destroyAllOutputs();
+    state.destroyDragSource();
     state.destroyClipboardSource();
     deinitBrowserState(&state);
     state.clipboard_buf.deinit(allocator);
+    state.clipboard_uri_list_buf.deinit(allocator);
+    state.clipboard_gnome_files_buf.deinit(allocator);
+    state.drag_uri_list_buf.deinit(allocator);
+    state.drag_plain_buf.deinit(allocator);
+    state.drag_gnome_files_buf.deinit(allocator);
     if (state.data_device) |data_device| wl.wl_data_device_release(data_device);
     if (state.data_device_manager) |manager| wl.wl_data_device_manager_destroy(manager);
     state.resetCursorTheme();
