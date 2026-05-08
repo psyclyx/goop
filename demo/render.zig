@@ -2,6 +2,8 @@ const std = @import("std");
 const goop = @import("goop");
 const snail = @import("snail");
 
+const render_allocator = std.heap.smp_allocator;
+
 const gl = @cImport({
     @cDefine("GL_GLEXT_PROTOTYPES", "1");
     @cInclude("GL/glcorearb.h");
@@ -61,21 +63,21 @@ pub const Renderer = struct {
     };
 
     pub fn init(w: u32, h: u32, text_atlas: *const snail.TextAtlas) !Renderer {
-        var text_renderer = try snail.GlRenderer.init(std.heap.page_allocator);
+        var text_renderer = try snail.GlRenderer.init(render_allocator);
         var text_renderer_owned = true;
         errdefer if (text_renderer_owned) text_renderer.deinit();
 
-        const frame_arena = try std.heap.page_allocator.create(std.heap.ArenaAllocator);
-        frame_arena.* = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        const frame_arena = try render_allocator.create(std.heap.ArenaAllocator);
+        frame_arena.* = std.heap.ArenaAllocator.init(render_allocator);
         var frame_arena_owned = true;
         errdefer if (frame_arena_owned) {
             frame_arena.deinit();
-            std.heap.page_allocator.destroy(frame_arena);
+            render_allocator.destroy(frame_arena);
         };
 
-        const scratch_buf = try std.heap.page_allocator.alloc(u8, 256);
+        const scratch_buf = try render_allocator.alloc(u8, 256);
         var scratch_owned = true;
-        errdefer if (scratch_owned) std.heap.page_allocator.free(scratch_buf);
+        errdefer if (scratch_owned) render_allocator.free(scratch_buf);
 
         const metrics = fontLineMetrics(text_atlas);
 
@@ -111,13 +113,13 @@ pub const Renderer = struct {
         self.path_builder.deinit();
         self.text_builder.deinit();
         self.scene.deinit();
-        self.runs.deinit(std.heap.page_allocator);
-        self.draw_words.deinit(std.heap.page_allocator);
-        self.draw_segments.deinit(std.heap.page_allocator);
+        self.runs.deinit(render_allocator);
+        self.draw_words.deinit(render_allocator);
+        self.draw_segments.deinit(render_allocator);
         self.text_renderer.deinit();
         self.frame_arena.deinit();
-        std.heap.page_allocator.destroy(self.frame_arena);
-        std.heap.page_allocator.free(self.scratch_buf);
+        render_allocator.destroy(self.frame_arena);
+        render_allocator.free(self.scratch_buf);
     }
 
     pub fn uploadAtlas(self: *Renderer, text_atlas: *const snail.TextAtlas) void {
@@ -146,7 +148,7 @@ pub const Renderer = struct {
         var resources = snail.ResourceSet.init(&resource_entries);
         try resources.putTextAtlas(.goop_text_atlas, text_atlas);
 
-        const next = try self.text_renderer.uploadResourcesBlocking(std.heap.page_allocator, &resources);
+        const next = try self.text_renderer.uploadResourcesBlocking(render_allocator, &resources);
         self.text_resources = next;
     }
 
@@ -273,8 +275,8 @@ pub const Renderer = struct {
         };
         const word_count = @max(snail.DrawList.estimate(scene, options), 1);
         const segment_count = @max(snail.DrawList.estimateSegments(scene, options), 1);
-        self.draw_words.resize(std.heap.page_allocator, word_count) catch return;
-        self.draw_segments.resize(std.heap.page_allocator, segment_count) catch return;
+        self.draw_words.resize(render_allocator, word_count) catch return;
+        self.draw_segments.resize(render_allocator, segment_count) catch return;
 
         var draw = snail.DrawList.init(self.draw_words.items, self.draw_segments.items);
         draw.addScene(prepared, scene, options) catch return;
@@ -334,7 +336,7 @@ pub const Renderer = struct {
 
     fn ensureFrameTextBlob(self: *Renderer) !*snail.TextBlob {
         if (self.frame_text_blob) |blob| return blob;
-        const blob = try std.heap.page_allocator.create(snail.TextBlob);
+        const blob = try render_allocator.create(snail.TextBlob);
         self.frame_text_blob = blob;
         return blob;
     }
@@ -352,7 +354,7 @@ pub const Renderer = struct {
 
     fn ensureFramePathPicture(self: *Renderer) !*snail.PathPicture {
         if (self.frame_path_picture) |picture| return picture;
-        const picture = try std.heap.page_allocator.create(snail.PathPicture);
+        const picture = try render_allocator.create(snail.PathPicture);
         self.frame_path_picture = picture;
         return picture;
     }
@@ -412,7 +414,7 @@ pub const Renderer = struct {
             self.scene.deinit();
             self.scene = scene;
         }
-        try self.runs.append(std.heap.page_allocator, .{
+        try self.runs.append(render_allocator, .{
             .kind = kind,
             .clip = self.currentClip(),
             .scene = scene,
@@ -429,7 +431,7 @@ pub const Renderer = struct {
         var resource_entries: [1]snail.ResourceSet.Entry = undefined;
         var resources = snail.ResourceSet.init(&resource_entries);
         try resources.putPathPicture(.goop_frame_paths, picture);
-        return try self.text_renderer.uploadResourcesBlocking(std.heap.page_allocator, &resources);
+        return try self.text_renderer.uploadResourcesBlocking(render_allocator, &resources);
     }
 
     fn prepareFrameTextBlob(self: *Renderer) !void {
@@ -476,7 +478,7 @@ pub const Renderer = struct {
     fn ensureScratchCapacity(self: *Renderer, len: usize) void {
         if (self.scratch_buf.len >= len) return;
         const next_len = std.math.ceilPowerOfTwo(usize, @max(len, 256)) catch @max(len, 256);
-        self.scratch_buf = std.heap.page_allocator.realloc(self.scratch_buf, next_len) catch self.scratch_buf;
+        self.scratch_buf = render_allocator.realloc(self.scratch_buf, next_len) catch self.scratch_buf;
     }
 
     fn measureTextWidth(self: *Renderer, text: []const u8, font_size: f32) f32 {
@@ -517,9 +519,9 @@ pub const Renderer = struct {
         var utf8_view = std.unicode.Utf8View.init(text) catch return .{ .text = text, .width = full_width };
         var it = utf8_view.iterator();
         var boundaries: std.ArrayListUnmanaged(usize) = .empty;
-        defer boundaries.deinit(std.heap.page_allocator);
+        defer boundaries.deinit(render_allocator);
         while (it.nextCodepointSlice()) |slice| {
-            boundaries.append(std.heap.page_allocator, @intFromPtr(slice.ptr) - @intFromPtr(text.ptr) + slice.len) catch break;
+            boundaries.append(render_allocator, @intFromPtr(slice.ptr) - @intFromPtr(text.ptr) + slice.len) catch break;
         }
         if (boundaries.items.len == 0) return .{ .text = ellipsis, .width = ellipsis_width };
 
@@ -677,14 +679,14 @@ pub const Renderer = struct {
 
         if (self.frame_path_picture) |picture| {
             if (self.frame_path_picture_initialized) picture.deinit();
-            std.heap.page_allocator.destroy(picture);
+            render_allocator.destroy(picture);
             self.frame_path_picture = null;
             self.frame_path_picture_initialized = false;
         }
 
         if (self.frame_text_blob) |blob| {
             if (self.frame_text_blob_initialized) blob.deinit();
-            std.heap.page_allocator.destroy(blob);
+            render_allocator.destroy(blob);
             self.frame_text_blob = null;
             self.frame_text_blob_initialized = false;
         }

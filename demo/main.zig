@@ -18,7 +18,7 @@ const egl = @cImport({
     @cInclude("EGL/egl.h");
 });
 
-const allocator = std.heap.page_allocator;
+const allocator = std.heap.smp_allocator;
 const clipboard_mime_utf8 = "text/plain;charset=utf-8";
 const clipboard_mime_utf8_string = "UTF8_STRING";
 const clipboard_mime_text = "text/plain";
@@ -119,18 +119,20 @@ fn isPrintableTextCodepoint(codepoint: u32) bool {
     return true;
 }
 
-fn ensureAtlasForPaintList(text_atlas: *snail.TextAtlas, renderer: *render.Renderer, paint_list: goop.PaintList) !bool {
+fn ensureAtlasForPaintList(ensured_text: *std.BufSet, text_atlas: *snail.TextAtlas, renderer: *render.Renderer, paint_list: goop.PaintList) !bool {
     var changed = false;
     for (paint_list.commands) |command| {
         if (command != .text) continue;
         const text = command.text.text;
         if (text.len == 0) continue;
+        if (ensured_text.contains(text)) continue;
 
         if (try text_atlas.ensureText(.{}, text)) |next_atlas| {
             text_atlas.deinit();
             text_atlas.* = next_atlas;
             changed = true;
         }
+        try ensured_text.insert(text);
     }
 
     if (changed) renderer.uploadAtlas(text_atlas);
@@ -1397,6 +1399,8 @@ pub fn main(init: std.process.Init) !void {
 
     var text_atlas = try snail.TextAtlas.init(allocator, &.{.{ .data = font_data }});
     defer text_atlas.deinit();
+    var ensured_text = std.BufSet.init(allocator);
+    defer ensured_text.deinit();
 
     const line_metrics = fontLineMetrics(&text_atlas);
     var text_measure = SnailTextCtx{
@@ -1623,12 +1627,13 @@ pub fn main(init: std.process.Init) !void {
         // Render
         var paint_list = try ctx.generatePaintList();
         defer ctx.freePaintList(&paint_list);
-        if (try ensureAtlasForPaintList(&text_atlas, &renderer, paint_list)) {
+        if (try ensureAtlasForPaintList(&ensured_text, &text_atlas, &renderer, paint_list)) {
             const updated_metrics = fontLineMetrics(&text_atlas);
             text_measure.ascent_units = updated_metrics.ascent;
             text_measure.descent_units = updated_metrics.descent;
             ctx.setDimensions(state.logical_width, state.logical_height);
             ctx.doLayout(&text_measure_ctx);
+            ctx.freePaintList(&paint_list);
             paint_list = try ctx.generatePaintList();
         }
 

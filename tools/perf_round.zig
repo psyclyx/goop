@@ -11,6 +11,8 @@ const gl = @cImport({
     @cInclude("GL/glcorearb.h");
 });
 
+const bench_allocator = std.heap.smp_allocator;
+
 const BenchConfig = struct {
     width: u32 = 1440,
     height: u32 = 900,
@@ -33,6 +35,7 @@ const SnailResources = struct {
     allocator: std.mem.Allocator,
     font_data: []u8,
     text_atlas: snail.TextAtlas,
+    ensured_text: std.BufSet,
 
     fn init(allocator: std.mem.Allocator, env: *const std.process.Environ.Map, io: std.Io) !SnailResources {
         const font_data = try loadDemoFont(allocator, env, io);
@@ -45,10 +48,12 @@ const SnailResources = struct {
             .allocator = allocator,
             .font_data = font_data,
             .text_atlas = text_atlas,
+            .ensured_text = std.BufSet.init(allocator),
         };
     }
 
     fn deinit(self: *SnailResources) void {
+        self.ensured_text.deinit();
         self.text_atlas.deinit();
         self.allocator.free(self.font_data);
     }
@@ -190,7 +195,7 @@ var bench_io: ?std.Io = null;
 pub fn main(init: std.process.Init) !void {
     bench_io = init.io;
 
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var arena = std.heap.ArenaAllocator.init(bench_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
@@ -203,10 +208,10 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print("\n", .{});
 
-    var snail_resources = try SnailResources.init(std.heap.page_allocator, init.environ_map, init.io);
+    var snail_resources = try SnailResources.init(bench_allocator, init.environ_map, init.io);
     defer snail_resources.deinit();
 
-    var text_measure = try SnailTextCtx.init(std.heap.page_allocator, &snail_resources);
+    var text_measure = try SnailTextCtx.init(bench_allocator, &snail_resources);
     defer text_measure.deinit();
     const text_measure_ctx = goop.TextMeasureCtx{
         .measureFn = &snailMeasureText,
@@ -225,7 +230,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn initBenchContext(config: BenchConfig) !goop.Context {
-    return goop.Context.init(std.heap.page_allocator, .{
+    return goop.Context.init(bench_allocator, .{
         .width = config.width,
         .height = config.height,
         .theme = benchTheme(),
@@ -327,7 +332,7 @@ fn prepareContext(ctx: *goop.Context, config: BenchConfig, text_ctx: ?*const goo
 fn stabilizeAtlas(ctx: *goop.Context, config: BenchConfig, text_ctx: *const goop.TextMeasureCtx, snail_resources: *SnailResources, renderer: ?*render.Renderer) !void {
     while (true) {
         const paint_list = try ctx.generatePaintList();
-        if (!try ensureAtlasForPaintList(&snail_resources.text_atlas, renderer, paint_list)) break;
+        if (!try ensureAtlasForPaintList(snail_resources, renderer, paint_list)) break;
         ctx.setDimensions(config.width, config.height);
         ctx.doLayout(text_ctx);
     }
@@ -400,9 +405,9 @@ fn benchLowerCachedPaint(ctx: *goop.Context, config: BenchConfig, text_ctx: ?*co
     var draw_accum: usize = 0;
 
     for (0..config.lower_iters) |_| {
-        var draw_list = try goop.draw.lowerPaintList(paint_list, std.heap.page_allocator, text_ctx);
+        var draw_list = try goop.draw.lowerPaintList(paint_list, bench_allocator, text_ctx);
         draw_accum +%= draw_list.commands.len;
-        goop.draw.freeDrawList(&draw_list, std.heap.page_allocator);
+        goop.draw.freeDrawList(&draw_list, bench_allocator);
     }
 
     std.mem.doNotOptimizeAway(draw_accum);
@@ -501,21 +506,23 @@ fn benchFrameRegenAndRender(ctx: *goop.Context, renderer: *render.Renderer, conf
     return monotonicNs() - start_ns;
 }
 
-fn ensureAtlasForPaintList(text_atlas: *snail.TextAtlas, renderer: ?*render.Renderer, paint_list: goop.PaintList) !bool {
+fn ensureAtlasForPaintList(resources: *SnailResources, renderer: ?*render.Renderer, paint_list: goop.PaintList) !bool {
     var changed = false;
     for (paint_list.commands) |command| {
         if (command != .text) continue;
         const text = command.text.text;
         if (text.len == 0) continue;
+        if (resources.ensured_text.contains(text)) continue;
 
-        if (try text_atlas.ensureText(.{}, text)) |next_atlas| {
-            text_atlas.deinit();
-            text_atlas.* = next_atlas;
+        if (try resources.text_atlas.ensureText(.{}, text)) |next_atlas| {
+            resources.text_atlas.deinit();
+            resources.text_atlas = next_atlas;
             changed = true;
         }
+        try resources.ensured_text.insert(text);
     }
 
-    if (changed and renderer != null) renderer.?.uploadAtlas(text_atlas);
+    if (changed and renderer != null) renderer.?.uploadAtlas(&resources.text_atlas);
     return changed;
 }
 
