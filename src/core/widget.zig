@@ -19,6 +19,9 @@ pub const InteractionState = struct {
     hovered: bool = false,
     pressed: bool = false,
     focused: bool = false,
+    accepts_drop: bool = false,
+    drop_hovered: bool = false,
+    drop_received: bool = false,
     primary_clicked: bool = false,
     secondary_clicked: bool = false,
 };
@@ -158,6 +161,9 @@ pub const WidgetKind = union(enum) {
         selection_mode: SelectionMode = .single,
         anchor_index: ?u16 = null,
         changed: bool = false,
+        marquee_active: bool = false,
+        marquee_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+        drop_preview_background: bool = false,
 
         pub const SelectionMode = enum {
             single,
@@ -170,6 +176,12 @@ pub const WidgetKind = union(enum) {
         group: u32 = 0,
         selected: bool = false,
         clicked: bool = false,
+        marquee_base_selected: bool = false,
+        dragging: bool = false,
+        drag_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+        drag_offset_x: f32 = 0,
+        drag_offset_y: f32 = 0,
+        drop_preview: bool = false,
     };
 
     pub const GridSelector = struct {
@@ -224,6 +236,9 @@ pub const WidgetKind = union(enum) {
         sort_direction: SortDirection = .ascending,
         selection_changed: bool = false,
         anchor_row: ?u16 = null,
+        marquee_active: bool = false,
+        marquee_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+        drop_preview_background: bool = false,
         active_columns: u8 = 0,
         column_weights: [max_columns]f32 = [_]f32{0} ** max_columns,
 
@@ -332,6 +347,12 @@ pub const WidgetKind = union(enum) {
     pub const TableRow = struct {
         header: bool = false,
         selected: bool = false,
+        marquee_base_selected: bool = false,
+        dragging: bool = false,
+        drag_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+        drag_offset_x: f32 = 0,
+        drag_offset_y: f32 = 0,
+        drop_preview: bool = false,
     };
 
     pub const TableCell = struct {};

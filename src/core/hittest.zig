@@ -59,6 +59,7 @@ pub fn isInteractive(kind: widget.WidgetKind) bool {
         .radio_button,
         .tree_item,
         .dropdown,
+        .list_box,
         .selectable,
         .grid_selector,
         .grid_item,
@@ -76,7 +77,7 @@ pub fn isInteractive(kind: widget.WidgetKind) bool {
         .container,
         .text_input,
         => true,
-        .text, .list_box, .table_cell, .toolbar, .status_bar, .menu_bar, .tooltip, .tab_bar, .spacer => false,
+        .text, .table_cell, .toolbar, .status_bar, .menu_bar, .tooltip, .tab_bar, .spacer => false,
     };
 }
 
@@ -178,8 +179,7 @@ fn pointHitsWidget(tree: *const widget.Tree, handle: widget.NodeHandle, x: f32, 
     const local_x = x - state.offset_x;
     const local_y = y - state.offset_y;
     return switch (node.kind) {
-        .table => widget.tableResizeHandleIndexAtPoint(tree, handle, local_x, local_y) != null or
-            widget.tableHeaderCellIndexAtPoint(tree, handle, local_x, local_y) != null,
+        .table => pointInRect(local_x, local_y, node.layout_rect),
         .table_row => widget.tableRowSelectable(tree, handle) and pointInRect(local_x, local_y, node.layout_rect),
         .splitter => {
             const resolved = node.style_override.resolve(style.Theme.default);

@@ -32,6 +32,11 @@ pub const MeasureTextFn = goop.MeasureTextFn;
 pub const TextDimensions = goop.TextDimensions;
 pub const Clipboard = goop.Clipboard;
 pub const SecondaryClick = goop.SecondaryClick;
+pub const TreeDrop = goop.TreeDrop;
+pub const GridDrop = goop.GridDrop;
+pub const ListDrop = goop.ListDrop;
+pub const TableDrop = goop.TableDrop;
+pub const WidgetDrop = goop.WidgetDrop;
 pub const Runtime = goop.Runtime;
 pub const Context = goop.Context;
 

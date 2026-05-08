@@ -275,7 +275,7 @@ fn emitNode(
         .radio_button => |rb| try emitRadioButton(node, rb, resolved, theme, commands, allocator, text_ctx),
         .tree_item => |tree_item| try emitTreeItem(tree, handle, node, tree_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .dropdown => |dropdown| try emitDropdown(tree, handle, node, dropdown, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .list_box => try emitListBox(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .list_box => |list_box| try emitListBox(tree, handle, node, list_box, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .selectable => |selectable| try emitSelectable(node, selectable, resolved, theme, commands, allocator, text_ctx),
         .grid_selector => |grid_selector| try emitGridSelector(tree, handle, node, grid_selector, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
         .grid_item => |grid_item| try emitGridItem(node, grid_item, resolved, theme, commands, allocator, text_ctx),
@@ -299,6 +299,8 @@ fn emitNode(
         .text_input => try emitTextInput(node, resolved, theme, commands, allocator, text_ctx),
         .scroll_area => try emitScrollArea(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
     }
+
+    try emitDropTargetOverlay(node, resolved, theme, commands, allocator);
 
     if (node.custom_draw and node.kind != .table_cell and node_rect.w > 0 and node_rect.h > 0) {
         try commands.append(allocator, .{ .custom = .{
@@ -882,6 +884,7 @@ fn emitListBox(
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
+    list_box: widget.WidgetKind.ListBox,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(PaintCommand),
@@ -892,12 +895,26 @@ fn emitListBox(
     const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
-        .color = resolved.bg,
-        .border_color = resolved.border,
+        .color = if (list_box.drop_preview_background)
+            style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
+        else
+            resolved.bg,
+        .border_color = if (list_box.drop_preview_background) theme.accent else resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
     try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+
+    if (list_box.marquee_active and list_box.marquee_rect.w > 0 and list_box.marquee_rect.h > 0) {
+        const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
+        try commands.append(allocator, .{ .box = .{
+            .bounds = list_box.marquee_rect,
+            .color = fill,
+            .border_color = theme.accent,
+            .border_width = 1,
+            .corner_radius = 0,
+        } });
+    }
 }
 
 fn emitSelectable(
@@ -913,9 +930,12 @@ fn emitSelectable(
     const rect = paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
-        .color = fill,
-        .border_color = if (selectable.selected) theme.accent else resolved.border,
-        .border_width = if (selectable.selected) 1 else 0,
+        .color = if (selectable.dragging)
+            style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
+        else
+            fill,
+        .border_color = if (selectable.drop_preview or selectable.selected) theme.accent else resolved.border,
+        .border_width = if (selectable.drop_preview or selectable.selected) 1 else 0,
         .corner_radius = resolved.border_radius,
     } });
     const selectable_bounds = defaultTextBounds(rect, resolved);
@@ -1034,13 +1054,27 @@ fn emitTable(
     const rect = snappedRect(paintRect(node.layout_rect));
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
-        .color = resolved.bg,
-        .border_color = resolved.border,
+        .color = if (table.drop_preview_background)
+            style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
+        else
+            resolved.bg,
+        .border_color = if (table.drop_preview_background) theme.accent else resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
 
     try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+
+    if (table.marquee_active and table.marquee_rect.w > 0 and table.marquee_rect.h > 0) {
+        const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
+        try commands.append(allocator, .{ .box = .{
+            .bounds = table.marquee_rect,
+            .color = fill,
+            .border_color = theme.accent,
+            .border_width = 1,
+            .corner_radius = 0,
+        } });
+    }
 
     if (table.resizable and table.active_columns >= 2) {
         var divider_index: u8 = 0;
@@ -1085,6 +1119,16 @@ fn emitTableRow(
             .color = fill,
             .border_color = fill,
             .border_width = 0,
+            .corner_radius = 0,
+        } });
+    }
+
+    if (row.drop_preview and row_fill_rect.w > 0 and row_fill_rect.h > 0) {
+        try commands.append(allocator, .{ .box = .{
+            .bounds = row_fill_rect,
+            .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 36),
+            .border_color = theme.accent,
+            .border_width = 1,
             .corner_radius = 0,
         } });
     }
@@ -1964,7 +2008,9 @@ fn emitFocusRingRect(
 /// Resolve the background color for an interactive widget, accounting for
 /// pressed/hovered state.
 fn interactionBg(node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme) style.Color {
-    return if (node.interaction.pressed)
+    return if (node.interaction.drop_hovered)
+        style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
+    else if (node.interaction.pressed)
         theme.bg_active
     else if (node.interaction.hovered)
         theme.bg_hover
@@ -1973,7 +2019,9 @@ fn interactionBg(node: *const widget.Node, resolved: style.ResolvedStyle, theme:
 }
 
 fn selectableBg(node: *const widget.Node, selected: bool, theme: style.Theme) style.Color {
-    return if (node.interaction.pressed)
+    return if (node.interaction.drop_hovered)
+        style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
+    else if (node.interaction.pressed)
         theme.bg_active
     else if (selected)
         theme.selection_bg
@@ -1983,6 +2031,25 @@ fn selectableBg(node: *const widget.Node, selected: bool, theme: style.Theme) st
         .{ .r = 0, .g = 0, .b = 0, .a = 0 };
 }
 
+fn emitDropTargetOverlay(
+    node: *const widget.Node,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(PaintCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    if (!node.interaction.drop_hovered) return;
+    const rect = paintRect(node.layout_rect);
+    if (rect.w <= 0 or rect.h <= 0) return;
+    try commands.append(allocator, .{ .box = .{
+        .bounds = rect,
+        .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 32),
+        .border_color = theme.accent,
+        .border_width = @max(resolved.border_width, 1),
+        .corner_radius = resolved.border_radius,
+    } });
+}
+
 fn tableRowFill(
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
@@ -1990,6 +2057,7 @@ fn tableRowFill(
     row: widget.WidgetKind.TableRow,
     theme: style.Theme,
 ) style.Color {
+    if (row.dragging) return style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72);
     if (row.selected) return theme.selection_bg;
     if (row.header) return theme.bg_active;
     if (widget.tableRowSelectable(tree, handle) and node.interaction.hovered) {
@@ -2293,6 +2361,8 @@ fn treeItemChrome(
     return .{
         .color = if (item.dragging)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
+        else if (node.interaction.drop_hovered)
+            style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
         else if (item.drop_preview == .into)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
         else if (item.selected)
@@ -2305,13 +2375,13 @@ fn treeItemChrome(
             theme.bg_hover
         else
             .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-        .border_color = if (item.drop_preview == .into)
+        .border_color = if (node.interaction.drop_hovered or item.drop_preview == .into)
             theme.accent
         else if (has_custom_border)
             resolved.border
         else
             .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-        .border_width = if (item.drop_preview == .into)
+        .border_width = if (node.interaction.drop_hovered or item.drop_preview == .into)
             @max(resolved.border_width, 1)
         else if (has_custom_border)
             resolved.border_width
@@ -2666,7 +2736,14 @@ fn emitDragGhosts(
                 try emitDragGhostRect(item.drag_rect, resolved, theme, commands, allocator);
                 const label_x = item.drag_rect.x + resolved.padding.left;
                 const label_bounds = customTextBounds(item.drag_rect, resolved, label_x, rectRight(item.drag_rect) - resolved.padding.right - label_x);
-                try appendTextCommand(commands, allocator, label_bounds, item.label, resolved.fg, resolved.font_size, .start, .clip);
+                try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .start, .clip);
+            },
+            .selectable => |item| {
+                if (!item.dragging or item.drag_rect.w <= 0 or item.drag_rect.h <= 0) continue;
+                const resolved = node.style_override.resolve(theme);
+                try emitDragGhostRect(item.drag_rect, resolved, theme, commands, allocator);
+                const label_bounds = defaultTextBounds(item.drag_rect, resolved);
+                try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .start, .clip);
             },
             .grid_item => |item| {
                 if (!item.dragging or item.drag_rect.w <= 0 or item.drag_rect.h <= 0) continue;
@@ -2683,8 +2760,8 @@ fn emitDragGhosts(
                     };
                     try commands.append(allocator, .{ .box = .{
                         .bounds = icon_rect,
-                        .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 96),
-                        .border_color = theme.accent,
+                        .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 68),
+                        .border_color = dragGhostColor(theme.accent, 170),
                         .border_width = 1,
                         .corner_radius = @min(resolved.border_radius, 8),
                     } });
@@ -2695,11 +2772,20 @@ fn emitDragGhosts(
                     .w = inner.w,
                     .h = resolved.font_size * 1.4,
                 };
-                try appendTextCommand(commands, allocator, label_bounds, item.label, resolved.fg, resolved.font_size, .center, .ellipsis);
+                try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .center, .ellipsis);
+            },
+            .table_row => |row| {
+                if (!row.dragging or row.drag_rect.w <= 0 or row.drag_rect.h <= 0) continue;
+                const resolved = node.style_override.resolve(theme);
+                try emitDragGhostRect(row.drag_rect, resolved, theme, commands, allocator);
             },
             else => {},
         }
     }
+}
+
+fn dragGhostColor(color: style.Color, alpha: u8) style.Color {
+    return .{ .r = color.r, .g = color.g, .b = color.b, .a = @min(color.a, alpha) };
 }
 
 fn emitDragGhostRect(
@@ -2711,8 +2797,8 @@ fn emitDragGhostRect(
 ) !void {
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
-        .color = style.Color.rgba(theme.bg_active.r, theme.bg_active.g, theme.bg_active.b, 216),
-        .border_color = theme.accent,
+        .color = style.Color.rgba(theme.bg_active.r, theme.bg_active.g, theme.bg_active.b, 150),
+        .border_color = dragGhostColor(theme.accent, 180),
         .border_width = @max(resolved.border_width, 1),
         .corner_radius = resolved.border_radius,
     } });

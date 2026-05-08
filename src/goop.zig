@@ -33,6 +33,9 @@ pub const Clipboard = dispatch.Clipboard;
 pub const SecondaryClick = dispatch.SecondaryClick;
 pub const TreeDrop = dispatch.TreeDrop;
 pub const GridDrop = dispatch.GridDrop;
+pub const ListDrop = dispatch.ListDrop;
+pub const TableDrop = dispatch.TableDrop;
+pub const WidgetDrop = dispatch.WidgetDrop;
 
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
@@ -149,10 +152,14 @@ pub const Runtime = struct {
         self.mouse.last_secondary_click = null;
         self.mouse.last_tree_drop = null;
         self.mouse.last_grid_drop = null;
+        self.mouse.last_list_drop = null;
+        self.mouse.last_table_drop = null;
+        self.mouse.last_widget_drop = null;
         for (tree.nodes.items) |*node| {
             if (!node.alive) continue;
             node.interaction.primary_clicked = false;
             node.interaction.secondary_clicked = false;
+            node.interaction.drop_received = false;
             switch (node.kind) {
                 .button => {
                     node.kind.button.clicked = false;
@@ -239,9 +246,30 @@ pub const Runtime = struct {
         return self.mouse.last_grid_drop;
     }
 
+    /// Get the most recent completed list-box drop that occurred this frame, if any.
+    pub fn lastListDrop(self: *const Runtime) ?ListDrop {
+        return self.mouse.last_list_drop;
+    }
+
+    /// Get the most recent completed table-row drop that occurred this frame, if any.
+    pub fn lastTableDrop(self: *const Runtime) ?TableDrop {
+        return self.mouse.last_table_drop;
+    }
+
+    /// Get the most recent generic widget drop that occurred this frame, if any.
+    pub fn lastWidgetDrop(self: *const Runtime) ?WidgetDrop {
+        return self.mouse.last_widget_drop;
+    }
+
     /// Get the timestamp from the most recent primary-button press event.
     pub fn lastPrimaryPressTimestampMs(self: *const Runtime) u64 {
         return self.mouse.last_click_time_ms;
+    }
+
+    /// Cancel the active pointer gesture, clearing any drag or marquee state.
+    pub fn cancelPointerGesture(self: *Runtime, tree: *Tree) void {
+        dispatch.cancelPointerGesture(tree, &self.mouse);
+        self.draw_dirty = true;
     }
 
     /// Remove a widget and its entire subtree from the tree.
@@ -384,6 +412,23 @@ pub const Context = struct {
     /// for one frame.
     pub fn clearClickedFlags(self: *Context) void {
         self.runtime.clearClickedFlags(&self.tree);
+    }
+
+    /// Mark a widget as a generic drop target for active item drags.
+    pub fn setDropTarget(self: *Context, handle: NodeHandle, accepts_drop: bool) void {
+        if (!self.tree.isAlive(handle)) return;
+        self.tree.get(handle).interaction.accepts_drop = accepts_drop;
+    }
+
+    /// Check whether a generic drop is currently hovering this widget.
+    pub fn isDropHovered(self: *const Context, handle: NodeHandle) bool {
+        if (!self.tree.isAlive(handle)) return false;
+        return self.tree.getConst(handle).interaction.drop_hovered;
+    }
+
+    /// Cancel the active pointer gesture, clearing any drag or marquee state.
+    pub fn cancelPointerGesture(self: *Context) void {
+        self.runtime.cancelPointerGesture(&self.tree);
     }
 
     /// Check if a widget was activated with the primary button this frame.
@@ -631,6 +676,21 @@ pub const Context = struct {
     /// Get the most recent completed grid-item drop that occurred this frame, if any.
     pub fn lastGridDrop(self: *const Context) ?GridDrop {
         return self.runtime.lastGridDrop();
+    }
+
+    /// Get the most recent completed list-box drop that occurred this frame, if any.
+    pub fn lastListDrop(self: *const Context) ?ListDrop {
+        return self.runtime.lastListDrop();
+    }
+
+    /// Get the most recent completed table-row drop that occurred this frame, if any.
+    pub fn lastTableDrop(self: *const Context) ?TableDrop {
+        return self.runtime.lastTableDrop();
+    }
+
+    /// Get the most recent generic widget drop that occurred this frame, if any.
+    pub fn lastWidgetDrop(self: *const Context) ?WidgetDrop {
+        return self.runtime.lastWidgetDrop();
     }
 
     /// Get the timestamp from the most recent primary-button press event.
