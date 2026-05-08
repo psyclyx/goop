@@ -787,6 +787,7 @@ pub const Node = struct {
     kind: WidgetKind,
     style_override: style.Style = .{},
     interaction: InteractionState = .{},
+    user_id: u64 = 0,
     layout_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
     custom_draw: bool = false,
 

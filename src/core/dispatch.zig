@@ -61,6 +61,34 @@ pub const WidgetDrop = struct {
     shift_down: bool,
 };
 
+pub const Drop = union(enum) {
+    tree: TreeDrop,
+    grid: GridDrop,
+    list: ListDrop,
+    table: TableDrop,
+    widget: WidgetDrop,
+
+    pub fn source(self: Drop) widget.NodeHandle {
+        return switch (self) {
+            .tree => |drop| drop.source,
+            .grid => |drop| drop.source,
+            .list => |drop| drop.source,
+            .table => |drop| drop.source,
+            .widget => |drop| drop.source,
+        };
+    }
+
+    pub fn target(self: Drop) widget.NodeHandle {
+        return switch (self) {
+            .tree => |drop| drop.target,
+            .grid => |drop| drop.target,
+            .list => |drop| drop.target,
+            .table => |drop| drop.target,
+            .widget => |drop| drop.target,
+        };
+    }
+};
+
 const ScrollbarAxis = enum { vertical, horizontal };
 
 pub const MouseState = struct {
@@ -68,6 +96,7 @@ pub const MouseState = struct {
     y: f32 = 0,
     left_down: bool = false,
     right_down: bool = false,
+    middle_down: bool = false,
     /// The widget that the left button went down on (for click detection).
     press_target: ?widget.NodeHandle = null,
     right_press_target: ?widget.NodeHandle = null,
@@ -111,6 +140,8 @@ pub const MouseState = struct {
     widget_drop_preview: ?WidgetDrop = null,
     /// The most recent generic widget drop committed this frame.
     last_widget_drop: ?WidgetDrop = null,
+    /// The most recent completed drop committed this frame.
+    last_drop: ?Drop = null,
     /// Whether a shift key is currently held.
     shift_down: bool = false,
     /// Whether a ctrl key is currently held.
@@ -295,6 +326,8 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                 } else {
                     handleSecondaryRelease(tree, mouse);
                 }
+            } else if (mb.button == .middle) {
+                mouse.middle_down = mb.state == .pressed;
             }
         },
         .mouse_scroll => |ms| {
@@ -910,6 +943,7 @@ fn finalizeTreeDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *Mouse
     }
     if (mouse.tree_drop_preview) |preview| {
         mouse.last_tree_drop = preview;
+        mouse.last_drop = .{ .tree = preview };
         if (tree.isAlive(preview.target) and tree.getConst(preview.target).kind == .tree_item) {
             tree.get(preview.target).kind.tree_item.drop_received = true;
         }
@@ -992,6 +1026,7 @@ fn finalizeSelectableDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: 
     }
     if (mouse.list_drop_preview) |preview| {
         mouse.last_list_drop = preview;
+        mouse.last_drop = .{ .list = preview };
     }
     clearListDragPreview(tree);
     mouse.list_drop_preview = null;
@@ -1074,6 +1109,7 @@ fn finalizeGridItemDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *M
     }
     if (mouse.grid_drop_preview) |preview| {
         mouse.last_grid_drop = preview;
+        mouse.last_drop = .{ .grid = preview };
     }
     clearGridDragPreview(tree);
     mouse.grid_drop_preview = null;
@@ -1277,6 +1313,7 @@ fn finalizeTableRowDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *M
     }
     if (mouse.table_drop_preview) |preview| {
         mouse.last_table_drop = preview;
+        mouse.last_drop = .{ .table = preview };
     }
     clearTableDragPreview(tree);
     mouse.table_drop_preview = null;
@@ -1332,6 +1369,7 @@ fn finalizeWidgetDrop(tree: *widget.Tree, source: widget.NodeHandle, mouse: *Mou
     if (mouse.widget_drop_preview) |preview| {
         if (preview.source.eql(source)) {
             mouse.last_widget_drop = preview;
+            mouse.last_drop = .{ .widget = preview };
             if (tree.isAlive(preview.target)) tree.get(preview.target).interaction.drop_received = true;
         }
     }

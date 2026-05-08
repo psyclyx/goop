@@ -197,6 +197,35 @@ const FileClipboardAction = enum {
     cut,
 };
 
+const WidgetUserKind = enum(u8) {
+    none = 0,
+    asset_entry = 1,
+    place = 2,
+    folder_tree = 3,
+    breadcrumb = 4,
+    toolbar_up = 5,
+};
+
+fn widgetUserId(kind: WidgetUserKind, index: usize) u64 {
+    return (@as(u64, @intFromEnum(kind)) << 56) | @as(u64, @intCast(index));
+}
+
+fn widgetUserKind(user_id: u64) WidgetUserKind {
+    const raw: u8 = @intCast(user_id >> 56);
+    return switch (raw) {
+        1 => .asset_entry,
+        2 => .place,
+        3 => .folder_tree,
+        4 => .breadcrumb,
+        5 => .toolbar_up,
+        else => .none,
+    };
+}
+
+fn widgetUserIndex(user_id: u64) usize {
+    return @intCast(user_id & 0x00ff_ffff_ffff_ffff);
+}
+
 const BrowserEntryKind = enum {
     directory,
     file,
@@ -2005,7 +2034,7 @@ fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, serial: u32, _: u32, key:
     } }) catch {};
 
     if (key_state == 1) {
-        const focused_handle = focusedNodeHandle(ctx);
+        const focused_handle = ctx.focusedWidget();
         const focused_is_text_input = if (focused_handle) |handle|
             ctx.tree.getConst(handle).kind == .text_input
         else
@@ -3226,17 +3255,13 @@ fn applyEntrySelectionClick(state: *State, entry_index: usize) !void {
 fn syncSelectedPathsFromTable(state: *State, ctx: *goop.Context, handle: goop.NodeHandle) !void {
     clearSelectedPaths(state);
 
-    var row_index: usize = 0;
-    var iter = ctx.tree.children(handle);
-    while (iter.next()) |child| {
-        const node = ctx.tree.getConst(child);
-        if (node.kind != .table_row or node.kind.table_row.header) continue;
-        const entry_index = state.asset_visible_start + row_index;
-        if (entry_index >= state.entries.items.len) break;
-        if (node.kind.table_row.selected) {
-            try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[entry_index].path));
-        }
-        row_index += 1;
+    const selected_count = ctx.tableSelectionCount(handle);
+    var selected_ordinal: u16 = 0;
+    while (selected_ordinal < selected_count) : (selected_ordinal += 1) {
+        const selected = ctx.selectedChild(handle, selected_ordinal) orelse break;
+        const entry_index = assetEntryIndexFromUserId(state, selected.user_id) orelse state.asset_visible_start + selected.index;
+        if (entry_index >= state.entries.items.len) continue;
+        try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[entry_index].path));
     }
 
     try syncPrimarySelection(state);
@@ -3245,30 +3270,33 @@ fn syncSelectedPathsFromTable(state: *State, ctx: *goop.Context, handle: goop.No
 fn syncSelectedPathsFromGrid(state: *State, ctx: *goop.Context, handle: goop.NodeHandle) !void {
     clearSelectedPaths(state);
 
-    var item_index: usize = 0;
-    var iter = ctx.tree.children(handle);
-    while (iter.next()) |child| {
-        const node = ctx.tree.getConst(child);
-        if (node.kind != .grid_item) continue;
-        const entry_index = state.asset_visible_start + item_index;
-        if (entry_index >= state.entries.items.len) break;
-        if (node.kind.grid_item.selected) {
-            try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[entry_index].path));
-        }
-        item_index += 1;
+    const selected_count = ctx.gridSelectorSelectionCount(handle);
+    var selected_ordinal: u16 = 0;
+    while (selected_ordinal < selected_count) : (selected_ordinal += 1) {
+        const selected = ctx.selectedChild(handle, selected_ordinal) orelse break;
+        const entry_index = assetEntryIndexFromUserId(state, selected.user_id) orelse state.asset_visible_start + selected.index;
+        if (entry_index >= state.entries.items.len) continue;
+        try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[entry_index].path));
     }
 
     try syncPrimarySelection(state);
 }
 
-fn visibleEntryIndexForHandle(handles: []const goop.NodeHandle, handle: goop.NodeHandle, visible_start: usize, entry_count: usize) ?usize {
-    for (handles, 0..) |candidate, visible_index| {
-        if (!candidate.eql(handle)) continue;
-        const entry_index = visible_start + visible_index;
-        if (entry_index >= entry_count) return null;
-        return entry_index;
-    }
+fn assetEntryIndexFromUserId(state: *const State, user_id: u64) ?usize {
+    if (widgetUserKind(user_id) != .asset_entry) return null;
+    const entry_index = widgetUserIndex(user_id);
+    if (entry_index < state.entries.items.len) return entry_index;
     return null;
+}
+
+fn borrowedDropDestinationPathForUserId(state: *const State, user_id: u64) ?[]const u8 {
+    const index = widgetUserIndex(user_id);
+    return switch (widgetUserKind(user_id)) {
+        .place => if (index < state.places.items.len) state.places.items[index].path else null,
+        .folder_tree => if (index < state.folder_tree_paths.items.len) state.folder_tree_paths.items[index] else null,
+        .breadcrumb => if (index < state.breadcrumb_paths.items.len) state.breadcrumb_paths.items[index] else null,
+        else => null,
+    };
 }
 
 fn pathIsSameOrInside(parent: []const u8, child: []const u8) bool {
@@ -3503,10 +3531,10 @@ fn deletePaths(state: *State, paths: []const []const u8) !bool {
     return true;
 }
 
-fn handleAssetTableDrop(state: *State, drop: goop.TableDrop) !bool {
+fn handleAssetTableDrop(state: *State, ctx: *const goop.Context, drop: goop.TableDrop) !bool {
     if (drop.position != .row) return false;
-    const source_index = visibleEntryIndexForHandle(state.row_handles.items, drop.source, state.asset_visible_start, state.entries.items.len) orelse return false;
-    const target_index = visibleEntryIndexForHandle(state.row_handles.items, drop.target, state.asset_visible_start, state.entries.items.len) orelse return false;
+    const source_index = assetEntryIndexFromUserId(state, ctx.userId(drop.source)) orelse return false;
+    const target_index = assetEntryIndexFromUserId(state, ctx.userId(drop.target)) orelse return false;
     if (source_index == target_index) return false;
 
     const source_path = state.entries.items[source_index].path;
@@ -3519,10 +3547,10 @@ fn handleAssetTableDrop(state: *State, drop: goop.TableDrop) !bool {
     return moveDropPathsToDirectory(state, source_path, target_entry.navigationPath());
 }
 
-fn handleAssetGridDrop(state: *State, drop: goop.GridDrop) !bool {
+fn handleAssetGridDrop(state: *State, ctx: *const goop.Context, drop: goop.GridDrop) !bool {
     if (drop.position != .item) return false;
-    const source_index = visibleEntryIndexForHandle(state.grid_handles.items, drop.source, state.asset_visible_start, state.entries.items.len) orelse return false;
-    const target_index = visibleEntryIndexForHandle(state.grid_handles.items, drop.target, state.asset_visible_start, state.entries.items.len) orelse return false;
+    const source_index = assetEntryIndexFromUserId(state, ctx.userId(drop.source)) orelse return false;
+    const target_index = assetEntryIndexFromUserId(state, ctx.userId(drop.target)) orelse return false;
     if (source_index == target_index) return false;
 
     const source_path = state.entries.items[source_index].path;
@@ -3535,60 +3563,35 @@ fn handleAssetGridDrop(state: *State, drop: goop.GridDrop) !bool {
     return moveDropPathsToDirectory(state, source_path, target_entry.navigationPath());
 }
 
-fn assetPathForDragSource(state: *const State, source: goop.NodeHandle) ?[]const u8 {
-    if (visibleEntryIndexForHandle(state.row_handles.items, source, state.asset_visible_start, state.entries.items.len)) |index| {
-        return state.entries.items[index].path;
-    }
-    if (visibleEntryIndexForHandle(state.grid_handles.items, source, state.asset_visible_start, state.entries.items.len)) |index| {
-        return state.entries.items[index].path;
-    }
-    return null;
-}
+fn handleAssetWidgetDrop(state: *State, ctx: *const goop.Context, drop: goop.WidgetDrop) !bool {
+    const source_index = assetEntryIndexFromUserId(state, ctx.userId(drop.source)) orelse return false;
+    const source_path = state.entries.items[source_index].path;
 
-fn borrowedDropDestinationPath(state: *const State, target: goop.NodeHandle) ?[]const u8 {
-    for (state.place_handles.items, 0..) |handle, index| {
-        if (handle.eql(target) and index < state.places.items.len) return state.places.items[index].path;
-    }
-    for (state.folder_tree_handles.items, 0..) |handle, index| {
-        if (handle.eql(target) and index < state.folder_tree_paths.items.len) return state.folder_tree_paths.items[index];
-    }
-    for (state.breadcrumb_handles.items, 0..) |handle, index| {
-        if (handle.eql(target) and index < state.breadcrumb_paths.items.len) return state.breadcrumb_paths.items[index];
-    }
-    return null;
-}
-
-fn handleAssetWidgetDrop(state: *State, drop: goop.WidgetDrop) !bool {
-    const source_path = assetPathForDragSource(state, drop.source) orelse return false;
-
-    if (state.btn_up) |up| {
-        if (up.eql(drop.target)) {
-            const parent = try parentPathAlloc(allocator, state.current_dir);
-            defer if (parent) |path| allocator.free(path);
-            const parent_path = parent orelse return false;
-            return moveDropPathsToDirectory(state, source_path, parent_path);
-        }
+    const target_user_id = ctx.userId(drop.target);
+    if (widgetUserKind(target_user_id) == .toolbar_up) {
+        const parent = try parentPathAlloc(allocator, state.current_dir);
+        defer if (parent) |path| allocator.free(path);
+        const parent_path = parent orelse return false;
+        return moveDropPathsToDirectory(state, source_path, parent_path);
     }
 
-    const target_dir = borrowedDropDestinationPath(state, drop.target) orelse return false;
+    const target_dir = borrowedDropDestinationPathForUserId(state, target_user_id) orelse return false;
     return moveDropPathsToDirectory(state, source_path, target_dir);
 }
 
 fn maybeStartWaylandAssetDrag(state: *State, ctx: *goop.Context) !bool {
     if (state.drag_source != null) return false;
-    if (!ctx.runtime.mouse.left_down) return false;
-    const drag_target = ctx.runtime.mouse.drag_target orelse return false;
+    if (!ctx.isPointerButtonDown(.left)) return false;
+    const drag_target = ctx.activeDragSource() orelse return false;
+    const pointer = ctx.pointerPosition();
     const pointer_outside_window = !state.pointer_inside or
-        ctx.runtime.mouse.x < 0 or
-        ctx.runtime.mouse.y < 0 or
-        ctx.runtime.mouse.x >= @as(f32, @floatFromInt(state.logical_width)) or
-        ctx.runtime.mouse.y >= @as(f32, @floatFromInt(state.logical_height));
+        pointer.x < 0 or
+        pointer.y < 0 or
+        pointer.x >= @as(f32, @floatFromInt(state.logical_width)) or
+        pointer.y >= @as(f32, @floatFromInt(state.logical_height));
     if (!pointer_outside_window) return false;
 
-    const entry_index = switch (state.view_mode) {
-        .list => visibleEntryIndexForHandle(state.row_handles.items, drag_target, state.asset_visible_start, state.entries.items.len),
-        .grid => visibleEntryIndexForHandle(state.grid_handles.items, drag_target, state.asset_visible_start, state.entries.items.len),
-    } orelse return false;
+    const entry_index = assetEntryIndexFromUserId(state, ctx.userId(drag_target)) orelse return false;
 
     const source_path = state.entries.items[entry_index].path;
     const started = if (isPathSelected(state, source_path) and state.selected_paths.items.len > 0)
@@ -4386,7 +4389,7 @@ fn addNameCell(state: *State, ctx: *goop.Context, row: goop.NodeHandle, entry: B
         const input = try ctx.tree.addChild(cell, .{ .text_input = state.rename_input });
         ctx.tree.get(input).style_override = fileManagerRenameInputStyle(state);
         state.rename_input_handle = input;
-        focusWidget(ctx, input);
+        _ = ctx.focusWidget(input);
     } else {
         _ = try ctx.tree.addChild(cell, .{ .text = .{
             .content = try allocAssetEntryNameText(state, entry),
@@ -4657,10 +4660,11 @@ fn buildListAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
     };
     applyAssetTableColumns(&ctx.tree.get(state.asset_table_body.?).kind.table, state);
 
-    for (state.entries.items[window.start..window.end]) |entry| {
+    for (state.entries.items[window.start..window.end], window.start..) |entry, entry_index| {
         const row = try ctx.tree.addChild(state.asset_table_body.?, .{ .table_row = .{
             .selected = isPathSelected(state, entry.path),
         } });
+        ctx.setUserId(row, widgetUserId(.asset_entry, entry_index));
         ctx.tree.get(row).style_override = .{
             .border_width = browserTableDividerWidthPx(state),
         };
@@ -4737,11 +4741,12 @@ fn buildGridAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
         .border_radius = 0,
     };
 
-    for (state.entries.items[window.start..window.end]) |entry| {
+    for (state.entries.items[window.start..window.end], window.start..) |entry, entry_index| {
         const item = try ctx.tree.addChild(state.asset_grid.?, .{ .grid_item = .{
             .label = try allocAssetUiEllipsizedUtf8Lossy(state, entry.name, uiPx(state, 104), ctx.theme.font_size),
             .selected = isPathSelected(state, entry.path),
         } });
+        ctx.setUserId(item, widgetUserId(.asset_entry, entry_index));
         ctx.tree.get(item).custom_draw = true;
         ctx.tree.get(item).style_override = .{
             .bg = if (entry.isDirectory())
@@ -5073,26 +5078,6 @@ fn debugWidgetKindName(kind: goop.widget.WidgetKind) []const u8 {
     };
 }
 
-fn focusWidget(ctx: *goop.Context, handle: goop.NodeHandle) void {
-    for (ctx.tree.nodes.items) |*node| {
-        if (node.alive) node.interaction.focused = false;
-    }
-    if (ctx.isAlive(handle)) {
-        ctx.tree.get(handle).interaction.focused = true;
-        ctx.runtime.mouse.focused = handle;
-    } else {
-        ctx.runtime.mouse.focused = null;
-    }
-}
-
-fn focusedNodeHandle(ctx: *const goop.Context) ?goop.NodeHandle {
-    for (ctx.tree.nodes.items, 0..) |node, index| {
-        if (!node.alive or !node.interaction.focused) continue;
-        return ctx.tree.handleFromIndex(@intCast(index));
-    }
-    return null;
-}
-
 fn entryNameTextRect(state: *const State, ctx: *const goop.Context, visible_index: usize, entry: BrowserEntry) ?goop.draw.Rect {
     if (visible_index >= state.name_cell_handles.items.len) return null;
     const cell = state.name_cell_handles.items[visible_index];
@@ -5240,7 +5225,7 @@ fn debugLogFilePanelLayout(state: *State) void {
         const body_row = if (state.row_handles.items.len > 0) state.row_handles.items[0] else null;
         const header_widths = collectRowCellWidths(ctx, header_row);
         const body_widths = collectRowCellWidths(ctx, body_row);
-        const focused_handle = focusedNodeHandle(ctx);
+        const focused_handle = ctx.focusedWidget();
         const focused_index = if (focused_handle) |handle| handle.index else std.math.maxInt(u32);
 
         const layout_state_unchanged = focused_index == state.layout_debug_last_focus_index and
@@ -6614,6 +6599,7 @@ fn addFolderTreeItem(
     } });
     ctx.tree.get(handle).style_override = fileManagerFolderTreeItemStyle(state);
     ctx.setDropTarget(handle, true);
+    ctx.setUserId(handle, widgetUserId(.folder_tree, state.folder_tree_paths.items.len));
     try state.folder_tree_handles.append(allocator, handle);
     try state.folder_tree_paths.append(allocator, try allocator.dupe(u8, path));
     return handle;
@@ -6782,6 +6768,7 @@ fn buildWidgetTree(state: *State) !void {
     state.btn_back = try addToolbarCommandButton(state, ctx, toolbar, "Back", .back);
     state.btn_forward = try addToolbarCommandButton(state, ctx, toolbar, "Forward", .forward);
     state.btn_up = try addToolbarCommandButton(state, ctx, toolbar, "Up", .up);
+    ctx.setUserId(state.btn_up.?, widgetUserId(.toolbar_up, 0));
     if (browserCommandEnabled(state, .up)) ctx.setDropTarget(state.btn_up.?, true);
     state.btn_home = try addToolbarCommandButton(state, ctx, toolbar, "Home", .home);
     state.btn_refresh = try addToolbarCommandButton(state, ctx, toolbar, "Refresh", .refresh);
@@ -6838,13 +6825,14 @@ fn buildWidgetTree(state: *State) !void {
         const places_label = try ctx.tree.addChild(sidebar_content, .{ .text = .{ .content = "Places" } });
         ctx.tree.get(places_label).style_override = fileManagerSectionLabelStyle(state);
         const places_list = try ctx.tree.addChild(sidebar_content, .{ .list_box = .{ .selection_mode = .single } });
-        for (state.places.items) |place| {
+        for (state.places.items, 0..) |place, place_index| {
             const handle = try ctx.tree.addChild(places_list, .{ .selectable = .{
                 .label = place.label,
                 .selected = std.mem.eql(u8, place.path, state.current_dir),
             } });
             ctx.tree.get(handle).style_override = fileManagerPlaceItemStyle(state);
             ctx.setDropTarget(handle, true);
+            ctx.setUserId(handle, widgetUserId(.place, place_index));
             try state.place_handles.append(allocator, handle);
         }
 
@@ -6907,6 +6895,7 @@ fn buildWidgetTree(state: *State) !void {
     const root_button = try ctx.tree.addChild(breadcrumb_bar, .{ .button = .{ .label = "/" } });
     ctx.tree.get(root_button).style_override = fileManagerToolbarButtonStyle(state, false, true);
     ctx.setDropTarget(root_button, true);
+    ctx.setUserId(root_button, widgetUserId(.breadcrumb, state.breadcrumb_paths.items.len));
     try state.breadcrumb_handles.append(allocator, root_button);
     try state.breadcrumb_paths.append(allocator, try allocator.dupe(u8, "/"));
     if (!std.mem.eql(u8, state.current_dir, "/")) {
@@ -6918,6 +6907,7 @@ fn buildWidgetTree(state: *State) !void {
             const handle = try ctx.tree.addChild(breadcrumb_bar, .{ .button = .{ .label = try allocUiUtf8Lossy(state, segment) } });
             ctx.tree.get(handle).style_override = fileManagerToolbarButtonStyle(state, false, true);
             ctx.setDropTarget(handle, true);
+            ctx.setUserId(handle, widgetUserId(.breadcrumb, state.breadcrumb_paths.items.len));
             try state.breadcrumb_handles.append(allocator, handle);
             try state.breadcrumb_paths.append(allocator, try allocator.dupe(u8, state.current_dir[0..end]));
             start = end + 1;
@@ -7698,45 +7688,30 @@ pub fn main(init: std.process.Init) !void {
         }
 
         var asset_primary_handled = false;
-        if (ctx.lastWidgetDrop()) |drop| {
-            asset_primary_handled = true;
-            if (state.rename_path != null) {
-                switch (try commitActiveRename(&state)) {
-                    .inactive => {},
-                    .closed => rebuild_ui = true,
-                    .blocked => rebuild_ui = true,
+        if (ctx.lastDrop()) |drop| {
+            const asset_drop = switch (drop) {
+                .widget => |widget_drop| assetEntryIndexFromUserId(&state, ctx.userId(widget_drop.source)) != null,
+                .table => |table_drop| assetEntryIndexFromUserId(&state, ctx.userId(table_drop.source)) != null,
+                .grid => |grid_drop| assetEntryIndexFromUserId(&state, ctx.userId(grid_drop.source)) != null,
+                else => false,
+            };
+            if (asset_drop) {
+                asset_primary_handled = true;
+                if (state.rename_path != null) {
+                    switch (try commitActiveRename(&state)) {
+                        .inactive => {},
+                        .closed => rebuild_ui = true,
+                        .blocked => rebuild_ui = true,
+                    }
                 }
-            }
-            if (state.rename_path == null) {
-                rebuild_ui = try handleAssetWidgetDrop(&state, drop) or rebuild_ui;
-            }
-        }
-
-        if (ctx.lastTableDrop()) |drop| {
-            asset_primary_handled = true;
-            if (state.rename_path != null) {
-                switch (try commitActiveRename(&state)) {
-                    .inactive => {},
-                    .closed => rebuild_ui = true,
-                    .blocked => rebuild_ui = true,
+                if (state.rename_path == null) {
+                    rebuild_ui = switch (drop) {
+                        .widget => |widget_drop| try handleAssetWidgetDrop(&state, &ctx, widget_drop),
+                        .table => |table_drop| try handleAssetTableDrop(&state, &ctx, table_drop),
+                        .grid => |grid_drop| try handleAssetGridDrop(&state, &ctx, grid_drop),
+                        else => false,
+                    } or rebuild_ui;
                 }
-            }
-            if (state.rename_path == null) {
-                rebuild_ui = try handleAssetTableDrop(&state, drop) or rebuild_ui;
-            }
-        }
-
-        if (ctx.lastGridDrop()) |drop| {
-            asset_primary_handled = true;
-            if (state.rename_path != null) {
-                switch (try commitActiveRename(&state)) {
-                    .inactive => {},
-                    .closed => rebuild_ui = true,
-                    .blocked => rebuild_ui = true,
-                }
-            }
-            if (state.rename_path == null) {
-                rebuild_ui = try handleAssetGridDrop(&state, drop) or rebuild_ui;
             }
         }
 
@@ -7861,7 +7836,7 @@ pub fn main(init: std.process.Init) !void {
 
         if (!asset_primary_handled) {
             var selection_widget_changed = false;
-            const selection_drag_active = ctx.runtime.mouse.left_down;
+            const selection_drag_active = ctx.isPointerButtonDown(.left);
             if (state.view_mode == .list) {
                 if (state.asset_table_body) |table| {
                     if (ctx.isAlive(table) and ctx.tableSelectionChanged(table)) {
@@ -7914,7 +7889,7 @@ pub fn main(init: std.process.Init) !void {
             if (selection_widget_changed) asset_primary_handled = true;
         }
 
-        if (!ctx.runtime.mouse.left_down and state.asset_selection_rebuild_pending) {
+        if (!ctx.isPointerButtonDown(.left) and state.asset_selection_rebuild_pending) {
             state.asset_selection_rebuild_pending = false;
             rebuild_ui = true;
         }

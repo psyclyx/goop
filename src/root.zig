@@ -37,6 +37,9 @@ pub const GridDrop = goop.GridDrop;
 pub const ListDrop = goop.ListDrop;
 pub const TableDrop = goop.TableDrop;
 pub const WidgetDrop = goop.WidgetDrop;
+pub const Drop = goop.Drop;
+pub const PointerPosition = goop.PointerPosition;
+pub const SelectedChild = goop.SelectedChild;
 pub const Runtime = goop.Runtime;
 pub const Context = goop.Context;
 

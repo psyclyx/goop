@@ -36,6 +36,18 @@ pub const GridDrop = dispatch.GridDrop;
 pub const ListDrop = dispatch.ListDrop;
 pub const TableDrop = dispatch.TableDrop;
 pub const WidgetDrop = dispatch.WidgetDrop;
+pub const Drop = dispatch.Drop;
+
+pub const PointerPosition = struct {
+    x: f32,
+    y: f32,
+};
+
+pub const SelectedChild = struct {
+    handle: NodeHandle,
+    index: u16,
+    user_id: u64,
+};
 
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
@@ -155,6 +167,7 @@ pub const Runtime = struct {
         self.mouse.last_list_drop = null;
         self.mouse.last_table_drop = null;
         self.mouse.last_widget_drop = null;
+        self.mouse.last_drop = null;
         for (tree.nodes.items) |*node| {
             if (!node.alive) continue;
             node.interaction.primary_clicked = false;
@@ -261,9 +274,65 @@ pub const Runtime = struct {
         return self.mouse.last_widget_drop;
     }
 
+    /// Get the most recent completed drop that occurred this frame, if any.
+    pub fn lastDrop(self: *const Runtime) ?Drop {
+        return self.mouse.last_drop;
+    }
+
     /// Get the timestamp from the most recent primary-button press event.
     pub fn lastPrimaryPressTimestampMs(self: *const Runtime) u64 {
         return self.mouse.last_click_time_ms;
+    }
+
+    /// Get the current pointer position in context coordinates.
+    pub fn pointerPosition(self: *const Runtime) PointerPosition {
+        return .{ .x = self.mouse.x, .y = self.mouse.y };
+    }
+
+    /// Check whether a pointer button is currently held.
+    pub fn isPointerButtonDown(self: *const Runtime, button: Event.MouseButton.Button) bool {
+        return switch (button) {
+            .left => self.mouse.left_down,
+            .right => self.mouse.right_down,
+            .middle => self.mouse.middle_down,
+        };
+    }
+
+    /// Get the widget currently being dragged, if any.
+    pub fn activeDragSource(self: *const Runtime) ?NodeHandle {
+        return self.mouse.drag_target;
+    }
+
+    /// Get the currently focused widget, if it is still alive.
+    pub fn focusedWidget(self: *const Runtime, tree: *const Tree) ?NodeHandle {
+        if (self.mouse.focused) |handle| {
+            if (tree.isAlive(handle)) return handle;
+        }
+        return null;
+    }
+
+    /// Set keyboard focus to a live widget.
+    pub fn focusWidget(self: *Runtime, tree: *Tree, handle: NodeHandle) bool {
+        if (!tree.isAlive(handle)) {
+            self.clearFocus(tree);
+            return false;
+        }
+        for (tree.nodes.items) |*node| {
+            if (node.alive) node.interaction.focused = false;
+        }
+        tree.get(handle).interaction.focused = true;
+        self.mouse.focused = handle;
+        self.draw_dirty = true;
+        return true;
+    }
+
+    /// Clear keyboard focus.
+    pub fn clearFocus(self: *Runtime, tree: *Tree) void {
+        for (tree.nodes.items) |*node| {
+            if (node.alive) node.interaction.focused = false;
+        }
+        self.mouse.focused = null;
+        self.draw_dirty = true;
     }
 
     /// Cancel the active pointer gesture, clearing any drag or marquee state.
@@ -282,6 +351,18 @@ pub const Runtime = struct {
     /// Check whether a handle still refers to a living widget.
     pub fn isAlive(_: *const Runtime, tree: *const Tree, handle: NodeHandle) bool {
         return tree.isAlive(handle);
+    }
+
+    /// Attach an application-defined stable identifier to a widget.
+    pub fn setUserId(_: *Runtime, tree: *Tree, handle: NodeHandle, user_id: u64) void {
+        if (!tree.isAlive(handle)) return;
+        tree.get(handle).user_id = user_id;
+    }
+
+    /// Get an application-defined stable identifier attached to a widget.
+    pub fn userId(_: *const Runtime, tree: *const Tree, handle: NodeHandle) u64 {
+        if (!tree.isAlive(handle)) return 0;
+        return tree.getConst(handle).user_id;
     }
 
     /// Run layout: walk the widget tree through clay and write back rects.
@@ -414,6 +495,16 @@ pub const Context = struct {
         self.runtime.clearClickedFlags(&self.tree);
     }
 
+    /// Attach an application-defined stable identifier to a widget.
+    pub fn setUserId(self: *Context, handle: NodeHandle, user_id: u64) void {
+        self.runtime.setUserId(&self.tree, handle, user_id);
+    }
+
+    /// Get an application-defined stable identifier attached to a widget.
+    pub fn userId(self: *const Context, handle: NodeHandle) u64 {
+        return self.runtime.userId(&self.tree, handle);
+    }
+
     /// Mark a widget as a generic drop target for active item drags.
     pub fn setDropTarget(self: *Context, handle: NodeHandle, accepts_drop: bool) void {
         if (!self.tree.isAlive(handle)) return;
@@ -424,6 +515,36 @@ pub const Context = struct {
     pub fn isDropHovered(self: *const Context, handle: NodeHandle) bool {
         if (!self.tree.isAlive(handle)) return false;
         return self.tree.getConst(handle).interaction.drop_hovered;
+    }
+
+    /// Get the current pointer position in context coordinates.
+    pub fn pointerPosition(self: *const Context) PointerPosition {
+        return self.runtime.pointerPosition();
+    }
+
+    /// Check whether a pointer button is currently held.
+    pub fn isPointerButtonDown(self: *const Context, button: Event.MouseButton.Button) bool {
+        return self.runtime.isPointerButtonDown(button);
+    }
+
+    /// Get the widget currently being dragged, if any.
+    pub fn activeDragSource(self: *const Context) ?NodeHandle {
+        return self.runtime.activeDragSource();
+    }
+
+    /// Get the currently focused widget, if it is still alive.
+    pub fn focusedWidget(self: *const Context) ?NodeHandle {
+        return self.runtime.focusedWidget(&self.tree);
+    }
+
+    /// Set keyboard focus to a live widget.
+    pub fn focusWidget(self: *Context, handle: NodeHandle) bool {
+        return self.runtime.focusWidget(&self.tree, handle);
+    }
+
+    /// Clear keyboard focus.
+    pub fn clearFocus(self: *Context) void {
+        self.runtime.clearFocus(&self.tree);
     }
 
     /// Cancel the active pointer gesture, clearing any drag or marquee state.
@@ -573,6 +694,54 @@ pub const Context = struct {
         return count;
     }
 
+    /// Get the selected direct child at the given selected ordinal.
+    ///
+    /// For list boxes and grid selectors, index counts selectable/grid-item
+    /// children. For tables, index counts non-header rows.
+    pub fn selectedChild(self: *const Context, handle: NodeHandle, selected_ordinal: u16) ?SelectedChild {
+        if (!self.tree.isAlive(handle)) return null;
+        const parent_kind = self.tree.getConst(handle).kind;
+        var child_index: u16 = 0;
+        var selected_index: u16 = 0;
+        var iter = self.tree.children(handle);
+        while (iter.next()) |child| {
+            const node = self.tree.getConst(child);
+            const selected = switch (parent_kind) {
+                .list_box => blk: {
+                    if (node.kind != .selectable) continue;
+                    break :blk node.kind.selectable.selected;
+                },
+                .grid_selector => blk: {
+                    if (node.kind != .grid_item) continue;
+                    break :blk node.kind.grid_item.selected;
+                },
+                .table => blk: {
+                    if (node.kind != .table_row or node.kind.table_row.header) continue;
+                    break :blk node.kind.table_row.selected;
+                },
+                else => return null,
+            };
+            if (selected) {
+                if (selected_index == selected_ordinal) {
+                    return .{
+                        .handle = child,
+                        .index = child_index,
+                        .user_id = node.user_id,
+                    };
+                }
+                selected_index += 1;
+            }
+            child_index += 1;
+        }
+        return null;
+    }
+
+    /// Get the direct child index at the given selected ordinal.
+    pub fn selectedChildIndex(self: *const Context, handle: NodeHandle, selected_ordinal: u16) ?u16 {
+        const child = self.selectedChild(handle, selected_ordinal) orelse return null;
+        return child.index;
+    }
+
     /// Get the selected direct child index of a grid selector, if any.
     pub fn gridSelectorSelectedIndex(self: *const Context, handle: NodeHandle) ?u16 {
         var index: u16 = 0;
@@ -691,6 +860,11 @@ pub const Context = struct {
     /// Get the most recent generic widget drop that occurred this frame, if any.
     pub fn lastWidgetDrop(self: *const Context) ?WidgetDrop {
         return self.runtime.lastWidgetDrop();
+    }
+
+    /// Get the most recent completed drop that occurred this frame, if any.
+    pub fn lastDrop(self: *const Context) ?Drop {
+        return self.runtime.lastDrop();
     }
 
     /// Get the timestamp from the most recent primary-button press event.
@@ -1256,6 +1430,8 @@ test "grid item drop is reported across context frames" {
     } });
     const first = try ctx.tree.addChild(grid, .{ .grid_item = .{ .label = "Brick" } });
     const second = try ctx.tree.addChild(grid, .{ .grid_item = .{ .label = "Metal" } });
+    ctx.setUserId(first, 101);
+    ctx.setUserId(second, 102);
 
     ctx.clearClickedFlags();
     ctx.doLayout(null);
@@ -1273,6 +1449,14 @@ test "grid item drop is reported across context frames" {
         .x = second_rect.x + second_rect.w * 0.5,
         .y = second_rect.y + second_rect.h * 0.5,
     } });
+    ctx.processEvents();
+
+    const pointer = ctx.pointerPosition();
+    try std.testing.expect(ctx.isPointerButtonDown(.left));
+    try std.testing.expect(ctx.activeDragSource().?.eql(first));
+    try std.testing.expectApproxEqAbs(second_rect.x + second_rect.w * 0.5, pointer.x, 0.01);
+    try std.testing.expectEqual(@as(u64, 101), ctx.userId(first));
+
     try ctx.pushEvent(.{ .mouse_button = .{
         .button = .left,
         .state = .released,
@@ -1285,9 +1469,12 @@ test "grid item drop is reported across context frames" {
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
     try std.testing.expectEqual(dispatch.GridDrop.Position.item, drop.position);
+    try std.testing.expect(!ctx.isPointerButtonDown(.left));
+    try std.testing.expect(ctx.lastDrop().?.grid.source.eql(first));
 
     ctx.clearClickedFlags();
     try std.testing.expect(ctx.lastGridDrop() == null);
+    try std.testing.expect(ctx.lastDrop() == null);
 }
 
 test "multi-select list box supports ctrl-toggle and shift-range selection" {
@@ -1302,6 +1489,9 @@ test "multi-select list box supports ctrl-toggle and shift-range selection" {
     } });
     const camera = try ctx.tree.addChild(list_box, .{ .selectable = .{ .label = "Camera" } });
     const light = try ctx.tree.addChild(list_box, .{ .selectable = .{ .label = "Light" } });
+    ctx.setUserId(scene, 201);
+    ctx.setUserId(camera, 202);
+    ctx.setUserId(light, 203);
 
     ctx.clearClickedFlags();
     ctx.doLayout(null);
@@ -1327,6 +1517,10 @@ test "multi-select list box supports ctrl-toggle and shift-range selection" {
     try std.testing.expect(ctx.isSelected(scene));
     try std.testing.expect(ctx.isSelected(camera));
     try std.testing.expectEqual(@as(u16, 2), ctx.listBoxSelectionCount(list_box));
+    const selected = ctx.selectedChild(list_box, 1).?;
+    try std.testing.expect(selected.handle.eql(camera));
+    try std.testing.expectEqual(@as(u16, 1), selected.index);
+    try std.testing.expectEqual(@as(u64, 202), selected.user_id);
 
     ctx.clearClickedFlags();
     const light_rect = ctx.tree.getConst(light).layout_rect;
