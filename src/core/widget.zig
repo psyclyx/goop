@@ -1125,19 +1125,19 @@ pub fn kindFromDesc(desc: WidgetDesc) WidgetKind {
     };
 }
 
-/// Read-only projection of a widget node's per-kind state.
+/// Read-only projection of a widget node's kind-specific state.
 ///
-/// `WidgetView` is the supported way to query widget state from the
-/// outside. It carries identifying fields, mutable interaction state
-/// (value, selected, expanded, …), and one-frame flags (clicked,
-/// changed, toggled, …). Pure configuration the embedder set at
-/// construction (min/max/precision/min_first/etc) is intentionally
-/// omitted — the embedder is the source of truth for that.
+/// `WidgetView` carries identifying fields and persistent state
+/// (label, value, selected, expanded, …) plus typed event payloads
+/// that have widget-specific shape (table.sort_changed,
+/// table.resized_column, tree_item.rename_committed). Cross-kind
+/// per-frame flags (clicked, changed, toggled, drop_received) live on
+/// `NodeView`, not here. Pure construction-time configuration
+/// (min/max/precision/min_first) is also omitted — the embedder is
+/// the source of truth for that.
 ///
-/// The view is built by `WidgetView.fromNode` and is a snapshot of the
-/// node's kind + interaction state at one moment. Slices it carries
-/// (labels, content) point into the tree's storage and stay valid
-/// until the next mutation that touches the same widget.
+/// Slices borrow from the tree's storage and stay valid until the
+/// next mutation that touches the widget.
 pub const WidgetView = union(enum) {
     container: Container,
     text: Text,
@@ -1146,7 +1146,7 @@ pub const WidgetView = union(enum) {
     radio_button: RadioButton,
     tree_item: TreeItem,
     dropdown: Dropdown,
-    list_box: ListBox,
+    list_box: void,
     selectable: Selectable,
     grid_selector: GridSelector,
     grid_item: GridItem,
@@ -1176,20 +1176,17 @@ pub const WidgetView = union(enum) {
 
     pub const Button = struct {
         label: []const u8,
-        clicked: bool,
     };
 
     pub const Checkbox = struct {
         label: []const u8,
         checked: bool,
-        clicked: bool,
     };
 
     pub const RadioButton = struct {
         label: []const u8,
         group: u32,
         selected: bool,
-        clicked: bool,
     };
 
     pub const TreeItem = struct {
@@ -1199,10 +1196,7 @@ pub const WidgetView = union(enum) {
         expanded: bool,
         selected: bool,
         editing: bool,
-        clicked: bool,
-        toggled: bool,
         dragging: bool,
-        drop_received: bool,
         rename_committed: bool,
     };
 
@@ -1211,35 +1205,27 @@ pub const WidgetView = union(enum) {
         selected_text: []const u8,
         selected_index: ?u16,
         open: bool,
-        clicked: bool,
-        changed: bool,
     };
-
-    pub const ListBox = struct { changed: bool };
 
     pub const Selectable = struct {
         label: []const u8,
         group: u32,
         selected: bool,
-        clicked: bool,
         dragging: bool,
     };
 
     pub const GridSelector = struct {
-        changed: bool,
         computed_columns: u16,
     };
 
     pub const GridItem = struct {
         label: []const u8,
         selected: bool,
-        clicked: bool,
         dragging: bool,
     };
 
     pub const Table = struct {
         active_columns: u8,
-        changed: bool,
         resized_column: ?u8,
         sorted_column: ?u8,
         sort_direction: WidgetKind.Table.SortDirection,
@@ -1255,7 +1241,6 @@ pub const WidgetView = union(enum) {
 
     pub const Menu = struct {
         label: []const u8,
-        clicked: bool,
     };
 
     pub const Popup = struct {
@@ -1278,19 +1263,16 @@ pub const WidgetView = union(enum) {
         shortcut: []const u8,
         checked: bool,
         disabled: bool,
-        clicked: bool,
     };
 
     pub const DragValue = struct {
         value: f32,
-        changed: bool,
         editing: bool,
         display_text: []const u8,
     };
 
     pub const SpinBox = struct {
         value: f32,
-        changed: bool,
         editing: bool,
         display_text: []const u8,
     };
@@ -1298,12 +1280,10 @@ pub const WidgetView = union(enum) {
     pub const TabItem = struct {
         label: []const u8,
         selected: bool,
-        clicked: bool,
     };
 
     pub const Splitter = struct {
         ratio: f32,
-        changed: bool,
     };
 
     pub const Slider = struct { value: f32 };
@@ -1321,25 +1301,23 @@ pub const WidgetView = union(enum) {
 
     pub fn fromNode(node: *const Node) WidgetView {
         // Read fields through pointers so slices borrow from the tree's
-        // storage rather than a temporary copy. Per-frame flags like
-        // `clicked`, `changed`, `toggled`, `drop_received` come from
-        // `node.interaction`; everything else lives on `node.kind`.
+        // storage rather than a temporary copy. Cross-kind per-frame
+        // flags (clicked, changed, toggled, drop_received) live on
+        // `NodeView`; this view carries only kind-specific persistent
+        // state and typed events (table.sort_changed, etc.).
         const kind = &node.kind;
-        const i = node.interaction;
         return switch (kind.*) {
             .container => .{ .container = .{ .direction = kind.container.direction } },
             .text => .{ .text = .{ .content = kind.text.content } },
-            .button => .{ .button = .{ .label = kind.button.label, .clicked = i.primary_clicked } },
+            .button => .{ .button = .{ .label = kind.button.label } },
             .checkbox => .{ .checkbox = .{
                 .label = kind.checkbox.label,
                 .checked = kind.checkbox.checked,
-                .clicked = i.primary_clicked,
             } },
             .radio_button => .{ .radio_button = .{
                 .label = kind.radio_button.label,
                 .group = kind.radio_button.group,
                 .selected = kind.radio_button.selected,
-                .clicked = i.primary_clicked,
             } },
             .tree_item => .{ .tree_item = .{
                 .label = kind.tree_item.displayLabel(),
@@ -1348,10 +1326,7 @@ pub const WidgetView = union(enum) {
                 .expanded = kind.tree_item.expanded,
                 .selected = kind.tree_item.selected,
                 .editing = kind.tree_item.editing,
-                .clicked = i.primary_clicked,
-                .toggled = i.toggled,
                 .dragging = kind.tree_item.drag.active,
-                .drop_received = i.drop_received,
                 .rename_committed = kind.tree_item.rename_committed,
             } },
             .dropdown => .{ .dropdown = .{
@@ -1359,30 +1334,24 @@ pub const WidgetView = union(enum) {
                 .selected_text = kind.dropdown.selected_text,
                 .selected_index = kind.dropdown.selected_index,
                 .open = kind.dropdown.open,
-                .clicked = i.primary_clicked,
-                .changed = i.changed,
             } },
-            .list_box => .{ .list_box = .{ .changed = i.changed } },
+            .list_box => .{ .list_box = {} },
             .selectable => .{ .selectable = .{
                 .label = kind.selectable.label,
                 .group = kind.selectable.group,
                 .selected = kind.selectable.selected,
-                .clicked = i.primary_clicked,
                 .dragging = kind.selectable.drag.active,
             } },
             .grid_selector => .{ .grid_selector = .{
-                .changed = i.changed,
                 .computed_columns = kind.grid_selector.computed_columns,
             } },
             .grid_item => .{ .grid_item = .{
                 .label = kind.grid_item.label,
                 .selected = kind.grid_item.selected,
-                .clicked = i.primary_clicked,
                 .dragging = kind.grid_item.drag.active,
             } },
             .table => .{ .table = .{
                 .active_columns = kind.table.active_columns,
-                .changed = i.changed,
                 .resized_column = kind.table.resized_column,
                 .sorted_column = kind.table.sorted_column,
                 .sort_direction = kind.table.sort_direction,
@@ -1398,7 +1367,7 @@ pub const WidgetView = union(enum) {
             .toolbar => .{ .toolbar = {} },
             .status_bar => .{ .status_bar = {} },
             .menu_bar => .{ .menu_bar = {} },
-            .menu => .{ .menu = .{ .label = kind.menu.label, .clicked = i.primary_clicked } },
+            .menu => .{ .menu = .{ .label = kind.menu.label } },
             .popup => .{ .popup = .{
                 .placement = kind.popup.placement,
                 .x = kind.popup.x,
@@ -1417,17 +1386,14 @@ pub const WidgetView = union(enum) {
                 .shortcut = kind.menu_item.shortcut,
                 .checked = kind.menu_item.checked,
                 .disabled = kind.menu_item.disabled,
-                .clicked = i.primary_clicked,
             } },
             .drag_value => .{ .drag_value = .{
                 .value = kind.drag_value.value,
-                .changed = i.changed,
                 .editing = kind.drag_value.editing,
                 .display_text = kind.drag_value.displayValue(),
             } },
             .spinbox => .{ .spinbox = .{
                 .value = kind.spinbox.value,
-                .changed = i.changed,
                 .editing = kind.spinbox.editing,
                 .display_text = kind.spinbox.displayValue(),
             } },
@@ -1435,9 +1401,8 @@ pub const WidgetView = union(enum) {
             .tab_item => .{ .tab_item = .{
                 .label = kind.tab_item.label,
                 .selected = kind.tab_item.selected,
-                .clicked = i.primary_clicked,
             } },
-            .splitter => .{ .splitter = .{ .ratio = kind.splitter.ratio, .changed = i.changed } },
+            .splitter => .{ .splitter = .{ .ratio = kind.splitter.ratio } },
             .slider => .{ .slider = .{ .value = kind.slider.value } },
             .spacer => .{ .spacer = {} },
             .scroll_area => .{ .scroll_area = .{
@@ -1449,6 +1414,49 @@ pub const WidgetView = union(enum) {
                 .cursor = kind.text_input.cursor,
                 .selection_anchor = kind.text_input.selection_anchor,
             } },
+        };
+    }
+};
+
+/// Read-only snapshot of a single node — bundles layout rect,
+/// per-frame interaction flags, and the kind-specific `WidgetView`.
+/// Returned by `Tree.node`. Slices borrow from tree storage and stay
+/// valid until the next mutation that touches the node.
+pub const NodeView = struct {
+    rect: draw.Rect,
+    user_id: u64,
+    custom_draw: bool,
+    focused: bool,
+    accepts_drop: bool,
+    drop_hovered: bool,
+    drop_received: bool,
+    /// Activated this frame with the primary pointer button.
+    clicked: bool,
+    /// Activated this frame with the secondary pointer button.
+    secondary_clicked: bool,
+    /// State changed this frame (value edited, selection changed,
+    /// dropdown picked, splitter dragged, table column resized, …).
+    /// Typed change semantics like `table.sort_changed` stay on the
+    /// kind view; `changed` is the catch-all.
+    changed: bool,
+    /// Tree item disclosure was toggled this frame.
+    toggled: bool,
+    kind: WidgetView,
+
+    pub fn fromNode(node: *const Node) NodeView {
+        return .{
+            .rect = node.layout_rect,
+            .user_id = node.user_id,
+            .custom_draw = node.custom_draw,
+            .focused = node.interaction.focused,
+            .accepts_drop = node.interaction.accepts_drop,
+            .drop_hovered = node.interaction.drop_hovered,
+            .drop_received = node.interaction.drop_received,
+            .clicked = node.interaction.primary_clicked,
+            .secondary_clicked = node.interaction.secondary_clicked,
+            .changed = node.interaction.changed,
+            .toggled = node.interaction.toggled,
+            .kind = WidgetView.fromNode(node),
         };
     }
 };
@@ -1500,10 +1508,10 @@ pub const Tree = struct {
     /// Remove a node and all its descendants from the tree.
     /// The handle becomes invalid after this call.
     pub fn remove(self: *Tree, handle: NodeHandle) !void {
-        const node = self.getMut(handle);
+        const n = self.getMut(handle);
 
         // Recursively remove children first
-        var child = node.first_child;
+        var child = n.first_child;
         while (child) |ch| {
             const next = self.nodes.items[ch.index].next_sibling;
             try self.remove(ch);
@@ -1511,59 +1519,101 @@ pub const Tree = struct {
         }
 
         // Unlink from parent's child list
-        if (node.parent) |ph| {
+        if (n.parent) |ph| {
             const parent = &self.nodes.items[ph.index];
             if (parent.first_child) |fc| {
                 if (fc.eql(handle)) {
-                    parent.first_child = node.next_sibling;
+                    parent.first_child = n.next_sibling;
                 }
             }
             if (parent.last_child) |lc| {
                 if (lc.eql(handle)) {
-                    parent.last_child = node.prev_sibling;
+                    parent.last_child = n.prev_sibling;
                 }
             }
         }
 
         // Unlink from sibling chain
-        if (node.prev_sibling) |prev| {
-            self.nodes.items[prev.index].next_sibling = node.next_sibling;
+        if (n.prev_sibling) |prev| {
+            self.nodes.items[prev.index].next_sibling = n.next_sibling;
         }
-        if (node.next_sibling) |nxt| {
-            self.nodes.items[nxt.index].prev_sibling = node.prev_sibling;
+        if (n.next_sibling) |nxt| {
+            self.nodes.items[nxt.index].prev_sibling = n.prev_sibling;
         }
 
         // Mark dead, bump generation, push to free list
-        node.alive = false;
-        node.generation +%= 1;
-        node.parent = null;
-        node.first_child = null;
-        node.last_child = null;
-        node.next_sibling = null;
-        node.prev_sibling = null;
+        n.alive = false;
+        n.generation +%= 1;
+        n.parent = null;
+        n.first_child = null;
+        n.last_child = null;
+        n.next_sibling = null;
+        n.prev_sibling = null;
         try self.free_list.append(self.allocator, handle.index);
     }
 
     /// Get a pointer to a node by handle.
     /// Asserts the handle is valid (generation matches and node is alive).
     pub fn get(self: *Tree, handle: NodeHandle) *Node {
-        const node = &self.nodes.items[handle.index];
-        std.debug.assert(node.alive and node.generation == handle.generation);
-        return node;
+        const n = &self.nodes.items[handle.index];
+        std.debug.assert(n.alive and n.generation == handle.generation);
+        return n;
     }
 
     /// Get a const pointer to a node by handle.
     pub fn getConst(self: *const Tree, handle: NodeHandle) *const Node {
-        const node = &self.nodes.items[handle.index];
-        std.debug.assert(node.alive and node.generation == handle.generation);
-        return node;
+        const n = &self.nodes.items[handle.index];
+        std.debug.assert(n.alive and n.generation == handle.generation);
+        return n;
     }
 
     /// Check whether a handle refers to a living node.
     pub fn isAlive(self: *const Tree, handle: NodeHandle) bool {
         if (handle.index >= self.nodes.items.len) return false;
-        const node = &self.nodes.items[handle.index];
-        return node.alive and node.generation == handle.generation;
+        const n = &self.nodes.items[handle.index];
+        return n.alive and n.generation == handle.generation;
+    }
+
+    /// Snapshot of a node's read-only state. Returns null if the
+    /// handle is dead. Slices in the snapshot borrow from tree
+    /// storage and stay valid until the next mutation on this node.
+    pub fn node(self: *const Tree, handle: NodeHandle) ?NodeView {
+        if (!self.isAlive(handle)) return null;
+        return NodeView.fromNode(self.getConst(handle));
+    }
+
+    /// Set an embedder-defined stable identifier on a widget. Pure
+    /// field write — does not touch layout or draw caches, so call
+    /// it freely without invalidation concerns.
+    pub fn setUserId(self: *Tree, handle: NodeHandle, user_id: u64) void {
+        if (!self.isAlive(handle)) return;
+        self.get(handle).user_id = user_id;
+    }
+
+    /// Read a widget's embedder-defined identifier. Returns 0 for
+    /// dead handles so drop sources / drag targets that may have
+    /// gone stale by the time the embedder consumes the event don't
+    /// require explicit aliveness checks at the call site.
+    pub fn userId(self: *const Tree, handle: NodeHandle) u64 {
+        if (!self.isAlive(handle)) return 0;
+        return self.getConst(handle).user_id;
+    }
+
+    /// Mark a widget as a generic drop target for active drags. Pure
+    /// field write; does not invalidate caches.
+    pub fn setDropTarget(self: *Tree, handle: NodeHandle, accepts_drop: bool) void {
+        if (!self.isAlive(handle)) return;
+        self.get(handle).interaction.accepts_drop = accepts_drop;
+    }
+
+    /// Get a single column's normalized width for a table, in [0, 1].
+    /// Returns null if the handle is dead, not a table, or the column
+    /// index exceeds the active column count.
+    pub fn tableColumnFraction(self: *const Tree, handle: NodeHandle, index: u8) ?f32 {
+        if (!self.isAlive(handle)) return null;
+        const n = self.getConst(handle);
+        if (n.kind != .table) return null;
+        return n.kind.table.columnWeight(index);
     }
 
     /// Build a handle for a live node at the given index.
@@ -1633,9 +1683,9 @@ pub const Tree = struct {
 
     /// Internal: get a mutable pointer without generation check (for remove).
     fn getMut(self: *Tree, handle: NodeHandle) *Node {
-        const node = &self.nodes.items[handle.index];
-        std.debug.assert(node.alive and node.generation == handle.generation);
-        return node;
+        const n = &self.nodes.items[handle.index];
+        std.debug.assert(n.alive and n.generation == handle.generation);
+        return n;
     }
 
     pub const ChildIterator = struct {

@@ -473,7 +473,7 @@ pub fn xdgPopupDone(data: ?*anyopaque, _: ?*wl.xdg_popup) callconv(.c) void {
     const popup: *PopupSurface = @ptrCast(@alignCast(data));
     const state = popup.owner;
     if (state.ctx) |ctx| {
-        if (ctx.runtime.isAlive(&ctx.tree, popup.handle) and ctx.tree.getConst(popup.handle).kind == .popup) {
+        if (ctx.tree.isAlive(popup.handle) and ctx.tree.getConst(popup.handle).kind == .popup) {
             if (ctx.runtime.mutateKind(&ctx.tree, popup.handle)) |__k| {
                 __k.popup.visible = false;
             }
@@ -516,7 +516,7 @@ pub fn syncNativePopupSurfaces(state: *State, ctx: *goop.Context) !void {
 }
 
 pub fn popupNeedsNativeSurface(ctx: *const goop.Context, handle: goop.NodeHandle) bool {
-    if (!ctx.runtime.isAlive(&ctx.tree, handle)) return false;
+    if (!ctx.tree.isAlive(handle)) return false;
     const node = ctx.tree.getConst(handle);
     if (node.kind != .popup or !node.kind.popup.visible) return false;
     return node.layout_rect.w > 0 and node.layout_rect.h > 0;
@@ -1133,7 +1133,7 @@ pub fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, serial: u32, _: u32, 
                 if (focused_is_rename_input) {
                     state.rename_commit_requested = true;
                 } else if (state.address_input_handle) |handle| {
-                    if (ctx.runtime.isAlive(&ctx.tree, handle) and ctx.tree.getConst(handle).interaction.focused) {
+                    if (ctx.tree.isAlive(handle) and ctx.tree.getConst(handle).interaction.focused) {
                         state.address_submit_requested = true;
                     }
                 }

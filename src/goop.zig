@@ -48,6 +48,7 @@ pub const NodeHandle = widget.NodeHandle;
 pub const WidgetKind = widget.WidgetKind;
 pub const WidgetDesc = widget.WidgetDesc;
 pub const WidgetView = widget.WidgetView;
+pub const NodeView = widget.NodeView;
 pub const kindFromDesc = widget.kindFromDesc;
 pub const Rect = draw.Rect;
 pub const Event = event.Event;
@@ -223,32 +224,6 @@ pub const Runtime = struct {
         }
     }
 
-    /// Snapshot a widget's read-only state. Returns null if the handle
-    /// is dead. The slices in the returned view borrow from the tree
-    /// and stay valid until the next mutation that touches this widget.
-    pub fn widget(_: *const Runtime, tree: *const Tree, handle: NodeHandle) ?WidgetView {
-        if (!tree.isAlive(handle)) return null;
-        return WidgetView.fromNode(tree.getConst(handle));
-    }
-
-    /// Get the laid-out rectangle for a widget. Returns null if the
-    /// handle is dead. The rectangle is from the most recent layout
-    /// pass; call `doLayout` first if state has changed since.
-    pub fn layoutRect(_: *const Runtime, tree: *const Tree, handle: NodeHandle) ?Rect {
-        if (!tree.isAlive(handle)) return null;
-        return tree.getConst(handle).layout_rect;
-    }
-
-    /// Get a single column's normalized width for a table, in [0, 1].
-    /// Returns null if the handle is not a table or the column index
-    /// exceeds the table's active column count.
-    pub fn tableColumnFraction(_: *const Runtime, tree: *const Tree, handle: NodeHandle, index: u8) ?f32 {
-        if (!tree.isAlive(handle)) return null;
-        const node = tree.getConst(handle);
-        if (node.kind != .table) return null;
-        return node.kind.table.columnWeight(index);
-    }
-
     /// Replace a widget's payload with the provided descriptor. The
     /// desc tag must match the widget's current kind. Returns true on
     /// success, false if the handle is dead or the tag does not match.
@@ -295,18 +270,6 @@ pub const Runtime = struct {
         tree.get(handle).custom_draw = custom;
         self.invalidate();
         return true;
-    }
-
-    /// Check if a widget was activated with the primary button this frame.
-    pub fn wasClicked(_: *const Runtime, tree: *const Tree, handle: NodeHandle) bool {
-        if (!tree.isAlive(handle)) return false;
-        return tree.getConst(handle).interaction.primary_clicked;
-    }
-
-    /// Check if a widget was activated with the secondary button this frame.
-    pub fn wasSecondaryClicked(_: *const Runtime, tree: *const Tree, handle: NodeHandle) bool {
-        if (!tree.isAlive(handle)) return false;
-        return tree.getConst(handle).interaction.secondary_clicked;
     }
 
     /// Get the most recent secondary click that occurred this frame, if any.
@@ -381,35 +344,6 @@ pub const Runtime = struct {
     pub fn cancelPointerGesture(self: *Runtime, tree: *Tree) void {
         dispatch.cancelPointerGesture(tree, &self.mouse);
         self.draw_dirty = true;
-    }
-
-    /// Check whether a handle still refers to a living widget.
-    pub fn isAlive(_: *const Runtime, tree: *const Tree, handle: NodeHandle) bool {
-        return tree.isAlive(handle);
-    }
-
-    /// Attach an application-defined stable identifier to a widget.
-    pub fn setUserId(_: *Runtime, tree: *Tree, handle: NodeHandle, user_id: u64) void {
-        if (!tree.isAlive(handle)) return;
-        tree.get(handle).user_id = user_id;
-    }
-
-    /// Get an application-defined stable identifier attached to a widget.
-    pub fn userId(_: *const Runtime, tree: *const Tree, handle: NodeHandle) u64 {
-        if (!tree.isAlive(handle)) return 0;
-        return tree.getConst(handle).user_id;
-    }
-
-    /// Mark a widget as a generic drop target for active item drags.
-    pub fn setDropTarget(_: *Runtime, tree: *Tree, handle: NodeHandle, accepts_drop: bool) void {
-        if (!tree.isAlive(handle)) return;
-        tree.get(handle).interaction.accepts_drop = accepts_drop;
-    }
-
-    /// Check whether a generic drop is currently hovering this widget.
-    pub fn isDropHovered(_: *const Runtime, tree: *const Tree, handle: NodeHandle) bool {
-        if (!tree.isAlive(handle)) return false;
-        return tree.getConst(handle).interaction.drop_hovered;
     }
 
     /// Run layout: walk the widget tree through clay and write back rects.
@@ -584,8 +518,8 @@ pub const Context = struct {
 // intentionally not part of the public API.
 
 fn testIsChecked(ctx: *const Context, h: NodeHandle) bool {
-    const v = ctx.runtime.widget(&ctx.tree, h) orelse return false;
-    return switch (v) {
+    const n = ctx.tree.node(h) orelse return false;
+    return switch (n.kind) {
         .checkbox => |w| w.checked,
         .menu_item => |w| w.checked,
         else => false,
@@ -593,8 +527,8 @@ fn testIsChecked(ctx: *const Context, h: NodeHandle) bool {
 }
 
 fn testIsSelected(ctx: *const Context, h: NodeHandle) bool {
-    const v = ctx.runtime.widget(&ctx.tree, h) orelse return false;
-    return switch (v) {
+    const n = ctx.tree.node(h) orelse return false;
+    return switch (n.kind) {
         .radio_button => |w| w.selected,
         .tree_item => |w| w.selected,
         .selectable => |w| w.selected,
@@ -628,9 +562,9 @@ fn testFirstSelectedSelectableIndex(ctx: *const Context, parent: NodeHandle) ?u1
     var index: u16 = 0;
     var iter = ctx.tree.children(parent);
     while (iter.next()) |child| {
-        const v = ctx.runtime.widget(&ctx.tree, child) orelse continue;
-        if (v != .selectable) continue;
-        if (v.selectable.selected) return index;
+        const n = ctx.tree.node(child) orelse continue;
+        if (n.kind != .selectable) continue;
+        if (n.kind.selectable.selected) return index;
         index += 1;
     }
     return null;
@@ -640,9 +574,9 @@ fn testFirstSelectedGridItemIndex(ctx: *const Context, parent: NodeHandle) ?u16 
     var index: u16 = 0;
     var iter = ctx.tree.children(parent);
     while (iter.next()) |child| {
-        const v = ctx.runtime.widget(&ctx.tree, child) orelse continue;
-        if (v != .grid_item) continue;
-        if (v.grid_item.selected) return index;
+        const n = ctx.tree.node(child) orelse continue;
+        if (n.kind != .grid_item) continue;
+        if (n.kind.grid_item.selected) return index;
         index += 1;
     }
     return null;
@@ -652,8 +586,8 @@ fn testCountSelectedGridItems(ctx: *const Context, parent: NodeHandle) u16 {
     var count: u16 = 0;
     var iter = ctx.tree.children(parent);
     while (iter.next()) |child| {
-        const v = ctx.runtime.widget(&ctx.tree, child) orelse continue;
-        if (v == .grid_item and v.grid_item.selected) count += 1;
+        const n = ctx.tree.node(child) orelse continue;
+        if (n.kind == .grid_item and n.kind.grid_item.selected) count += 1;
     }
     return count;
 }
@@ -662,10 +596,10 @@ fn testCountSelectedDataRows(ctx: *const Context, parent: NodeHandle) u16 {
     var count: u16 = 0;
     var iter = ctx.tree.children(parent);
     while (iter.next()) |child| {
-        const v = ctx.runtime.widget(&ctx.tree, child) orelse continue;
-        if (v != .table_row) continue;
-        if (v.table_row.header) continue;
-        if (v.table_row.selected) count += 1;
+        const n = ctx.tree.node(child) orelse continue;
+        if (n.kind != .table_row) continue;
+        if (n.kind.table_row.header) continue;
+        if (n.kind.table_row.selected) count += 1;
     }
     return count;
 }
@@ -674,10 +608,10 @@ fn testFirstSelectedDataRowIndex(ctx: *const Context, parent: NodeHandle) ?u16 {
     var index: u16 = 0;
     var iter = ctx.tree.children(parent);
     while (iter.next()) |child| {
-        const v = ctx.runtime.widget(&ctx.tree, child) orelse continue;
-        if (v != .table_row) continue;
-        if (v.table_row.header) continue;
-        if (v.table_row.selected) return index;
+        const n = ctx.tree.node(child) orelse continue;
+        if (n.kind != .table_row) continue;
+        if (n.kind.table_row.header) continue;
+        if (n.kind.table_row.selected) return index;
         index += 1;
     }
     return null;
@@ -772,11 +706,11 @@ test "event dispatch detects button click" {
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = click_x, .y = click_y } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.runtime.wasClicked(&ctx.tree, btn));
+    try std.testing.expect(ctx.tree.node(btn).?.clicked);
 
     // After clearing, clicked should be false
     ctx.clearClickedFlags();
-    try std.testing.expect(!ctx.runtime.wasClicked(&ctx.tree, btn));
+    try std.testing.expect(!ctx.tree.node(btn).?.clicked);
 }
 
 test "checkbox toggle via events" {
@@ -818,10 +752,10 @@ test "radio button group selection via events" {
 
     try std.testing.expect(testIsSelected(&ctx, rb1));
     try std.testing.expect(!testIsSelected(&ctx, rb2));
-    try std.testing.expect(ctx.runtime.wasClicked(&ctx.tree, rb1));
+    try std.testing.expect(ctx.tree.node(rb1).?.clicked);
 
     ctx.clearClickedFlags();
-    try std.testing.expect(!ctx.runtime.wasClicked(&ctx.tree, rb1));
+    try std.testing.expect(!ctx.tree.node(rb1).?.clicked);
 
     // Click rb2 — should deselect rb1
     const rb2_rect = ctx.tree.getConst(rb2).layout_rect;
@@ -1008,7 +942,7 @@ test "collapsed tree item can be reopened across context frames" {
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = disclosure_x, .y = disclosure_y } });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = disclosure_x, .y = disclosure_y } });
     ctx.processEvents();
-    try std.testing.expect(!ctx.runtime.widget(&ctx.tree, parent).?.tree_item.expanded);
+    try std.testing.expect(!ctx.tree.node(parent).?.kind.tree_item.expanded);
 
     ctx.clearClickedFlags();
     ctx.doLayout(null);
@@ -1017,7 +951,7 @@ test "collapsed tree item can be reopened across context frames" {
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = disclosure_x, .y = disclosure_y } });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = disclosure_x, .y = disclosure_y } });
     ctx.processEvents();
-    try std.testing.expect(ctx.runtime.widget(&ctx.tree, parent).?.tree_item.expanded);
+    try std.testing.expect(ctx.tree.node(parent).?.kind.tree_item.expanded);
 }
 
 test "tree item drop is reported across context frames" {
@@ -1124,7 +1058,7 @@ test "list box reports selected index and change across context frames" {
     } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.runtime.widget(&ctx.tree, list_box).?.list_box.changed);
+    try std.testing.expect(ctx.tree.node(list_box).?.changed);
     try std.testing.expectEqual(@as(?u16, 1), testFirstSelectedSelectableIndex(&ctx, list_box));
     try std.testing.expect(testIsSelected(&ctx, camera));
 }
@@ -1168,7 +1102,7 @@ test "grid selector reports selection count and change across context frames" {
     try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.runtime.widget(&ctx.tree, grid).?.grid_selector.changed);
+    try std.testing.expect(ctx.tree.node(grid).?.changed);
     try std.testing.expectEqual(@as(u16, 2), testCountSelectedGridItems(&ctx, grid));
     try std.testing.expect(testIsSelected(&ctx, metal));
 }
@@ -1186,8 +1120,8 @@ test "grid item drop is reported across context frames" {
     } });
     const first = try ctx.tree.addChild(grid, .{ .grid_item = .{ .label = "Brick" } });
     const second = try ctx.tree.addChild(grid, .{ .grid_item = .{ .label = "Metal" } });
-    ctx.runtime.setUserId(&ctx.tree, first, 101);
-    ctx.runtime.setUserId(&ctx.tree, second, 102);
+    ctx.tree.setUserId(first, 101);
+    ctx.tree.setUserId(second, 102);
 
     ctx.clearClickedFlags();
     ctx.doLayout(null);
@@ -1211,7 +1145,7 @@ test "grid item drop is reported across context frames" {
     try std.testing.expect(ctx.runtime.isPointerButtonDown(.left));
     try std.testing.expect(ctx.runtime.activeDragSource().?.eql(first));
     try std.testing.expectApproxEqAbs(second_rect.x + second_rect.w * 0.5, pointer.x, 0.01);
-    try std.testing.expectEqual(@as(u64, 101), ctx.runtime.userId(&ctx.tree, first));
+    try std.testing.expectEqual(@as(u64, 101), ctx.tree.userId(first));
 
     try ctx.pushEvent(.{ .mouse_button = .{
         .button = .left,
@@ -1243,9 +1177,9 @@ test "multi-select list box supports ctrl-toggle and shift-range selection" {
     } });
     const camera = try ctx.tree.addChild(list_box, .{ .selectable = .{ .label = "Camera" } });
     const light = try ctx.tree.addChild(list_box, .{ .selectable = .{ .label = "Light" } });
-    ctx.runtime.setUserId(&ctx.tree, scene, 201);
-    ctx.runtime.setUserId(&ctx.tree, camera, 202);
-    ctx.runtime.setUserId(&ctx.tree, light, 203);
+    ctx.tree.setUserId(scene, 201);
+    ctx.tree.setUserId(camera, 202);
+    ctx.tree.setUserId(light, 203);
 
     ctx.clearClickedFlags();
     ctx.doLayout(null);
@@ -1267,7 +1201,7 @@ test "multi-select list box supports ctrl-toggle and shift-range selection" {
     try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.runtime.widget(&ctx.tree, list_box).?.list_box.changed);
+    try std.testing.expect(ctx.tree.node(list_box).?.changed);
     try std.testing.expect(testIsSelected(&ctx, scene));
     try std.testing.expect(testIsSelected(&ctx, camera));
     try std.testing.expectEqual(@as(u16, 2), testCountSelectedChildren(&ctx, list_box));
@@ -1280,9 +1214,9 @@ test "multi-select list box supports ctrl-toggle and shift-range selection" {
         var idx: u16 = 0;
         var iter = ctx.tree.children(list_box);
         while (iter.next()) |child| {
-            const v = ctx.runtime.widget(&ctx.tree, child) orelse continue;
-            if (v != .selectable) continue;
-            if (v.selectable.selected) {
+            const v = ctx.tree.node(child) orelse continue;
+            if (v.kind != .selectable) continue;
+            if (v.kind.selectable.selected) {
                 if (ordinal == 1) {
                     found = child;
                     found_index = idx;
@@ -1294,7 +1228,7 @@ test "multi-select list box supports ctrl-toggle and shift-range selection" {
         }
         try std.testing.expect(found.?.eql(camera));
         try std.testing.expectEqual(@as(u16, 1), found_index);
-        try std.testing.expectEqual(@as(u64, 202), ctx.runtime.userId(&ctx.tree, found.?));
+        try std.testing.expectEqual(@as(u64, 202), ctx.tree.userId(found.?));
     }
 
     ctx.clearClickedFlags();
@@ -1317,7 +1251,7 @@ test "multi-select list box supports ctrl-toggle and shift-range selection" {
     try ctx.pushEvent(.{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.runtime.widget(&ctx.tree, list_box).?.list_box.changed);
+    try std.testing.expect(ctx.tree.node(list_box).?.changed);
     try std.testing.expect(testIsSelected(&ctx, scene));
     try std.testing.expect(testIsSelected(&ctx, camera));
     try std.testing.expect(testIsSelected(&ctx, light));
@@ -1377,7 +1311,7 @@ test "table row selection reports count and first selected row" {
     try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.runtime.widget(&ctx.tree, table).?.table.selection_changed);
+    try std.testing.expect(ctx.tree.node(table).?.kind.table.selection_changed);
     try std.testing.expectEqual(@as(u16, 2), testCountSelectedDataRows(&ctx, table));
     try std.testing.expectEqual(@as(?u16, 0), testFirstSelectedDataRowIndex(&ctx, table));
     try std.testing.expect(testIsSelected(&ctx, first));
@@ -1403,7 +1337,7 @@ test "table row selection reports count and first selected row" {
     try ctx.pushEvent(.{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.runtime.widget(&ctx.tree, table).?.table.selection_changed);
+    try std.testing.expect(ctx.tree.node(table).?.kind.table.selection_changed);
     try std.testing.expectEqual(@as(u16, 3), testCountSelectedDataRows(&ctx, table));
     try std.testing.expectEqual(@as(?u16, 0), testFirstSelectedDataRowIndex(&ctx, table));
     try std.testing.expect(testIsSelected(&ctx, third));
@@ -1505,9 +1439,9 @@ test "resizable table columns update widths in the same frame as drag" {
     const resized_row_name = ctx.tree.getConst(row_name).layout_rect;
     const resized_row_type = ctx.tree.getConst(row_type).layout_rect;
 
-    try std.testing.expect(ctx.runtime.widget(&ctx.tree, table).?.table.changed);
-    try std.testing.expectEqual(@as(?u8, 0), ctx.runtime.widget(&ctx.tree, table).?.table.resized_column);
-    try std.testing.expect(ctx.runtime.tableColumnFraction(&ctx.tree, table, 0).? > (1.0 / 3.0));
+    try std.testing.expect(ctx.tree.node(table).?.changed);
+    try std.testing.expectEqual(@as(?u8, 0), ctx.tree.node(table).?.kind.table.resized_column);
+    try std.testing.expect(ctx.tree.tableColumnFraction(table, 0).? > (1.0 / 3.0));
     try std.testing.expect(resized_name.w > initial_name.w);
     try std.testing.expect(resized_type.w < initial_type.w);
     try std.testing.expectApproxEqAbs(resized_name.x, resized_row_name.x, 0.01);
@@ -1562,10 +1496,10 @@ test "sortable table headers update retained sort state" {
     } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.runtime.wasClicked(&ctx.tree, table));
-    try std.testing.expect(ctx.runtime.widget(&ctx.tree, table).?.table.sort_changed);
-    try std.testing.expectEqual(@as(?u8, 1), ctx.runtime.widget(&ctx.tree, table).?.table.sorted_column);
-    try std.testing.expectEqual(widget.WidgetKind.Table.SortDirection.ascending, ctx.runtime.widget(&ctx.tree, table).?.table.sort_direction);
+    try std.testing.expect(ctx.tree.node(table).?.clicked);
+    try std.testing.expect(ctx.tree.node(table).?.kind.table.sort_changed);
+    try std.testing.expectEqual(@as(?u8, 1), ctx.tree.node(table).?.kind.table.sorted_column);
+    try std.testing.expectEqual(widget.WidgetKind.Table.SortDirection.ascending, ctx.tree.node(table).?.kind.table.sort_direction);
 
     ctx.clearClickedFlags();
     try ctx.pushEvent(.{ .mouse_button = .{
@@ -1584,9 +1518,9 @@ test "sortable table headers update retained sort state" {
     } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.runtime.widget(&ctx.tree, table).?.table.sort_changed);
-    try std.testing.expectEqual(@as(?u8, 1), ctx.runtime.widget(&ctx.tree, table).?.table.sorted_column);
-    try std.testing.expectEqual(widget.WidgetKind.Table.SortDirection.descending, ctx.runtime.widget(&ctx.tree, table).?.table.sort_direction);
+    try std.testing.expect(ctx.tree.node(table).?.kind.table.sort_changed);
+    try std.testing.expectEqual(@as(?u8, 1), ctx.tree.node(table).?.kind.table.sorted_column);
+    try std.testing.expectEqual(widget.WidgetKind.Table.SortDirection.descending, ctx.tree.node(table).?.kind.table.sort_direction);
 }
 
 test "tooltip layout updates in the same frame as hover" {

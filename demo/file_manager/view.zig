@@ -156,7 +156,7 @@ fn browserNameTextInsetLeftPx(state: *const State) f32 {
 
 pub fn captureFilePanelViewport(state: *State, ctx: *goop.Context) void {
     const handle = state.file_panel_scroll orelse return;
-    if (!ctx.runtime.isAlive(&ctx.tree, handle)) return;
+    if (!ctx.tree.isAlive(handle)) return;
     const node = ctx.tree.getConst(handle);
     state.file_panel_scroll_y = node.kind.scroll_area.scroll_y;
     state.file_panel_viewport_width = node.layout_rect.w;
@@ -165,7 +165,7 @@ pub fn captureFilePanelViewport(state: *State, ctx: *goop.Context) void {
 
 pub fn captureSidebarScroll(state: *State, ctx: *goop.Context) void {
     const handle = state.sidebar_scroll orelse return;
-    if (!ctx.runtime.isAlive(&ctx.tree, handle)) return;
+    if (!ctx.tree.isAlive(handle)) return;
     const node = ctx.tree.getConst(handle);
     if (node.kind != .scroll_area) return;
     state.sidebar_scroll_x = node.kind.scroll_area.scroll_x;
@@ -627,7 +627,7 @@ pub fn buildListAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop
         const row = try ctx.tree.addChild(state.asset_table_body.?, .{ .table_row = .{
             .selected = isPathSelected(state, entry.path),
         } });
-        ctx.runtime.setUserId(&ctx.tree, row, widgetUserId(.asset_entry, entry_index));
+        ctx.tree.setUserId(row, widgetUserId(.asset_entry, entry_index));
         _ = ctx.runtime.setStyle(&ctx.tree, row, .{
             .border_width = browserTableDividerWidthPx(state),
         });
@@ -709,7 +709,7 @@ pub fn buildGridAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop
             .label = try allocAssetUiEllipsizedUtf8Lossy(state, entry.name, uiPx(state, 104), ctx.theme.font_size),
             .selected = isPathSelected(state, entry.path),
         } });
-        ctx.runtime.setUserId(&ctx.tree, item, widgetUserId(.asset_entry, entry_index));
+        ctx.tree.setUserId(item, widgetUserId(.asset_entry, entry_index));
         _ = ctx.runtime.setCustomDraw(&ctx.tree, item, true);
         _ = ctx.runtime.setStyle(&ctx.tree, item, .{
             .bg = if (entry.isDirectory())
@@ -786,7 +786,7 @@ pub fn rebuildAssetView(state: *State) !void {
 pub fn refreshAssetViewportIfNeeded(state: *State) !bool {
     const ctx = state.ctx orelse return false;
     const scroll_handle = state.file_panel_scroll orelse return false;
-    if (!ctx.runtime.isAlive(&ctx.tree, scroll_handle)) return false;
+    if (!ctx.tree.isAlive(scroll_handle)) return false;
 
     const previous_scroll_y = state.file_panel_scroll_y;
     const previous_viewport_height = state.file_panel_viewport_height;
@@ -807,7 +807,7 @@ pub fn refreshAssetViewportIfNeeded(state: *State) !bool {
 
     switch (state.view_mode) {
         .list => {
-            const asset_alive = if (state.asset_table_body) |body| ctx.runtime.isAlive(&ctx.tree, body) else false;
+            const asset_alive = if (state.asset_table_body) |body| ctx.tree.isAlive(body) else false;
             const window = browserListWindow(state, viewport_height);
             const viewport_height_changed = @abs(previous_viewport_height - viewport_height) > 0.01;
             const scroll_clamped = @abs(current_scroll_y - window.scroll_y) > 0.01;
@@ -838,7 +838,7 @@ pub fn refreshAssetViewportIfNeeded(state: *State) !bool {
             return scroll_clamped;
         },
         .grid => {
-            const asset_alive = if (state.asset_view_root) |root| ctx.runtime.isAlive(&ctx.tree, root) else false;
+            const asset_alive = if (state.asset_view_root) |root| ctx.tree.isAlive(root) else false;
             const window = browserGridWindow(state, viewport_width, viewport_height);
             const viewport_height_changed = @abs(previous_viewport_height - viewport_height) > 0.01;
             const scroll_clamped = @abs(current_scroll_y - window.scroll_y) > 0.01;
@@ -1047,7 +1047,7 @@ pub fn debugWidgetKindName(kind: goop.widget.WidgetKind) []const u8 {
 pub fn entryNameTextRect(state: *const State, ctx: *const goop.Context, visible_index: usize, entry: BrowserEntry) ?goop.draw.Rect {
     if (visible_index >= state.name_cell_handles.items.len) return null;
     const cell = state.name_cell_handles.items[visible_index];
-    if (!ctx.runtime.isAlive(&ctx.tree, cell)) return null;
+    if (!ctx.tree.isAlive(cell)) return null;
 
     const node = ctx.tree.getConst(cell);
     const resolved = node.style_override.resolve(ctx.theme);
@@ -1074,11 +1074,11 @@ pub fn pointHitsEntryNameText(state: *const State, ctx: *const goop.Context, vis
 
 pub fn pointHitsVisibleAssetItem(state: *const State, ctx: *const goop.Context, x: f32, y: f32) bool {
     for (state.row_handles.items) |handle| {
-        if (!ctx.runtime.isAlive(&ctx.tree, handle)) continue;
+        if (!ctx.tree.isAlive(handle)) continue;
         if (pointInRect(x, y, ctx.tree.getConst(handle).layout_rect)) return true;
     }
     for (state.grid_handles.items) |handle| {
-        if (!ctx.runtime.isAlive(&ctx.tree, handle)) continue;
+        if (!ctx.tree.isAlive(handle)) continue;
         if (pointInRect(x, y, ctx.tree.getConst(handle).layout_rect)) return true;
     }
     return false;
@@ -1086,7 +1086,7 @@ pub fn pointHitsVisibleAssetItem(state: *const State, ctx: *const goop.Context, 
 
 pub fn pointInFilePanelBlankSpace(state: *const State, ctx: *const goop.Context, x: f32, y: f32) bool {
     const scroll_handle = state.file_panel_scroll orelse return false;
-    if (!ctx.runtime.isAlive(&ctx.tree, scroll_handle)) return false;
+    if (!ctx.tree.isAlive(scroll_handle)) return false;
     const rect = ctx.tree.getConst(scroll_handle).layout_rect;
     if (!pointInRect(x, y, rect)) return false;
 
@@ -1099,7 +1099,7 @@ pub fn pointInFilePanelBlankSpace(state: *const State, ctx: *const goop.Context,
 pub fn collectRowCellWidths(ctx: *const goop.Context, row_handle: ?goop.NodeHandle) [4]f32 {
     var widths: [4]f32 = .{ -1, -1, -1, -1 };
     const row = row_handle orelse return widths;
-    if (!ctx.runtime.isAlive(&ctx.tree, row)) return widths;
+    if (!ctx.tree.isAlive(row)) return widths;
 
     var cell_index: usize = 0;
     var iter = ctx.tree.children(row);
@@ -1125,7 +1125,7 @@ pub fn debugLogFilePanelLayout(state: *State) void {
     const ctx = state.ctx orelse return;
     const root_handle = state.ui_root orelse return;
     const scroll_handle = state.file_panel_scroll orelse return;
-    if (!ctx.runtime.isAlive(&ctx.tree, root_handle) or !ctx.runtime.isAlive(&ctx.tree, scroll_handle)) return;
+    if (!ctx.tree.isAlive(root_handle) or !ctx.tree.isAlive(scroll_handle)) return;
 
     const root_rect = ctx.tree.getConst(root_handle).layout_rect;
     const scroll_node = ctx.tree.getConst(scroll_handle);
@@ -1139,12 +1139,12 @@ pub fn debugLogFilePanelLayout(state: *State) void {
         .list => state.asset_table_body,
         .grid => state.asset_view_root,
     };
-    const body_alive = if (body_handle) |handle| ctx.runtime.isAlive(&ctx.tree, handle) else false;
+    const body_alive = if (body_handle) |handle| ctx.tree.isAlive(handle) else false;
     const body_y = if (body_alive) ctx.tree.getConst(body_handle.?).layout_rect.y else -1.0;
     const body_h = if (body_alive) ctx.tree.getConst(body_handle.?).layout_rect.h else -1.0;
     const first_row_alive = switch (state.view_mode) {
-        .list => state.row_handles.items.len > 0 and ctx.runtime.isAlive(&ctx.tree, state.row_handles.items[0]),
-        .grid => state.grid_handles.items.len > 0 and ctx.runtime.isAlive(&ctx.tree, state.grid_handles.items[0]),
+        .list => state.row_handles.items.len > 0 and ctx.tree.isAlive(state.row_handles.items[0]),
+        .grid => state.grid_handles.items.len > 0 and ctx.tree.isAlive(state.grid_handles.items[0]),
     };
     const first_row_y = switch (state.view_mode) {
         .list => if (first_row_alive) ctx.tree.getConst(state.row_handles.items[0]).layout_rect.y else -1.0,
@@ -1183,8 +1183,8 @@ pub fn debugLogFilePanelLayout(state: *State) void {
     if (state.layout_debug_enabled and state.view_mode == .list) {
         const header_table_handle = state.asset_table;
         const body_table_handle = state.asset_table_body;
-        const header_alive = if (header_table_handle) |handle| ctx.runtime.isAlive(&ctx.tree, handle) else false;
-        const body_table_alive = if (body_table_handle) |handle| ctx.runtime.isAlive(&ctx.tree, handle) else false;
+        const header_alive = if (header_table_handle) |handle| ctx.tree.isAlive(handle) else false;
+        const body_table_alive = if (body_table_handle) |handle| ctx.tree.isAlive(handle) else false;
         const header_rect = if (header_alive) ctx.tree.getConst(header_table_handle.?).layout_rect else goop.draw.Rect{ .x = -1, .y = -1, .w = -1, .h = -1 };
         const body_rect = if (body_table_alive) ctx.tree.getConst(body_table_handle.?).layout_rect else goop.draw.Rect{ .x = -1, .y = -1, .w = -1, .h = -1 };
         const header_row = if (header_alive) goop.widget.tableHeaderRow(&ctx.tree, header_table_handle.?) else null;
@@ -1336,8 +1336,8 @@ pub fn addFolderTreeItem(
         .selected = selected,
     } });
     _ = ctx.runtime.setStyle(&ctx.tree, handle, fileManagerFolderTreeItemStyle(state));
-    ctx.runtime.setDropTarget(&ctx.tree, handle, true);
-    ctx.runtime.setUserId(&ctx.tree, handle, widgetUserId(.folder_tree, state.folder_tree_paths.items.len));
+    ctx.tree.setDropTarget(handle, true);
+    ctx.tree.setUserId(handle, widgetUserId(.folder_tree, state.folder_tree_paths.items.len));
     try state.folder_tree_handles.append(allocator, handle);
     try state.folder_tree_paths.append(allocator, try allocator.dupe(u8, path));
     return handle;
@@ -1407,10 +1407,10 @@ pub fn buildWidgetTree(state: *State) !void {
     captureFilePanelViewport(state, ctx);
     captureSidebarScroll(state, ctx);
     if (state.ui_root) |root| {
-        if (ctx.runtime.isAlive(&ctx.tree, root)) try ctx.tree.remove(root);
+        if (ctx.tree.isAlive(root)) try ctx.tree.remove(root);
     }
     if (state.context_popup) |popup| {
-        if (ctx.runtime.isAlive(&ctx.tree, popup)) try ctx.tree.remove(popup);
+        if (ctx.tree.isAlive(popup)) try ctx.tree.remove(popup);
     }
     clearUiTracking(state);
 
@@ -1508,8 +1508,8 @@ pub fn buildWidgetTree(state: *State) !void {
     state.btn_back = try addToolbarCommandButton(state, ctx, toolbar, "Back", .back);
     state.btn_forward = try addToolbarCommandButton(state, ctx, toolbar, "Forward", .forward);
     state.btn_up = try addToolbarCommandButton(state, ctx, toolbar, "Up", .up);
-    ctx.runtime.setUserId(&ctx.tree, state.btn_up.?, widgetUserId(.toolbar_up, 0));
-    if (browserCommandEnabled(state, .up)) ctx.runtime.setDropTarget(&ctx.tree, state.btn_up.?, true);
+    ctx.tree.setUserId(state.btn_up.?, widgetUserId(.toolbar_up, 0));
+    if (browserCommandEnabled(state, .up)) ctx.tree.setDropTarget(state.btn_up.?, true);
     state.btn_home = try addToolbarCommandButton(state, ctx, toolbar, "Home", .home);
     state.btn_refresh = try addToolbarCommandButton(state, ctx, toolbar, "Refresh", .refresh);
     _ = try ctx.tree.addChild(toolbar, .{ .spacer = .{ .width = uiPx(state, 6) } });
@@ -1574,8 +1574,8 @@ pub fn buildWidgetTree(state: *State) !void {
                 .selected = std.mem.eql(u8, place.path, state.current_dir),
             } });
             _ = ctx.runtime.setStyle(&ctx.tree, handle, fileManagerPlaceItemStyle(state));
-            ctx.runtime.setDropTarget(&ctx.tree, handle, true);
-            ctx.runtime.setUserId(&ctx.tree, handle, widgetUserId(.place, place_index));
+            ctx.tree.setDropTarget(handle, true);
+            ctx.tree.setUserId(handle, widgetUserId(.place, place_index));
             try state.place_handles.append(allocator, handle);
         }
 
@@ -1637,8 +1637,8 @@ pub fn buildWidgetTree(state: *State) !void {
     _ = ctx.runtime.setStyle(&ctx.tree, breadcrumb_bar, fileManagerPaneHeaderStyle(state));
     const root_button = try ctx.tree.addChild(breadcrumb_bar, .{ .button = .{ .label = "/" } });
     _ = ctx.runtime.setStyle(&ctx.tree, root_button, fileManagerToolbarButtonStyle(state, false, true));
-    ctx.runtime.setDropTarget(&ctx.tree, root_button, true);
-    ctx.runtime.setUserId(&ctx.tree, root_button, widgetUserId(.breadcrumb, state.breadcrumb_paths.items.len));
+    ctx.tree.setDropTarget(root_button, true);
+    ctx.tree.setUserId(root_button, widgetUserId(.breadcrumb, state.breadcrumb_paths.items.len));
     try state.breadcrumb_handles.append(allocator, root_button);
     try state.breadcrumb_paths.append(allocator, try allocator.dupe(u8, "/"));
     if (!std.mem.eql(u8, state.current_dir, "/")) {
@@ -1649,8 +1649,8 @@ pub fn buildWidgetTree(state: *State) !void {
             const segment = state.current_dir[start..end];
             const handle = try ctx.tree.addChild(breadcrumb_bar, .{ .button = .{ .label = try allocUiUtf8Lossy(state, segment) } });
             _ = ctx.runtime.setStyle(&ctx.tree, handle, fileManagerToolbarButtonStyle(state, false, true));
-            ctx.runtime.setDropTarget(&ctx.tree, handle, true);
-            ctx.runtime.setUserId(&ctx.tree, handle, widgetUserId(.breadcrumb, state.breadcrumb_paths.items.len));
+            ctx.tree.setDropTarget(handle, true);
+            ctx.tree.setUserId(handle, widgetUserId(.breadcrumb, state.breadcrumb_paths.items.len));
             try state.breadcrumb_handles.append(allocator, handle);
             try state.breadcrumb_paths.append(allocator, try allocator.dupe(u8, state.current_dir[0..end]));
             start = end + 1;

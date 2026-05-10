@@ -28,8 +28,8 @@ fn countSelectedSelectables(ctx: *const goop.Context, parent: goop.NodeHandle) u
     var count: u16 = 0;
     var iter = ctx.tree.children(parent);
     while (iter.next()) |child| {
-        const v = ctx.runtime.widget(&ctx.tree, child) orelse continue;
-        if (v == .selectable and v.selectable.selected) count += 1;
+        const v = ctx.tree.node(child) orelse continue;
+        if (v.kind == .selectable and v.kind.selectable.selected) count += 1;
     }
     return count;
 }
@@ -38,8 +38,8 @@ fn countSelectedGridItems(ctx: *const goop.Context, parent: goop.NodeHandle) u16
     var count: u16 = 0;
     var iter = ctx.tree.children(parent);
     while (iter.next()) |child| {
-        const v = ctx.runtime.widget(&ctx.tree, child) orelse continue;
-        if (v == .grid_item and v.grid_item.selected) count += 1;
+        const v = ctx.tree.node(child) orelse continue;
+        if (v.kind == .grid_item and v.kind.grid_item.selected) count += 1;
     }
     return count;
 }
@@ -48,8 +48,8 @@ fn countSelectedDataRows(ctx: *const goop.Context, parent: goop.NodeHandle) u16 
     var count: u16 = 0;
     var iter = ctx.tree.children(parent);
     while (iter.next()) |child| {
-        const v = ctx.runtime.widget(&ctx.tree, child) orelse continue;
-        if (v == .table_row and !v.table_row.header and v.table_row.selected) count += 1;
+        const v = ctx.tree.node(child) orelse continue;
+        if (v.kind == .table_row and !v.kind.table_row.header and v.kind.table_row.selected) count += 1;
     }
     return count;
 }
@@ -58,9 +58,9 @@ fn firstSelectedDataRowIndex(ctx: *const goop.Context, parent: goop.NodeHandle) 
     var index: u16 = 0;
     var iter = ctx.tree.children(parent);
     while (iter.next()) |child| {
-        const v = ctx.runtime.widget(&ctx.tree, child) orelse continue;
-        if (v != .table_row or v.table_row.header) continue;
-        if (v.table_row.selected) return index;
+        const v = ctx.tree.node(child) orelse continue;
+        if (v.kind != .table_row or v.kind.table_row.header) continue;
+        if (v.kind.table_row.selected) return index;
         index += 1;
     }
     return null;
@@ -1540,40 +1540,40 @@ pub fn main(init: std.process.Init) !void {
         }
 
         // Check clicks
-        if (state.btn_a) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.btn_a) |h| if (ctx.tree.node(h).?.clicked) {
             state.click_count += 1;
             std.debug.print("Toolbar action: Translate (total: {})\n", .{state.click_count});
         };
-        if (state.btn_b) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.btn_b) |h| if (ctx.tree.node(h).?.clicked) {
             state.click_count += 1;
             std.debug.print("Toolbar action: Rotate (total: {})\n", .{state.click_count});
         };
-        if (state.btn_c) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.btn_c) |h| if (ctx.tree.node(h).?.clicked) {
             state.click_count += 1;
             std.debug.print("Toolbar action: Scale (total: {})\n", .{state.click_count});
         };
 
         // Log checkbox state changes (checkbox toggles itself on click)
-        if (state.checkbox) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
-            std.debug.print("Checkbox toggled: {}\n", .{ctx.runtime.widget(&ctx.tree, h).?.checkbox.checked});
+        if (state.checkbox) |h| if (ctx.tree.node(h).?.clicked) {
+            std.debug.print("Checkbox toggled: {}\n", .{ctx.tree.node(h).?.kind.checkbox.checked});
         };
 
         // Log radio button selection
-        if (state.radio_a) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Radio: Option A selected\n", .{});
-        if (state.radio_b) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Radio: Option B selected\n", .{});
-        if (state.radio_c) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Radio: Option C selected\n", .{});
+        if (state.radio_a) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Radio: Option A selected\n", .{});
+        if (state.radio_b) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Radio: Option B selected\n", .{});
+        if (state.radio_c) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Radio: Option C selected\n", .{});
         if (state.tree_parent) |h| {
-            if (ctx.runtime.widget(&ctx.tree, h).?.tree_item.toggled) std.debug.print("Outline root expanded: {}\n", .{ctx.runtime.widget(&ctx.tree, h).?.tree_item.expanded});
-            if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Outline selected: Scene\n", .{});
-            if (ctx.runtime.widget(&ctx.tree, h).?.tree_item.rename_committed) std.debug.print("Outline renamed: {s}\n", .{ctx.runtime.widget(&ctx.tree, h).?.tree_item.label});
+            if (ctx.tree.node(h).?.toggled) std.debug.print("Outline root expanded: {}\n", .{ctx.tree.node(h).?.kind.tree_item.expanded});
+            if (ctx.tree.node(h).?.clicked) std.debug.print("Outline selected: Scene\n", .{});
+            if (ctx.tree.node(h).?.kind.tree_item.rename_committed) std.debug.print("Outline renamed: {s}\n", .{ctx.tree.node(h).?.kind.tree_item.label});
         }
         if (state.tree_child_a) |h| {
-            if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Outline selected: Camera\n", .{});
-            if (ctx.runtime.widget(&ctx.tree, h).?.tree_item.rename_committed) std.debug.print("Outline renamed: {s}\n", .{ctx.runtime.widget(&ctx.tree, h).?.tree_item.label});
+            if (ctx.tree.node(h).?.clicked) std.debug.print("Outline selected: Camera\n", .{});
+            if (ctx.tree.node(h).?.kind.tree_item.rename_committed) std.debug.print("Outline renamed: {s}\n", .{ctx.tree.node(h).?.kind.tree_item.label});
         }
         if (state.tree_child_b) |h| {
-            if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Outline selected: Directional Light\n", .{});
-            if (ctx.runtime.widget(&ctx.tree, h).?.tree_item.rename_committed) std.debug.print("Outline renamed: {s}\n", .{ctx.runtime.widget(&ctx.tree, h).?.tree_item.label});
+            if (ctx.tree.node(h).?.clicked) std.debug.print("Outline selected: Directional Light\n", .{});
+            if (ctx.tree.node(h).?.kind.tree_item.rename_committed) std.debug.print("Outline renamed: {s}\n", .{ctx.tree.node(h).?.kind.tree_item.label});
         }
         if (ctx.runtime.lastDrop()) |last| switch (last) {
             .tree => |drop| {
@@ -1583,8 +1583,8 @@ pub fn main(init: std.process.Init) !void {
                     .after => "after",
                 };
                 std.debug.print("Outline drop: {s} -> {s} ({s})\n", .{
-                    ctx.runtime.widget(&ctx.tree, drop.source).?.tree_item.label,
-                    ctx.runtime.widget(&ctx.tree, drop.target).?.tree_item.label,
+                    ctx.tree.node(drop.source).?.kind.tree_item.label,
+                    ctx.tree.node(drop.target).?.kind.tree_item.label,
                     position_name,
                 });
             },
@@ -1599,76 +1599,76 @@ pub fn main(init: std.process.Init) !void {
             },
             else => {},
         };
-        if (state.list_box) |h| if (ctx.runtime.widget(&ctx.tree, h).?.list_box.changed) {
+        if (state.list_box) |h| if (ctx.tree.node(h).?.changed) {
             std.debug.print("List box selection count: {}\n", .{countSelectedSelectables(&ctx, h)});
         };
-        if (state.selectable_scene) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("List row selected: Scene Collection\n", .{});
-        if (state.selectable_camera) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("List row selected: Camera Rig\n", .{});
-        if (state.selectable_light) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("List row selected: Lighting Set\n", .{});
-        if (state.grid_selector) |h| if (ctx.runtime.widget(&ctx.tree, h).?.grid_selector.changed) {
+        if (state.selectable_scene) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("List row selected: Scene Collection\n", .{});
+        if (state.selectable_camera) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("List row selected: Camera Rig\n", .{});
+        if (state.selectable_light) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("List row selected: Lighting Set\n", .{});
+        if (state.grid_selector) |h| if (ctx.tree.node(h).?.changed) {
             std.debug.print("Grid selection count: {}\n", .{countSelectedGridItems(&ctx, h)});
         };
-        if (state.grid_item_a) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Grid tile selected: Brick\n", .{});
-        if (state.grid_item_b) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Grid tile selected: Metal\n", .{});
-        if (state.grid_item_c) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Grid tile selected: Leaves\n", .{});
-        if (state.grid_item_d) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Grid tile selected: UI Icons\n", .{});
-        if (state.asset_table) |h| if (ctx.runtime.widget(&ctx.tree, h).?.table.changed) {
+        if (state.grid_item_a) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Grid tile selected: Brick\n", .{});
+        if (state.grid_item_b) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Grid tile selected: Metal\n", .{});
+        if (state.grid_item_c) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Grid tile selected: Leaves\n", .{});
+        if (state.grid_item_d) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Grid tile selected: UI Icons\n", .{});
+        if (state.asset_table) |h| if (ctx.tree.node(h).?.changed) {
             std.debug.print("Asset table divider {} resized: [{d:.2}, {d:.2}, {d:.2}]\n", .{
-                ctx.runtime.widget(&ctx.tree, h).?.table.resized_column.?,
-                ctx.runtime.tableColumnFraction(&ctx.tree, h, 0).?,
-                ctx.runtime.tableColumnFraction(&ctx.tree, h, 1).?,
-                ctx.runtime.tableColumnFraction(&ctx.tree, h, 2).?,
+                ctx.tree.node(h).?.kind.table.resized_column.?,
+                ctx.tree.tableColumnFraction(h, 0).?,
+                ctx.tree.tableColumnFraction(h, 1).?,
+                ctx.tree.tableColumnFraction(h, 2).?,
             });
         };
-        if (state.asset_table) |h| if (ctx.runtime.widget(&ctx.tree, h).?.table.sort_changed) {
-            const column_name = switch (ctx.runtime.widget(&ctx.tree, h).?.table.sorted_column.?) {
+        if (state.asset_table) |h| if (ctx.tree.node(h).?.kind.table.sort_changed) {
+            const column_name = switch (ctx.tree.node(h).?.kind.table.sorted_column.?) {
                 0 => "Name",
                 1 => "Type",
                 2 => "Visible",
                 else => "Unknown",
             };
-            const direction_name = switch (ctx.runtime.widget(&ctx.tree, h).?.table.sort_direction) {
+            const direction_name = switch (ctx.tree.node(h).?.kind.table.sort_direction) {
                 .ascending => "ascending",
                 .descending => "descending",
             };
             std.debug.print("Asset table sort: {s} {s}\n", .{ column_name, direction_name });
         };
-        if (state.asset_table) |h| if (ctx.runtime.widget(&ctx.tree, h).?.table.selection_changed) {
+        if (state.asset_table) |h| if (ctx.tree.node(h).?.kind.table.selection_changed) {
             std.debug.print("Asset table selection count: {}, first row: {?}\n", .{
                 countSelectedDataRows(&ctx, h),
                 firstSelectedDataRowIndex(&ctx, h),
             });
         };
-        if (state.asset_row_a) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Asset row clicked: SceneRoot\n", .{});
-        if (state.asset_row_b) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Asset row clicked: CameraRig\n", .{});
-        if (state.asset_row_c) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Asset row clicked: KeyLight\n", .{});
-        if (state.dropdown) |h| if (ctx.runtime.widget(&ctx.tree, h).?.dropdown.changed) {
-            std.debug.print("Dropdown selected: {s}\n", .{ctx.runtime.widget(&ctx.tree, h).?.dropdown.selected_text});
+        if (state.asset_row_a) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Asset row clicked: SceneRoot\n", .{});
+        if (state.asset_row_b) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Asset row clicked: CameraRig\n", .{});
+        if (state.asset_row_c) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Asset row clicked: KeyLight\n", .{});
+        if (state.dropdown) |h| if (ctx.tree.node(h).?.changed) {
+            std.debug.print("Dropdown selected: {s}\n", .{ctx.tree.node(h).?.kind.dropdown.selected_text});
         };
-        if (state.menu_file) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Menu toggled: File\n", .{});
-        if (state.menu_edit) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Menu toggled: Edit\n", .{});
-        if (state.menu_recent_a) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Recent file: shot_v014.blend\n", .{});
-        if (state.menu_recent_b) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Recent file: layout_blockout.blend\n", .{});
-        if (state.menu_quit) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Menu action: Quit\n", .{});
-        if (state.menu_copy) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Menu action: Copy\n", .{});
-        if (state.menu_paste) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Menu action: Paste\n", .{});
-        if (state.drag_value) |h| if (ctx.runtime.widget(&ctx.tree, h).?.drag_value.changed) {
-            std.debug.print("Exposure changed: {d:.2}\n", .{ctx.runtime.widget(&ctx.tree, h).?.drag_value.value});
+        if (state.menu_file) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Menu toggled: File\n", .{});
+        if (state.menu_edit) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Menu toggled: Edit\n", .{});
+        if (state.menu_recent_a) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Recent file: shot_v014.blend\n", .{});
+        if (state.menu_recent_b) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Recent file: layout_blockout.blend\n", .{});
+        if (state.menu_quit) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Menu action: Quit\n", .{});
+        if (state.menu_copy) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Menu action: Copy\n", .{});
+        if (state.menu_paste) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Menu action: Paste\n", .{});
+        if (state.drag_value) |h| if (ctx.tree.node(h).?.changed) {
+            std.debug.print("Exposure changed: {d:.2}\n", .{ctx.tree.node(h).?.kind.drag_value.value});
         };
-        if (state.spinbox) |h| if (ctx.runtime.widget(&ctx.tree, h).?.spinbox.changed) {
-            std.debug.print("Samples changed: {d:.0}\n", .{ctx.runtime.widget(&ctx.tree, h).?.spinbox.value});
+        if (state.spinbox) |h| if (ctx.tree.node(h).?.changed) {
+            std.debug.print("Samples changed: {d:.0}\n", .{ctx.tree.node(h).?.kind.spinbox.value});
         };
-        if (state.tab_scene) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.tab_scene) |h| if (ctx.tree.node(h).?.clicked) {
             std.debug.print("Tab selected: Scene\n", .{});
         };
-        if (state.tab_render) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.tab_render) |h| if (ctx.tree.node(h).?.clicked) {
             std.debug.print("Tab selected: Render\n", .{});
         };
-        if (state.splitter) |h| if (ctx.runtime.widget(&ctx.tree, h).?.splitter.changed) {
-            std.debug.print("Splitter ratio: {d:.2}\n", .{ctx.runtime.widget(&ctx.tree, h).?.splitter.ratio});
+        if (state.splitter) |h| if (ctx.tree.node(h).?.changed) {
+            std.debug.print("Splitter ratio: {d:.2}\n", .{ctx.tree.node(h).?.kind.splitter.ratio});
         };
-        if (state.context_action_a) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Context action: Rename\n", .{});
-        if (state.context_action_b) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) std.debug.print("Context action: Delete\n", .{});
+        if (state.context_action_a) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Context action: Rename\n", .{});
+        if (state.context_action_b) |h| if (ctx.tree.node(h).?.clicked) std.debug.print("Context action: Delete\n", .{});
 
         // Render
         var paint_list = try ctx.generatePaintList();

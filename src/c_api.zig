@@ -1049,21 +1049,21 @@ fn optionalU8(value: ?u8) COptionalU8 {
     return if (value) |v| .{ .has_value = true, .value = v } else .{};
 }
 
-fn widgetViewToC(view: api.WidgetView) CWidgetView {
-    return switch (view) {
+fn widgetViewToC(node: api.NodeView) CWidgetView {
+    return switch (node.kind) {
         .container => |v| .{ .kind = .container, .data = .{ .container = .{ .direction = directionToC(v.direction) } } },
         .text => |v| .{ .kind = .text, .data = .{ .text = .{ .content = toCStr(v.content) } } },
-        .button => |v| .{ .kind = .button, .data = .{ .button = .{ .label = toCStr(v.label), .clicked = v.clicked } } },
+        .button => |v| .{ .kind = .button, .data = .{ .button = .{ .label = toCStr(v.label), .clicked = node.clicked } } },
         .checkbox => |v| .{ .kind = .checkbox, .data = .{ .checkbox = .{
             .label = toCStr(v.label),
             .checked = v.checked,
-            .clicked = v.clicked,
+            .clicked = node.clicked,
         } } },
         .radio_button => |v| .{ .kind = .radio_button, .data = .{ .radio_button = .{
             .label = toCStr(v.label),
             .group = v.group,
             .selected = v.selected,
-            .clicked = v.clicked,
+            .clicked = node.clicked,
         } } },
         .tree_item => |v| .{ .kind = .tree_item, .data = .{ .tree_item = .{
             .label = toCStr(v.label),
@@ -1072,10 +1072,10 @@ fn widgetViewToC(view: api.WidgetView) CWidgetView {
             .expanded = v.expanded,
             .selected = v.selected,
             .editing = v.editing,
-            .clicked = v.clicked,
-            .toggled = v.toggled,
+            .clicked = node.clicked,
+            .toggled = node.toggled,
             .dragging = v.dragging,
-            .drop_received = v.drop_received,
+            .drop_received = node.drop_received,
             .rename_committed = v.rename_committed,
         } } },
         .dropdown => |v| .{ .kind = .dropdown, .data = .{ .dropdown = .{
@@ -1083,30 +1083,30 @@ fn widgetViewToC(view: api.WidgetView) CWidgetView {
             .selected_text = toCStr(v.selected_text),
             .selected_index = optionalU16(v.selected_index),
             .open = v.open,
-            .clicked = v.clicked,
-            .changed = v.changed,
+            .clicked = node.clicked,
+            .changed = node.changed,
         } } },
-        .list_box => |v| .{ .kind = .list_box, .data = .{ .list_box = .{ .changed = v.changed } } },
+        .list_box => .{ .kind = .list_box, .data = .{ .list_box = .{ .changed = node.changed } } },
         .selectable => |v| .{ .kind = .selectable, .data = .{ .selectable = .{
             .label = toCStr(v.label),
             .group = v.group,
             .selected = v.selected,
-            .clicked = v.clicked,
+            .clicked = node.clicked,
             .dragging = v.dragging,
         } } },
         .grid_selector => |v| .{ .kind = .grid_selector, .data = .{ .grid_selector = .{
-            .changed = v.changed,
+            .changed = node.changed,
             .computed_columns = v.computed_columns,
         } } },
         .grid_item => |v| .{ .kind = .grid_item, .data = .{ .grid_item = .{
             .label = toCStr(v.label),
             .selected = v.selected,
-            .clicked = v.clicked,
+            .clicked = node.clicked,
             .dragging = v.dragging,
         } } },
         .table => |v| .{ .kind = .table, .data = .{ .table = .{
             .active_columns = v.active_columns,
-            .changed = v.changed,
+            .changed = node.changed,
             .resized_column = optionalU8(v.resized_column),
             .sorted_column = optionalU8(v.sorted_column),
             .sort_direction = sortDirectionToC(v.sort_direction),
@@ -1122,7 +1122,7 @@ fn widgetViewToC(view: api.WidgetView) CWidgetView {
         .toolbar => .{ .kind = .toolbar, .data = .{ .toolbar = .{} } },
         .status_bar => .{ .kind = .status_bar, .data = .{ .status_bar = .{} } },
         .menu_bar => .{ .kind = .menu_bar, .data = .{ .menu_bar = .{} } },
-        .menu => |v| .{ .kind = .menu, .data = .{ .menu = .{ .label = toCStr(v.label), .clicked = v.clicked } } },
+        .menu => |v| .{ .kind = .menu, .data = .{ .menu = .{ .label = toCStr(v.label), .clicked = node.clicked } } },
         .popup => |v| .{ .kind = .popup, .data = .{ .popup = .{
             .placement = placementToC(v.placement),
             .x = v.x,
@@ -1141,17 +1141,17 @@ fn widgetViewToC(view: api.WidgetView) CWidgetView {
             .shortcut = toCStr(v.shortcut),
             .checked = v.checked,
             .disabled = v.disabled,
-            .clicked = v.clicked,
+            .clicked = node.clicked,
         } } },
         .drag_value => |v| .{ .kind = .drag_value, .data = .{ .drag_value = .{
             .value = v.value,
-            .changed = v.changed,
+            .changed = node.changed,
             .editing = v.editing,
             .display_text = toCStr(v.display_text),
         } } },
         .spinbox => |v| .{ .kind = .spinbox, .data = .{ .spinbox = .{
             .value = v.value,
-            .changed = v.changed,
+            .changed = node.changed,
             .editing = v.editing,
             .display_text = toCStr(v.display_text),
         } } },
@@ -1159,9 +1159,9 @@ fn widgetViewToC(view: api.WidgetView) CWidgetView {
         .tab_item => |v| .{ .kind = .tab_item, .data = .{ .tab_item = .{
             .label = toCStr(v.label),
             .selected = v.selected,
-            .clicked = v.clicked,
+            .clicked = node.clicked,
         } } },
-        .splitter => |v| .{ .kind = .splitter, .data = .{ .splitter = .{ .ratio = v.ratio, .changed = v.changed } } },
+        .splitter => |v| .{ .kind = .splitter, .data = .{ .splitter = .{ .ratio = v.ratio, .changed = node.changed } } },
         .slider => |v| .{ .kind = .slider, .data = .{ .slider = .{ .value = v.value } } },
         .spacer => .{ .kind = .spacer, .data = .{ .spacer = .{} } },
         .scroll_area => |v| .{ .kind = .scroll_area, .data = .{ .scroll_area = .{
@@ -1580,7 +1580,7 @@ fn markDirty(ctx: *CContext) void {
 }
 
 fn validHandle(ctx: *const CContext, handle: CHandle) bool {
-    return ctx.ctx.runtime.isAlive(&ctx.ctx.tree, handleFromC(handle));
+    return ctx.ctx.tree.isAlive(handleFromC(handle));
 }
 
 fn convertDrawCommand(cmd: draw.DrawCommand) CDrawCommand {
@@ -1846,41 +1846,41 @@ export fn goop_context_remove_widget(ctx: ?*CContext, handle: CHandle) bool {
 
 export fn goop_context_is_alive(ctx: ?*const CContext, handle: CHandle) bool {
     const context = ctx orelse return false;
-    return context.ctx.runtime.isAlive(&context.ctx.tree, handleFromC(handle));
+    return context.ctx.tree.isAlive(handleFromC(handle));
 }
 
 export fn goop_context_layout_rect(ctx: ?*const CContext, handle: CHandle, out_rect: ?*CRect) bool {
     const context = ctx orelse return false;
     const rect = out_rect orelse return false;
-    if (!validHandle(context, handle)) return false;
-    rect.* = rectToC(context.ctx.tree.getConst(handleFromC(handle)).layout_rect);
+    const node = context.ctx.tree.node(handleFromC(handle)) orelse return false;
+    rect.* = rectToC(node.rect);
     return true;
 }
 
 export fn goop_context_was_clicked(ctx: ?*const CContext, handle: CHandle) bool {
     const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.runtime.wasClicked(&context.ctx.tree, handleFromC(handle));
+    const node = context.ctx.tree.node(handleFromC(handle)) orelse return false;
+    return node.clicked;
 }
 
 export fn goop_context_was_secondary_clicked(ctx: ?*const CContext, handle: CHandle) bool {
     const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.runtime.wasSecondaryClicked(&context.ctx.tree, handleFromC(handle));
+    const node = context.ctx.tree.node(handleFromC(handle)) orelse return false;
+    return node.secondary_clicked;
 }
 
 export fn goop_context_widget(ctx: ?*const CContext, handle: CHandle, out_view: ?*CWidgetView) bool {
     const context = ctx orelse return false;
     const view_ptr = out_view orelse return false;
-    const view = context.ctx.runtime.widget(&context.ctx.tree, handleFromC(handle)) orelse return false;
-    view_ptr.* = widgetViewToC(view);
+    const node = context.ctx.tree.node(handleFromC(handle)) orelse return false;
+    view_ptr.* = widgetViewToC(node);
     return true;
 }
 
 export fn goop_context_table_column_fraction(ctx: ?*const CContext, handle: CHandle, index: u8, out_fraction: ?*f32) bool {
     const context = ctx orelse return false;
     const fraction_ptr = out_fraction orelse return false;
-    const fraction = context.ctx.runtime.tableColumnFraction(&context.ctx.tree, handleFromC(handle), index) orelse return false;
+    const fraction = context.ctx.tree.tableColumnFraction(handleFromC(handle), index) orelse return false;
     fraction_ptr.* = fraction;
     return true;
 }
@@ -1938,14 +1938,13 @@ export fn goop_context_invalidate(ctx: ?*CContext) bool {
 export fn goop_context_set_user_id(ctx: ?*CContext, handle: CHandle, user_id: u64) bool {
     const context = ctx orelse return false;
     if (!validHandle(context, handle)) return false;
-    context.ctx.runtime.setUserId(&context.ctx.tree, handleFromC(handle), user_id);
+    context.ctx.tree.setUserId(handleFromC(handle), user_id);
     return true;
 }
 
 export fn goop_context_user_id(ctx: ?*const CContext, handle: CHandle) u64 {
     const context = ctx orelse return 0;
-    if (!validHandle(context, handle)) return 0;
-    return context.ctx.runtime.userId(&context.ctx.tree, handleFromC(handle));
+    return context.ctx.tree.userId(handleFromC(handle));
 }
 
 export fn goop_context_set_custom_draw(ctx: ?*CContext, handle: CHandle, custom: bool) bool {
@@ -1957,14 +1956,14 @@ export fn goop_context_set_custom_draw(ctx: ?*CContext, handle: CHandle, custom:
 export fn goop_context_set_drop_target(ctx: ?*CContext, handle: CHandle, accepts_drop: bool) bool {
     const context = ctx orelse return false;
     if (!validHandle(context, handle)) return false;
-    context.ctx.runtime.setDropTarget(&context.ctx.tree, handleFromC(handle), accepts_drop);
+    context.ctx.tree.setDropTarget(handleFromC(handle), accepts_drop);
     return true;
 }
 
 export fn goop_context_is_drop_hovered(ctx: ?*const CContext, handle: CHandle) bool {
     const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.runtime.isDropHovered(&context.ctx.tree, handleFromC(handle));
+    const node = context.ctx.tree.node(handleFromC(handle)) orelse return false;
+    return node.drop_hovered;
 }
 
 export fn goop_context_focused_widget(ctx: ?*const CContext, out_handle: ?*CHandle) bool {

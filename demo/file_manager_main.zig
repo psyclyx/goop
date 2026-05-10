@@ -1490,14 +1490,14 @@ pub fn syncAddressInputToCurrentDir(state: *State) void {
 
 fn syncAddressInputFromWidget(state: *State, ctx: *goop.Context) void {
     const handle = state.address_input_handle orelse return;
-    if (!ctx.runtime.isAlive(&ctx.tree, handle)) return;
+    if (!ctx.tree.isAlive(handle)) return;
     if (ctx.tree.getConst(handle).kind != .text_input) return;
     state.address_input = ctx.tree.getConst(handle).kind.text_input;
 }
 
 fn syncRenameInputFromWidget(state: *State, ctx: *goop.Context) void {
     const handle = state.rename_input_handle orelse return;
-    if (!ctx.runtime.isAlive(&ctx.tree, handle)) return;
+    if (!ctx.tree.isAlive(handle)) return;
     if (ctx.tree.getConst(handle).kind != .text_input) return;
     state.rename_input = ctx.tree.getConst(handle).kind.text_input;
 }
@@ -1730,10 +1730,10 @@ pub fn syncSelectedPathsFromTable(state: *State, ctx: *goop.Context, handle: goo
     var row_index: u16 = 0;
     var iter = ctx.tree.children(handle);
     while (iter.next()) |child| {
-        const v = ctx.runtime.widget(&ctx.tree, child) orelse continue;
-        if (v != .table_row or v.table_row.header) continue;
-        if (v.table_row.selected) {
-            const user_id = ctx.runtime.userId(&ctx.tree, child);
+        const v = ctx.tree.node(child) orelse continue;
+        if (v.kind != .table_row or v.kind.table_row.header) continue;
+        if (v.kind.table_row.selected) {
+            const user_id = ctx.tree.userId(child);
             const entry_index = assetEntryIndexFromUserId(state, user_id) orelse state.asset_visible_start + row_index;
             if (entry_index < state.entries.items.len) {
                 try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[entry_index].path));
@@ -1751,10 +1751,10 @@ pub fn syncSelectedPathsFromGrid(state: *State, ctx: *goop.Context, handle: goop
     var item_index: u16 = 0;
     var iter = ctx.tree.children(handle);
     while (iter.next()) |child| {
-        const v = ctx.runtime.widget(&ctx.tree, child) orelse continue;
-        if (v != .grid_item) continue;
-        if (v.grid_item.selected) {
-            const user_id = ctx.runtime.userId(&ctx.tree, child);
+        const v = ctx.tree.node(child) orelse continue;
+        if (v.kind != .grid_item) continue;
+        if (v.kind.grid_item.selected) {
+            const user_id = ctx.tree.userId(child);
             const entry_index = assetEntryIndexFromUserId(state, user_id) orelse state.asset_visible_start + item_index;
             if (entry_index < state.entries.items.len) {
                 try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[entry_index].path));
@@ -1785,8 +1785,8 @@ fn borrowedDropDestinationPathForUserId(state: *const State, user_id: u64) ?[]co
 
 fn handleAssetTableDrop(state: *State, ctx: *const goop.Context, drop: goop.TableDrop) !bool {
     if (drop.position != .row) return false;
-    const source_index = assetEntryIndexFromUserId(state, ctx.runtime.userId(&ctx.tree, drop.source)) orelse return false;
-    const target_index = assetEntryIndexFromUserId(state, ctx.runtime.userId(&ctx.tree, drop.target)) orelse return false;
+    const source_index = assetEntryIndexFromUserId(state, ctx.tree.userId(drop.source)) orelse return false;
+    const target_index = assetEntryIndexFromUserId(state, ctx.tree.userId(drop.target)) orelse return false;
     if (source_index == target_index) return false;
 
     const source_path = state.entries.items[source_index].path;
@@ -1801,8 +1801,8 @@ fn handleAssetTableDrop(state: *State, ctx: *const goop.Context, drop: goop.Tabl
 
 fn handleAssetGridDrop(state: *State, ctx: *const goop.Context, drop: goop.GridDrop) !bool {
     if (drop.position != .item) return false;
-    const source_index = assetEntryIndexFromUserId(state, ctx.runtime.userId(&ctx.tree, drop.source)) orelse return false;
-    const target_index = assetEntryIndexFromUserId(state, ctx.runtime.userId(&ctx.tree, drop.target)) orelse return false;
+    const source_index = assetEntryIndexFromUserId(state, ctx.tree.userId(drop.source)) orelse return false;
+    const target_index = assetEntryIndexFromUserId(state, ctx.tree.userId(drop.target)) orelse return false;
     if (source_index == target_index) return false;
 
     const source_path = state.entries.items[source_index].path;
@@ -1816,10 +1816,10 @@ fn handleAssetGridDrop(state: *State, ctx: *const goop.Context, drop: goop.GridD
 }
 
 fn handleAssetWidgetDrop(state: *State, ctx: *const goop.Context, drop: goop.WidgetDrop) !bool {
-    const source_index = assetEntryIndexFromUserId(state, ctx.runtime.userId(&ctx.tree, drop.source)) orelse return false;
+    const source_index = assetEntryIndexFromUserId(state, ctx.tree.userId(drop.source)) orelse return false;
     const source_path = state.entries.items[source_index].path;
 
-    const target_user_id = ctx.runtime.userId(&ctx.tree, drop.target);
+    const target_user_id = ctx.tree.userId(drop.target);
     if (widgetUserKind(target_user_id) == .toolbar_up) {
         const parent = try parentPathAlloc(allocator, state.current_dir);
         defer if (parent) |path| allocator.free(path);
@@ -1843,7 +1843,7 @@ fn maybeStartWaylandAssetDrag(state: *State, ctx: *goop.Context) !bool {
         pointer.y >= @as(f32, @floatFromInt(state.logical_height));
     if (!pointer_outside_window) return false;
 
-    const entry_index = assetEntryIndexFromUserId(state, ctx.runtime.userId(&ctx.tree, drag_target)) orelse return false;
+    const entry_index = assetEntryIndexFromUserId(state, ctx.tree.userId(drag_target)) orelse return false;
 
     const source_path = state.entries.items[entry_index].path;
     const started = if (isPathSelected(state, source_path) and state.selected_paths.items.len > 0)
@@ -1939,7 +1939,7 @@ fn showContextMenuForPath(state: *State, ctx: *goop.Context, path: []const u8) !
 fn hideContextMenu(state: *State, ctx: *goop.Context) void {
     state.context_visible = false;
     if (state.context_popup) |popup| {
-        if (ctx.runtime.isAlive(&ctx.tree, popup) and ctx.tree.getConst(popup).kind == .popup) {
+        if (ctx.tree.isAlive(popup) and ctx.tree.getConst(popup).kind == .popup) {
             if (ctx.runtime.mutateKind(&ctx.tree, popup)) |__k| { __k.popup.visible = false; }
         }
     }
@@ -1948,7 +1948,7 @@ fn hideContextMenu(state: *State, ctx: *goop.Context) void {
 
 fn syncContextPopupVisibleFromWidget(state: *State, ctx: *const goop.Context) void {
     const popup = state.context_popup orelse return;
-    if (!ctx.runtime.isAlive(&ctx.tree, popup) or ctx.tree.getConst(popup).kind != .popup) return;
+    if (!ctx.tree.isAlive(popup) or ctx.tree.getConst(popup).kind != .popup) return;
     state.context_visible = ctx.tree.getConst(popup).kind.popup.visible;
 }
 
@@ -2271,7 +2271,7 @@ fn setTopMenuPopupVisible(state: *const State, ctx: *goop.Context, target: ?goop
     var changed = false;
     for (popups) |popup_handle| {
         const popup = popup_handle orelse continue;
-        if (!ctx.runtime.isAlive(&ctx.tree, popup) or ctx.tree.getConst(popup).kind != .popup) continue;
+        if (!ctx.tree.isAlive(popup) or ctx.tree.getConst(popup).kind != .popup) continue;
         const visible = if (target) |selected| selected.eql(popup) else false;
         if (ctx.tree.getConst(popup).kind.popup.visible == visible) continue;
         if (ctx.runtime.mutateKind(&ctx.tree, popup)) |__k| { __k.popup.visible = visible; }
@@ -2285,7 +2285,7 @@ fn toggleTopMenuPopup(state: *const State, ctx: *goop.Context, popup: ?goop.Node
         setTopMenuPopupVisible(state, ctx, null);
         return;
     };
-    if (!ctx.runtime.isAlive(&ctx.tree, target) or ctx.tree.getConst(target).kind != .popup) return;
+    if (!ctx.tree.isAlive(target) or ctx.tree.getConst(target).kind != .popup) return;
     const should_open = !ctx.tree.getConst(target).kind.popup.visible;
     setTopMenuPopupVisible(state, ctx, if (should_open) target else null);
 }
@@ -2552,34 +2552,34 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        if (state.nav_splitter) |h| if (ctx.runtime.widget(&ctx.tree, h).?.splitter.changed) {
-            state.nav_ratio = ctx.runtime.widget(&ctx.tree, h).?.splitter.ratio;
+        if (state.nav_splitter) |h| if (ctx.tree.node(h).?.changed) {
+            state.nav_ratio = ctx.tree.node(h).?.kind.splitter.ratio;
         };
-        if (state.detail_splitter) |h| if (ctx.runtime.widget(&ctx.tree, h).?.splitter.changed) {
-            state.detail_ratio = ctx.runtime.widget(&ctx.tree, h).?.splitter.ratio;
+        if (state.detail_splitter) |h| if (ctx.tree.node(h).?.changed) {
+            state.detail_ratio = ctx.tree.node(h).?.kind.splitter.ratio;
         };
-        if (state.preview_splitter) |h| if (ctx.runtime.widget(&ctx.tree, h).?.splitter.changed) {
-            state.preview_ratio = ctx.runtime.widget(&ctx.tree, h).?.splitter.ratio;
+        if (state.preview_splitter) |h| if (ctx.tree.node(h).?.changed) {
+            state.preview_ratio = ctx.tree.node(h).?.kind.splitter.ratio;
         };
 
-        if (state.asset_table) |h| if (ctx.runtime.widget(&ctx.tree, h).?.table.changed) {
-            state.table_column_weights[0] = ctx.runtime.tableColumnFraction(&ctx.tree, h, 0) orelse state.table_column_weights[0];
-            state.table_column_weights[1] = ctx.runtime.tableColumnFraction(&ctx.tree, h, 1) orelse state.table_column_weights[1];
-            state.table_column_weights[2] = ctx.runtime.tableColumnFraction(&ctx.tree, h, 2) orelse state.table_column_weights[2];
-            state.table_column_weights[3] = ctx.runtime.tableColumnFraction(&ctx.tree, h, 3) orelse state.table_column_weights[3];
+        if (state.asset_table) |h| if (ctx.tree.node(h).?.changed) {
+            state.table_column_weights[0] = ctx.tree.tableColumnFraction(h, 0) orelse state.table_column_weights[0];
+            state.table_column_weights[1] = ctx.tree.tableColumnFraction(h, 1) orelse state.table_column_weights[1];
+            state.table_column_weights[2] = ctx.tree.tableColumnFraction(h, 2) orelse state.table_column_weights[2];
+            state.table_column_weights[3] = ctx.tree.tableColumnFraction(h, 3) orelse state.table_column_weights[3];
             if (state.asset_table_body) |body| {
-                if (ctx.runtime.isAlive(&ctx.tree, body)) {
+                if (ctx.tree.isAlive(body)) {
                     applyAssetTableColumns(&ctx.runtime.mutateKind(&ctx.tree, body).?.table, &state);
                     ctx.runtime.invalidate();
                 }
             }
         };
 
-        if (state.asset_table) |h| if (ctx.runtime.widget(&ctx.tree, h).?.table.sort_changed) {
-            if (ctx.runtime.widget(&ctx.tree, h).?.table.sorted_column) |sorted_column| {
+        if (state.asset_table) |h| if (ctx.tree.node(h).?.kind.table.sort_changed) {
+            if (ctx.tree.node(h).?.kind.table.sorted_column) |sorted_column| {
                 const previous_sort_column = state.sort_column;
                 state.sort_column = @enumFromInt(sorted_column);
-                state.sort_direction = switch (ctx.runtime.widget(&ctx.tree, h).?.table.sort_direction) {
+                state.sort_direction = switch (ctx.tree.node(h).?.kind.table.sort_direction) {
                     .ascending => .ascending,
                     .descending => .descending,
                 };
@@ -2592,171 +2592,171 @@ pub fn main(init: std.process.Init) !void {
             }
         };
 
-        if (state.menu_file_refresh) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_file_refresh) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .refresh) or rebuild_ui;
         };
-        if (state.menu_file_copy_path) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_file_copy_path) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .copy_path) or rebuild_ui;
         };
-        if (state.menu_file_open_target) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_file_open_target) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .open_link_target) or rebuild_ui;
         };
-        if (state.menu_file_quit) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_file_quit) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .quit) or rebuild_ui;
         };
-        if (state.menu_edit_copy) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_edit_copy) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .copy) or rebuild_ui;
         };
-        if (state.menu_edit_cut) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_edit_cut) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .cut) or rebuild_ui;
         };
-        if (state.menu_edit_paste) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_edit_paste) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .paste) or rebuild_ui;
         };
-        if (state.menu_edit_delete) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_edit_delete) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .delete) or rebuild_ui;
         };
-        if (state.menu_edit_rename) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_edit_rename) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try beginRenameSelection(&state, &ctx) or rebuild_ui;
         };
-        if (state.menu_edit_move_parent) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_edit_move_parent) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .move_parent) or rebuild_ui;
         };
-        if (state.menu_edit_select_all) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_edit_select_all) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .select_all) or rebuild_ui;
         };
-        if (state.menu_edit_clear_selection) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_edit_clear_selection) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .clear_selection) or rebuild_ui;
         };
-        if (state.menu_view_sidebar) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_view_sidebar) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .toggle_sidebar) or rebuild_ui;
         };
-        if (state.menu_view_preview) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_view_preview) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .toggle_preview) or rebuild_ui;
         };
-        if (state.menu_view_info) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_view_info) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .toggle_info) or rebuild_ui;
         };
-        if (state.menu_view_status_bar) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_view_status_bar) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .toggle_status_bar) or rebuild_ui;
         };
-        if (state.menu_view_list) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_view_list) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .view_list) or rebuild_ui;
         };
-        if (state.menu_view_grid) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_view_grid) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .view_grid) or rebuild_ui;
         };
-        if (state.menu_view_sort_directories) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_view_sort_directories) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .toggle_sort_directories) or rebuild_ui;
         };
-        if (state.menu_go_back) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_go_back) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .back) or rebuild_ui;
         };
-        if (state.menu_go_forward) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_go_forward) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .forward) or rebuild_ui;
         };
-        if (state.menu_go_up) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_go_up) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .up) or rebuild_ui;
         };
-        if (state.menu_go_home) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_go_home) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .home) or rebuild_ui;
         };
-        if (state.menu_help_about) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.menu_help_about) |h| if (ctx.tree.node(h).?.clicked) {
             setTopMenuPopupVisible(&state, &ctx, null);
             rebuild_ui = try runBrowserCommand(&state, .about) or rebuild_ui;
         };
 
-        if (state.context_open) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.context_open) |h| if (ctx.tree.node(h).?.clicked) {
             hideContextMenu(&state, &ctx);
             rebuild_ui = try openContextTarget(&state) or rebuild_ui;
         };
-        if (state.context_copy) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.context_copy) |h| if (ctx.tree.node(h).?.clicked) {
             hideContextMenu(&state, &ctx);
             rebuild_ui = try runBrowserCommand(&state, .copy) or rebuild_ui;
         };
-        if (state.context_cut) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.context_cut) |h| if (ctx.tree.node(h).?.clicked) {
             hideContextMenu(&state, &ctx);
             rebuild_ui = try runBrowserCommand(&state, .cut) or rebuild_ui;
         };
-        if (state.context_paste) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.context_paste) |h| if (ctx.tree.node(h).?.clicked) {
             hideContextMenu(&state, &ctx);
             rebuild_ui = try pasteContextTarget(&state) or rebuild_ui;
         };
-        if (state.context_delete) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.context_delete) |h| if (ctx.tree.node(h).?.clicked) {
             hideContextMenu(&state, &ctx);
             rebuild_ui = try runBrowserCommand(&state, .delete) or rebuild_ui;
         };
-        if (state.context_rename) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.context_rename) |h| if (ctx.tree.node(h).?.clicked) {
             hideContextMenu(&state, &ctx);
             rebuild_ui = try beginRenameSelection(&state, &ctx) or rebuild_ui;
         };
-        if (state.context_move_parent) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.context_move_parent) |h| if (ctx.tree.node(h).?.clicked) {
             hideContextMenu(&state, &ctx);
             rebuild_ui = try runBrowserCommand(&state, .move_parent) or rebuild_ui;
         };
-        if (state.context_copy_path) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.context_copy_path) |h| if (ctx.tree.node(h).?.clicked) {
             hideContextMenu(&state, &ctx);
             rebuild_ui = try copyContextTargetPath(&state) or rebuild_ui;
         };
-        if (state.context_open_link_target) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.context_open_link_target) |h| if (ctx.tree.node(h).?.clicked) {
             hideContextMenu(&state, &ctx);
             rebuild_ui = try openContextLinkTarget(&state) or rebuild_ui;
         };
 
-        if (state.btn_back) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.btn_back) |h| if (ctx.tree.node(h).?.clicked) {
             rebuild_ui = try runBrowserCommand(&state, .back) or rebuild_ui;
         };
-        if (state.btn_forward) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.btn_forward) |h| if (ctx.tree.node(h).?.clicked) {
             rebuild_ui = try runBrowserCommand(&state, .forward) or rebuild_ui;
         };
-        if (state.btn_up) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.btn_up) |h| if (ctx.tree.node(h).?.clicked) {
             rebuild_ui = try runBrowserCommand(&state, .up) or rebuild_ui;
         };
-        if (state.btn_home) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.btn_home) |h| if (ctx.tree.node(h).?.clicked) {
             rebuild_ui = try runBrowserCommand(&state, .home) or rebuild_ui;
         };
-        if (state.btn_refresh) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.btn_refresh) |h| if (ctx.tree.node(h).?.clicked) {
             rebuild_ui = try runBrowserCommand(&state, .refresh) or rebuild_ui;
         };
-        if (state.btn_toggle_sidebar) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.btn_toggle_sidebar) |h| if (ctx.tree.node(h).?.clicked) {
             rebuild_ui = try runBrowserCommand(&state, .toggle_sidebar) or rebuild_ui;
         };
-        if (state.btn_toggle_preview) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.btn_toggle_preview) |h| if (ctx.tree.node(h).?.clicked) {
             rebuild_ui = try runBrowserCommand(&state, .toggle_preview) or rebuild_ui;
         };
-        if (state.btn_toggle_info) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.btn_toggle_info) |h| if (ctx.tree.node(h).?.clicked) {
             rebuild_ui = try runBrowserCommand(&state, .toggle_info) or rebuild_ui;
         };
-        if (state.btn_address_go) |h| if (ctx.runtime.wasClicked(&ctx.tree, h)) {
+        if (state.btn_address_go) |h| if (ctx.tree.node(h).?.clicked) {
             state.address_submit_requested = true;
         };
-        if (state.btn_list_view) |h| if (ctx.runtime.wasClicked(&ctx.tree, h) and state.view_mode != .list) {
+        if (state.btn_list_view) |h| if (ctx.tree.node(h).?.clicked and state.view_mode != .list) {
             rebuild_ui = try runBrowserCommand(&state, .view_list) or rebuild_ui;
         };
-        if (state.btn_grid_view) |h| if (ctx.runtime.wasClicked(&ctx.tree, h) and state.view_mode != .grid) {
+        if (state.btn_grid_view) |h| if (ctx.tree.node(h).?.clicked and state.view_mode != .grid) {
             rebuild_ui = try runBrowserCommand(&state, .view_grid) or rebuild_ui;
         };
 
@@ -2773,7 +2773,7 @@ pub fn main(init: std.process.Init) !void {
 
         var context_menu_opened = false;
         for (state.place_handles.items, 0..) |handle, index| {
-            if (!ctx.runtime.wasSecondaryClicked(&ctx.tree, handle)) continue;
+            if (!ctx.tree.node(handle).?.secondary_clicked) continue;
             if (index >= state.places.items.len) continue;
             try showContextMenuForPath(&state, &ctx, state.places.items[index].path);
             context_menu_opened = true;
@@ -2783,7 +2783,7 @@ pub fn main(init: std.process.Init) !void {
 
         if (!context_menu_opened) {
             for (state.folder_tree_handles.items, 0..) |handle, index| {
-                if (!ctx.runtime.wasSecondaryClicked(&ctx.tree, handle)) continue;
+                if (!ctx.tree.node(handle).?.secondary_clicked) continue;
                 if (index >= state.folder_tree_paths.items.len) continue;
                 try showContextMenuForPath(&state, &ctx, state.folder_tree_paths.items[index]);
                 context_menu_opened = true;
@@ -2794,7 +2794,7 @@ pub fn main(init: std.process.Init) !void {
 
         if (!context_menu_opened) {
             for (state.breadcrumb_handles.items, 0..) |handle, index| {
-                if (!ctx.runtime.wasSecondaryClicked(&ctx.tree, handle)) continue;
+                if (!ctx.tree.node(handle).?.secondary_clicked) continue;
                 if (index >= state.breadcrumb_paths.items.len) continue;
                 try showContextMenuForPath(&state, &ctx, state.breadcrumb_paths.items[index]);
                 context_menu_opened = true;
@@ -2805,7 +2805,7 @@ pub fn main(init: std.process.Init) !void {
 
         if (!context_menu_opened) {
             for (state.row_handles.items, 0..) |handle, index| {
-                if (!ctx.runtime.wasSecondaryClicked(&ctx.tree, handle)) continue;
+                if (!ctx.tree.node(handle).?.secondary_clicked) continue;
                 const entry_index = state.asset_visible_start + index;
                 if (entry_index >= state.entries.items.len) continue;
                 try selectEntryForContextMenu(&state, entry_index);
@@ -2818,7 +2818,7 @@ pub fn main(init: std.process.Init) !void {
 
         if (!context_menu_opened) {
             for (state.grid_handles.items, 0..) |handle, index| {
-                if (!ctx.runtime.wasSecondaryClicked(&ctx.tree, handle)) continue;
+                if (!ctx.tree.node(handle).?.secondary_clicked) continue;
                 const entry_index = state.asset_visible_start + index;
                 if (entry_index >= state.entries.items.len) continue;
                 try selectEntryForContextMenu(&state, entry_index);
@@ -2831,7 +2831,7 @@ pub fn main(init: std.process.Init) !void {
 
         if (!context_menu_opened) {
             if (state.file_panel_scroll) |handle| {
-                if (ctx.runtime.wasSecondaryClicked(&ctx.tree, handle)) {
+                if (ctx.tree.node(handle).?.secondary_clicked) {
                     try showContextMenuForPath(&state, &ctx, state.current_dir);
                     rebuild_ui = true;
                 }
@@ -2841,9 +2841,9 @@ pub fn main(init: std.process.Init) !void {
         var asset_primary_handled = false;
         if (ctx.runtime.lastDrop()) |drop| {
             const asset_drop = switch (drop) {
-                .widget => |widget_drop| assetEntryIndexFromUserId(&state, ctx.runtime.userId(&ctx.tree, widget_drop.source)) != null,
-                .table => |table_drop| assetEntryIndexFromUserId(&state, ctx.runtime.userId(&ctx.tree, table_drop.source)) != null,
-                .grid => |grid_drop| assetEntryIndexFromUserId(&state, ctx.runtime.userId(&ctx.tree, grid_drop.source)) != null,
+                .widget => |widget_drop| assetEntryIndexFromUserId(&state, ctx.tree.userId(widget_drop.source)) != null,
+                .table => |table_drop| assetEntryIndexFromUserId(&state, ctx.tree.userId(table_drop.source)) != null,
+                .grid => |grid_drop| assetEntryIndexFromUserId(&state, ctx.tree.userId(grid_drop.source)) != null,
                 else => false,
             };
             if (asset_drop) {
@@ -2867,42 +2867,42 @@ pub fn main(init: std.process.Init) !void {
         }
 
         for (state.place_handles.items, 0..) |handle, index| {
-            if (!ctx.runtime.wasClicked(&ctx.tree, handle)) continue;
+            if (!ctx.tree.node(handle).?.clicked) continue;
             if (index >= state.places.items.len) continue;
             rebuild_ui = try setCurrentDirectory(&state, state.places.items[index].path, true) or rebuild_ui;
             break;
         }
 
         for (state.folder_tree_handles.items, 0..) |handle, index| {
-            if (!ctx.runtime.widget(&ctx.tree, handle).?.tree_item.toggled) continue;
+            if (!ctx.tree.node(handle).?.toggled) continue;
             if (index >= state.folder_tree_paths.items.len) continue;
             const path = state.folder_tree_paths.items[index];
             const previous_expansion = folderTreeExpansion(&state, path);
             if (previous_expansion == .partial) {
                 rebuild_ui = try setFolderTreePathExpanded(&state, path, true) or rebuild_ui;
             } else {
-                const expanded = ctx.runtime.widget(&ctx.tree, handle).?.tree_item.expanded;
+                const expanded = ctx.tree.node(handle).?.kind.tree_item.expanded;
                 rebuild_ui = try setFolderTreePathExpanded(&state, path, expanded) or rebuild_ui;
                 if (!expanded and std.mem.eql(u8, path, state.current_dir)) rebuild_ui = true;
             }
         }
 
         for (state.folder_tree_handles.items, 0..) |handle, index| {
-            if (!ctx.runtime.wasClicked(&ctx.tree, handle) or ctx.runtime.widget(&ctx.tree, handle).?.tree_item.toggled) continue;
+            if (!ctx.tree.node(handle).?.clicked or ctx.tree.node(handle).?.toggled) continue;
             if (index >= state.folder_tree_paths.items.len) continue;
             rebuild_ui = try setCurrentDirectory(&state, state.folder_tree_paths.items[index], true) or rebuild_ui;
             break;
         }
 
         for (state.breadcrumb_handles.items, 0..) |handle, index| {
-            if (!ctx.runtime.wasClicked(&ctx.tree, handle)) continue;
+            if (!ctx.tree.node(handle).?.clicked) continue;
             if (index >= state.breadcrumb_paths.items.len) continue;
             rebuild_ui = try setCurrentDirectory(&state, state.breadcrumb_paths.items[index], true) or rebuild_ui;
             break;
         }
 
         for (state.row_handles.items, 0..) |handle, index| {
-            if (!ctx.runtime.wasClicked(&ctx.tree, handle)) continue;
+            if (!ctx.tree.node(handle).?.clicked) continue;
             asset_primary_handled = true;
             var entry_index = state.asset_visible_start + index;
             if (entry_index >= state.entries.items.len) continue;
@@ -2948,7 +2948,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         for (state.grid_handles.items, 0..) |handle, index| {
-            if (!ctx.runtime.wasClicked(&ctx.tree, handle)) continue;
+            if (!ctx.tree.node(handle).?.clicked) continue;
             asset_primary_handled = true;
             var entry_index = state.asset_visible_start + index;
             if (entry_index >= state.entries.items.len) continue;
@@ -2990,7 +2990,7 @@ pub fn main(init: std.process.Init) !void {
             const selection_drag_active = ctx.runtime.isPointerButtonDown(.left);
             if (state.view_mode == .list) {
                 if (state.asset_table_body) |table| {
-                    if (ctx.runtime.isAlive(&ctx.tree, table) and ctx.runtime.widget(&ctx.tree, table).?.table.selection_changed) {
+                    if (ctx.tree.isAlive(table) and ctx.tree.node(table).?.kind.table.selection_changed) {
                         selection_widget_changed = true;
                         if (state.rename_path != null) {
                             switch (try commitActiveRename(&state)) {
@@ -3014,7 +3014,7 @@ pub fn main(init: std.process.Init) !void {
                 }
             } else if (state.view_mode == .grid) {
                 if (state.asset_grid) |grid| {
-                    if (ctx.runtime.isAlive(&ctx.tree, grid) and ctx.runtime.widget(&ctx.tree, grid).?.grid_selector.changed) {
+                    if (ctx.tree.isAlive(grid) and ctx.tree.node(grid).?.changed) {
                         selection_widget_changed = true;
                         if (state.rename_path != null) {
                             switch (try commitActiveRename(&state)) {
