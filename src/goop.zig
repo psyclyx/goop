@@ -56,6 +56,8 @@ pub const Style = style.Style;
 pub const Color = style.Color;
 pub const PaintCommand = draw.PaintCommand;
 pub const PaintList = draw.PaintList;
+pub const PaintOptions = draw.PaintOptions;
+pub const PaintScope = draw.PaintScope;
 pub const DrawCommand = draw.DrawCommand;
 pub const DrawList = draw.DrawList;
 pub const TextAlign = draw.TextAlign;
@@ -498,7 +500,7 @@ pub const Runtime = struct {
             if (self.cached_paint_list) |cached| return cached;
         }
         self.invalidateDrawCache();
-        const paint_list = try draw.generatePaint(tree, theme, self.allocator, self.text_measure_ctx);
+        const paint_list = try draw.generatePaint(tree, theme, self.allocator, self.text_measure_ctx, .{});
         self.cached_paint_list = paint_list;
         self.draw_dirty = false;
         return paint_list;

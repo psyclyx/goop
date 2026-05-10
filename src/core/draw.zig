@@ -141,31 +141,35 @@ pub const DrawList = struct {
     commands: []const DrawCommand,
 };
 
-/// Generate semantic paint commands from a laid-out widget tree.
-pub fn generatePaint(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !PaintList {
-    return generatePaintWithFloating(tree, theme, allocator, text_ctx, true);
-}
+/// What slice of the widget tree to paint.
+pub const PaintScope = union(enum) {
+    /// Whole tree from every root.
+    full: Full,
+    /// Only the subtree rooted at this handle, with the popup origin
+    /// translated to (0, 0). Used to paint a popup into its own surface.
+    popup: widget.NodeHandle,
 
-pub fn generatePaintWithoutFloating(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !PaintList {
-    return generatePaintWithFloating(tree, theme, allocator, text_ctx, false);
-}
-
-pub fn generatePaintForPopup(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !PaintList {
-    var commands: std.ArrayListUnmanaged(PaintCommand) = .empty;
-    errdefer commands.deinit(allocator);
-
-    const rect = tree.getConst(handle).layout_rect;
-    var paint_ctx = PaintCtx{
-        .cull_rect = null,
-        .offset = .{ .x = -rect.x, .y = -rect.y },
+    pub const Full = struct {
+        /// Include floating subtrees (popups, tooltips) and active drag
+        /// ghosts. Embedders that paint floating layers separately
+        /// (e.g. via per-popup surfaces) set this to false.
+        include_floating: bool = true,
     };
+};
 
-    try emitNode(&paint_ctx, tree, handle, theme, &commands, allocator, text_ctx, true);
+pub const PaintOptions = struct {
+    scope: PaintScope = .{ .full = .{} },
+};
 
-    return .{ .commands = try commands.toOwnedSlice(allocator) };
+/// Generate semantic paint commands from a laid-out widget tree.
+pub fn generatePaint(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, options: PaintOptions) !PaintList {
+    return switch (options.scope) {
+        .full => |full| paintFull(tree, theme, allocator, text_ctx, full.include_floating),
+        .popup => |handle| paintPopupSubtree(tree, handle, theme, allocator, text_ctx),
+    };
 }
 
-fn generatePaintWithFloating(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, include_floating: bool) !PaintList {
+fn paintFull(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, include_floating: bool) !PaintList {
     var commands: std.ArrayListUnmanaged(PaintCommand) = .empty;
     errdefer commands.deinit(allocator);
     var paint_ctx = PaintCtx{};
@@ -190,6 +194,21 @@ fn generatePaintWithFloating(tree: *const widget.Tree, theme: style.Theme, alloc
     }
 
     try emitDragGhosts(&paint_ctx, tree, theme, &commands, allocator, text_ctx);
+
+    return .{ .commands = try commands.toOwnedSlice(allocator) };
+}
+
+fn paintPopupSubtree(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !PaintList {
+    var commands: std.ArrayListUnmanaged(PaintCommand) = .empty;
+    errdefer commands.deinit(allocator);
+
+    const rect = tree.getConst(handle).layout_rect;
+    var paint_ctx = PaintCtx{
+        .cull_rect = null,
+        .offset = .{ .x = -rect.x, .y = -rect.y },
+    };
+
+    try emitNode(&paint_ctx, tree, handle, theme, &commands, allocator, text_ctx, true);
 
     return .{ .commands = try commands.toOwnedSlice(allocator) };
 }
@@ -254,7 +273,7 @@ pub fn lowerPaintList(paint_list: PaintList, allocator: std.mem.Allocator, text_
 
 /// Generate renderer-facing draw commands from a laid-out widget tree.
 pub fn generate(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !DrawList {
-    var paint_list = try generatePaint(tree, theme, allocator, text_ctx);
+    var paint_list = try generatePaint(tree, theme, allocator, text_ctx, .{});
     defer freePaintList(&paint_list, allocator);
     return lowerPaintList(paint_list, allocator, text_ctx);
 }
@@ -3087,7 +3106,7 @@ test "popup paint can be split from main paint" {
     tree.get(popup).layout_rect = .{ .x = 10, .y = 32, .w = 144, .h = 30 };
     tree.get(item).layout_rect = .{ .x = 10, .y = 32, .w = 144, .h = 30 };
 
-    var main_paint = try generatePaintWithoutFloating(&tree, style.Theme.default, allocator, null);
+    var main_paint = try generatePaint(&tree, style.Theme.default, allocator, null, .{ .scope = .{ .full = .{ .include_floating = false } } });
     defer freePaintList(&main_paint, allocator);
     for (main_paint.commands) |command| {
         if (command == .box) {
@@ -3095,7 +3114,7 @@ test "popup paint can be split from main paint" {
         }
     }
 
-    var popup_paint = try generatePaintForPopup(&tree, popup, style.Theme.default, allocator, null);
+    var popup_paint = try generatePaint(&tree, style.Theme.default, allocator, null, .{ .scope = .{ .popup = popup } });
     defer freePaintList(&popup_paint, allocator);
     try std.testing.expect(popup_paint.commands.len >= 3);
     try std.testing.expect(popup_paint.commands[0] == .box);
@@ -3119,7 +3138,7 @@ test "checked menu item emits checked indicator" {
     tree.get(item).layout_rect = .{ .x = 0, .y = 0, .w = 140, .h = 28 };
 
     const theme = style.Theme.default;
-    var paint = try generatePaint(&tree, theme, allocator, null);
+    var paint = try generatePaint(&tree, theme, allocator, null, .{});
     defer freePaintList(&paint, allocator);
 
     var found_indicator = false;
@@ -3162,7 +3181,7 @@ test "hovered top-level menu uses active fill while menu bar is open" {
     tree.get(edit).interaction.hovered = true;
 
     const theme = style.Theme.default;
-    var paint = try generatePaintWithoutFloating(&tree, theme, allocator, null);
+    var paint = try generatePaint(&tree, theme, allocator, null, .{ .scope = .{ .full = .{ .include_floating = false } } });
     defer freePaintList(&paint, allocator);
 
     var found_edit_box = false;

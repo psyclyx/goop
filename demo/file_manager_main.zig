@@ -3078,7 +3078,7 @@ pub fn main(init: std.process.Init) !void {
         }
         debugLogFilePanelLayout(&state);
         updatePointerCursor(&state);
-        var atlas_paint_list = try goop.draw.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx);
+        var atlas_paint_list = try goop.draw.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx, .{});
         defer goop.draw.freePaintList(&atlas_paint_list, allocator);
         if (try ensureAtlasForPaintList(&ensured_text, &text_atlas, &renderer, atlas_paint_list)) {
             const updated_metrics = fontLineMetrics(&text_atlas);
@@ -3088,7 +3088,7 @@ pub fn main(init: std.process.Init) !void {
             ctx.doLayout(&text_measure_ctx);
         }
         try syncNativePopupSurfaces(&state, &ctx);
-        var base_paint_list = try goop.draw.generatePaintWithoutFloating(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx);
+        var base_paint_list = try goop.draw.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx, .{ .scope = .{ .full = .{ .include_floating = false } } });
         defer goop.draw.freePaintList(&base_paint_list, allocator);
         const paint_list = try composeFileBrowserPaintList(&state, base_paint_list);
 

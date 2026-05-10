@@ -694,7 +694,7 @@ pub fn renderNativePopupSurfaces(state: *State, renderer: *render.Renderer) !voi
     while (it) |popup| : (it = popup.next) {
         if (!popup.configured or !popupNeedsNativeSurface(ctx, popup.handle)) continue;
 
-        var popup_paint_list = try goop.draw.generatePaintForPopup(&ctx.tree, popup.handle, ctx.theme, allocator, state.text_measure_ctx);
+        var popup_paint_list = try goop.draw.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx, .{ .scope = .{ .popup = popup.handle } });
         defer goop.draw.freePaintList(&popup_paint_list, allocator);
 
         if (egl.eglMakeCurrent(state.egl_display, popup.egl_surface, popup.egl_surface, state.egl_context) == 0) return error.EglMakeCurrentFailed;
