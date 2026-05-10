@@ -14,6 +14,17 @@ pub const NodeHandle = struct {
     }
 };
 
+/// Drag state shared by widget kinds that participate in pointer-driven
+/// reordering (tree items, selectables, grid items, table rows). All
+/// fields are owned and reset by the dispatch layer; embedders only
+/// observe `active` (via `WidgetView.<kind>.dragging`).
+pub const DragState = struct {
+    active: bool = false,
+    rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    offset_x: f32 = 0,
+    offset_y: f32 = 0,
+};
+
 /// Interaction state tracked per widget.
 pub const InteractionState = struct {
     hovered: bool = false,
@@ -101,10 +112,7 @@ pub const WidgetKind = union(enum) {
         editing: bool = false,
         clicked: bool = false,
         toggled: bool = false,
-        dragging: bool = false,
-        drag_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-        drag_offset_x: f32 = 0,
-        drag_offset_y: f32 = 0,
+        drag: DragState = .{},
         drop_preview: ?DropPosition = null,
         drop_received: bool = false,
         rename_committed: bool = false,
@@ -177,10 +185,7 @@ pub const WidgetKind = union(enum) {
         selected: bool = false,
         clicked: bool = false,
         marquee_base_selected: bool = false,
-        dragging: bool = false,
-        drag_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-        drag_offset_x: f32 = 0,
-        drag_offset_y: f32 = 0,
+        drag: DragState = .{},
         drop_preview: bool = false,
     };
 
@@ -210,10 +215,7 @@ pub const WidgetKind = union(enum) {
         selected: bool = false,
         clicked: bool = false,
         marquee_base_selected: bool = false,
-        dragging: bool = false,
-        drag_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-        drag_offset_x: f32 = 0,
-        drag_offset_y: f32 = 0,
+        drag: DragState = .{},
         drop_preview: bool = false,
     };
 
@@ -348,10 +350,7 @@ pub const WidgetKind = union(enum) {
         header: bool = false,
         selected: bool = false,
         marquee_base_selected: bool = false,
-        dragging: bool = false,
-        drag_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-        drag_offset_x: f32 = 0,
-        drag_offset_y: f32 = 0,
+        drag: DragState = .{},
         drop_preview: bool = false,
     };
 
@@ -1350,7 +1349,7 @@ pub const WidgetView = union(enum) {
                 .editing = kind.tree_item.editing,
                 .clicked = kind.tree_item.clicked,
                 .toggled = kind.tree_item.toggled,
-                .dragging = kind.tree_item.dragging,
+                .dragging = kind.tree_item.drag.active,
                 .drop_received = kind.tree_item.drop_received,
                 .rename_committed = kind.tree_item.rename_committed,
             } },
@@ -1368,7 +1367,7 @@ pub const WidgetView = union(enum) {
                 .group = kind.selectable.group,
                 .selected = kind.selectable.selected,
                 .clicked = kind.selectable.clicked,
-                .dragging = kind.selectable.dragging,
+                .dragging = kind.selectable.drag.active,
             } },
             .grid_selector => .{ .grid_selector = .{
                 .changed = kind.grid_selector.changed,
@@ -1378,7 +1377,7 @@ pub const WidgetView = union(enum) {
                 .label = kind.grid_item.label,
                 .selected = kind.grid_item.selected,
                 .clicked = kind.grid_item.clicked,
-                .dragging = kind.grid_item.dragging,
+                .dragging = kind.grid_item.drag.active,
             } },
             .table => .{ .table = .{
                 .active_columns = kind.table.active_columns,
@@ -1392,7 +1391,7 @@ pub const WidgetView = union(enum) {
             .table_row => .{ .table_row = .{
                 .header = kind.table_row.header,
                 .selected = kind.table_row.selected,
-                .dragging = kind.table_row.dragging,
+                .dragging = kind.table_row.drag.active,
             } },
             .table_cell => .{ .table_cell = {} },
             .toolbar => .{ .toolbar = {} },

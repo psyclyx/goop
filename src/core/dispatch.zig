@@ -190,8 +190,8 @@ pub fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
         node.interaction.drop_received = false;
         switch (node.kind) {
             .tree_item => |*item| {
-                item.dragging = false;
-                item.drag_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                item.drag.active = false;
+                item.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
                 item.drop_preview = null;
             },
             .list_box => |*list_box| {
@@ -201,8 +201,8 @@ pub fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
             },
             .selectable => |*item| {
                 item.marquee_base_selected = false;
-                item.dragging = false;
-                item.drag_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                item.drag.active = false;
+                item.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
                 item.drop_preview = false;
             },
             .grid_selector => |*selector| {
@@ -212,8 +212,8 @@ pub fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
             },
             .grid_item => |*item| {
                 item.marquee_base_selected = false;
-                item.dragging = false;
-                item.drag_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                item.drag.active = false;
+                item.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
                 item.drop_preview = false;
             },
             .table => |*table| {
@@ -223,8 +223,8 @@ pub fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
             },
             .table_row => |*row| {
                 row.marquee_base_selected = false;
-                row.dragging = false;
-                row.drag_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                row.drag.active = false;
+                row.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
                 row.drop_preview = false;
             },
             else => {},
@@ -905,9 +905,9 @@ fn beginTreeDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseSta
     mouse.drag_target = source;
     {
         const item = &tree.get(source).kind.tree_item;
-        item.dragging = true;
-        item.drag_offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
-        item.drag_offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
+        item.drag.active = true;
+        item.drag.offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
+        item.drag.offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
     }
     updateTreeDragPreview(tree, source, mouse);
 }
@@ -937,8 +937,8 @@ fn updateTreeDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mouse: *
 fn finalizeTreeDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
     if (tree.isAlive(source) and tree.getConst(source).kind == .tree_item) {
         const item = &tree.get(source).kind.tree_item;
-        item.dragging = false;
-        item.drag_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+        item.drag.active = false;
+        item.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.tree_drop_preview) |preview| {
 
@@ -961,9 +961,9 @@ fn clearTreeDragPreview(tree: *widget.Tree) void {
 fn updateTreeDragGhostRect(tree: *widget.Tree, source: widget.NodeHandle, mouse: *const MouseState) void {
     const source_rect = tree.getConst(source).layout_rect;
     const item = &tree.get(source).kind.tree_item;
-    item.drag_rect = .{
-        .x = mouse.x - item.drag_offset_x,
-        .y = mouse.y - item.drag_offset_y,
+    item.drag.rect = .{
+        .x = mouse.x - item.drag.offset_x,
+        .y = mouse.y - item.drag.offset_y,
         .w = source_rect.w,
         .h = source_rect.h,
     };
@@ -977,9 +977,9 @@ fn beginSelectableDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *Mo
     mouse.drag_target = source;
     {
         const item = &tree.get(source).kind.selectable;
-        item.dragging = true;
-        item.drag_offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
-        item.drag_offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
+        item.drag.active = true;
+        item.drag.offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
+        item.drag.offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
     }
     updateSelectableDragPreview(tree, source, mouse);
 }
@@ -1020,8 +1020,8 @@ fn updateSelectableDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mo
 fn finalizeSelectableDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
     if (tree.isAlive(source) and tree.getConst(source).kind == .selectable) {
         const item = &tree.get(source).kind.selectable;
-        item.dragging = false;
-        item.drag_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+        item.drag.active = false;
+        item.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.list_drop_preview) |preview| {
 
@@ -1045,9 +1045,9 @@ fn clearListDragPreview(tree: *widget.Tree) void {
 fn updateSelectableDragGhostRect(tree: *widget.Tree, source: widget.NodeHandle, mouse: *const MouseState) void {
     const source_rect = tree.getConst(source).layout_rect;
     const item = &tree.get(source).kind.selectable;
-    item.drag_rect = .{
-        .x = mouse.x - item.drag_offset_x,
-        .y = mouse.y - item.drag_offset_y,
+    item.drag.rect = .{
+        .x = mouse.x - item.drag.offset_x,
+        .y = mouse.y - item.drag.offset_y,
         .w = source_rect.w,
         .h = source_rect.h,
     };
@@ -1060,9 +1060,9 @@ fn beginGridItemDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *Mous
     mouse.drag_target = source;
     {
         const item = &tree.get(source).kind.grid_item;
-        item.dragging = true;
-        item.drag_offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
-        item.drag_offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
+        item.drag.active = true;
+        item.drag.offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
+        item.drag.offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
     }
     updateGridItemDragPreview(tree, source, mouse);
 }
@@ -1103,8 +1103,8 @@ fn updateGridItemDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mous
 fn finalizeGridItemDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
     if (tree.isAlive(source) and tree.getConst(source).kind == .grid_item) {
         const item = &tree.get(source).kind.grid_item;
-        item.dragging = false;
-        item.drag_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+        item.drag.active = false;
+        item.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.grid_drop_preview) |preview| {
 
@@ -1128,9 +1128,9 @@ fn clearGridDragPreview(tree: *widget.Tree) void {
 fn updateGridItemDragGhostRect(tree: *widget.Tree, source: widget.NodeHandle, mouse: *const MouseState) void {
     const source_rect = tree.getConst(source).layout_rect;
     const item = &tree.get(source).kind.grid_item;
-    item.drag_rect = .{
-        .x = mouse.x - item.drag_offset_x,
-        .y = mouse.y - item.drag_offset_y,
+    item.drag.rect = .{
+        .x = mouse.x - item.drag.offset_x,
+        .y = mouse.y - item.drag.offset_y,
         .w = source_rect.w,
         .h = source_rect.h,
     };
@@ -1263,9 +1263,9 @@ fn beginTableRowDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *Mous
     mouse.drag_target = source;
     {
         const row = &tree.get(source).kind.table_row;
-        row.dragging = true;
-        row.drag_offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
-        row.drag_offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
+        row.drag.active = true;
+        row.drag.offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
+        row.drag.offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
     }
     updateTableRowDragPreview(tree, source, mouse);
 }
@@ -1307,8 +1307,8 @@ fn updateTableRowDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mous
 fn finalizeTableRowDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
     if (tree.isAlive(source) and tree.getConst(source).kind == .table_row) {
         const row = &tree.get(source).kind.table_row;
-        row.dragging = false;
-        row.drag_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+        row.drag.active = false;
+        row.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.table_drop_preview) |preview| {
 
@@ -1332,9 +1332,9 @@ fn clearTableDragPreview(tree: *widget.Tree) void {
 fn updateTableRowDragGhostRect(tree: *widget.Tree, source: widget.NodeHandle, mouse: *const MouseState) void {
     const source_rect = tree.getConst(source).layout_rect;
     const row = &tree.get(source).kind.table_row;
-    row.drag_rect = .{
-        .x = mouse.x - row.drag_offset_x,
-        .y = mouse.y - row.drag_offset_y,
+    row.drag.rect = .{
+        .x = mouse.x - row.drag.offset_x,
+        .y = mouse.y - row.drag.offset_y,
         .w = source_rect.w,
         .h = source_rect.h,
     };
@@ -4173,14 +4173,14 @@ test "grid item drag reports drop target" {
     }, &mouse, style.Theme.default);
 
     try std.testing.expect(mouse.drag_target != null);
-    try std.testing.expect(tree.getConst(first).kind.grid_item.dragging);
+    try std.testing.expect(tree.getConst(first).kind.grid_item.drag.active);
     try std.testing.expect(tree.getConst(second).kind.grid_item.drop_preview);
 
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 146, .y = 40 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(!tree.getConst(first).kind.grid_item.dragging);
+    try std.testing.expect(!tree.getConst(first).kind.grid_item.drag.active);
     try std.testing.expect(!tree.getConst(second).kind.grid_item.drop_preview);
     const drop = mouse.last_drop.?.grid;
     try std.testing.expect(drop.source.eql(first));
@@ -4215,7 +4215,7 @@ test "cancel pointer gesture clears active grid drag" {
     try std.testing.expect(mouse.left_down);
     try std.testing.expect(mouse.drag_target != null);
     try std.testing.expect(mouse.grid_drop_preview != null);
-    try std.testing.expect(tree.getConst(first).kind.grid_item.dragging);
+    try std.testing.expect(tree.getConst(first).kind.grid_item.drag.active);
     try std.testing.expect(tree.getConst(second).kind.grid_item.drop_preview);
 
     cancelPointerGesture(&tree, &mouse);
@@ -4224,7 +4224,7 @@ test "cancel pointer gesture clears active grid drag" {
     try std.testing.expect(mouse.press_target == null);
     try std.testing.expect(mouse.drag_target == null);
     try std.testing.expect(mouse.grid_drop_preview == null);
-    try std.testing.expect(!tree.getConst(first).kind.grid_item.dragging);
+    try std.testing.expect(!tree.getConst(first).kind.grid_item.drag.active);
     try std.testing.expect(!tree.getConst(second).kind.grid_item.drop_preview);
 }
 
@@ -4542,7 +4542,7 @@ test "tree item drag reports drop target and position" {
         .{ .mouse_move = .{ .x = 40, .y = 56 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(tree.getConst(first).kind.tree_item.dragging);
+    try std.testing.expect(tree.getConst(first).kind.tree_item.drag.active);
     try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, tree.getConst(second).kind.tree_item.drop_preview.?);
 
     process(&tree, &.{
@@ -4554,7 +4554,7 @@ test "tree item drag reports drop target and position" {
     try std.testing.expect(drop.target.eql(second));
     try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, drop.position);
     try std.testing.expect(tree.getConst(second).kind.tree_item.drop_received);
-    try std.testing.expect(!tree.getConst(first).kind.tree_item.dragging);
+    try std.testing.expect(!tree.getConst(first).kind.tree_item.drag.active);
     try std.testing.expect(tree.getConst(second).kind.tree_item.drop_preview == null);
 }
 
@@ -4750,7 +4750,7 @@ test "selectable drag reports list drop target" {
         .{ .mouse_move = .{ .x = 40, .y = 50 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(tree.getConst(first).kind.selectable.dragging);
+    try std.testing.expect(tree.getConst(first).kind.selectable.drag.active);
     try std.testing.expect(tree.getConst(second).kind.selectable.drop_preview);
 
     process(&tree, &.{
@@ -4761,7 +4761,7 @@ test "selectable drag reports list drop target" {
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
     try std.testing.expectEqual(ListDrop.Position.item, drop.position);
-    try std.testing.expect(!tree.getConst(first).kind.selectable.dragging);
+    try std.testing.expect(!tree.getConst(first).kind.selectable.drag.active);
     try std.testing.expect(!tree.getConst(second).kind.selectable.drop_preview);
 }
 
@@ -4817,7 +4817,7 @@ test "table row drag reports table drop target" {
         .{ .mouse_move = .{ .x = 40, .y = 50 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(tree.getConst(first).kind.table_row.dragging);
+    try std.testing.expect(tree.getConst(first).kind.table_row.drag.active);
     try std.testing.expect(tree.getConst(second).kind.table_row.drop_preview);
 
     process(&tree, &.{
@@ -4828,7 +4828,7 @@ test "table row drag reports table drop target" {
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
     try std.testing.expectEqual(TableDrop.Position.row, drop.position);
-    try std.testing.expect(!tree.getConst(first).kind.table_row.dragging);
+    try std.testing.expect(!tree.getConst(first).kind.table_row.drag.active);
     try std.testing.expect(!tree.getConst(second).kind.table_row.drop_preview);
 }
 

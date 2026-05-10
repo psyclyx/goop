@@ -970,7 +970,7 @@ fn emitSelectable(
     const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
-        .color = if (selectable.dragging)
+        .color = if (selectable.drag.active)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
         else
             fill,
@@ -1032,7 +1032,7 @@ fn emitGridItem(
     _: ?*const layout.TextMeasureCtx,
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
-    const fill = if (grid_item.dragging)
+    const fill = if (grid_item.drag.active)
         style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
     else
         selectableBg(node, grid_item.selected, theme);
@@ -2122,7 +2122,7 @@ fn tableRowFill(
     row: widget.WidgetKind.TableRow,
     theme: style.Theme,
 ) style.Color {
-    if (row.dragging) return style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72);
+    if (row.drag.active) return style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72);
     if (row.selected) return theme.selection_bg;
     if (row.header) return theme.bg_active;
     if (widget.tableRowSelectable(tree, handle) and node.interaction.hovered) {
@@ -2424,7 +2424,7 @@ fn treeItemChrome(
     const has_custom_border = node.style_override.border != null or node.style_override.border_width != null;
 
     return .{
-        .color = if (item.dragging)
+        .color = if (item.drag.active)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
         else if (node.interaction.drop_hovered)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
@@ -2804,25 +2804,25 @@ fn emitDragGhosts(
         if (!node.alive) continue;
         switch (node.kind) {
             .tree_item => |item| {
-                if (!item.dragging or item.drag_rect.w <= 0 or item.drag_rect.h <= 0) continue;
+                if (!item.drag.active or item.drag.rect.w <= 0 or item.drag.rect.h <= 0) continue;
                 const resolved = node.style_override.resolve(theme);
-                try emitDragGhostRect(item.drag_rect, resolved, theme, commands, allocator);
-                const label_x = item.drag_rect.x + resolved.padding.left;
-                const label_bounds = customTextBounds(item.drag_rect, resolved, label_x, rectRight(item.drag_rect) - resolved.padding.right - label_x);
+                try emitDragGhostRect(item.drag.rect, resolved, theme, commands, allocator);
+                const label_x = item.drag.rect.x + resolved.padding.left;
+                const label_bounds = customTextBounds(item.drag.rect, resolved, label_x, rectRight(item.drag.rect) - resolved.padding.right - label_x);
                 try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .start, .clip);
             },
             .selectable => |item| {
-                if (!item.dragging or item.drag_rect.w <= 0 or item.drag_rect.h <= 0) continue;
+                if (!item.drag.active or item.drag.rect.w <= 0 or item.drag.rect.h <= 0) continue;
                 const resolved = node.style_override.resolve(theme);
-                try emitDragGhostRect(item.drag_rect, resolved, theme, commands, allocator);
-                const label_bounds = defaultTextBounds(item.drag_rect, resolved);
+                try emitDragGhostRect(item.drag.rect, resolved, theme, commands, allocator);
+                const label_bounds = defaultTextBounds(item.drag.rect, resolved);
                 try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .start, .clip);
             },
             .grid_item => |item| {
-                if (!item.dragging or item.drag_rect.w <= 0 or item.drag_rect.h <= 0) continue;
+                if (!item.drag.active or item.drag.rect.w <= 0 or item.drag.rect.h <= 0) continue;
                 const resolved = node.style_override.resolve(theme);
-                try emitDragGhostRect(item.drag_rect, resolved, theme, commands, allocator);
-                const inner = defaultTextBounds(item.drag_rect, resolved);
+                try emitDragGhostRect(item.drag.rect, resolved, theme, commands, allocator);
+                const inner = defaultTextBounds(item.drag.rect, resolved);
                 const icon_size = @max(@min(inner.w, inner.h - resolved.font_size - theme.spacing), 0);
                 if (icon_size > 8) {
                     const icon_rect = Rect{
@@ -2841,16 +2841,16 @@ fn emitDragGhosts(
                 }
                 const label_bounds = Rect{
                     .x = inner.x,
-                    .y = item.drag_rect.y + item.drag_rect.h - resolved.padding.bottom - resolved.font_size * 1.4,
+                    .y = item.drag.rect.y + item.drag.rect.h - resolved.padding.bottom - resolved.font_size * 1.4,
                     .w = inner.w,
                     .h = resolved.font_size * 1.4,
                 };
                 try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .center, .ellipsis);
             },
             .table_row => |row| {
-                if (!row.dragging or row.drag_rect.w <= 0 or row.drag_rect.h <= 0) continue;
+                if (!row.drag.active or row.drag.rect.w <= 0 or row.drag.rect.h <= 0) continue;
                 const resolved = node.style_override.resolve(theme);
-                try emitDragGhostRect(row.drag_rect, resolved, theme, commands, allocator);
+                try emitDragGhostRect(row.drag.rect, resolved, theme, commands, allocator);
             },
             else => {},
         }
