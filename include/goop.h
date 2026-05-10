@@ -321,6 +321,8 @@ typedef struct {
 typedef struct {
     float scroll_x;
     float scroll_y;
+    bool disable_horizontal_scroll;
+    bool disable_vertical_scroll;
 } goop_scroll_area_widget_t;
 
 typedef struct {
@@ -478,8 +480,22 @@ typedef enum {
     GOOP_DRAW_RECT = 0,
     GOOP_DRAW_TEXT = 1,
     GOOP_DRAW_CLIP = 2,
-    GOOP_DRAW_CUSTOM = 3,
+    GOOP_DRAW_ICON = 3,
+    GOOP_DRAW_CUSTOM = 4,
 } goop_draw_command_kind_t;
+
+typedef enum {
+    GOOP_TEXT_ALIGN_START = 0,
+    GOOP_TEXT_ALIGN_CENTER = 1,
+    GOOP_TEXT_ALIGN_END = 2,
+} goop_text_align_t;
+
+typedef enum {
+    GOOP_TEXT_OVERFLOW_VISIBLE = 0,
+    GOOP_TEXT_OVERFLOW_CLIP = 1,
+    GOOP_TEXT_OVERFLOW_ELLIPSIS = 2,
+    GOOP_TEXT_OVERFLOW_WRAP = 3,
+} goop_text_overflow_t;
 
 typedef struct {
     goop_rect_t bounds;
@@ -490,19 +506,27 @@ typedef struct {
 } goop_draw_rect_t;
 
 typedef struct {
-    float x;
-    float y;
     goop_rect_t bounds;
-    float baseline_y;
     goop_string_t text;
     goop_color_t color;
     float font_size;
+    goop_text_align_t text_align;
+    goop_text_overflow_t overflow;
 } goop_draw_text_t;
 
 typedef struct {
     bool has_bounds;
     goop_rect_t bounds;
 } goop_clip_rect_t;
+
+/* Opaque icon identity. The library does not interpret this value — widgets
+ * forward it to the embedder, which maps it to whatever asset or vector path
+ * it wants to draw. Embedders are free to define their own numeric scheme. */
+typedef struct {
+    goop_rect_t bounds;
+    uint32_t kind;
+    goop_color_t color;
+} goop_draw_icon_t;
 
 typedef struct {
     goop_node_handle_t handle;
@@ -515,6 +539,7 @@ typedef struct {
         goop_draw_rect_t rect;
         goop_draw_text_t text;
         goop_clip_rect_t clip;
+        goop_draw_icon_t icon;
         goop_draw_custom_t custom;
     } data;
 } goop_draw_command_t;

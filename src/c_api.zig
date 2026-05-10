@@ -487,19 +487,6 @@ const CTextOverflow = enum(c_int) {
     wrap = 3,
 };
 
-const CIconKind = enum(c_int) {
-    folder = 0,
-    file = 1,
-    symlink = 2,
-    home = 3,
-    back = 4,
-    up = 5,
-    refresh = 6,
-    list = 7,
-    grid = 8,
-    info = 9,
-};
-
 const CDrawRect = extern struct {
     bounds: CRect = .{},
     color: CColor = .{},
@@ -529,7 +516,7 @@ const CDrawCustom = extern struct {
 
 const CDrawIcon = extern struct {
     bounds: CRect = .{},
-    kind: CIconKind = .file,
+    kind: u32 = 0,
     color: CColor = .{},
 };
 
@@ -1234,18 +1221,7 @@ fn convertDrawCommand(cmd: draw.DrawCommand) CDrawCommand {
             .kind = .icon,
             .data = .{ .icon = .{
                 .bounds = rectToC(icon_cmd.bounds),
-                .kind = switch (icon_cmd.kind) {
-                    .folder => .folder,
-                    .file => .file,
-                    .symlink => .symlink,
-                    .home => .home,
-                    .back => .back,
-                    .up => .up,
-                    .refresh => .refresh,
-                    .list => .list,
-                    .grid => .grid,
-                    .info => .info,
-                },
+                .kind = icon_cmd.kind,
                 .color = colorToC(icon_cmd.color),
             } },
         },
@@ -1825,7 +1801,118 @@ test "c header parses" {
     const c = @cImport({
         @cInclude("goop.h");
     });
-    try std.testing.expect(@sizeOf(c.goop_node_handle_t) == @sizeOf(CHandle));
-    try std.testing.expect(@sizeOf(c.goop_menu_item_widget_t) == @sizeOf(CMenuItemWidget));
-    try std.testing.expect(@sizeOf(c.goop_widget_t) > 0);
+
+    const Pair = struct { Z: type, C: type };
+    const pairs = [_]Pair{
+        .{ .Z = CStr, .C = c.goop_string_t },
+        .{ .Z = CHandle, .C = c.goop_node_handle_t },
+        .{ .Z = CRect, .C = c.goop_rect_t },
+        .{ .Z = CColor, .C = c.goop_color_t },
+        .{ .Z = CEdges, .C = c.goop_edges_t },
+        .{ .Z = CTheme, .C = c.goop_theme_t },
+        .{ .Z = CStyle, .C = c.goop_style_t },
+        .{ .Z = COptionalU16, .C = c.goop_optional_u16_t },
+        .{ .Z = COptionalU8, .C = c.goop_optional_u8_t },
+
+        .{ .Z = CContainerWidget, .C = c.goop_container_widget_t },
+        .{ .Z = CTextWidget, .C = c.goop_text_widget_t },
+        .{ .Z = CButtonWidget, .C = c.goop_button_widget_t },
+        .{ .Z = CCheckboxWidget, .C = c.goop_checkbox_widget_t },
+        .{ .Z = CRadioButtonWidget, .C = c.goop_radio_button_widget_t },
+        .{ .Z = CTreeItemWidget, .C = c.goop_tree_item_widget_t },
+        .{ .Z = CDropdownWidget, .C = c.goop_dropdown_widget_t },
+        .{ .Z = CListBoxWidget, .C = c.goop_list_box_widget_t },
+        .{ .Z = CSelectableWidget, .C = c.goop_selectable_widget_t },
+        .{ .Z = CGridSelectorWidget, .C = c.goop_grid_selector_widget_t },
+        .{ .Z = CGridItemWidget, .C = c.goop_grid_item_widget_t },
+        .{ .Z = CTableWidget, .C = c.goop_table_widget_t },
+        .{ .Z = CTableRowWidget, .C = c.goop_table_row_widget_t },
+        .{ .Z = CPopupWidget, .C = c.goop_popup_widget_t },
+        .{ .Z = CTooltipWidget, .C = c.goop_tooltip_widget_t },
+        .{ .Z = CMenuWidget, .C = c.goop_menu_widget_t },
+        .{ .Z = CMenuItemWidget, .C = c.goop_menu_item_widget_t },
+        .{ .Z = CDragValueWidget, .C = c.goop_drag_value_widget_t },
+        .{ .Z = CSpinboxWidget, .C = c.goop_spinbox_widget_t },
+        .{ .Z = CTabItemWidget, .C = c.goop_tab_item_widget_t },
+        .{ .Z = CSplitterWidget, .C = c.goop_splitter_widget_t },
+        .{ .Z = CSliderWidget, .C = c.goop_slider_widget_t },
+        .{ .Z = CScrollAreaWidget, .C = c.goop_scroll_area_widget_t },
+        .{ .Z = CTextInputWidget, .C = c.goop_text_input_widget_t },
+        .{ .Z = CSpacerWidget, .C = c.goop_spacer_widget_t },
+        .{ .Z = CUnitWidget, .C = c.goop_unit_widget_t },
+        .{ .Z = CWidget, .C = c.goop_widget_t },
+
+        .{ .Z = CMouseMoveEvent, .C = c.goop_mouse_move_event_t },
+        .{ .Z = CMouseButtonEvent, .C = c.goop_mouse_button_event_t },
+        .{ .Z = CMouseScrollEvent, .C = c.goop_mouse_scroll_event_t },
+        .{ .Z = CKeyEvent, .C = c.goop_key_event_t },
+        .{ .Z = CTextEvent, .C = c.goop_text_event_t },
+        .{ .Z = CFocusEvent, .C = c.goop_focus_event_t },
+        .{ .Z = CResizeEvent, .C = c.goop_resize_event_t },
+        .{ .Z = CEvent, .C = c.goop_event_t },
+
+        .{ .Z = CDrawRect, .C = c.goop_draw_rect_t },
+        .{ .Z = CDrawText, .C = c.goop_draw_text_t },
+        .{ .Z = CClipRect, .C = c.goop_clip_rect_t },
+        .{ .Z = CDrawIcon, .C = c.goop_draw_icon_t },
+        .{ .Z = CDrawCustom, .C = c.goop_draw_custom_t },
+        .{ .Z = CDrawCommand, .C = c.goop_draw_command_t },
+        .{ .Z = CDrawList, .C = c.goop_draw_list_t },
+
+        .{ .Z = CTextDimensions, .C = c.goop_text_dimensions_t },
+        .{ .Z = CTextMeasureCtx, .C = c.goop_text_measure_ctx_t },
+        .{ .Z = CClipboard, .C = c.goop_clipboard_t },
+        .{ .Z = CContextOptions, .C = c.goop_context_options_t },
+        .{ .Z = CSecondaryClick, .C = c.goop_secondary_click_t },
+        .{ .Z = CTreeDrop, .C = c.goop_tree_drop_t },
+        .{ .Z = CGridDrop, .C = c.goop_grid_drop_t },
+    };
+
+    inline for (pairs) |pair| {
+        std.testing.expectEqual(@sizeOf(pair.Z), @sizeOf(pair.C)) catch |err| {
+            std.debug.print("size mismatch: zig={s} c={s} zig_size={} c_size={}\n", .{
+                @typeName(pair.Z),
+                @typeName(pair.C),
+                @sizeOf(pair.Z),
+                @sizeOf(pair.C),
+            });
+            return err;
+        };
+        inline for (@typeInfo(pair.Z).@"struct".fields) |field| {
+            const z_off = @offsetOf(pair.Z, field.name);
+            const c_off = @offsetOf(pair.C, field.name);
+            std.testing.expectEqual(z_off, c_off) catch |err| {
+                std.debug.print("offset mismatch: {s}.{s}: zig={} c={}\n", .{
+                    @typeName(pair.Z),
+                    field.name,
+                    z_off,
+                    c_off,
+                });
+                return err;
+            };
+        }
+    }
+}
+
+test "c header draw command kinds match" {
+    const c = @cImport({
+        @cInclude("goop.h");
+    });
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CDrawCommandKind.rect)), c.GOOP_DRAW_RECT);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CDrawCommandKind.text)), c.GOOP_DRAW_TEXT);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CDrawCommandKind.clip)), c.GOOP_DRAW_CLIP);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CDrawCommandKind.icon)), c.GOOP_DRAW_ICON);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CDrawCommandKind.custom)), c.GOOP_DRAW_CUSTOM);
+}
+
+test "c header widget kinds match" {
+    const c = @cImport({
+        @cInclude("goop.h");
+    });
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CWidgetKind.container)), c.GOOP_WIDGET_CONTAINER);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CWidgetKind.text)), c.GOOP_WIDGET_TEXT);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CWidgetKind.button)), c.GOOP_WIDGET_BUTTON);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CWidgetKind.scroll_area)), c.GOOP_WIDGET_SCROLL_AREA);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CWidgetKind.text_input)), c.GOOP_WIDGET_TEXT_INPUT);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CWidgetKind.spacer)), c.GOOP_WIDGET_SPACER);
 }

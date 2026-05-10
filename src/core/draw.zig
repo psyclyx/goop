@@ -31,18 +31,11 @@ pub const TextOverflow = enum {
     ellipsis,
 };
 
-pub const IconKind = enum {
-    folder,
-    file,
-    symlink,
-    home,
-    back,
-    up,
-    refresh,
-    list,
-    grid,
-    info,
-};
+/// Opaque icon identity. The core does not interpret this value — it is
+/// passed through from widgets to the embedder, which maps it to whatever
+/// asset or vector path it wants to draw. Embedders are free to define
+/// their own numeric scheme.
+pub const IconId = u32;
 
 /// A semantic paint command emitted by the core.
 pub const PaintCommand = union(enum) {
@@ -75,7 +68,7 @@ pub const PaintCommand = union(enum) {
 
     pub const Icon = struct {
         bounds: Rect,
-        kind: IconKind,
+        kind: IconId,
         color: style.Color,
     };
 
@@ -122,7 +115,7 @@ pub const DrawCommand = union(enum) {
 
     pub const DrawIcon = struct {
         bounds: Rect,
-        kind: IconKind,
+        kind: IconId,
         color: style.Color,
     };
 

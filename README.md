@@ -25,7 +25,8 @@ the editor-style chrome that the library is being built around.
 
 The core does not create windows, own the event loop, or issue GPU commands.
 It tracks widget state, writes back layout rectangles, and emits simple draw
-commands (`rect`, `text`, `clip`) that a caller can render however it wants.
+commands (`rect`, `text`, `clip`, `icon`, `custom`) that a caller can render
+however it wants.
 
 Current pieces in-tree:
 
@@ -38,7 +39,7 @@ Current pieces in-tree:
 
 Widgets currently implemented:
 
-- container, text, button, checkbox, radio button, tree item
+- container, spacer, text, button, checkbox, radio button, tree item
 - dropdown, popup, tooltip, menu bar, menu, menu item
 - list box, selectable, grid selector, grid item
 - table, table row, table cell

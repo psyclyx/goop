@@ -43,31 +43,42 @@ static bool push_text(goop_context_t *ctx, uint32_t codepoint) {
     return goop_context_push_event(ctx, &text);
 }
 
-static void summarize_draw_list(const goop_draw_list_t *draw_list) {
-    size_t rect_count = 0;
-    size_t text_count = 0;
-    size_t clip_count = 0;
-    size_t custom_count = 0;
+typedef struct {
+    size_t rect;
+    size_t text;
+    size_t clip;
+    size_t icon;
+    size_t custom;
+    size_t unknown;
+} draw_summary_t;
+
+static draw_summary_t summarize_draw_list(const goop_draw_list_t *draw_list) {
+    draw_summary_t summary = {0};
 
     for (size_t i = 0; i < draw_list->len; ++i) {
         switch (draw_list->commands[i].kind) {
             case GOOP_DRAW_RECT:
-                ++rect_count;
+                ++summary.rect;
                 break;
             case GOOP_DRAW_TEXT:
-                ++text_count;
+                ++summary.text;
                 break;
             case GOOP_DRAW_CLIP:
-                ++clip_count;
+                ++summary.clip;
+                break;
+            case GOOP_DRAW_ICON:
+                ++summary.icon;
                 break;
             case GOOP_DRAW_CUSTOM:
-                ++custom_count;
+                ++summary.custom;
+                break;
+            default:
+                ++summary.unknown;
                 break;
         }
     }
 
-    printf("draw summary: rect=%zu text=%zu clip=%zu custom=%zu\n",
-           rect_count, text_count, clip_count, custom_count);
+    return summary;
 }
 
 int main(void) {
@@ -161,7 +172,56 @@ int main(void) {
 
     printf("goop c example: text=%.*s clicked=%d draw_commands=%zu\n",
            (int)value.len, value.ptr, clicked ? 1 : 0, draw_list.len);
-    summarize_draw_list(&draw_list);
+
+    const draw_summary_t summary = summarize_draw_list(&draw_list);
+    printf("draw summary: rect=%zu text=%zu clip=%zu icon=%zu custom=%zu\n",
+           summary.rect, summary.text, summary.clip, summary.icon, summary.custom);
+
+    if (summary.unknown != 0) {
+        fprintf(stderr,
+                "draw list contains %zu commands with unknown kind — "
+                "C header is likely out of sync with c_api.zig\n",
+                summary.unknown);
+        goop_context_free_draw_list(ctx, &draw_list);
+        goop_context_destroy(ctx);
+        return 1;
+    }
+
+    if (summary.rect + summary.text + summary.clip + summary.icon + summary.custom != draw_list.len) {
+        fprintf(stderr, "draw summary did not classify every command\n");
+        goop_context_free_draw_list(ctx, &draw_list);
+        goop_context_destroy(ctx);
+        return 1;
+    }
+
+    if (summary.text < 1) {
+        fprintf(stderr,
+                "expected at least one text command (button label), got %zu — "
+                "draw command layout may be misaligned\n",
+                summary.text);
+        goop_context_free_draw_list(ctx, &draw_list);
+        goop_context_destroy(ctx);
+        return 1;
+    }
+
+    bool found_button_label = false;
+    for (size_t i = 0; i < draw_list.len; ++i) {
+        if (draw_list.commands[i].kind != GOOP_DRAW_TEXT) continue;
+        const goop_draw_text_t *t = &draw_list.commands[i].data.text;
+        if (t->text.len == 5 && t->text.ptr != NULL &&
+            memcmp(t->text.ptr, "Apply", 5) == 0) {
+            found_button_label = true;
+            break;
+        }
+    }
+    if (!found_button_label) {
+        fprintf(stderr,
+                "expected a text command with content \"Apply\" — "
+                "goop_draw_text_t field layout likely diverged from c_api.zig\n");
+        goop_context_free_draw_list(ctx, &draw_list);
+        goop_context_destroy(ctx);
+        return 1;
+    }
 
     goop_context_free_draw_list(ctx, &draw_list);
     goop_context_destroy(ctx);

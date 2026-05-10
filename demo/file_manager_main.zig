@@ -4915,12 +4915,13 @@ fn refreshAssetViewportIfNeeded(state: *State) !bool {
     return false;
 }
 
-fn browserEntryIconKind(entry: BrowserEntry) goop.IconKind {
-    return switch (entry.kind) {
+fn browserEntryIconKind(entry: BrowserEntry) u32 {
+    const id: render.DemoIcon = switch (entry.kind) {
         .directory => .folder,
         .symlink => if (entry.target_kind == .directory) .folder else .file,
         else => .file,
     };
+    return @intFromEnum(id);
 }
 
 fn browserEntryIconColor(theme: goop.Theme, entry: BrowserEntry, selected: bool) goop.Color {
@@ -4990,7 +4991,7 @@ fn appendEntryIconCommands(
     if (entry.kind == .symlink) {
         try state.composed_paint_commands.append(allocator, .{ .icon = .{
             .bounds = symlinkBadgeRect(bounds),
-            .kind = .symlink,
+            .kind = @intFromEnum(render.DemoIcon.symlink),
             .color = browserEntryLinkBadgeColor(ctx.theme, selected),
         } });
     }
@@ -6593,7 +6594,7 @@ fn addFolderTreeItem(
     const handle = try ctx.tree.addChild(parent, .{ .tree_item = .{
         .label = label,
         .group = 91,
-        .icon = .folder,
+        .icon = @intFromEnum(render.DemoIcon.folder),
         .icon_color = .rgb(74, 120, 201),
         .has_children = has_children,
         .expanded = expanded,

@@ -15,6 +15,27 @@ const PaintCommand = goop.PaintCommand;
 const PaintList = goop.PaintList;
 const Rect = goop.draw.Rect;
 
+/// The demo's icon vocabulary. Widgets in the demo set
+/// `tree_item.icon = @intFromEnum(DemoIcon.folder)` (etc.); this renderer
+/// switches on the same enum when it draws the icon command. Goop core does
+/// not see or interpret these values — the field is just an opaque `u32`.
+pub const DemoIcon = enum(u32) {
+    folder = 0,
+    file = 1,
+    symlink = 2,
+    home = 3,
+    back = 4,
+    up = 5,
+    refresh = 6,
+    list = 7,
+    grid = 8,
+    info = 9,
+};
+
+pub fn demoIconId(icon: DemoIcon) u32 {
+    return @intFromEnum(icon);
+}
+
 const Scissor = struct { x: i32, y: i32, w: i32, h: i32 };
 
 const RunKind = enum { path, text };
@@ -782,7 +803,7 @@ pub const Renderer = struct {
                 .icon => |icon| {
                     h = mixHash(h, 4);
                     h = hashRect(h, icon.bounds);
-                    h = mixHash(h, @intFromEnum(icon.kind));
+                    h = mixHash(h, icon.kind);
                     h = hashColor(h, icon.color);
                 },
                 .custom => |custom| {
@@ -925,14 +946,16 @@ pub const Renderer = struct {
 
     fn appendIconPicture(
         builder: *snail.PathPictureBuilder,
-        kind: goop.IconKind,
+        kind: u32,
         rect: snail.Rect,
         fill: snail.FillStyle,
         stroke: snail.StrokeStyle,
     ) !void {
         const transform = snail.Transform2D.translate(rect.x, rect.y);
         const local = snail.Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
-        switch (kind) {
+        if (kind >= @typeInfo(DemoIcon).@"enum".fields.len) return;
+        const demo_kind: DemoIcon = @enumFromInt(kind);
+        switch (demo_kind) {
             .folder => {
                 var path = snail.Path.init(builder.allocator);
                 defer path.deinit();
