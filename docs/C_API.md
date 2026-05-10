@@ -63,9 +63,12 @@ be inserted at the exact point `goop` emitted it in draw order.
 If your renderer has baseline-aware text APIs, prefer `baseline_y` over
 guessing from `font_size`.
 
-The draw list is owned by `goop_context_t` and is valid until the next call
-that mutates context state (events, tree edits, theme changes, resize).
-Copy it if you need it to outlive the next frame.
+The draw list is owned by `goop_context_t` and is valid until the next
+call to `goop_context_generate_draw_list` (or the paint-list equivalent),
+or until `goop_context_destroy`. Other state changes (events, tree edits,
+theme changes, resize) only set the dirty flag — the previous list keeps
+pointing at allocated memory until you regenerate. Copy the slice if you
+need it to outlive the next regeneration.
 
 ## Text And Clipboard
 

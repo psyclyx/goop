@@ -494,24 +494,28 @@ pub const Runtime = struct {
         self.last_node_count = current_count;
     }
 
-    /// Generate draw commands from the laid-out widget tree.
+    /// Generate the renderer-facing draw command list.
     ///
-    /// The returned list is owned by the Runtime. It stays valid until the
-    /// next call that invalidates the draw cache (event processing, tree
-    /// mutation, theme/dimension change, or `deinit`). Copy if you need it
-    /// to outlive that.
+    /// The returned slice is owned by the Runtime. It stays valid until
+    /// the next call to `generateDrawList`, `generatePaintList`, or
+    /// `deinit` on this runtime — those are the only paths that free
+    /// the underlying memory. Other state changes (events, tree
+    /// mutation, theme/dimension changes) only set the dirty flag; the
+    /// previous list keeps pointing at allocated memory until you
+    /// regenerate. Copy the slice if you need it to outlive the next
+    /// regeneration.
     pub fn generateDrawList(self: *Runtime, tree: *const Tree, theme: Theme) !DrawList {
         if (!self.draw_dirty) {
             if (self.cached_draw_list) |cached| return cached;
         }
         const paint_list = try self.generatePaintList(tree, theme);
-        if (self.cached_draw_list) |cached| return cached;
         const dl = try draw.lowerPaintList(paint_list, self.allocator, self.text_measure_ctx);
         self.cached_draw_list = dl;
-        self.draw_dirty = false;
         return dl;
     }
 
+    /// Generate the semantic paint command list. Same lifetime rules as
+    /// `generateDrawList`.
     pub fn generatePaintList(self: *Runtime, tree: *const Tree, theme: Theme) !PaintList {
         if (!self.draw_dirty) {
             if (self.cached_paint_list) |cached| return cached;
