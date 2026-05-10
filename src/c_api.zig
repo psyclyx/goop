@@ -1577,7 +1577,7 @@ fn markDirty(ctx: *CContext) void {
 }
 
 fn validHandle(ctx: *const CContext, handle: CHandle) bool {
-    return ctx.ctx.isAlive(handleFromC(handle));
+    return ctx.ctx.runtime.isAlive(&ctx.ctx.tree, handleFromC(handle));
 }
 
 fn convertDrawCommand(cmd: draw.DrawCommand) CDrawCommand {
@@ -1841,7 +1841,7 @@ export fn goop_context_remove_widget(ctx: ?*CContext, handle: CHandle) bool {
 
 export fn goop_context_is_alive(ctx: ?*const CContext, handle: CHandle) bool {
     const context = ctx orelse return false;
-    return context.ctx.isAlive(handleFromC(handle));
+    return context.ctx.runtime.isAlive(&context.ctx.tree, handleFromC(handle));
 }
 
 export fn goop_context_layout_rect(ctx: ?*const CContext, handle: CHandle, out_rect: ?*CRect) bool {
@@ -1855,19 +1855,19 @@ export fn goop_context_layout_rect(ctx: ?*const CContext, handle: CHandle, out_r
 export fn goop_context_was_clicked(ctx: ?*const CContext, handle: CHandle) bool {
     const context = ctx orelse return false;
     if (!validHandle(context, handle)) return false;
-    return context.ctx.wasClicked(handleFromC(handle));
+    return context.ctx.runtime.wasClicked(&context.ctx.tree, handleFromC(handle));
 }
 
 export fn goop_context_was_secondary_clicked(ctx: ?*const CContext, handle: CHandle) bool {
     const context = ctx orelse return false;
     if (!validHandle(context, handle)) return false;
-    return context.ctx.wasSecondaryClicked(handleFromC(handle));
+    return context.ctx.runtime.wasSecondaryClicked(&context.ctx.tree, handleFromC(handle));
 }
 
 export fn goop_context_widget(ctx: ?*const CContext, handle: CHandle, out_view: ?*CWidgetView) bool {
     const context = ctx orelse return false;
     const view_ptr = out_view orelse return false;
-    const view = context.ctx.widget(handleFromC(handle)) orelse return false;
+    const view = context.ctx.runtime.widget(&context.ctx.tree, handleFromC(handle)) orelse return false;
     view_ptr.* = widgetViewToC(view);
     return true;
 }
@@ -1875,7 +1875,7 @@ export fn goop_context_widget(ctx: ?*const CContext, handle: CHandle, out_view: 
 export fn goop_context_table_column_fraction(ctx: ?*const CContext, handle: CHandle, index: u8, out_fraction: ?*f32) bool {
     const context = ctx orelse return false;
     const fraction_ptr = out_fraction orelse return false;
-    const fraction = context.ctx.tableColumnFraction(handleFromC(handle), index) orelse return false;
+    const fraction = context.ctx.runtime.tableColumnFraction(&context.ctx.tree, handleFromC(handle), index) orelse return false;
     fraction_ptr.* = fraction;
     return true;
 }
@@ -1883,7 +1883,7 @@ export fn goop_context_table_column_fraction(ctx: ?*const CContext, handle: CHan
 export fn goop_context_last_secondary_click(ctx: ?*const CContext, out_click: ?*CSecondaryClick) bool {
     const context = ctx orelse return false;
     const click_ptr = out_click orelse return false;
-    const click = context.ctx.lastSecondaryClick() orelse return false;
+    const click = context.ctx.runtime.lastSecondaryClick() orelse return false;
     click_ptr.* = .{
         .target = handleToC(click.target),
         .x = click.x,
@@ -1895,7 +1895,7 @@ export fn goop_context_last_secondary_click(ctx: ?*const CContext, out_click: ?*
 export fn goop_context_last_drop(ctx: ?*const CContext, out_drop: ?*CDrop) bool {
     const context = ctx orelse return false;
     const drop_ptr = out_drop orelse return false;
-    const drop = context.ctx.lastDrop() orelse return false;
+    const drop = context.ctx.runtime.lastDrop() orelse return false;
     drop_ptr.* = switch (drop) {
         .tree => |d| .{ .kind = .tree, .data = .{ .tree = .{
             .source = handleToC(d.source),
