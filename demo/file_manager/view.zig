@@ -768,7 +768,7 @@ pub fn rebuildAssetView(state: *State) !void {
     });
 
     while (ctx.tree.getConst(scroll_handle).first_child) |child| {
-        try ctx.removeWidget(child);
+        try ctx.tree.remove(child);
     }
     clearAssetBodyTracking(state);
     try buildAssetView(state, ctx, scroll_handle);
@@ -1404,10 +1404,10 @@ pub fn buildWidgetTree(state: *State) !void {
     captureFilePanelViewport(state, ctx);
     captureSidebarScroll(state, ctx);
     if (state.ui_root) |root| {
-        if (ctx.isAlive(root)) try ctx.removeWidget(root);
+        if (ctx.isAlive(root)) try ctx.tree.remove(root);
     }
     if (state.context_popup) |popup| {
-        if (ctx.isAlive(popup)) try ctx.removeWidget(popup);
+        if (ctx.isAlive(popup)) try ctx.tree.remove(popup);
     }
     clearUiTracking(state);
 

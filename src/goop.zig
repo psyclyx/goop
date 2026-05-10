@@ -12,11 +12,15 @@
 //!   bundles a `Tree`, `Theme`, optional `Clipboard`, and a `Runtime` so
 //!   the common case is one type. Anything `Context` exposes is a thin
 //!   forward over `Runtime` plus its bundled tree.
-//! - `Tree` holds widget nodes. Mutating fields directly on a node
-//!   bypasses the runtime's invalidation, so changes that affect layout
-//!   or rendering should go through `Runtime.setStyle`/`updateWidget` or
-//!   the equivalent on `Context`. The runtime watches the tree's slot
-//!   count to catch raw `addChild`/`remove` calls.
+//! - `Tree` holds widget nodes. Add and remove go through `Tree`
+//!   directly (`tree.addRoot`, `tree.addChild`, `tree.remove`); the
+//!   runtime watches the live-node count and re-runs layout when it
+//!   changes. *In-place* mutations (style overrides, kind payload,
+//!   per-frame flags) must go through `Runtime.setStyle`,
+//!   `Runtime.updateWidget`, `Runtime.mutateKind`, or
+//!   `Runtime.setCustomDraw` (or the matching `Context` method) so the
+//!   layout/draw caches invalidate. Reaching into `tree.get(h).foo = ...`
+//!   silently bypasses invalidation and may produce stale frames.
 //! - The everyday primitives (`NodeHandle`, `WidgetKind`, `WidgetView`,
 //!   `Style`, `Theme`, `Event`, `DrawCommand`, …) are re-exported at
 //!   this level so most code only imports `goop`.
@@ -445,13 +449,6 @@ pub const Runtime = struct {
         self.draw_dirty = true;
     }
 
-    /// Remove a widget and its entire subtree from the tree.
-    /// The handle becomes invalid after this call.
-    pub fn removeWidget(self: *Runtime, tree: *Tree, handle: NodeHandle) !void {
-        self.invalidate();
-        try tree.remove(handle);
-    }
-
     /// Check whether a handle still refers to a living widget.
     pub fn isAlive(_: *const Runtime, tree: *const Tree, handle: NodeHandle) bool {
         return tree.isAlive(handle);
@@ -724,19 +721,6 @@ pub const Context = struct {
         return self.runtime.setCustomDraw(&self.tree, handle, custom);
     }
 
-    /// Add a top-level widget. Returns its handle. Marks the runtime
-    /// dirty.
-    pub fn addRoot(self: *Context, kind: WidgetKind) !NodeHandle {
-        self.runtime.invalidate();
-        return self.tree.addRoot(kind);
-    }
-
-    /// Add a child widget under the given parent. Returns its handle.
-    /// Marks the runtime dirty.
-    pub fn addChild(self: *Context, parent: NodeHandle, kind: WidgetKind) !NodeHandle {
-        self.runtime.invalidate();
-        return self.tree.addChild(parent, kind);
-    }
 
     /// Get the most recent secondary click that occurred this frame, if any.
     pub fn lastSecondaryClick(self: *const Context) ?SecondaryClick {
@@ -776,12 +760,6 @@ pub const Context = struct {
     /// Get the timestamp from the most recent primary-button press event.
     pub fn lastPrimaryPressTimestampMs(self: *const Context) u64 {
         return self.runtime.lastPrimaryPressTimestampMs();
-    }
-
-    /// Remove a widget and its entire subtree from the tree.
-    /// The handle becomes invalid after this call.
-    pub fn removeWidget(self: *Context, handle: NodeHandle) !void {
-        try self.runtime.removeWidget(&self.tree, handle);
     }
 
     /// Check whether a handle still refers to a living widget.

@@ -1775,7 +1775,9 @@ export fn goop_context_set_style(ctx: ?*CContext, handle: CHandle, override_styl
 export fn goop_context_remove_widget(ctx: ?*CContext, handle: CHandle) bool {
     const context = ctx orelse return false;
     if (!validHandle(context, handle)) return false;
-    context.ctx.removeWidget(handleFromC(handle)) catch return false;
+    context.ctx.tree.remove(handleFromC(handle)) catch return false;
+    // tree.remove changes the live-node count; the runtime detects the
+    // change on the next doLayout call.
     return true;
 }
 
