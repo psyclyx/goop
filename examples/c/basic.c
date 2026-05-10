@@ -130,37 +130,41 @@ int main(void) {
         return 1;
     }
 
-    goop_rect_t input_rect = {0};
-    goop_rect_t button_rect = {0};
-    if (!goop_context_layout_rect(ctx, input, &input_rect) ||
-        !goop_context_layout_rect(ctx, button, &button_rect)) {
-        fprintf(stderr, "failed to query layout rects\n");
+    goop_node_view_t input_node = {0};
+    goop_node_view_t button_node = {0};
+    if (!goop_context_node(ctx, input, &input_node) ||
+        !goop_context_node(ctx, button, &button_node)) {
+        fprintf(stderr, "failed to query node snapshots\n");
         goop_context_destroy(ctx);
         return 1;
     }
 
     if (!goop_context_clear_clicked_flags(ctx) ||
-        !push_mouse_click(ctx, input_rect) ||
+        !push_mouse_click(ctx, input_node.rect) ||
         !push_text(ctx, 'R') ||
         !push_text(ctx, 'e') ||
         !push_text(ctx, 'n') ||
         !push_text(ctx, 0x00E9) ||
-        !push_mouse_click(ctx, button_rect) ||
+        !push_mouse_click(ctx, button_node.rect) ||
         !goop_context_process_events(ctx)) {
         fprintf(stderr, "failed to drive input events\n");
         goop_context_destroy(ctx);
         return 1;
     }
 
-    goop_widget_view_t input_view = {0};
-    if (!goop_context_widget(ctx, input, &input_view) ||
-        input_view.kind != GOOP_WIDGET_TEXT_INPUT) {
-        fprintf(stderr, "failed to read text input view\n");
+    if (!goop_context_node(ctx, input, &input_node) ||
+        input_node.kind.kind != GOOP_WIDGET_TEXT_INPUT) {
+        fprintf(stderr, "failed to read text input snapshot\n");
         goop_context_destroy(ctx);
         return 1;
     }
-    const goop_string_t value = input_view.data.text_input.content;
-    const bool clicked = goop_context_was_clicked(ctx, button);
+    const goop_string_t value = input_node.kind.data.text_input.content;
+    if (!goop_context_node(ctx, button, &button_node)) {
+        fprintf(stderr, "failed to re-read button snapshot\n");
+        goop_context_destroy(ctx);
+        return 1;
+    }
+    const bool clicked = button_node.clicked;
 
     if (!clicked || value.len != 5 || !value.ptr ||
         value.ptr[0] != 'R' || value.ptr[1] != 'e' || value.ptr[2] != 'n' ||

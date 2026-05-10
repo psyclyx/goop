@@ -568,6 +568,42 @@ const CWidgetView = extern struct {
     } = .{ .container = .{} },
 };
 
+const CNodeView = extern struct {
+    rect: CRect = .{},
+    user_id: u64 = 0,
+    custom_draw: bool = false,
+    focused: bool = false,
+    accepts_drop: bool = false,
+    drop_hovered: bool = false,
+    drop_received: bool = false,
+    clicked: bool = false,
+    secondary_clicked: bool = false,
+    changed: bool = false,
+    toggled: bool = false,
+    kind: CWidgetView = .{},
+};
+
+const CFrameButtons = extern struct {
+    left: bool = false,
+    right: bool = false,
+    middle: bool = false,
+};
+
+const CFrameSnapshot = extern struct {
+    pointer_x: f32 = 0,
+    pointer_y: f32 = 0,
+    buttons: CFrameButtons = .{},
+    has_focused: bool = false,
+    focused: CHandle = .{},
+    has_drag_source: bool = false,
+    drag_source: CHandle = .{},
+    has_last_drop: bool = false,
+    last_drop: CDrop = .{},
+    has_last_secondary_click: bool = false,
+    last_secondary_click: CSecondaryClick = .{},
+    last_primary_press_ms: u64 = 0,
+};
+
 const CMouseButton = enum(c_int) {
     left = 0,
     right = 1,
@@ -1173,6 +1209,75 @@ fn widgetViewToC(node: api.NodeView) CWidgetView {
             .cursor = v.cursor,
             .selection_anchor = optionalU8(v.selection_anchor),
         } } },
+    };
+}
+
+fn nodeViewToC(node: api.NodeView) CNodeView {
+    return .{
+        .rect = rectToC(node.rect),
+        .user_id = node.user_id,
+        .custom_draw = node.custom_draw,
+        .focused = node.focused,
+        .accepts_drop = node.accepts_drop,
+        .drop_hovered = node.drop_hovered,
+        .drop_received = node.drop_received,
+        .clicked = node.clicked,
+        .secondary_clicked = node.secondary_clicked,
+        .changed = node.changed,
+        .toggled = node.toggled,
+        .kind = widgetViewToC(node),
+    };
+}
+
+fn dropToC(drop: dispatch.Drop) CDrop {
+    return switch (drop) {
+        .tree => |d| .{ .kind = .tree, .data = .{ .tree = .{
+            .source = handleToC(d.source),
+            .target = handleToC(d.target),
+            .position = treeDropPositionToC(d.position),
+        } } },
+        .grid => |d| .{ .kind = .grid, .data = .{ .grid = .{
+            .source = handleToC(d.source),
+            .target = handleToC(d.target),
+            .position = gridDropPositionToC(d.position),
+        } } },
+        .list => |d| .{ .kind = .list, .data = .{ .list = .{
+            .source = handleToC(d.source),
+            .target = handleToC(d.target),
+        } } },
+        .table => |d| .{ .kind = .table, .data = .{ .table = .{
+            .source = handleToC(d.source),
+            .target = handleToC(d.target),
+        } } },
+        .widget => |d| .{ .kind = .widget, .data = .{ .widget = .{
+            .source = handleToC(d.source),
+            .target = handleToC(d.target),
+        } } },
+    };
+}
+
+fn frameSnapshotToC(snap: api.FrameSnapshot) CFrameSnapshot {
+    return .{
+        .pointer_x = snap.pointer.x,
+        .pointer_y = snap.pointer.y,
+        .buttons = .{
+            .left = snap.buttons.left,
+            .right = snap.buttons.right,
+            .middle = snap.buttons.middle,
+        },
+        .has_focused = snap.focused != null,
+        .focused = if (snap.focused) |h| handleToC(h) else .{},
+        .has_drag_source = snap.drag_source != null,
+        .drag_source = if (snap.drag_source) |h| handleToC(h) else .{},
+        .has_last_drop = snap.last_drop != null,
+        .last_drop = if (snap.last_drop) |d| dropToC(d) else .{},
+        .has_last_secondary_click = snap.last_secondary_click != null,
+        .last_secondary_click = if (snap.last_secondary_click) |c| .{
+            .target = handleToC(c.target),
+            .x = c.x,
+            .y = c.y,
+        } else .{},
+        .last_primary_press_ms = snap.last_primary_press_ms,
     };
 }
 
@@ -1849,31 +1954,24 @@ export fn goop_context_is_alive(ctx: ?*const CContext, handle: CHandle) bool {
     return context.ctx.tree.isAlive(handleFromC(handle));
 }
 
-export fn goop_context_layout_rect(ctx: ?*const CContext, handle: CHandle, out_rect: ?*CRect) bool {
+/// Snapshot per-handle read-only state (rect, interaction flags, kind
+/// view) into one struct. Returns false for dead handles.
+export fn goop_context_node(ctx: ?*const CContext, handle: CHandle, out_node: ?*CNodeView) bool {
     const context = ctx orelse return false;
-    const rect = out_rect orelse return false;
+    const out = out_node orelse return false;
     const node = context.ctx.tree.node(handleFromC(handle)) orelse return false;
-    rect.* = rectToC(node.rect);
+    out.* = nodeViewToC(node);
     return true;
 }
 
-export fn goop_context_was_clicked(ctx: ?*const CContext, handle: CHandle) bool {
+/// Snapshot per-frame interaction state (pointer position, button
+/// state, focus, drag source, last drop, last secondary click, last
+/// primary press timestamp). Always succeeds; out_snapshot must be
+/// non-null.
+export fn goop_context_frame(ctx: ?*const CContext, out_snapshot: ?*CFrameSnapshot) bool {
     const context = ctx orelse return false;
-    const node = context.ctx.tree.node(handleFromC(handle)) orelse return false;
-    return node.clicked;
-}
-
-export fn goop_context_was_secondary_clicked(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    const node = context.ctx.tree.node(handleFromC(handle)) orelse return false;
-    return node.secondary_clicked;
-}
-
-export fn goop_context_widget(ctx: ?*const CContext, handle: CHandle, out_view: ?*CWidgetView) bool {
-    const context = ctx orelse return false;
-    const view_ptr = out_view orelse return false;
-    const node = context.ctx.tree.node(handleFromC(handle)) orelse return false;
-    view_ptr.* = widgetViewToC(node);
+    const out = out_snapshot orelse return false;
+    out.* = frameSnapshotToC(context.ctx.runtime.frame(&context.ctx.tree));
     return true;
 }
 
@@ -1882,49 +1980,6 @@ export fn goop_context_table_column_fraction(ctx: ?*const CContext, handle: CHan
     const fraction_ptr = out_fraction orelse return false;
     const fraction = context.ctx.tree.tableColumnFraction(handleFromC(handle), index) orelse return false;
     fraction_ptr.* = fraction;
-    return true;
-}
-
-export fn goop_context_last_secondary_click(ctx: ?*const CContext, out_click: ?*CSecondaryClick) bool {
-    const context = ctx orelse return false;
-    const click_ptr = out_click orelse return false;
-    const click = context.ctx.runtime.frame(&context.ctx.tree).last_secondary_click orelse return false;
-    click_ptr.* = .{
-        .target = handleToC(click.target),
-        .x = click.x,
-        .y = click.y,
-    };
-    return true;
-}
-
-export fn goop_context_last_drop(ctx: ?*const CContext, out_drop: ?*CDrop) bool {
-    const context = ctx orelse return false;
-    const drop_ptr = out_drop orelse return false;
-    const drop = context.ctx.runtime.frame(&context.ctx.tree).last_drop orelse return false;
-    drop_ptr.* = switch (drop) {
-        .tree => |d| .{ .kind = .tree, .data = .{ .tree = .{
-            .source = handleToC(d.source),
-            .target = handleToC(d.target),
-            .position = treeDropPositionToC(d.position),
-        } } },
-        .grid => |d| .{ .kind = .grid, .data = .{ .grid = .{
-            .source = handleToC(d.source),
-            .target = handleToC(d.target),
-            .position = gridDropPositionToC(d.position),
-        } } },
-        .list => |d| .{ .kind = .list, .data = .{ .list = .{
-            .source = handleToC(d.source),
-            .target = handleToC(d.target),
-        } } },
-        .table => |d| .{ .kind = .table, .data = .{ .table = .{
-            .source = handleToC(d.source),
-            .target = handleToC(d.target),
-        } } },
-        .widget => |d| .{ .kind = .widget, .data = .{ .widget = .{
-            .source = handleToC(d.source),
-            .target = handleToC(d.target),
-        } } },
-    };
     return true;
 }
 
@@ -1960,20 +2015,6 @@ export fn goop_context_set_drop_target(ctx: ?*CContext, handle: CHandle, accepts
     return true;
 }
 
-export fn goop_context_is_drop_hovered(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    const node = context.ctx.tree.node(handleFromC(handle)) orelse return false;
-    return node.drop_hovered;
-}
-
-export fn goop_context_focused_widget(ctx: ?*const CContext, out_handle: ?*CHandle) bool {
-    const context = ctx orelse return false;
-    const handle_ptr = out_handle orelse return false;
-    const focused = context.ctx.runtime.frame(&context.ctx.tree).focused orelse return false;
-    handle_ptr.* = handleToC(focused);
-    return true;
-}
-
 export fn goop_context_focus_widget(ctx: ?*CContext, handle: CHandle) bool {
     const context = ctx orelse return false;
     return context.ctx.runtime.focusWidget(&context.ctx.tree, handleFromC(handle));
@@ -1989,39 +2030,6 @@ export fn goop_context_cancel_pointer_gesture(ctx: ?*CContext) bool {
     const context = ctx orelse return false;
     context.ctx.runtime.cancelPointerGesture(&context.ctx.tree);
     return true;
-}
-
-export fn goop_context_pointer_position(ctx: ?*const CContext, out_x: ?*f32, out_y: ?*f32) bool {
-    const context = ctx orelse return false;
-    const x_ptr = out_x orelse return false;
-    const y_ptr = out_y orelse return false;
-    const pos = context.ctx.runtime.frame(&context.ctx.tree).pointer;
-    x_ptr.* = pos.x;
-    y_ptr.* = pos.y;
-    return true;
-}
-
-export fn goop_context_is_pointer_button_down(ctx: ?*const CContext, button: CMouseButton) bool {
-    const context = ctx orelse return false;
-    const buttons = context.ctx.runtime.frame(&context.ctx.tree).buttons;
-    return switch (button) {
-        .left => buttons.left,
-        .right => buttons.right,
-        .middle => buttons.middle,
-    };
-}
-
-export fn goop_context_active_drag_source(ctx: ?*const CContext, out_handle: ?*CHandle) bool {
-    const context = ctx orelse return false;
-    const handle_ptr = out_handle orelse return false;
-    const source = context.ctx.runtime.frame(&context.ctx.tree).drag_source orelse return false;
-    handle_ptr.* = handleToC(source);
-    return true;
-}
-
-export fn goop_context_last_primary_press_timestamp_ms(ctx: ?*const CContext) u64 {
-    const context = ctx orelse return 0;
-    return context.ctx.runtime.frame(&context.ctx.tree).last_primary_press_ms;
 }
 
 test "c api smoke" {
@@ -2043,16 +2051,16 @@ test "c api smoke" {
 
     try std.testing.expect(goop_context_do_layout(ctx, null));
 
-    var rect: CRect = .{};
-    try std.testing.expect(goop_context_layout_rect(ctx, button, &rect));
+    var node: CNodeView = .{};
+    try std.testing.expect(goop_context_node(ctx, button, &node));
 
     const press = CEvent{
         .kind = .mouse_button,
         .data = .{ .mouse_button = .{
             .button = .left,
             .state = .pressed,
-            .x = rect.x + rect.w * 0.5,
-            .y = rect.y + rect.h * 0.5,
+            .x = node.rect.x + node.rect.w * 0.5,
+            .y = node.rect.y + node.rect.h * 0.5,
         } },
     };
     const release = CEvent{
@@ -2060,15 +2068,16 @@ test "c api smoke" {
         .data = .{ .mouse_button = .{
             .button = .left,
             .state = .released,
-            .x = rect.x + rect.w * 0.5,
-            .y = rect.y + rect.h * 0.5,
+            .x = node.rect.x + node.rect.w * 0.5,
+            .y = node.rect.y + node.rect.h * 0.5,
         } },
     };
 
     try std.testing.expect(goop_context_push_event(ctx, &press));
     try std.testing.expect(goop_context_push_event(ctx, &release));
     try std.testing.expect(goop_context_process_events(ctx));
-    try std.testing.expect(goop_context_was_clicked(ctx, button));
+    try std.testing.expect(goop_context_node(ctx, button, &node));
+    try std.testing.expect(node.clicked);
 
     var draw_list: CDrawList = .{};
     try std.testing.expect(goop_context_generate_draw_list(ctx, &draw_list));
@@ -2096,10 +2105,10 @@ test "c api menu item exposes checked state and defaults to enabled" {
         } },
     }, &item));
 
-    var view: CWidgetView = .{};
-    try std.testing.expect(goop_context_widget(ctx, item, &view));
-    try std.testing.expectEqual(CWidgetKind.menu_item, view.kind);
-    const v = view.data.menu_item;
+    var node: CNodeView = .{};
+    try std.testing.expect(goop_context_node(ctx, item, &node));
+    try std.testing.expectEqual(CWidgetKind.menu_item, node.kind.kind);
+    const v = node.kind.data.menu_item;
     try std.testing.expect(v.checked);
     try std.testing.expect(!v.disabled);
     try std.testing.expectEqual(@as(usize, 6), v.shortcut.len);
@@ -2204,6 +2213,10 @@ test "c header parses" {
         .{ .Z = CTableDrop, .C = c.goop_table_drop_t },
         .{ .Z = CWidgetDrop, .C = c.goop_widget_drop_t },
         .{ .Z = CDrop, .C = c.goop_drop_t },
+
+        .{ .Z = CNodeView, .C = c.goop_node_view_t },
+        .{ .Z = CFrameButtons, .C = c.goop_frame_buttons_t },
+        .{ .Z = CFrameSnapshot, .C = c.goop_frame_snapshot_t },
     };
 
     inline for (pairs) |pair| {

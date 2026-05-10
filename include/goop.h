@@ -854,6 +854,42 @@ typedef struct {
     } data;
 } goop_drop_t;
 
+typedef struct {
+    goop_rect_t rect;
+    uint64_t user_id;
+    bool custom_draw;
+    bool focused;
+    bool accepts_drop;
+    bool drop_hovered;
+    bool drop_received;
+    bool clicked;
+    bool secondary_clicked;
+    bool changed;
+    bool toggled;
+    goop_widget_view_t kind;
+} goop_node_view_t;
+
+typedef struct {
+    bool left;
+    bool right;
+    bool middle;
+} goop_frame_buttons_t;
+
+typedef struct {
+    float pointer_x;
+    float pointer_y;
+    goop_frame_buttons_t buttons;
+    bool has_focused;
+    goop_node_handle_t focused;
+    bool has_drag_source;
+    goop_node_handle_t drag_source;
+    bool has_last_drop;
+    goop_drop_t last_drop;
+    bool has_last_secondary_click;
+    goop_secondary_click_t last_secondary_click;
+    uint64_t last_primary_press_ms;
+} goop_frame_snapshot_t;
+
 goop_theme_t goop_default_theme(void);
 
 goop_context_t *goop_context_create(const goop_context_options_t *opts);
@@ -874,33 +910,27 @@ bool goop_context_update_widget(goop_context_t *ctx, goop_node_handle_t handle, 
 bool goop_context_set_style(goop_context_t *ctx, goop_node_handle_t handle, const goop_style_t *style);
 bool goop_context_remove_widget(goop_context_t *ctx, goop_node_handle_t handle);
 bool goop_context_is_alive(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_layout_rect(const goop_context_t *ctx, goop_node_handle_t handle, goop_rect_t *out_rect);
 
 bool goop_context_invalidate(goop_context_t *ctx);
 
-bool goop_context_was_clicked(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_was_secondary_clicked(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_widget(const goop_context_t *ctx, goop_node_handle_t handle, goop_widget_view_t *out_view);
+/* Read-only snapshots. goop_context_node bundles per-handle layout
+ * rect, interaction flags, and the kind-specific view. goop_context_frame
+ * bundles per-frame pointer/button/focus/drop state. */
+bool goop_context_node(const goop_context_t *ctx, goop_node_handle_t handle, goop_node_view_t *out_node);
+bool goop_context_frame(const goop_context_t *ctx, goop_frame_snapshot_t *out_snapshot);
 bool goop_context_table_column_fraction(const goop_context_t *ctx, goop_node_handle_t handle, uint8_t index, float *out_fraction);
-bool goop_context_last_secondary_click(const goop_context_t *ctx, goop_secondary_click_t *out_click);
-bool goop_context_last_drop(const goop_context_t *ctx, goop_drop_t *out_drop);
-uint64_t goop_context_last_primary_press_timestamp_ms(const goop_context_t *ctx);
 
 /* Per-widget metadata. */
 bool goop_context_set_user_id(goop_context_t *ctx, goop_node_handle_t handle, uint64_t user_id);
 uint64_t goop_context_user_id(const goop_context_t *ctx, goop_node_handle_t handle);
 bool goop_context_set_custom_draw(goop_context_t *ctx, goop_node_handle_t handle, bool custom);
 bool goop_context_set_drop_target(goop_context_t *ctx, goop_node_handle_t handle, bool accepts_drop);
-bool goop_context_is_drop_hovered(const goop_context_t *ctx, goop_node_handle_t handle);
 
-/* Focus and pointer state. */
-bool goop_context_focused_widget(const goop_context_t *ctx, goop_node_handle_t *out_handle);
+/* Focus and pointer gestures. Pointer/button state lives on
+ * goop_frame_snapshot_t; these mutate dispatch state. */
 bool goop_context_focus_widget(goop_context_t *ctx, goop_node_handle_t handle);
 bool goop_context_clear_focus(goop_context_t *ctx);
 bool goop_context_cancel_pointer_gesture(goop_context_t *ctx);
-bool goop_context_pointer_position(const goop_context_t *ctx, float *out_x, float *out_y);
-bool goop_context_is_pointer_button_down(const goop_context_t *ctx, goop_mouse_button_t button);
-bool goop_context_active_drag_source(const goop_context_t *ctx, goop_node_handle_t *out_handle);
 
 #ifdef __cplusplus
 }
