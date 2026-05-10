@@ -1,0 +1,51 @@
+# Changelog
+
+All notable changes to `goop` will be documented here. The project follows
+[Semantic Versioning](https://semver.org). Pre-1.0 releases may include
+breaking changes between minor versions.
+
+## 0.1.0 — 2026-05-10
+
+First preview release.
+
+### Public API
+
+- Retained widget tree with generational handles and subtree removal.
+- 30 widget kinds: container, spacer, text, button, checkbox, radio
+  button, tree item, dropdown, popup, tooltip, menu bar / menu / menu
+  item, list box, selectable, grid selector, grid item, table / row /
+  cell, toolbar, status bar, drag value, spinbox, slider, text input,
+  tab bar / tab item, splitter, scroll area.
+- `Context` (single-tree convenience) and `Runtime` (multi-tree
+  primitive) with thin-forward symmetry. `WidgetDesc` for construction,
+  `NodeView` / `WidgetView` for reads, `mutateKind` / `setStyle` /
+  `updateWidget` / `setCustomDraw` for writes.
+- Per-kind `internal` substructs hide dispatch/draw-owned per-frame
+  state (drag rects, marquee, editor buffers) from embedders.
+- Platform-neutral `Event` model (mouse, key, text, focus, resize)
+  with a `Modifiers` bitmask carried on key/mouse events.
+- `DrawCommand` output (`rect`, `text`, `clip`, `icon`, `custom`)
+  consumed by an embedder-owned renderer. `PaintCommand` for embedders
+  that want the higher-level pre-render representation.
+- Per-widget style overrides via `Style` (resolved against `Theme`).
+- Optional `TextMeasureCtx` injection for accurate text sizing.
+- Optional `Clipboard` callback interface for cut/copy/paste in text
+  inputs.
+- C API in `include/goop.h` mirroring the Zig surface; `libgoop`
+  ships as both static archive and shared library.
+
+### Reference embedders
+
+- Wayland / EGL / OpenGL demo (`zig build demo`).
+- File-manager demo backed by the real filesystem (`zig build
+  file-manager-demo`).
+- Headless rendering pipeline used for CI screenshot regression
+  (`zig build screenshot`).
+- Headless C API example (`zig build c-example`).
+
+### Known limitations
+
+- Text editing is codepoint-aware UTF-8 but not grapheme-cluster-aware;
+  IME composition is not implemented.
+- MSAA sample count is hardcoded to 4× with no capability fallback.
+- The public API may still shift between minor versions until 1.0.
