@@ -19,6 +19,7 @@ pub const hittest = goop.hittest;
 pub const Tree = goop.Tree;
 pub const NodeHandle = goop.NodeHandle;
 pub const WidgetKind = goop.WidgetKind;
+pub const WidgetDesc = goop.WidgetDesc;
 pub const Event = goop.Event;
 pub const Theme = goop.Theme;
 pub const Style = goop.Style;

@@ -1194,21 +1194,22 @@ fn modifiersFromC(mods: CModifiers) event.Event.Modifiers {
     };
 }
 
-fn buildTextInput(desc: CTextInputWidget) widget.WidgetKind.TextInput {
-    var ti = widget.WidgetKind.TextInput{
-        .placeholder = fromCStr(desc.placeholder),
-    };
-    const value = fromCStr(desc.value);
-    if (value.len > 0) ti.insertSlice(value);
-    return ti;
-}
-
 fn setTextInputValue(ti: *widget.WidgetKind.TextInput, placeholder: []const u8, value: []const u8) void {
     ti.* = .{ .placeholder = placeholder };
     if (value.len > 0) ti.insertSlice(value);
 }
 
-fn buildWidgetKind(desc: CWidget) widget.WidgetKind {
+/// Apply the C-side text-input initial value to the constructed widget.
+/// The desc-only path leaves the buffer empty; for parity with the
+/// previous C API we insert the seed value here.
+fn applyTextInputSeedValue(node_kind: *widget.WidgetKind, desc: CWidget) void {
+    if (desc.kind != .text_input) return;
+    const value = fromCStr(desc.data.text_input.value);
+    if (value.len == 0) return;
+    node_kind.text_input.insertSlice(value);
+}
+
+fn buildWidgetDesc(desc: CWidget) widget.WidgetDesc {
     return switch (desc.kind) {
         .container => .{ .container = .{ .direction = directionFromC(desc.data.container.direction) } },
         .text => .{ .text = .{ .content = fromCStr(desc.data.text.content) } },
@@ -1333,7 +1334,9 @@ fn buildWidgetKind(desc: CWidget) widget.WidgetKind {
             .disable_horizontal_scroll = desc.data.scroll_area.disable_horizontal_scroll,
             .disable_vertical_scroll = desc.data.scroll_area.disable_vertical_scroll,
         } },
-        .text_input => .{ .text_input = buildTextInput(desc.data.text_input) },
+        .text_input => .{ .text_input = .{
+            .placeholder = fromCStr(desc.data.text_input.placeholder),
+        } },
         .spacer => .{ .spacer = .{
             .width = desc.data.spacer.width,
             .height = desc.data.spacer.height,
@@ -1794,7 +1797,8 @@ export fn goop_context_add_root(ctx: ?*CContext, desc: ?*const CWidget, out_hand
     const context = ctx orelse return false;
     const widget_desc = desc orelse return false;
     const handle_ptr = out_handle orelse return false;
-    const handle = context.ctx.tree.addRoot(buildWidgetKind(widget_desc.*)) catch return false;
+    const handle = context.ctx.tree.addRoot(buildWidgetDesc(widget_desc.*)) catch return false;
+    applyTextInputSeedValue(&context.ctx.tree.get(handle).kind, widget_desc.*);
     markDirty(context);
     handle_ptr.* = handleToC(handle);
     return true;
@@ -1805,7 +1809,8 @@ export fn goop_context_add_child(ctx: ?*CContext, parent: CHandle, desc: ?*const
     const widget_desc = desc orelse return false;
     const handle_ptr = out_handle orelse return false;
     if (!validHandle(context, parent)) return false;
-    const handle = context.ctx.tree.addChild(handleFromC(parent), buildWidgetKind(widget_desc.*)) catch return false;
+    const handle = context.ctx.tree.addChild(handleFromC(parent), buildWidgetDesc(widget_desc.*)) catch return false;
+    applyTextInputSeedValue(&context.ctx.tree.get(handle).kind, widget_desc.*);
     markDirty(context);
     handle_ptr.* = handleToC(handle);
     return true;

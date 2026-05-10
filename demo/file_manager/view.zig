@@ -342,7 +342,10 @@ pub fn addNameCell(state: *State, ctx: *goop.Context, row: goop.NodeHandle, entr
     });
     _ = ctx.runtime.setCustomDraw(&ctx.tree, cell, true);
     if (isRenamingPath(state, entry.path)) {
-        const input = try ctx.tree.addChild(cell, .{ .text_input = state.rename_input });
+        const input = try ctx.tree.addChild(cell, .{ .text_input = .{ .placeholder = state.rename_input.placeholder } });
+        if (ctx.runtime.mutateKind(&ctx.tree, input)) |kind| {
+            kind.text_input = state.rename_input;
+        }
         _ = ctx.runtime.setStyle(&ctx.tree, input, fileManagerRenameInputStyle(state));
         state.rename_input_handle = input;
         _ = ctx.runtime.focusWidget(&ctx.tree, input);
@@ -1514,7 +1517,10 @@ pub fn buildWidgetTree(state: *State) !void {
     state.btn_toggle_preview = try addToolbarCommandButton(state, ctx, toolbar, "Preview", .toggle_preview);
     state.btn_toggle_info = try addToolbarCommandButton(state, ctx, toolbar, "Details", .toggle_info);
     _ = try ctx.tree.addChild(toolbar, .{ .spacer = .{ .width = uiPx(state, 8) } });
-    state.address_input_handle = try ctx.tree.addChild(toolbar, .{ .text_input = state.address_input });
+    state.address_input_handle = try ctx.tree.addChild(toolbar, .{ .text_input = .{ .placeholder = state.address_input.placeholder } });
+    if (ctx.runtime.mutateKind(&ctx.tree, state.address_input_handle.?)) |kind| {
+        kind.text_input = state.address_input;
+    }
     _ = ctx.runtime.setStyle(&ctx.tree, state.address_input_handle.?, fileManagerTextInputStyle(state));
     state.btn_address_go = try addToolbarButton(state, ctx, toolbar, "Go", false, true);
     _ = try ctx.tree.addChild(toolbar, .{ .spacer = .{ .width = uiPx(state, 8) } });

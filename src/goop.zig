@@ -46,7 +46,9 @@ const dispatch = @import("core/dispatch.zig");
 pub const Tree = widget.Tree;
 pub const NodeHandle = widget.NodeHandle;
 pub const WidgetKind = widget.WidgetKind;
+pub const WidgetDesc = widget.WidgetDesc;
 pub const WidgetView = widget.WidgetView;
+pub const kindFromDesc = widget.kindFromDesc;
 pub const Rect = draw.Rect;
 pub const Event = event.Event;
 pub const Theme = style.Theme;
@@ -291,15 +293,18 @@ pub const Runtime = struct {
     }
 
     /// Replace a widget's payload with the provided descriptor. The
-    /// kind tag must match the widget's current kind. Returns true on
-    /// success, false if the handle is dead or the kind tag does not
-    /// match. Marks the runtime dirty.
-    pub fn updateWidget(self: *Runtime, tree: *Tree, handle: NodeHandle, kind: WidgetKind) bool {
+    /// desc tag must match the widget's current kind. Returns true on
+    /// success, false if the handle is dead or the tag does not match.
+    /// Marks the runtime dirty. Per-frame interaction state (clicked,
+    /// dragging, etc.) is reset to defaults; for surgical edits to
+    /// existing state use `mutateKind` instead.
+    pub fn updateWidget(self: *Runtime, tree: *Tree, handle: NodeHandle, desc: WidgetDesc) bool {
+        const widget_mod = @import("core/widget.zig");
         if (!tree.isAlive(handle)) return false;
         const node = tree.get(handle);
-        if (@as(std.meta.Tag(WidgetKind), node.kind) != @as(std.meta.Tag(WidgetKind), kind)) return false;
-        node.kind = kind;
-        @import("core/widget.zig").syncDerivedState(&node.kind);
+        if (@as(std.meta.Tag(WidgetKind), node.kind) != @as(std.meta.Tag(WidgetDesc), desc)) return false;
+        node.kind = widget_mod.kindFromDesc(desc);
+        widget_mod.syncDerivedState(&node.kind);
         self.invalidate();
         return true;
     }

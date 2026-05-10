@@ -782,6 +782,352 @@ pub const WidgetKind = union(enum) {
     };
 };
 
+/// User-authored construction inputs for a widget node.
+///
+/// `WidgetDesc` is the type the embedder hands to `Tree.addRoot` and
+/// `Tree.addChild`. It mirrors the shape of `WidgetKind` but contains
+/// only the fields the embedder is responsible for: identifying data
+/// (label, group), embedder-supplied configuration (min/max/precision,
+/// item_width, etc.), and persistent input state the embedder controls
+/// (checked, expanded, ratio, scroll position, etc.).
+///
+/// Per-frame interaction state (`clicked`, `toggled`, `changed`,
+/// `dragging`, `editing`, drag rectangles, label buffers, marquee
+/// state, and so on) is *not* part of `WidgetDesc` — goop owns those
+/// fields and resets them each frame. Trying to set them at
+/// construction time is a compile error.
+pub const WidgetDesc = union(enum) {
+    container: Container,
+    text: Text,
+    button: Button,
+    checkbox: Checkbox,
+    radio_button: RadioButton,
+    tree_item: TreeItem,
+    dropdown: Dropdown,
+    list_box: ListBox,
+    selectable: Selectable,
+    grid_selector: GridSelector,
+    grid_item: GridItem,
+    table: Table,
+    table_row: TableRow,
+    table_cell: TableCell,
+    toolbar: Toolbar,
+    status_bar: StatusBar,
+    menu_bar: MenuBar,
+    menu: Menu,
+    popup: Popup,
+    tooltip: Tooltip,
+    menu_item: MenuItem,
+    drag_value: DragValue,
+    spinbox: SpinBox,
+    tab_bar: TabBar,
+    tab_item: TabItem,
+    splitter: Splitter,
+    slider: Slider,
+    spacer: Spacer,
+    scroll_area: ScrollArea,
+    text_input: TextInput,
+
+    pub const Container = struct {
+        direction: WidgetKind.Container.Direction = .column,
+    };
+
+    pub const Text = struct {
+        content: []const u8,
+        overflow: draw.TextOverflow = .visible,
+    };
+
+    pub const Button = struct {
+        label: []const u8,
+    };
+
+    pub const Checkbox = struct {
+        label: []const u8,
+        checked: bool = false,
+    };
+
+    pub const RadioButton = struct {
+        label: []const u8,
+        group: u32,
+        selected: bool = false,
+    };
+
+    pub const TreeItem = struct {
+        label: []const u8,
+        group: u32 = 0,
+        icon: ?draw.IconId = null,
+        icon_color: ?style.Color = null,
+        editable: bool = false,
+        rename_trigger: WidgetKind.TreeItem.RenameTrigger = .none,
+        has_children: bool = false,
+        expanded: bool = true,
+        selected: bool = false,
+    };
+
+    pub const Dropdown = struct {
+        placeholder: []const u8 = "Select...",
+        selected_text: []const u8 = "",
+        selected_index: ?u16 = null,
+        open: bool = false,
+    };
+
+    pub const ListBox = struct {
+        selection_mode: WidgetKind.ListBox.SelectionMode = .single,
+    };
+
+    pub const Selectable = struct {
+        label: []const u8,
+        group: u32 = 0,
+        selected: bool = false,
+    };
+
+    pub const GridSelector = struct {
+        selection_mode: WidgetKind.ListBox.SelectionMode = .single,
+        item_width: f32 = 96,
+        item_height: f32 = 96,
+        column_gap: f32 = 8,
+        row_gap: f32 = 8,
+    };
+
+    pub const GridItem = struct {
+        label: []const u8,
+        icon: []const u8 = "",
+        selected: bool = false,
+    };
+
+    pub const Table = struct {
+        columns: u8 = 0,
+        striped: bool = true,
+        resizable: bool = false,
+        sortable: bool = false,
+        selection_mode: WidgetKind.Table.SelectionMode = .none,
+        min_column_width: f32 = 96,
+        sorted_column: ?u8 = null,
+        sort_direction: WidgetKind.Table.SortDirection = .ascending,
+    };
+
+    pub const TableRow = struct {
+        header: bool = false,
+        selected: bool = false,
+    };
+
+    pub const TableCell = struct {};
+
+    pub const Toolbar = struct {};
+
+    pub const StatusBar = struct {};
+
+    pub const MenuBar = struct {};
+
+    pub const Menu = struct {
+        label: []const u8,
+    };
+
+    pub const Popup = struct {
+        placement: WidgetKind.Popup.Placement = .absolute,
+        x: f32 = 0,
+        y: f32 = 0,
+        visible: bool = true,
+        close_on_outside_click: bool = true,
+        z_index: i16 = 100,
+        pointer_passthrough: bool = false,
+    };
+
+    pub const Tooltip = struct {
+        placement: WidgetKind.Popup.Placement = .below_start,
+        x: f32 = 0,
+        y: f32 = 0,
+        z_index: i16 = 120,
+    };
+
+    pub const MenuItem = struct {
+        label: []const u8,
+        shortcut: []const u8 = "",
+        checked: bool = false,
+        disabled: bool = false,
+    };
+
+    pub const DragValue = struct {
+        value: f32 = 0,
+        min: f32 = -1000000,
+        max: f32 = 1000000,
+        speed: f32 = 0.1,
+        precision: u8 = 2,
+    };
+
+    pub const SpinBox = struct {
+        value: f32 = 0,
+        min: f32 = -1000000,
+        max: f32 = 1000000,
+        step: f32 = 1,
+        precision: u8 = 2,
+    };
+
+    pub const TabBar = struct {};
+
+    pub const TabItem = struct {
+        label: []const u8,
+        selected: bool = false,
+    };
+
+    pub const Splitter = struct {
+        direction: WidgetKind.Container.Direction = .row,
+        ratio: f32 = 0.5,
+        min_first: f32 = 120,
+        min_second: f32 = 120,
+        thickness: f32 = 6,
+        gap_thickness: f32 = 1,
+        keyboard_step: f32 = 0.02,
+    };
+
+    pub const Slider = struct {
+        value: f32 = 0,
+        min: f32 = 0,
+        max: f32 = 1,
+    };
+
+    pub const Spacer = struct {
+        width: f32 = 0,
+        height: f32 = 0,
+    };
+
+    pub const ScrollArea = struct {
+        scroll_x: f32 = 0,
+        scroll_y: f32 = 0,
+        disable_horizontal_scroll: bool = false,
+        disable_vertical_scroll: bool = false,
+    };
+
+    pub const TextInput = struct {
+        placeholder: []const u8 = "",
+    };
+};
+
+/// Build a `WidgetKind` from a user-authored `WidgetDesc`. Copies the
+/// embedder-supplied fields and leaves all per-frame state at its
+/// default (zero/none/false). `Tree.addNode` calls `syncDerivedState`
+/// after construction, so any state that is *derived* from desc input
+/// (table column weights, drag-value labels) is filled in there.
+pub fn kindFromDesc(desc: WidgetDesc) WidgetKind {
+    return switch (desc) {
+        .container => |d| .{ .container = .{ .direction = d.direction } },
+        .text => |d| .{ .text = .{ .content = d.content, .overflow = d.overflow } },
+        .button => |d| .{ .button = .{ .label = d.label } },
+        .checkbox => |d| .{ .checkbox = .{ .label = d.label, .checked = d.checked } },
+        .radio_button => |d| .{ .radio_button = .{
+            .label = d.label,
+            .group = d.group,
+            .selected = d.selected,
+        } },
+        .tree_item => |d| .{ .tree_item = .{
+            .label = d.label,
+            .group = d.group,
+            .icon = d.icon,
+            .icon_color = d.icon_color,
+            .editable = d.editable,
+            .rename_trigger = d.rename_trigger,
+            .has_children = d.has_children,
+            .expanded = d.expanded,
+            .selected = d.selected,
+        } },
+        .dropdown => |d| .{ .dropdown = .{
+            .placeholder = d.placeholder,
+            .selected_text = d.selected_text,
+            .selected_index = d.selected_index,
+            .open = d.open,
+        } },
+        .list_box => |d| .{ .list_box = .{ .selection_mode = d.selection_mode } },
+        .selectable => |d| .{ .selectable = .{
+            .label = d.label,
+            .group = d.group,
+            .selected = d.selected,
+        } },
+        .grid_selector => |d| .{ .grid_selector = .{
+            .selection_mode = d.selection_mode,
+            .item_width = d.item_width,
+            .item_height = d.item_height,
+            .column_gap = d.column_gap,
+            .row_gap = d.row_gap,
+        } },
+        .grid_item => |d| .{ .grid_item = .{
+            .label = d.label,
+            .icon = d.icon,
+            .selected = d.selected,
+        } },
+        .table => |d| .{ .table = .{
+            .columns = d.columns,
+            .striped = d.striped,
+            .resizable = d.resizable,
+            .sortable = d.sortable,
+            .selection_mode = d.selection_mode,
+            .min_column_width = d.min_column_width,
+            .sorted_column = d.sorted_column,
+            .sort_direction = d.sort_direction,
+        } },
+        .table_row => |d| .{ .table_row = .{ .header = d.header, .selected = d.selected } },
+        .table_cell => .{ .table_cell = .{} },
+        .toolbar => .{ .toolbar = .{} },
+        .status_bar => .{ .status_bar = .{} },
+        .menu_bar => .{ .menu_bar = .{} },
+        .menu => |d| .{ .menu = .{ .label = d.label } },
+        .popup => |d| .{ .popup = .{
+            .placement = d.placement,
+            .x = d.x,
+            .y = d.y,
+            .visible = d.visible,
+            .close_on_outside_click = d.close_on_outside_click,
+            .z_index = d.z_index,
+            .pointer_passthrough = d.pointer_passthrough,
+        } },
+        .tooltip => |d| .{ .tooltip = .{
+            .placement = d.placement,
+            .x = d.x,
+            .y = d.y,
+            .z_index = d.z_index,
+        } },
+        .menu_item => |d| .{ .menu_item = .{
+            .label = d.label,
+            .shortcut = d.shortcut,
+            .checked = d.checked,
+            .disabled = d.disabled,
+        } },
+        .drag_value => |d| .{ .drag_value = .{
+            .value = d.value,
+            .min = d.min,
+            .max = d.max,
+            .speed = d.speed,
+            .precision = d.precision,
+        } },
+        .spinbox => |d| .{ .spinbox = .{
+            .value = d.value,
+            .min = d.min,
+            .max = d.max,
+            .step = d.step,
+            .precision = d.precision,
+        } },
+        .tab_bar => .{ .tab_bar = .{} },
+        .tab_item => |d| .{ .tab_item = .{ .label = d.label, .selected = d.selected } },
+        .splitter => |d| .{ .splitter = .{
+            .direction = d.direction,
+            .ratio = d.ratio,
+            .min_first = d.min_first,
+            .min_second = d.min_second,
+            .thickness = d.thickness,
+            .gap_thickness = d.gap_thickness,
+            .keyboard_step = d.keyboard_step,
+        } },
+        .slider => |d| .{ .slider = .{ .value = d.value, .min = d.min, .max = d.max } },
+        .spacer => |d| .{ .spacer = .{ .width = d.width, .height = d.height } },
+        .scroll_area => |d| .{ .scroll_area = .{
+            .scroll_x = d.scroll_x,
+            .scroll_y = d.scroll_y,
+            .disable_horizontal_scroll = d.disable_horizontal_scroll,
+            .disable_vertical_scroll = d.disable_vertical_scroll,
+        } },
+        .text_input => |d| .{ .text_input = .{ .placeholder = d.placeholder } },
+    };
+}
+
 /// Read-only projection of a widget node's per-kind state.
 ///
 /// `WidgetView` is the supported way to query widget state from the
@@ -1142,13 +1488,13 @@ pub const Tree = struct {
     }
 
     /// Add a root-level widget. Returns its handle.
-    pub fn addRoot(self: *Tree, kind: WidgetKind) !NodeHandle {
-        return self.addNode(kind, null);
+    pub fn addRoot(self: *Tree, desc: WidgetDesc) !NodeHandle {
+        return self.addNode(kindFromDesc(desc), null);
     }
 
     /// Add a child widget under the given parent. Returns its handle.
-    pub fn addChild(self: *Tree, parent: NodeHandle, kind: WidgetKind) !NodeHandle {
-        return self.addNode(kind, parent);
+    pub fn addChild(self: *Tree, parent: NodeHandle, desc: WidgetDesc) !NodeHandle {
+        return self.addNode(kindFromDesc(desc), parent);
     }
 
     /// Remove a node and all its descendants from the tree.
