@@ -1,5 +1,7 @@
 # goop
 
+[![ci](https://github.com/psyclyx/goop/actions/workflows/ci.yml/badge.svg)](https://github.com/psyclyx/goop/actions/workflows/ci.yml)
+
 Retained-mode GUI library for Zig. `goop` owns widget state, layout, and draw
 command generation; the embedder owns the native window, input delivery, text
 measurement, and final rendering backend.
@@ -9,11 +11,12 @@ measurement, and final rendering backend.
 > stable yet, and the demo is a reference embedder rather than a polished end
 > user application.
 
-![Current WIP Wayland demo screenshot](docs/assets/goop-demo-wip.png)
+![File-manager reference demo, rendered headlessly via the goop offscreen pipeline](docs/assets/goop-file-manager-demo.png)
 
-Current WIP demo on Wayland: outline rows with drag/drop previews, list and
-grid selection widgets, menus, tables, tabs, splitters, numeric controls, and
-the editor-style chrome that the library is being built around.
+The reference Wayland/EGL demo above is the file-manager example, rendered
+headlessly through the same offscreen pipeline goop ships for CI screenshots.
+It exercises menus, toolbars, breadcrumbs, sortable tables, splitters,
+sidebars, and the editor-style chrome that the library is being built around.
 
 ## What it is
 
@@ -72,6 +75,7 @@ zig build demo          # build and run the Wayland demo
 zig build file-manager-demo  # build and run the Linux file-browser Wayland demo
 zig build c-example     # build and run the headless C API example
 zig build perf-round    # run the headless retained-UI perf benchmark
+zig build screenshot    # re-render docs/assets/goop-file-manager-demo.png
 zig build install       # install static/shared libgoop, goop-demo, and goop.h to zig-out/
 ```
 
@@ -242,6 +246,18 @@ on the right, all on the same Wayland/EGL/snail stack.
 ```sh
 nix-shell --run 'zig build file-manager-demo'
 ```
+
+The same scene can be rendered without a display via
+[tools/screenshot.zig](tools/screenshot.zig). It builds the demo's State,
+runs one frame against an offscreen EGL pbuffer, reads the framebuffer back,
+and pipes the pixels through ImageMagick to refresh the README screenshot:
+
+```sh
+nix-shell --run 'zig build screenshot'
+```
+
+CI re-runs this on every push to make sure the demo's render path stays
+healthy.
 
 ## Docs
 
