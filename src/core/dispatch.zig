@@ -838,11 +838,13 @@ fn beginNumericEditorTextInput(tree: *widget.Tree, handle: widget.NodeHandle, co
 fn commitNumericEditor(tree: *widget.Tree, handle: widget.NodeHandle) bool {
     if (!tree.isAlive(handle)) return false;
     const node = tree.get(handle);
-    return switch (node.kind) {
+    const result: widget.CommitResult = switch (node.kind) {
         .drag_value => node.kind.drag_value.commitEdit(),
         .spinbox => node.kind.spinbox.commitEdit(),
-        else => false,
+        else => return false,
     };
+    if (result == .changed) node.interaction.changed = true;
+    return result != .invalid;
 }
 
 fn cancelNumericEditor(tree: *widget.Tree, handle: widget.NodeHandle) void {
@@ -944,7 +946,7 @@ fn finalizeTreeDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *Mouse
 
         mouse.last_drop = .{ .tree = preview };
         if (tree.isAlive(preview.target) and tree.getConst(preview.target).kind == .tree_item) {
-            tree.get(preview.target).kind.tree_item.drop_received = true;
+            tree.get(preview.target).interaction.drop_received = true;
         }
     }
     clearTreeDragPreview(tree);
@@ -1177,7 +1179,7 @@ fn updateListBoxMarquee(tree: *widget.Tree, list_box: widget.NodeHandle, mouse: 
             changed = true;
         }
     }
-    if (changed) tree.get(list_box).kind.list_box.changed = true;
+    if (changed) tree.get(list_box).interaction.changed = true;
 }
 
 fn finalizeListBoxMarquee(tree: *widget.Tree, list_box: widget.NodeHandle) void {
@@ -1231,7 +1233,7 @@ fn updateGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle, mo
             changed = true;
         }
     }
-    if (changed) tree.get(selector).kind.grid_selector.changed = true;
+    if (changed) tree.get(selector).interaction.changed = true;
 }
 
 fn finalizeGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle) void {
@@ -1925,7 +1927,6 @@ fn activateSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*co
     if (node.kind != .selectable) return;
 
     node.interaction.primary_clicked = true;
-    node.kind.selectable.clicked = true;
 
     if (mouse) |state| {
         if (selectableParentListBox(tree, handle)) |list_box| {
@@ -1955,7 +1956,6 @@ fn activateGridItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*cons
     if (node.kind != .grid_item) return;
 
     node.interaction.primary_clicked = true;
-    node.kind.grid_item.clicked = true;
 
     if (mouse) |state| {
         if (widget.gridItemParentSelector(tree, handle)) |selector| {
@@ -2009,13 +2009,16 @@ fn updateTableColumns(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *Mou
     if (total_width <= 0) return false;
 
     const delta = mouse.x - mouse.drag_origin_x;
-    return tree.get(handle).kind.table.resizeColumns(
+    const node = tree.get(handle);
+    const did_resize = node.kind.table.resizeColumns(
         divider_index,
         total_width,
         mouse.drag_origin_value,
         mouse.drag_origin_secondary_value,
         delta,
     );
+    if (did_resize) node.interaction.changed = true;
+    return did_resize;
 }
 
 fn updateDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32, mouse: *const MouseState) void {
@@ -2026,7 +2029,7 @@ fn updateDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32, 
     if (next != drag_value.value) {
         drag_value.value = next;
         drag_value.syncLabel();
-        drag_value.changed = true;
+        node.interaction.changed = true;
     }
 }
 
@@ -2070,7 +2073,7 @@ fn stepDragValue(tree: *widget.Tree, handle: widget.NodeHandle, direction: i8) v
     if (next != drag_value.value) {
         drag_value.value = next;
         drag_value.syncLabel();
-        drag_value.changed = true;
+        node.interaction.changed = true;
     }
 }
 
@@ -2082,7 +2085,7 @@ fn stepSpinBox(tree: *widget.Tree, handle: widget.NodeHandle, direction: i8, act
     if (next != spinbox.value) {
         spinbox.value = next;
         spinbox.syncLabel();
-        spinbox.changed = true;
+        node.interaction.changed = true;
         if (activate) node.interaction.primary_clicked = true;
     }
 }
@@ -2108,7 +2111,7 @@ fn updateSplitterRatio(
     const next = clampSplitterRatio(splitter.*, node.layout_rect, resolved, mouse.drag_origin_value + delta_px / available);
     if (next != splitter.ratio) {
         splitter.ratio = next;
-        splitter.changed = true;
+        node.interaction.changed = true;
         mouse.layout_changed = true;
     }
 }
@@ -2125,7 +2128,7 @@ fn stepSplitter(tree: *widget.Tree, handle: widget.NodeHandle, direction: i8, th
     );
     if (next != splitter.ratio) {
         splitter.ratio = next;
-        splitter.changed = true;
+        node.interaction.changed = true;
     }
 }
 
@@ -2230,12 +2233,10 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
     switch (node.kind) {
         .button => {
             node.interaction.primary_clicked = true;
-            node.kind.button.clicked = true;
         },
         .checkbox => {
             node.interaction.primary_clicked = true;
             node.kind.checkbox.checked = !node.kind.checkbox.checked;
-            node.kind.checkbox.clicked = true;
         },
         .radio_button => {
             node.interaction.primary_clicked = true;
@@ -2247,7 +2248,6 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
                 }
             }
             node.kind.radio_button.selected = true;
-            node.kind.radio_button.clicked = true;
         },
         .tree_item => {
             if (node.kind.tree_item.editing) return;
@@ -2259,12 +2259,10 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
                 }
             }
             node.kind.tree_item.selected = true;
-            node.kind.tree_item.clicked = true;
         },
         .dropdown => {
             node.interaction.primary_clicked = true;
             node.kind.dropdown.open = !node.kind.dropdown.open;
-            node.kind.dropdown.clicked = true;
         },
         .selectable => {
             activateSelectable(tree, handle, null);
@@ -2283,13 +2281,11 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
         },
         .menu => {
             node.interaction.primary_clicked = true;
-            node.kind.menu.clicked = true;
             toggleOwnedPopup(tree, handle, null);
         },
         .menu_item => {
             if (node.kind.menu_item.disabled) return;
             node.interaction.primary_clicked = true;
-            node.kind.menu_item.clicked = true;
             if (directPopupChild(tree, handle) != null) {
                 toggleOwnedPopup(tree, handle, null);
             } else {
@@ -2299,7 +2295,6 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
         .tab_item => {
             node.interaction.primary_clicked = true;
             selectTabItem(tree, handle);
-            node.kind.tab_item.clicked = true;
         },
         else => {},
     }
@@ -2382,9 +2377,9 @@ fn selectGridItem(tree: *widget.Tree, handle: widget.NodeHandle) bool {
         index += 1;
     }
 
-    const grid_selector = &tree.get(selector).kind.grid_selector;
-    grid_selector.anchor_index = selected_index;
-    if (changed) grid_selector.changed = true;
+    const selector_node = tree.get(selector);
+    selector_node.kind.grid_selector.anchor_index = selected_index;
+    if (changed) selector_node.interaction.changed = true;
     return changed;
 }
 
@@ -2432,7 +2427,7 @@ fn selectGridRange(
         }
         index += 1;
     }
-    if (changed) tree.get(selector).kind.grid_selector.changed = true;
+    if (changed) tree.get(selector).interaction.changed = true;
     return changed;
 }
 
@@ -2440,7 +2435,7 @@ fn toggleGridItem(tree: *widget.Tree, selector: widget.NodeHandle, handle: widge
     const current = tree.getConst(handle).kind.grid_item.selected;
     tree.get(handle).kind.grid_item.selected = !current;
     if (current == tree.getConst(handle).kind.grid_item.selected) return false;
-    tree.get(selector).kind.grid_selector.changed = true;
+    tree.get(selector).interaction.changed = true;
     return true;
 }
 
@@ -2459,7 +2454,7 @@ fn clearGridSelectorSelection(tree: *widget.Tree, selector: widget.NodeHandle) b
     }
 
     node.kind.grid_selector.anchor_index = null;
-    if (changed) node.kind.grid_selector.changed = true;
+    if (changed) node.interaction.changed = true;
     return changed;
 }
 
@@ -2479,7 +2474,7 @@ fn selectAllGridSelector(tree: *widget.Tree, selector: widget.NodeHandle) bool {
     }
     if (changed) {
         tree.get(selector).kind.grid_selector.anchor_index = last_index;
-        tree.get(selector).kind.grid_selector.changed = true;
+        tree.get(selector).interaction.changed = true;
     }
     return changed;
 }
@@ -2610,7 +2605,7 @@ fn selectListBoxRange(
         }
         index += 1;
     }
-    if (changed) tree.get(list_box).kind.list_box.changed = true;
+    if (changed) tree.get(list_box).interaction.changed = true;
     return changed;
 }
 
@@ -2618,14 +2613,14 @@ fn toggleListBoxSelectable(tree: *widget.Tree, list_box: widget.NodeHandle, hand
     const current = tree.getConst(handle).kind.selectable.selected;
     tree.get(handle).kind.selectable.selected = !current;
     if (current == tree.getConst(handle).kind.selectable.selected) return false;
-    tree.get(list_box).kind.list_box.changed = true;
+    tree.get(list_box).interaction.changed = true;
     return true;
 }
 
 fn markSelectableListBoxChanged(tree: *widget.Tree, handle: widget.NodeHandle) void {
     const parent_handle = tree.getConst(handle).parent orelse return;
     if (tree.getConst(parent_handle).kind == .list_box) {
-        tree.get(parent_handle).kind.list_box.changed = true;
+        tree.get(parent_handle).interaction.changed = true;
     }
 }
 
@@ -2668,7 +2663,7 @@ fn applyMenuSelection(tree: *widget.Tree, handle: widget.NodeHandle) void {
             const index = menuItemIndex(tree, popup_handle, handle);
             parent.kind.dropdown.selected_text = node.kind.menu_item.label;
             parent.kind.dropdown.selected_index = index;
-            parent.kind.dropdown.changed = true;
+            parent.interaction.changed = true;
         }
     }
 
@@ -2831,7 +2826,7 @@ fn toggleTreeItem(tree: *widget.Tree, handle: widget.NodeHandle) void {
     if (node.kind != .tree_item) return;
     if (!hasTreeItemChildren(tree, handle)) return;
     node.kind.tree_item.expanded = !node.kind.tree_item.expanded;
-    node.kind.tree_item.toggled = true;
+    node.interaction.toggled = true;
 }
 
 fn commitTreeItemRename(tree: *widget.Tree, handle: widget.NodeHandle) void {
@@ -3304,7 +3299,7 @@ test "button click sets clicked flag" {
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(tree.getConst(btn).kind.button.clicked);
+    try std.testing.expect(tree.getConst(btn).interaction.primary_clicked);
     try std.testing.expect(!tree.getConst(btn).interaction.pressed);
 }
 
@@ -3327,7 +3322,7 @@ test "press and release on different widgets does not click" {
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 500, .y = 300 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(!tree.getConst(btn).kind.button.clicked);
+    try std.testing.expect(!tree.getConst(btn).interaction.primary_clicked);
 }
 
 test "slider drag updates value" {
@@ -3406,7 +3401,7 @@ test "drag value drag updates value" {
 
     try std.testing.expect(mouse.drag_target != null);
     try std.testing.expectApproxEqAbs(@as(f32, 20), tree.getConst(drag_value).kind.drag_value.value, 0.01);
-    try std.testing.expect(tree.getConst(drag_value).kind.drag_value.changed);
+    try std.testing.expect(tree.getConst(drag_value).interaction.changed);
 }
 
 test "drag value accepts typed edits" {
@@ -3442,7 +3437,7 @@ test "drag value accepts typed edits" {
 
     try std.testing.expect(!tree.getConst(drag_value).kind.drag_value.editing);
     try std.testing.expectApproxEqAbs(@as(f32, 42), tree.getConst(drag_value).kind.drag_value.value, 0.01);
-    try std.testing.expect(tree.getConst(drag_value).kind.drag_value.changed);
+    try std.testing.expect(tree.getConst(drag_value).interaction.changed);
 }
 
 test "focused drag value begins editing on numeric text input" {
@@ -3471,7 +3466,7 @@ test "focused drag value begins editing on numeric text input" {
 
     try std.testing.expect(!tree.getConst(drag_value).kind.drag_value.editing);
     try std.testing.expectApproxEqAbs(@as(f32, 7), tree.getConst(drag_value).kind.drag_value.value, 0.01);
-    try std.testing.expect(tree.getConst(drag_value).kind.drag_value.changed);
+    try std.testing.expect(tree.getConst(drag_value).interaction.changed);
 }
 
 test "spinbox click steps value" {
@@ -3496,9 +3491,9 @@ test "spinbox click steps value" {
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 120, .y = 20 } },
     }, &mouse, style.Theme.default);
     try std.testing.expectApproxEqAbs(@as(f32, 7), tree.getConst(spinbox).kind.spinbox.value, 0.01);
-    try std.testing.expect(tree.getConst(spinbox).kind.spinbox.changed);
+    try std.testing.expect(tree.getConst(spinbox).interaction.changed);
 
-    tree.get(spinbox).kind.spinbox.changed = false;
+    tree.get(spinbox).interaction.changed = false;
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 20 } },
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 20, .y = 20 } },
@@ -3538,7 +3533,7 @@ test "spinbox accepts typed edits in the value field" {
 
     try std.testing.expect(!tree.getConst(spinbox).kind.spinbox.editing);
     try std.testing.expectApproxEqAbs(@as(f32, 9), tree.getConst(spinbox).kind.spinbox.value, 0.01);
-    try std.testing.expect(tree.getConst(spinbox).kind.spinbox.changed);
+    try std.testing.expect(tree.getConst(spinbox).interaction.changed);
 }
 
 test "checkbox toggles on click" {
@@ -3902,7 +3897,7 @@ test "enter/space activates focused widget" {
         .{ .key = .{ .scancode = 15, .keycode = .tab, .state = .pressed } },
         .{ .key = .{ .scancode = 28, .keycode = .enter, .state = .pressed } },
     }, &mouse, style.Theme.default);
-    try std.testing.expect(tree.getConst(btn).kind.button.clicked);
+    try std.testing.expect(tree.getConst(btn).interaction.primary_clicked);
 
     // Tab to checkbox, press Space to toggle
     process(&tree, &.{
@@ -4006,7 +4001,7 @@ test "tab item click selects sibling tab" {
 
     try std.testing.expect(!tree.getConst(scene).kind.tab_item.selected);
     try std.testing.expect(tree.getConst(render).kind.tab_item.selected);
-    try std.testing.expect(tree.getConst(render).kind.tab_item.clicked);
+    try std.testing.expect(tree.getConst(render).interaction.primary_clicked);
 }
 
 test "selectable rows update sibling selection and list box change state" {
@@ -4041,18 +4036,18 @@ test "selectable rows update sibling selection and list box change state" {
 
     try std.testing.expect(!tree.getConst(first).kind.selectable.selected);
     try std.testing.expect(tree.getConst(second).kind.selectable.selected);
-    try std.testing.expect(tree.getConst(second).kind.selectable.clicked);
-    try std.testing.expect(tree.getConst(list_box).kind.list_box.changed);
+    try std.testing.expect(tree.getConst(second).interaction.primary_clicked);
+    try std.testing.expect(tree.getConst(list_box).interaction.changed);
     try std.testing.expect(mouse.focused.?.eql(second));
 
-    tree.get(list_box).kind.list_box.changed = false;
-    tree.get(second).kind.selectable.clicked = false;
+    tree.get(list_box).interaction.changed = false;
+    tree.get(second).interaction.primary_clicked = false;
 
     process(&tree, &.{.{ .key = .{ .scancode = 108, .keycode = .down, .state = .pressed } }}, &mouse, style.Theme.default);
 
     try std.testing.expect(!tree.getConst(second).kind.selectable.selected);
     try std.testing.expect(tree.getConst(third).kind.selectable.selected);
-    try std.testing.expect(tree.getConst(list_box).kind.list_box.changed);
+    try std.testing.expect(tree.getConst(list_box).interaction.changed);
     try std.testing.expect(mouse.focused.?.eql(third));
 }
 
@@ -4089,7 +4084,7 @@ test "multi-select list box supports ctrl-toggle and additive shift range" {
     try std.testing.expect(!tree.getConst(third).kind.selectable.selected);
     try std.testing.expectEqual(@as(?u16, 1), tree.getConst(list_box).kind.list_box.anchor_index);
 
-    tree.get(list_box).kind.list_box.changed = false;
+    tree.get(list_box).interaction.changed = false;
 
     process(&tree, &.{
         .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
@@ -4103,7 +4098,7 @@ test "multi-select list box supports ctrl-toggle and additive shift range" {
     try std.testing.expect(tree.getConst(first).kind.selectable.selected);
     try std.testing.expect(tree.getConst(second).kind.selectable.selected);
     try std.testing.expect(tree.getConst(third).kind.selectable.selected);
-    try std.testing.expect(tree.getConst(list_box).kind.list_box.changed);
+    try std.testing.expect(tree.getConst(list_box).interaction.changed);
 }
 
 test "grid selector marquee selects intersecting tiles" {
@@ -4139,7 +4134,7 @@ test "grid selector marquee selects intersecting tiles" {
     try std.testing.expect(tree.getConst(second).kind.grid_item.selected);
     try std.testing.expect(!tree.getConst(third).kind.grid_item.selected);
     try std.testing.expect(!tree.getConst(fourth).kind.grid_item.selected);
-    try std.testing.expect(tree.getConst(grid).kind.grid_selector.changed);
+    try std.testing.expect(tree.getConst(grid).interaction.changed);
     try std.testing.expect(!tree.getConst(grid).kind.grid_selector.marquee_active);
 }
 
@@ -4392,9 +4387,9 @@ test "tree item toggles and keyboard navigation follows visible items" {
     }, &mouse, style.Theme.default);
 
     try std.testing.expect(!tree.getConst(parent).kind.tree_item.expanded);
-    try std.testing.expect(tree.getConst(parent).kind.tree_item.toggled);
+    try std.testing.expect(tree.getConst(parent).interaction.toggled);
     try std.testing.expect(!tree.getConst(parent).kind.tree_item.selected);
-    try std.testing.expect(!tree.getConst(parent).kind.tree_item.clicked);
+    try std.testing.expect(!tree.getConst(parent).interaction.primary_clicked);
 
     mouse.focused = parent;
     focus.syncFocusFlags(&tree, mouse.focused);
@@ -4457,8 +4452,8 @@ test "lazy tree item can toggle without materialized child nodes" {
     }, &mouse, style.Theme.default);
 
     try std.testing.expect(tree.getConst(parent).kind.tree_item.expanded);
-    try std.testing.expect(tree.getConst(parent).kind.tree_item.toggled);
-    try std.testing.expect(!tree.getConst(parent).kind.tree_item.clicked);
+    try std.testing.expect(tree.getConst(parent).interaction.toggled);
+    try std.testing.expect(!tree.getConst(parent).interaction.primary_clicked);
 }
 
 test "selected editable tree item can rename inline on click" {
@@ -4553,7 +4548,7 @@ test "tree item drag reports drop target and position" {
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
     try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, drop.position);
-    try std.testing.expect(tree.getConst(second).kind.tree_item.drop_received);
+    try std.testing.expect(tree.getConst(second).interaction.drop_received);
     try std.testing.expect(!tree.getConst(first).kind.tree_item.drag.active);
     try std.testing.expect(tree.getConst(second).kind.tree_item.drop_preview == null);
 }
@@ -4590,10 +4585,10 @@ test "dropdown menu item selection updates dropdown state" {
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 30, .y = 72 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(tree.getConst(b).kind.menu_item.clicked);
+    try std.testing.expect(tree.getConst(b).interaction.primary_clicked);
     try std.testing.expectEqualStrings("Beta", tree.getConst(dropdown).kind.dropdown.selected_text);
     try std.testing.expectEqual(@as(?u16, 1), tree.getConst(dropdown).kind.dropdown.selected_index);
-    try std.testing.expect(tree.getConst(dropdown).kind.dropdown.changed);
+    try std.testing.expect(tree.getConst(dropdown).interaction.changed);
     try std.testing.expect(!tree.getConst(dropdown).kind.dropdown.open);
     try std.testing.expect(!tree.getConst(popup).kind.popup.visible);
 }
@@ -4637,7 +4632,7 @@ test "menu hover opens submenu and leaf selection closes the stack" {
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 170, .y = 40 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(tree.getConst(recent_a).kind.menu_item.clicked);
+    try std.testing.expect(tree.getConst(recent_a).interaction.primary_clicked);
     try std.testing.expect(!tree.getConst(file_popup).kind.popup.visible);
     try std.testing.expect(!tree.getConst(recent_popup).kind.popup.visible);
 }
@@ -4671,7 +4666,7 @@ test "splitter drag updates ratio" {
     }, &mouse, style.Theme.default);
 
     try std.testing.expect(tree.getConst(splitter).kind.splitter.ratio > 0.5);
-    try std.testing.expect(tree.getConst(splitter).kind.splitter.changed);
+    try std.testing.expect(tree.getConst(splitter).interaction.changed);
 }
 
 test "secondary click is reported on the target widget" {
@@ -4725,7 +4720,7 @@ test "list box marquee selects intersecting rows" {
     try std.testing.expect(!tree.getConst(first).kind.selectable.selected);
     try std.testing.expect(tree.getConst(second).kind.selectable.selected);
     try std.testing.expect(tree.getConst(third).kind.selectable.selected);
-    try std.testing.expect(tree.getConst(list_box).kind.list_box.changed);
+    try std.testing.expect(tree.getConst(list_box).interaction.changed);
     try std.testing.expect(!tree.getConst(list_box).kind.list_box.marquee_active);
 }
 

@@ -207,61 +207,16 @@ pub const Runtime = struct {
             node.interaction.primary_clicked = false;
             node.interaction.secondary_clicked = false;
             node.interaction.drop_received = false;
+            node.interaction.changed = false;
+            node.interaction.toggled = false;
             switch (node.kind) {
-                .button => {
-                    node.kind.button.clicked = false;
-                },
-                .checkbox => {
-                    node.kind.checkbox.clicked = false;
-                },
-                .radio_button => {
-                    node.kind.radio_button.clicked = false;
-                },
                 .tree_item => |*tree_item| {
-                    tree_item.clicked = false;
-                    tree_item.toggled = false;
-                    tree_item.drop_received = false;
                     tree_item.rename_committed = false;
                 },
-                .dropdown => |*dropdown| {
-                    dropdown.clicked = false;
-                    dropdown.changed = false;
-                },
-                .list_box => |*list_box| {
-                    list_box.changed = false;
-                },
-                .selectable => |*selectable| {
-                    selectable.clicked = false;
-                },
-                .grid_selector => |*grid_selector| {
-                    grid_selector.changed = false;
-                },
-                .grid_item => |*grid_item| {
-                    grid_item.clicked = false;
-                },
                 .table => |*table| {
-                    table.changed = false;
                     table.resized_column = null;
                     table.sort_changed = false;
                     table.selection_changed = false;
-                },
-                .menu => |*menu| {
-                    menu.clicked = false;
-                },
-                .menu_item => {
-                    node.kind.menu_item.clicked = false;
-                },
-                .drag_value => |*drag_value| {
-                    drag_value.changed = false;
-                },
-                .spinbox => |*spinbox| {
-                    spinbox.changed = false;
-                },
-                .tab_item => |*tab_item| {
-                    tab_item.clicked = false;
-                },
-                .splitter => |*splitter| {
-                    splitter.changed = false;
                 },
                 else => {},
             }
@@ -273,7 +228,7 @@ pub const Runtime = struct {
     /// and stay valid until the next mutation that touches this widget.
     pub fn widget(_: *const Runtime, tree: *const Tree, handle: NodeHandle) ?WidgetView {
         if (!tree.isAlive(handle)) return null;
-        return WidgetView.fromKind(&tree.getConst(handle).kind);
+        return WidgetView.fromNode(tree.getConst(handle));
     }
 
     /// Get the laid-out rectangle for a widget. Returns null if the

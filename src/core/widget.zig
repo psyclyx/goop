@@ -14,6 +14,18 @@ pub const NodeHandle = struct {
     }
 };
 
+/// Outcome of committing an inline numeric editor (`DragValue`,
+/// `SpinBox`). Lets dispatch distinguish parse failure from a clean
+/// commit, and a clean commit from one that actually moved the value.
+pub const CommitResult = enum {
+    /// Parse failed. The editor stays in editing state.
+    invalid,
+    /// Parsed successfully; value was unchanged.
+    unchanged,
+    /// Parsed successfully; value changed.
+    changed,
+};
+
 /// Drag state shared by widget kinds that participate in pointer-driven
 /// reordering (tree items, selectables, grid items, table rows). All
 /// fields are owned and reset by the dispatch layer; embedders only
@@ -26,6 +38,14 @@ pub const DragState = struct {
 };
 
 /// Interaction state tracked per widget.
+///
+/// `*_clicked`, `drop_received`, `changed`, and `toggled` are
+/// per-frame activation flags reset by `clearClickedFlags`. The
+/// remaining fields are persistent until the dispatch layer revises
+/// them. Per-kind flags that carried only a `bool` (e.g. button
+/// clicked, dropdown changed, tree disclosure toggled) all live here;
+/// the kind structs only carry data that is genuinely typed
+/// (table.resized_column, tree_item.rename_committed, etc.).
 pub const InteractionState = struct {
     hovered: bool = false,
     pressed: bool = false,
@@ -35,6 +55,8 @@ pub const InteractionState = struct {
     drop_received: bool = false,
     primary_clicked: bool = false,
     secondary_clicked: bool = false,
+    changed: bool = false,
+    toggled: bool = false,
 };
 
 /// Widget-specific data.
@@ -83,20 +105,17 @@ pub const WidgetKind = union(enum) {
 
     pub const Button = struct {
         label: []const u8,
-        clicked: bool = false,
     };
 
     pub const Checkbox = struct {
         label: []const u8,
         checked: bool = false,
-        clicked: bool = false,
     };
 
     pub const RadioButton = struct {
         label: []const u8,
         group: u32,
         selected: bool = false,
-        clicked: bool = false,
     };
 
     pub const TreeItem = struct {
@@ -110,11 +129,8 @@ pub const WidgetKind = union(enum) {
         expanded: bool = true,
         selected: bool = false,
         editing: bool = false,
-        clicked: bool = false,
-        toggled: bool = false,
         drag: DragState = .{},
         drop_preview: ?DropPosition = null,
-        drop_received: bool = false,
         rename_committed: bool = false,
         editor: TextInput = .{},
 
@@ -161,14 +177,11 @@ pub const WidgetKind = union(enum) {
         selected_text: []const u8 = "",
         selected_index: ?u16 = null,
         open: bool = false,
-        clicked: bool = false,
-        changed: bool = false,
     };
 
     pub const ListBox = struct {
         selection_mode: SelectionMode = .single,
         anchor_index: ?u16 = null,
-        changed: bool = false,
         marquee_active: bool = false,
         marquee_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
         drop_preview_background: bool = false,
@@ -183,7 +196,6 @@ pub const WidgetKind = union(enum) {
         label: []const u8,
         group: u32 = 0,
         selected: bool = false,
-        clicked: bool = false,
         marquee_base_selected: bool = false,
         drag: DragState = .{},
         drop_preview: bool = false,
@@ -196,7 +208,6 @@ pub const WidgetKind = union(enum) {
         column_gap: f32 = 8,
         row_gap: f32 = 8,
         anchor_index: ?u16 = null,
-        changed: bool = false,
         computed_columns: u16 = 1,
         content_height: f32 = 0,
         marquee_active: bool = false,
@@ -213,7 +224,6 @@ pub const WidgetKind = union(enum) {
         label: []const u8,
         icon: []const u8 = "",
         selected: bool = false,
-        clicked: bool = false,
         marquee_base_selected: bool = false,
         drag: DragState = .{},
         drop_preview: bool = false,
@@ -231,7 +241,6 @@ pub const WidgetKind = union(enum) {
         sortable: bool = false,
         selection_mode: SelectionMode = .none,
         min_column_width: f32 = 96,
-        changed: bool = false,
         resized_column: ?u8 = null,
         sort_changed: bool = false,
         sorted_column: ?u8 = null,
@@ -320,7 +329,6 @@ pub const WidgetKind = union(enum) {
             const new_right = pair_total - new_left;
             self.column_weights[divider_index] = new_left / total_width;
             self.column_weights[divider_index + 1] = new_right / total_width;
-            self.changed = true;
             self.resized_column = divider_index;
             return true;
         }
@@ -364,7 +372,6 @@ pub const WidgetKind = union(enum) {
 
     pub const Menu = struct {
         label: []const u8,
-        clicked: bool = false,
     };
 
     pub const Popup = struct {
@@ -396,7 +403,6 @@ pub const WidgetKind = union(enum) {
         shortcut: []const u8 = "",
         checked: bool = false,
         disabled: bool = false,
-        clicked: bool = false,
     };
 
     pub const DragValue = struct {
@@ -405,7 +411,6 @@ pub const WidgetKind = union(enum) {
         max: f32 = 1000000,
         speed: f32 = 0.1,
         precision: u8 = 2,
-        changed: bool = false,
         editing: bool = false,
         label_buf: [64]u8 = [_]u8{0} ** 64,
         label_len: u8 = 0,
@@ -433,16 +438,14 @@ pub const WidgetKind = union(enum) {
             self.editing = false;
         }
 
-        pub fn commitEdit(self: *DragValue) bool {
-            const next_value = std.fmt.parseFloat(f32, self.editor.content()) catch return false;
+        pub fn commitEdit(self: *DragValue) CommitResult {
+            const next_value = std.fmt.parseFloat(f32, self.editor.content()) catch return .invalid;
             const clamped = std.math.clamp(next_value, self.min, self.max);
-            if (clamped != self.value) {
-                self.value = clamped;
-                self.changed = true;
-            }
+            const did_change = clamped != self.value;
+            self.value = clamped;
             self.syncLabel();
             self.editing = false;
-            return true;
+            return if (did_change) .changed else .unchanged;
         }
     };
 
@@ -452,7 +455,6 @@ pub const WidgetKind = union(enum) {
         max: f32 = 1000000,
         step: f32 = 1,
         precision: u8 = 2,
-        changed: bool = false,
         editing: bool = false,
         label_buf: [64]u8 = [_]u8{0} ** 64,
         label_len: u8 = 0,
@@ -480,16 +482,14 @@ pub const WidgetKind = union(enum) {
             self.editing = false;
         }
 
-        pub fn commitEdit(self: *SpinBox) bool {
-            const next_value = std.fmt.parseFloat(f32, self.editor.content()) catch return false;
+        pub fn commitEdit(self: *SpinBox) CommitResult {
+            const next_value = std.fmt.parseFloat(f32, self.editor.content()) catch return .invalid;
             const clamped = std.math.clamp(next_value, self.min, self.max);
-            if (clamped != self.value) {
-                self.value = clamped;
-                self.changed = true;
-            }
+            const did_change = clamped != self.value;
+            self.value = clamped;
             self.syncLabel();
             self.editing = false;
-            return true;
+            return if (did_change) .changed else .unchanged;
         }
     };
 
@@ -498,7 +498,6 @@ pub const WidgetKind = union(enum) {
     pub const TabItem = struct {
         label: []const u8,
         selected: bool = false,
-        clicked: bool = false,
     };
 
     pub const Splitter = struct {
@@ -509,7 +508,6 @@ pub const WidgetKind = union(enum) {
         thickness: f32 = 6,
         gap_thickness: f32 = 1,
         keyboard_step: f32 = 0.02,
-        changed: bool = false,
     };
 
     pub const Slider = struct {
@@ -1136,10 +1134,10 @@ pub fn kindFromDesc(desc: WidgetDesc) WidgetKind {
 /// construction (min/max/precision/min_first/etc) is intentionally
 /// omitted — the embedder is the source of truth for that.
 ///
-/// The view is built by `WidgetView.fromKind` and is a snapshot of the
-/// kind data at one moment. Slices it carries (labels, content) point
-/// into the tree's storage and stay valid until the next mutation that
-/// touches the same widget.
+/// The view is built by `WidgetView.fromNode` and is a snapshot of the
+/// node's kind + interaction state at one moment. Slices it carries
+/// (labels, content) point into the tree's storage and stay valid
+/// until the next mutation that touches the same widget.
 pub const WidgetView = union(enum) {
     container: Container,
     text: Text,
@@ -1321,24 +1319,27 @@ pub const WidgetView = union(enum) {
         selection_anchor: ?u8,
     };
 
-    pub fn fromKind(kind: *const WidgetKind) WidgetView {
-        // We read fields through the `kind` pointer rather than via value
-        // captures so that slices the view exposes (label, content, …)
-        // borrow from the tree's storage and not a temporary copy.
+    pub fn fromNode(node: *const Node) WidgetView {
+        // Read fields through pointers so slices borrow from the tree's
+        // storage rather than a temporary copy. Per-frame flags like
+        // `clicked`, `changed`, `toggled`, `drop_received` come from
+        // `node.interaction`; everything else lives on `node.kind`.
+        const kind = &node.kind;
+        const i = node.interaction;
         return switch (kind.*) {
             .container => .{ .container = .{ .direction = kind.container.direction } },
             .text => .{ .text = .{ .content = kind.text.content } },
-            .button => .{ .button = .{ .label = kind.button.label, .clicked = kind.button.clicked } },
+            .button => .{ .button = .{ .label = kind.button.label, .clicked = i.primary_clicked } },
             .checkbox => .{ .checkbox = .{
                 .label = kind.checkbox.label,
                 .checked = kind.checkbox.checked,
-                .clicked = kind.checkbox.clicked,
+                .clicked = i.primary_clicked,
             } },
             .radio_button => .{ .radio_button = .{
                 .label = kind.radio_button.label,
                 .group = kind.radio_button.group,
                 .selected = kind.radio_button.selected,
-                .clicked = kind.radio_button.clicked,
+                .clicked = i.primary_clicked,
             } },
             .tree_item => .{ .tree_item = .{
                 .label = kind.tree_item.displayLabel(),
@@ -1347,10 +1348,10 @@ pub const WidgetView = union(enum) {
                 .expanded = kind.tree_item.expanded,
                 .selected = kind.tree_item.selected,
                 .editing = kind.tree_item.editing,
-                .clicked = kind.tree_item.clicked,
-                .toggled = kind.tree_item.toggled,
+                .clicked = i.primary_clicked,
+                .toggled = i.toggled,
                 .dragging = kind.tree_item.drag.active,
-                .drop_received = kind.tree_item.drop_received,
+                .drop_received = i.drop_received,
                 .rename_committed = kind.tree_item.rename_committed,
             } },
             .dropdown => .{ .dropdown = .{
@@ -1358,30 +1359,30 @@ pub const WidgetView = union(enum) {
                 .selected_text = kind.dropdown.selected_text,
                 .selected_index = kind.dropdown.selected_index,
                 .open = kind.dropdown.open,
-                .clicked = kind.dropdown.clicked,
-                .changed = kind.dropdown.changed,
+                .clicked = i.primary_clicked,
+                .changed = i.changed,
             } },
-            .list_box => .{ .list_box = .{ .changed = kind.list_box.changed } },
+            .list_box => .{ .list_box = .{ .changed = i.changed } },
             .selectable => .{ .selectable = .{
                 .label = kind.selectable.label,
                 .group = kind.selectable.group,
                 .selected = kind.selectable.selected,
-                .clicked = kind.selectable.clicked,
+                .clicked = i.primary_clicked,
                 .dragging = kind.selectable.drag.active,
             } },
             .grid_selector => .{ .grid_selector = .{
-                .changed = kind.grid_selector.changed,
+                .changed = i.changed,
                 .computed_columns = kind.grid_selector.computed_columns,
             } },
             .grid_item => .{ .grid_item = .{
                 .label = kind.grid_item.label,
                 .selected = kind.grid_item.selected,
-                .clicked = kind.grid_item.clicked,
+                .clicked = i.primary_clicked,
                 .dragging = kind.grid_item.drag.active,
             } },
             .table => .{ .table = .{
                 .active_columns = kind.table.active_columns,
-                .changed = kind.table.changed,
+                .changed = i.changed,
                 .resized_column = kind.table.resized_column,
                 .sorted_column = kind.table.sorted_column,
                 .sort_direction = kind.table.sort_direction,
@@ -1397,7 +1398,7 @@ pub const WidgetView = union(enum) {
             .toolbar => .{ .toolbar = {} },
             .status_bar => .{ .status_bar = {} },
             .menu_bar => .{ .menu_bar = {} },
-            .menu => .{ .menu = .{ .label = kind.menu.label, .clicked = kind.menu.clicked } },
+            .menu => .{ .menu = .{ .label = kind.menu.label, .clicked = i.primary_clicked } },
             .popup => .{ .popup = .{
                 .placement = kind.popup.placement,
                 .x = kind.popup.x,
@@ -1416,17 +1417,17 @@ pub const WidgetView = union(enum) {
                 .shortcut = kind.menu_item.shortcut,
                 .checked = kind.menu_item.checked,
                 .disabled = kind.menu_item.disabled,
-                .clicked = kind.menu_item.clicked,
+                .clicked = i.primary_clicked,
             } },
             .drag_value => .{ .drag_value = .{
                 .value = kind.drag_value.value,
-                .changed = kind.drag_value.changed,
+                .changed = i.changed,
                 .editing = kind.drag_value.editing,
                 .display_text = kind.drag_value.displayValue(),
             } },
             .spinbox => .{ .spinbox = .{
                 .value = kind.spinbox.value,
-                .changed = kind.spinbox.changed,
+                .changed = i.changed,
                 .editing = kind.spinbox.editing,
                 .display_text = kind.spinbox.displayValue(),
             } },
@@ -1434,9 +1435,9 @@ pub const WidgetView = union(enum) {
             .tab_item => .{ .tab_item = .{
                 .label = kind.tab_item.label,
                 .selected = kind.tab_item.selected,
-                .clicked = kind.tab_item.clicked,
+                .clicked = i.primary_clicked,
             } },
-            .splitter => .{ .splitter = .{ .ratio = kind.splitter.ratio, .changed = kind.splitter.changed } },
+            .splitter => .{ .splitter = .{ .ratio = kind.splitter.ratio, .changed = i.changed } },
             .slider => .{ .slider = .{ .value = kind.slider.value } },
             .spacer => .{ .spacer = {} },
             .scroll_area => .{ .scroll_area = .{
