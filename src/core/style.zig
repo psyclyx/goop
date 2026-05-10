@@ -56,45 +56,61 @@ pub const Theme = struct {
     pub const default: Theme = .{};
 };
 
-/// Per-widget style overrides. null fields inherit from the theme.
+/// Per-widget style overrides. Every field mirrors a `Theme` field;
+/// null inherits from the active theme. The comptime check below
+/// asserts the two field sets stay in sync — adding a field to Theme
+/// without adding it here is a compile error.
 pub const Style = struct {
     bg: ?Color = null,
     fg: ?Color = null,
+    accent: ?Color = null,
     border: ?Color = null,
+    bg_hover: ?Color = null,
+    bg_active: ?Color = null,
+    focus_ring: ?Color = null,
+    placeholder_fg: ?Color = null,
+    selection_bg: ?Color = null,
+    tree_guide: ?Color = null,
     font_size: ?f32 = null,
     padding: ?Edges = null,
-    spacing: ?f32 = null,
     border_radius: ?f32 = null,
     border_width: ?f32 = null,
+    spacing: ?f32 = null,
     thumb_width: ?f32 = null,
 
     pub fn resolve(self: Style, theme: Theme) ResolvedStyle {
-        return .{
-            .bg = self.bg orelse theme.bg,
-            .fg = self.fg orelse theme.fg,
-            .border = self.border orelse theme.border,
-            .font_size = self.font_size orelse theme.font_size,
-            .padding = self.padding orelse theme.padding,
-            .spacing = self.spacing orelse theme.spacing,
-            .border_radius = self.border_radius orelse theme.border_radius,
-            .border_width = self.border_width orelse theme.border_width,
-            .thumb_width = self.thumb_width orelse theme.thumb_width,
-        };
+        var out: ResolvedStyle = theme;
+        inline for (@typeInfo(Theme).@"struct".fields) |field| {
+            if (@field(self, field.name)) |value| {
+                @field(out, field.name) = value;
+            }
+        }
+        return out;
     }
 };
 
 /// Fully resolved style — no optional fields, ready for layout/draw.
-pub const ResolvedStyle = struct {
-    bg: Color,
-    fg: Color,
-    border: Color,
-    font_size: f32,
-    padding: Edges,
-    spacing: f32,
-    border_radius: f32,
-    border_width: f32,
-    thumb_width: f32,
-};
+/// Structurally identical to `Theme`.
+pub const ResolvedStyle = Theme;
+
+comptime {
+    const theme_fields = @typeInfo(Theme).@"struct".fields;
+    const style_fields = @typeInfo(Style).@"struct".fields;
+    if (theme_fields.len != style_fields.len) {
+        @compileError("Theme and Style have diverged: field counts differ");
+    }
+    for (theme_fields, style_fields) |theme_field, style_field| {
+        if (!std.mem.eql(u8, theme_field.name, style_field.name)) {
+            @compileError("Theme and Style have diverged: field name mismatch (Theme has '" ++
+                theme_field.name ++ "', Style has '" ++ style_field.name ++ "')");
+        }
+        const opt_info = @typeInfo(style_field.type);
+        if (opt_info != .optional or opt_info.optional.child != theme_field.type) {
+            @compileError("Theme and Style have diverged: '" ++ theme_field.name ++
+                "' should be `?<theme type>` on Style");
+        }
+    }
+}
 
 test "style resolves against theme" {
     const theme = Theme.default;
