@@ -782,6 +782,40 @@ const CGridDrop = extern struct {
     position: CGridDropPosition = .item,
 };
 
+const CListDrop = extern struct {
+    source: CHandle = .{},
+    target: CHandle = .{},
+};
+
+const CTableDrop = extern struct {
+    source: CHandle = .{},
+    target: CHandle = .{},
+};
+
+const CWidgetDrop = extern struct {
+    source: CHandle = .{},
+    target: CHandle = .{},
+};
+
+const CDropKind = enum(c_int) {
+    tree = 0,
+    grid = 1,
+    list = 2,
+    table = 3,
+    widget = 4,
+};
+
+const CDrop = extern struct {
+    kind: CDropKind = .tree,
+    data: extern union {
+        tree: CTreeDrop,
+        grid: CGridDrop,
+        list: CListDrop,
+        table: CTableDrop,
+        widget: CWidgetDrop,
+    } = .{ .tree = .{} },
+};
+
 const CContext = struct {
     ctx: api.Context,
     draw_commands: std.ArrayListUnmanaged(CDrawCommand) = .empty,
@@ -1834,26 +1868,33 @@ export fn goop_context_last_secondary_click(ctx: ?*const CContext, out_click: ?*
     return true;
 }
 
-export fn goop_context_last_tree_drop(ctx: ?*const CContext, out_drop: ?*CTreeDrop) bool {
+export fn goop_context_last_drop(ctx: ?*const CContext, out_drop: ?*CDrop) bool {
     const context = ctx orelse return false;
     const drop_ptr = out_drop orelse return false;
-    const drop = context.ctx.lastTreeDrop() orelse return false;
-    drop_ptr.* = .{
-        .source = handleToC(drop.source),
-        .target = handleToC(drop.target),
-        .position = treeDropPositionToC(drop.position),
-    };
-    return true;
-}
-
-export fn goop_context_last_grid_drop(ctx: ?*const CContext, out_drop: ?*CGridDrop) bool {
-    const context = ctx orelse return false;
-    const drop_ptr = out_drop orelse return false;
-    const drop = context.ctx.lastGridDrop() orelse return false;
-    drop_ptr.* = .{
-        .source = handleToC(drop.source),
-        .target = handleToC(drop.target),
-        .position = gridDropPositionToC(drop.position),
+    const drop = context.ctx.lastDrop() orelse return false;
+    drop_ptr.* = switch (drop) {
+        .tree => |d| .{ .kind = .tree, .data = .{ .tree = .{
+            .source = handleToC(d.source),
+            .target = handleToC(d.target),
+            .position = treeDropPositionToC(d.position),
+        } } },
+        .grid => |d| .{ .kind = .grid, .data = .{ .grid = .{
+            .source = handleToC(d.source),
+            .target = handleToC(d.target),
+            .position = gridDropPositionToC(d.position),
+        } } },
+        .list => |d| .{ .kind = .list, .data = .{ .list = .{
+            .source = handleToC(d.source),
+            .target = handleToC(d.target),
+        } } },
+        .table => |d| .{ .kind = .table, .data = .{ .table = .{
+            .source = handleToC(d.source),
+            .target = handleToC(d.target),
+        } } },
+        .widget => |d| .{ .kind = .widget, .data = .{ .widget = .{
+            .source = handleToC(d.source),
+            .target = handleToC(d.target),
+        } } },
     };
     return true;
 }
@@ -2034,6 +2075,10 @@ test "c header parses" {
         .{ .Z = CSecondaryClick, .C = c.goop_secondary_click_t },
         .{ .Z = CTreeDrop, .C = c.goop_tree_drop_t },
         .{ .Z = CGridDrop, .C = c.goop_grid_drop_t },
+        .{ .Z = CListDrop, .C = c.goop_list_drop_t },
+        .{ .Z = CTableDrop, .C = c.goop_table_drop_t },
+        .{ .Z = CWidgetDrop, .C = c.goop_widget_drop_t },
+        .{ .Z = CDrop, .C = c.goop_drop_t },
     };
 
     inline for (pairs) |pair| {

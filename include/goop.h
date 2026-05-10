@@ -804,6 +804,40 @@ typedef struct {
     goop_grid_drop_position_t position;
 } goop_grid_drop_t;
 
+typedef struct {
+    goop_node_handle_t source;
+    goop_node_handle_t target;
+} goop_list_drop_t;
+
+typedef struct {
+    goop_node_handle_t source;
+    goop_node_handle_t target;
+} goop_table_drop_t;
+
+typedef struct {
+    goop_node_handle_t source;
+    goop_node_handle_t target;
+} goop_widget_drop_t;
+
+typedef enum {
+    GOOP_DROP_TREE = 0,
+    GOOP_DROP_GRID = 1,
+    GOOP_DROP_LIST = 2,
+    GOOP_DROP_TABLE = 3,
+    GOOP_DROP_WIDGET = 4,
+} goop_drop_kind_t;
+
+typedef struct {
+    goop_drop_kind_t kind;
+    union {
+        goop_tree_drop_t tree;
+        goop_grid_drop_t grid;
+        goop_list_drop_t list;
+        goop_table_drop_t table;
+        goop_widget_drop_t widget;
+    } data;
+} goop_drop_t;
+
 goop_theme_t goop_default_theme(void);
 
 goop_context_t *goop_context_create(const goop_context_options_t *opts);
@@ -831,8 +865,7 @@ bool goop_context_was_secondary_clicked(const goop_context_t *ctx, goop_node_han
 bool goop_context_widget(const goop_context_t *ctx, goop_node_handle_t handle, goop_widget_view_t *out_view);
 bool goop_context_table_column_fraction(const goop_context_t *ctx, goop_node_handle_t handle, uint8_t index, float *out_fraction);
 bool goop_context_last_secondary_click(const goop_context_t *ctx, goop_secondary_click_t *out_click);
-bool goop_context_last_tree_drop(const goop_context_t *ctx, goop_tree_drop_t *out_drop);
-bool goop_context_last_grid_drop(const goop_context_t *ctx, goop_grid_drop_t *out_drop);
+bool goop_context_last_drop(const goop_context_t *ctx, goop_drop_t *out_drop);
 
 #ifdef __cplusplus
 }

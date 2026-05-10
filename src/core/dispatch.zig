@@ -122,24 +122,14 @@ pub const MouseState = struct {
     last_secondary_click: ?SecondaryClick = null,
     /// Active tree drop preview while dragging an outline row.
     tree_drop_preview: ?TreeDrop = null,
-    /// The most recent tree drop committed this frame.
-    last_tree_drop: ?TreeDrop = null,
     /// Active grid drop preview while dragging a grid item.
     grid_drop_preview: ?GridDrop = null,
-    /// The most recent grid drop committed this frame.
-    last_grid_drop: ?GridDrop = null,
     /// Active list drop preview while dragging a selectable row.
     list_drop_preview: ?ListDrop = null,
-    /// The most recent list drop committed this frame.
-    last_list_drop: ?ListDrop = null,
     /// Active table drop preview while dragging a table row.
     table_drop_preview: ?TableDrop = null,
-    /// The most recent table drop committed this frame.
-    last_table_drop: ?TableDrop = null,
     /// Active generic drop target while dragging an item.
     widget_drop_preview: ?WidgetDrop = null,
-    /// The most recent generic widget drop committed this frame.
-    last_widget_drop: ?WidgetDrop = null,
     /// The most recent completed drop committed this frame.
     last_drop: ?Drop = null,
     /// Whether a shift key is currently held.
@@ -951,7 +941,7 @@ fn finalizeTreeDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *Mouse
         item.drag_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.tree_drop_preview) |preview| {
-        mouse.last_tree_drop = preview;
+
         mouse.last_drop = .{ .tree = preview };
         if (tree.isAlive(preview.target) and tree.getConst(preview.target).kind == .tree_item) {
             tree.get(preview.target).kind.tree_item.drop_received = true;
@@ -1034,7 +1024,7 @@ fn finalizeSelectableDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: 
         item.drag_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.list_drop_preview) |preview| {
-        mouse.last_list_drop = preview;
+
         mouse.last_drop = .{ .list = preview };
     }
     clearListDragPreview(tree);
@@ -1117,7 +1107,7 @@ fn finalizeGridItemDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *M
         item.drag_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.grid_drop_preview) |preview| {
-        mouse.last_grid_drop = preview;
+
         mouse.last_drop = .{ .grid = preview };
     }
     clearGridDragPreview(tree);
@@ -1321,7 +1311,7 @@ fn finalizeTableRowDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *M
         row.drag_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.table_drop_preview) |preview| {
-        mouse.last_table_drop = preview;
+
         mouse.last_drop = .{ .table = preview };
     }
     clearTableDragPreview(tree);
@@ -1377,7 +1367,7 @@ fn updateWidgetDropPreview(tree: *widget.Tree, source: widget.NodeHandle, mouse:
 fn finalizeWidgetDrop(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
     if (mouse.widget_drop_preview) |preview| {
         if (preview.source.eql(source)) {
-            mouse.last_widget_drop = preview;
+
             mouse.last_drop = .{ .widget = preview };
             if (tree.isAlive(preview.target)) tree.get(preview.target).interaction.drop_received = true;
         }
@@ -4192,10 +4182,10 @@ test "grid item drag reports drop target" {
 
     try std.testing.expect(!tree.getConst(first).kind.grid_item.dragging);
     try std.testing.expect(!tree.getConst(second).kind.grid_item.drop_preview);
-    try std.testing.expect(mouse.last_grid_drop != null);
-    try std.testing.expect(mouse.last_grid_drop.?.source.eql(first));
-    try std.testing.expect(mouse.last_grid_drop.?.target.eql(second));
-    try std.testing.expectEqual(GridDrop.Position.item, mouse.last_grid_drop.?.position);
+    const drop = mouse.last_drop.?.grid;
+    try std.testing.expect(drop.source.eql(first));
+    try std.testing.expect(drop.target.eql(second));
+    try std.testing.expectEqual(GridDrop.Position.item, drop.position);
 }
 
 test "cancel pointer gesture clears active grid drag" {
@@ -4272,9 +4262,9 @@ test "generic drop target receives item drag" {
 
     try std.testing.expect(!tree.getConst(drop_button).interaction.drop_hovered);
     try std.testing.expect(tree.getConst(drop_button).interaction.drop_received);
-    try std.testing.expect(mouse.last_widget_drop != null);
-    try std.testing.expect(mouse.last_widget_drop.?.source.eql(first));
-    try std.testing.expect(mouse.last_widget_drop.?.target.eql(drop_button));
+    const drop = mouse.last_drop.?.widget;
+    try std.testing.expect(drop.source.eql(first));
+    try std.testing.expect(drop.target.eql(drop_button));
 }
 
 test "table rows support multi-select and additive shift range" {
@@ -4559,7 +4549,7 @@ test "tree item drag reports drop target and position" {
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 40, .y = 56 } },
     }, &mouse, style.Theme.default);
 
-    const drop = mouse.last_tree_drop.?;
+    const drop = mouse.last_drop.?.tree;
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
     try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, drop.position);
@@ -4767,7 +4757,7 @@ test "selectable drag reports list drop target" {
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 40, .y = 50 } },
     }, &mouse, style.Theme.default);
 
-    const drop = mouse.last_list_drop.?;
+    const drop = mouse.last_drop.?.list;
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
     try std.testing.expectEqual(ListDrop.Position.item, drop.position);
@@ -4834,7 +4824,7 @@ test "table row drag reports table drop target" {
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 40, .y = 50 } },
     }, &mouse, style.Theme.default);
 
-    const drop = mouse.last_table_drop.?;
+    const drop = mouse.last_drop.?.table;
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
     try std.testing.expectEqual(TableDrop.Position.row, drop.position);

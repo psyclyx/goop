@@ -1575,18 +1575,30 @@ pub fn main(init: std.process.Init) !void {
             if (ctx.wasClicked(h)) std.debug.print("Outline selected: Directional Light\n", .{});
             if (ctx.widget(h).?.tree_item.rename_committed) std.debug.print("Outline renamed: {s}\n", .{ctx.widget(h).?.tree_item.label});
         }
-        if (ctx.lastTreeDrop()) |drop| {
-            const position_name = switch (drop.position) {
-                .before => "before",
-                .into => "into",
-                .after => "after",
-            };
-            std.debug.print("Outline drop: {s} -> {s} ({s})\n", .{
-                ctx.widget(drop.source).?.tree_item.label,
-                ctx.widget(drop.target).?.tree_item.label,
-                position_name,
-            });
-        }
+        if (ctx.lastDrop()) |last| switch (last) {
+            .tree => |drop| {
+                const position_name = switch (drop.position) {
+                    .before => "before",
+                    .into => "into",
+                    .after => "after",
+                };
+                std.debug.print("Outline drop: {s} -> {s} ({s})\n", .{
+                    ctx.widget(drop.source).?.tree_item.label,
+                    ctx.widget(drop.target).?.tree_item.label,
+                    position_name,
+                });
+            },
+            .grid => |drop| switch (drop.position) {
+                .item => std.debug.print("Grid drop: {s} -> {s} (item)\n", .{
+                    ctx.tree.getConst(drop.source).kind.grid_item.label,
+                    ctx.tree.getConst(drop.target).kind.grid_item.label,
+                }),
+                .background => std.debug.print("Grid drop: {s} -> background\n", .{
+                    ctx.tree.getConst(drop.source).kind.grid_item.label,
+                }),
+            },
+            else => {},
+        };
         if (state.list_box) |h| if (ctx.widget(h).?.list_box.changed) {
             std.debug.print("List box selection count: {}\n", .{countSelectedSelectables(&ctx, h)});
         };
@@ -1600,17 +1612,6 @@ pub fn main(init: std.process.Init) !void {
         if (state.grid_item_b) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: Metal\n", .{});
         if (state.grid_item_c) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: Leaves\n", .{});
         if (state.grid_item_d) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: UI Icons\n", .{});
-        if (ctx.lastGridDrop()) |drop| {
-            switch (drop.position) {
-                .item => std.debug.print("Grid drop: {s} -> {s} (item)\n", .{
-                    ctx.tree.getConst(drop.source).kind.grid_item.label,
-                    ctx.tree.getConst(drop.target).kind.grid_item.label,
-                }),
-                .background => std.debug.print("Grid drop: {s} -> background\n", .{
-                    ctx.tree.getConst(drop.source).kind.grid_item.label,
-                }),
-            }
-        }
         if (state.asset_table) |h| if (ctx.widget(h).?.table.changed) {
             std.debug.print("Asset table divider {} resized: [{d:.2}, {d:.2}, {d:.2}]\n", .{
                 ctx.widget(h).?.table.resized_column.?,

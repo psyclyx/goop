@@ -197,11 +197,6 @@ pub const Runtime = struct {
     /// for one frame.
     pub fn clearClickedFlags(self: *Runtime, tree: *Tree) void {
         self.mouse.last_secondary_click = null;
-        self.mouse.last_tree_drop = null;
-        self.mouse.last_grid_drop = null;
-        self.mouse.last_list_drop = null;
-        self.mouse.last_table_drop = null;
-        self.mouse.last_widget_drop = null;
         self.mouse.last_drop = null;
         for (tree.nodes.items) |*node| {
             if (!node.alive) continue;
@@ -357,32 +352,9 @@ pub const Runtime = struct {
         return self.mouse.last_secondary_click;
     }
 
-    /// Get the most recent completed tree-item drop that occurred this frame, if any.
-    pub fn lastTreeDrop(self: *const Runtime) ?TreeDrop {
-        return self.mouse.last_tree_drop;
-    }
-
-    /// Get the most recent completed grid-item drop that occurred this frame, if any.
-    pub fn lastGridDrop(self: *const Runtime) ?GridDrop {
-        return self.mouse.last_grid_drop;
-    }
-
-    /// Get the most recent completed list-box drop that occurred this frame, if any.
-    pub fn lastListDrop(self: *const Runtime) ?ListDrop {
-        return self.mouse.last_list_drop;
-    }
-
-    /// Get the most recent completed table-row drop that occurred this frame, if any.
-    pub fn lastTableDrop(self: *const Runtime) ?TableDrop {
-        return self.mouse.last_table_drop;
-    }
-
-    /// Get the most recent generic widget drop that occurred this frame, if any.
-    pub fn lastWidgetDrop(self: *const Runtime) ?WidgetDrop {
-        return self.mouse.last_widget_drop;
-    }
-
-    /// Get the most recent completed drop that occurred this frame, if any.
+    /// Get the most recent completed drop that occurred this frame, if
+    /// any. The returned `Drop` is a tagged union — switch on it to get
+    /// the specific drop kind (tree, grid, list, table, widget).
     pub fn lastDrop(self: *const Runtime) ?Drop {
         return self.mouse.last_drop;
     }
@@ -731,32 +703,8 @@ pub const Context = struct {
         return self.runtime.lastSecondaryClick();
     }
 
-    /// Get the most recent completed tree-item drop that occurred this frame, if any.
-    pub fn lastTreeDrop(self: *const Context) ?TreeDrop {
-        return self.runtime.lastTreeDrop();
-    }
-
-    /// Get the most recent completed grid-item drop that occurred this frame, if any.
-    pub fn lastGridDrop(self: *const Context) ?GridDrop {
-        return self.runtime.lastGridDrop();
-    }
-
-    /// Get the most recent completed list-box drop that occurred this frame, if any.
-    pub fn lastListDrop(self: *const Context) ?ListDrop {
-        return self.runtime.lastListDrop();
-    }
-
-    /// Get the most recent completed table-row drop that occurred this frame, if any.
-    pub fn lastTableDrop(self: *const Context) ?TableDrop {
-        return self.runtime.lastTableDrop();
-    }
-
-    /// Get the most recent generic widget drop that occurred this frame, if any.
-    pub fn lastWidgetDrop(self: *const Context) ?WidgetDrop {
-        return self.runtime.lastWidgetDrop();
-    }
-
-    /// Get the most recent completed drop that occurred this frame, if any.
+    /// Get the most recent completed drop that occurred this frame, if
+    /// any. See `Runtime.lastDrop`.
     pub fn lastDrop(self: *const Context) ?Drop {
         return self.runtime.lastDrop();
     }
@@ -1263,13 +1211,13 @@ test "tree item drop is reported across context frames" {
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = second_rect.x + 12, .y = second_rect.y + second_rect.h * 0.5 } });
     ctx.processEvents();
 
-    const drop = ctx.lastTreeDrop().?;
+    const drop = ctx.lastDrop().?.tree;
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
     try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, drop.position);
 
     ctx.clearClickedFlags();
-    try std.testing.expect(ctx.lastTreeDrop() == null);
+    try std.testing.expect(ctx.lastDrop() == null);
 }
 
 test "tab panels switch visibility across context frames" {
@@ -1439,15 +1387,13 @@ test "grid item drop is reported across context frames" {
     } });
     ctx.processEvents();
 
-    const drop = ctx.lastGridDrop().?;
+    const drop = ctx.lastDrop().?.grid;
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
     try std.testing.expectEqual(dispatch.GridDrop.Position.item, drop.position);
     try std.testing.expect(!ctx.isPointerButtonDown(.left));
-    try std.testing.expect(ctx.lastDrop().?.grid.source.eql(first));
 
     ctx.clearClickedFlags();
-    try std.testing.expect(ctx.lastGridDrop() == null);
     try std.testing.expect(ctx.lastDrop() == null);
 }
 
