@@ -573,11 +573,6 @@ pub const Context = struct {
         self.tree.deinit();
     }
 
-    /// Mark layout and draw caches stale after caller-owned state changes.
-    pub fn invalidate(self: *Context) void {
-        self.runtime.invalidate();
-    }
-
     /// Queue an input event for processing. See `Runtime.pushEvent` for
     /// the coalescing contract on consecutive mouse_move and mouse_scroll
     /// events.

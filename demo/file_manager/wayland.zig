@@ -477,7 +477,7 @@ pub fn xdgPopupDone(data: ?*anyopaque, _: ?*wl.xdg_popup) callconv(.c) void {
             if (ctx.runtime.mutateKind(&ctx.tree, popup.handle)) |__k| {
                 __k.popup.visible = false;
             }
-            ctx.invalidate();
+            ctx.runtime.invalidate();
         }
     }
     state.destroyPopupSurface(popup);

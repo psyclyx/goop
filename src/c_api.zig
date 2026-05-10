@@ -1576,7 +1576,7 @@ fn convertEvent(ev: CEvent) event.Event {
 }
 
 fn markDirty(ctx: *CContext) void {
-    ctx.ctx.invalidate();
+    ctx.ctx.runtime.invalidate();
 }
 
 fn validHandle(ctx: *const CContext, handle: CHandle) bool {

@@ -1582,7 +1582,7 @@ pub fn beginRenameEntry(state: *State, ctx: *goop.Context, entry: BrowserEntry) 
     state.rename_input.selection_anchor = 0;
     state.rename_input.cursor = state.rename_input.len;
     state.status_note = null;
-    ctx.invalidate();
+    ctx.runtime.invalidate();
 }
 
 fn cancelActiveRename(state: *State) bool {
@@ -1933,7 +1933,7 @@ fn showContextMenuForPath(state: *State, ctx: *goop.Context, path: []const u8) !
     state.context_x = position.x;
     state.context_y = position.y;
     state.context_visible = true;
-    ctx.invalidate();
+    ctx.runtime.invalidate();
 }
 
 fn hideContextMenu(state: *State, ctx: *goop.Context) void {
@@ -1943,7 +1943,7 @@ fn hideContextMenu(state: *State, ctx: *goop.Context) void {
             if (ctx.runtime.mutateKind(&ctx.tree, popup)) |__k| { __k.popup.visible = false; }
         }
     }
-    ctx.invalidate();
+    ctx.runtime.invalidate();
 }
 
 fn syncContextPopupVisibleFromWidget(state: *State, ctx: *const goop.Context) void {
@@ -2277,7 +2277,7 @@ fn setTopMenuPopupVisible(state: *const State, ctx: *goop.Context, target: ?goop
         if (ctx.runtime.mutateKind(&ctx.tree, popup)) |__k| { __k.popup.visible = visible; }
         changed = true;
     }
-    if (changed) ctx.invalidate();
+    if (changed) ctx.runtime.invalidate();
 }
 
 fn toggleTopMenuPopup(state: *const State, ctx: *goop.Context, popup: ?goop.NodeHandle) void {
@@ -2570,7 +2570,7 @@ pub fn main(init: std.process.Init) !void {
             if (state.asset_table_body) |body| {
                 if (ctx.runtime.isAlive(&ctx.tree, body)) {
                     applyAssetTableColumns(&ctx.runtime.mutateKind(&ctx.tree, body).?.table, &state);
-                    ctx.invalidate();
+                    ctx.runtime.invalidate();
                 }
             }
         };

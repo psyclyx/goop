@@ -98,7 +98,7 @@ fn appendBrowserTestEntries(state: *State, count: usize) !void {
 }
 
 fn syncBrowserTestScrollFrame(state: *State, ctx: *goop.Context, text_measure_ctx: *const goop.TextMeasureCtx) !bool {
-    ctx.invalidate();
+    ctx.runtime.invalidate();
     ctx.doLayout(text_measure_ctx);
     if (try refreshAssetViewportIfNeeded(state)) {
         ctx.doLayout(text_measure_ctx);
