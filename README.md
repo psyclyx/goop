@@ -78,8 +78,8 @@ const goop = @import("goop");
 var ctx = try goop.Context.init(allocator, .{ .width = 1280, .height = 720 });
 defer ctx.deinit();
 
-const root = try ctx.addRoot(.{ .container = .{ .direction = .column } });
-const button = try ctx.addChild(root, .{ .button = .{ .label = "Run" } });
+const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+const button = try ctx.tree.addChild(root, .{ .button = .{ .label = "Run" } });
 
 // One frame: clear last-frame flags, queue input, layout, dispatch, draw.
 ctx.clearClickedFlags();
@@ -88,43 +88,54 @@ ctx.doLayout(null);
 ctx.processEvents();
 const draw_list = try ctx.generateDrawList();
 
-// Read interaction state through the tagged view.
-if (ctx.wasClicked(button)) {
-    // Handle the click.
-}
-if (ctx.widget(button)) |view| switch (view) {
-    .button => |b| std.debug.print("label={s}\n", .{b.label}),
-    else => {},
+// Read interaction state through the per-node snapshot.
+if (ctx.tree.node(button)) |view| {
+    if (view.clicked) {
+        // Handle the click.
+    }
+    switch (view.kind) {
+        .button => |b| std.debug.print("label={s}\n", .{b.label}),
+        else => {},
+    }
 }
 ```
 
-`Context` is the single-tree convenience layer over `Runtime`. Embedders that
-drive several trees from one runtime (e.g. main window plus detached popup
-surfaces) wire up `Runtime` directly with caller-owned `Tree`s — every
-`Context` method is a thin forward to the matching `Runtime` method.
+`Context` is the single-tree convenience layer over `Runtime`: every method
+is a thin forward to `Runtime` with the bundled `Tree`/`Theme`/`Clipboard`
+supplied implicitly. Embedders that drive several trees from one runtime
+(e.g. main window plus detached popup surfaces) wire up `Runtime` directly
+with caller-owned `Tree`s.
 
-Notes on the runtime contract:
+Runtime contract:
 
-- Pass a `goop.TextMeasureCtx` into `doLayout()` for accurate text sizing.
-  Pass `null` to fall back to a rough character-width estimate.
+- Build the tree through `ctx.tree.addRoot` / `ctx.tree.addChild` with a
+  `WidgetDesc` payload. `WidgetDesc` exposes only the embedder-supplied
+  fields; per-frame internal state (drag rects, marquee, editor buffers)
+  lives behind each kind's `internal` substruct and is owned by
+  dispatch/draw.
+- Mutate widgets after construction through `ctx.setStyle(handle, ...)`,
+  `ctx.updateWidget(handle, desc)`, `ctx.mutateKind(handle)`, or
+  `ctx.setCustomDraw(handle, ...)`. These invalidate the layout/draw
+  caches; reaching into `ctx.tree.get(handle)` directly does not.
+- Read state through `ctx.tree.node(handle)`, which returns a `NodeView`
+  snapshot bundling the layout rect, cross-kind per-frame flags
+  (`clicked`, `changed`, `toggled`, `drop_received`, `secondary_clicked`),
+  and the kind-specific `WidgetView`. `clearClickedFlags()` resets the
+  per-frame flags at the start of each frame.
+- Snapshot per-frame pointer/focus/drop state with `ctx.frame()`.
+- Pass a `goop.TextMeasureCtx` into `doLayout()` for accurate text
+  sizing; pass `null` for a rough character-width estimate.
+- `pushEvent` coalesces consecutive `mouse_move` and `mouse_scroll`
+  events into the latest position / summed delta. Push a non-mouse event
+  between samples if your gesture math depends on every move.
 - Returned `DrawList` and `PaintList` borrow from the runtime; they stay
-  valid until the next call that mutates state. There is no `freeDrawList`.
-- Use `ctx.setStyle(handle, ...)`, `ctx.updateWidget(handle, ...)`, or
-  `ctx.mutateKind(handle)` to change a widget after construction. These all
-  invalidate the layout/draw caches; reaching into `ctx.tree.get(handle)`
-  directly does not.
-- Read state through `ctx.widget(handle)`, which returns a tagged
-  `WidgetView` snapshot. Per-frame flags (`clicked`, `changed`, `toggled`)
-  live on that view and are cleared by `clearClickedFlags()`.
-- `pushEvent` coalesces consecutive `mouse_move` and `mouse_scroll` events
-  into the latest position / summed delta. Push a non-mouse event between
-  samples if your gesture math depends on every move.
+  valid until the next regeneration. There is no `freeDrawList`.
 
 ## C API
 
 `#include "goop.h"` for the C surface. The C layer mirrors the retained
-runtime — same `Context`/event loop shape, same widget descriptors, same
-tagged read view.
+runtime — same `Context` flow, same widget descriptors, same tagged read
+view.
 
 ```c
 #include "goop.h"
@@ -149,9 +160,9 @@ goop_context_add_child(ctx, root, &(goop_widget_t){
 goop_context_do_layout(ctx, NULL);
 goop_context_process_events(ctx);
 
-goop_widget_view_t view;
-if (goop_context_widget(ctx, button, &view) && view.kind == GOOP_WIDGET_BUTTON) {
-    /* view.data.button.label, view.data.button.clicked */
+goop_node_view_t view;
+if (goop_context_node(ctx, button, &view) && view.kind.kind == GOOP_WIDGET_BUTTON) {
+    /* view.clicked, view.kind.data.button.label */
 }
 
 goop_draw_list_t draw_list;
@@ -161,9 +172,9 @@ goop_context_destroy(ctx);
 ```
 
 The installed header covers context lifecycle, descriptor-based widget
-add/update/style/remove, platform-neutral event push (with a `mods` bitmask on
-key/mouse events), layout and draw-list generation, the tagged read view, and
-optional clipboard and text-measure callbacks.
+add/update/style/remove, platform-neutral event push (with a `mods` bitmask
+on key/mouse events), layout and draw-list generation, the tagged read view,
+per-frame snapshots, and optional clipboard and text-measure callbacks.
 
 For a complete headless example, see [examples/c/basic.c](examples/c/basic.c)
 and run it with `zig build c-example`.
