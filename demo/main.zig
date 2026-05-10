@@ -1092,7 +1092,7 @@ fn buildWidgetTree(state: *State) !void {
 
     // Toolbar chrome with common actions.
     const toolbar = try ctx.tree.addChild(root, .{ .toolbar = .{} });
-    _ = ctx.runtime.setStyle(&ctx.tree, toolbar, .{
+    _ = ctx.setStyle(toolbar, .{
         .bg = .{ .r = 36, .g = 36, .b = 36, .a = 255 },
         .border = .{ .r = 68, .g = 68, .b = 68, .a = 255 },
         .padding = goop.style.Edges.symmetric(8, 6),
@@ -1176,10 +1176,10 @@ fn buildWidgetTree(state: *State) !void {
         .min_column_width = 96,
     } });
     {
-        const table = &ctx.runtime.mutateKind(&ctx.tree, state.asset_table.?).?.table;
-        table.column_weights[0] = 0.56;
-        table.column_weights[1] = 0.24;
-        table.column_weights[2] = 0.20;
+        const table = &ctx.mutateKind(state.asset_table.?).?.table;
+        table.internal.column_weights[0] = 0.56;
+        table.internal.column_weights[1] = 0.24;
+        table.internal.column_weights[2] = 0.20;
     }
     const asset_header = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{ .header = true } });
     const asset_header_name = try ctx.tree.addChild(asset_header, .{ .table_cell = .{} });
@@ -1297,7 +1297,7 @@ fn buildWidgetTree(state: *State) !void {
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 8" } });
 
     const status_bar = try ctx.tree.addChild(root, .{ .status_bar = .{} });
-    _ = ctx.runtime.setStyle(&ctx.tree, status_bar, .{
+    _ = ctx.setStyle(status_bar, .{
         .bg = .{ .r = 34, .g = 34, .b = 34, .a = 255 },
         .border = .{ .r = 68, .g = 68, .b = 68, .a = 255 },
         .padding = goop.style.Edges.symmetric(8, 5),
@@ -1308,7 +1308,7 @@ fn buildWidgetTree(state: *State) !void {
     _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "Status: Ready" } });
 
     // Context menu popup. The demo opens it on secondary click, but callers
-    // can instead inspect ctx.runtime.frame(...).last_secondary_click to
+    // can instead inspect ctx.frame().last_secondary_click to
     // trigger a native popup.
     state.context_popup = try ctx.tree.addRoot(.{ .popup = .{ .placement = .absolute, .visible = false } });
     state.context_action_a = try ctx.tree.addChild(state.context_popup.?, .{ .menu_item = .{ .label = "Rename" } });
@@ -1466,7 +1466,7 @@ pub fn main(init: std.process.Init) !void {
     var ctx = try goop.Context.init(allocator, .{ .width = state.logical_width, .height = state.logical_height });
     defer ctx.deinit();
     state.ctx = &ctx;
-    ctx.clipboard = state.clipboard();
+    ctx.setClipboard(state.clipboard());
     try buildWidgetTree(&state);
 
     // GL renderer (with snail text support)
@@ -1526,7 +1526,7 @@ pub fn main(init: std.process.Init) !void {
 
         ctx.processEvents();
 
-        if (ctx.runtime.frame(&ctx.tree).last_secondary_click) |click| {
+        if (ctx.frame().last_secondary_click) |click| {
             if (state.context_popup) |popup| {
                 const popup_node = ctx.tree.get(popup);
                 popup_node.kind.popup.x = click.x;
@@ -1576,7 +1576,7 @@ pub fn main(init: std.process.Init) !void {
             if (ctx.tree.node(h).?.clicked) std.debug.print("Outline selected: Directional Light\n", .{});
             if (ctx.tree.node(h).?.kind.tree_item.rename_committed) std.debug.print("Outline renamed: {s}\n", .{ctx.tree.node(h).?.kind.tree_item.label});
         }
-        if (ctx.runtime.frame(&ctx.tree).last_drop) |last| switch (last) {
+        if (ctx.frame().last_drop) |last| switch (last) {
             .tree => |drop| {
                 const position_name = switch (drop.position) {
                     .before => "before",

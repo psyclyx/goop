@@ -786,7 +786,7 @@ fn emitTreeItem(
     const icon_gap = treeItemIconGap(item, theme);
     const text_x = label_x + icon_size + icon_gap;
     const label_bounds = customTextBounds(rect, resolved, text_x, rect.x + rect.w - resolved.padding.right - text_x);
-    const label = if (item.editing) node.kind.tree_item.editor.content() else item.label;
+    const label = if (item.editing) node.kind.tree_item.internal.editor.content() else item.label;
     const has_parent = findTreeParent(tree, handle) != null;
     const has_children = treeItemHasChildren(tree, handle);
 
@@ -839,7 +839,7 @@ fn emitTreeItem(
     }
 
     if (item.editing) {
-        const editor = &node.kind.tree_item.editor;
+        const editor = &node.kind.tree_item.internal.editor;
 
         if (editor.hasSelection()) {
             const range = editor.selectionRange();
@@ -934,20 +934,20 @@ fn emitListBox(
     const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
-        .color = if (list_box.drop_preview_background)
+        .color = if (list_box.internal.drop_preview_background)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
         else
             resolved.bg,
-        .border_color = if (list_box.drop_preview_background) theme.accent else resolved.border,
+        .border_color = if (list_box.internal.drop_preview_background) theme.accent else resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
     try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
-    if (list_box.marquee_active and list_box.marquee_rect.w > 0 and list_box.marquee_rect.h > 0) {
+    if (list_box.internal.marquee_active and list_box.internal.marquee_rect.w > 0 and list_box.internal.marquee_rect.h > 0) {
         const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
         try commands.append(allocator, .{ .box = .{
-            .bounds = list_box.marquee_rect,
+            .bounds = list_box.internal.marquee_rect,
             .color = fill,
             .border_color = theme.accent,
             .border_width = 1,
@@ -970,12 +970,12 @@ fn emitSelectable(
     const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
-        .color = if (selectable.drag.active)
+        .color = if (selectable.internal.drag.active)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
         else
             fill,
-        .border_color = if (selectable.drop_preview or selectable.selected) theme.accent else resolved.border,
-        .border_width = if (selectable.drop_preview or selectable.selected) 1 else 0,
+        .border_color = if (selectable.internal.drop_preview or selectable.selected) theme.accent else resolved.border,
+        .border_width = if (selectable.internal.drop_preview or selectable.selected) 1 else 0,
         .corner_radius = resolved.border_radius,
     } });
     const selectable_bounds = defaultTextBounds(rect, resolved);
@@ -999,20 +999,20 @@ fn emitGridSelector(
     const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
-        .color = if (grid_selector.drop_preview_background)
+        .color = if (grid_selector.internal.drop_preview_background)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
         else
             resolved.bg,
-        .border_color = if (grid_selector.drop_preview_background) theme.accent else resolved.border,
+        .border_color = if (grid_selector.internal.drop_preview_background) theme.accent else resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
     try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
-    if (grid_selector.marquee_active and grid_selector.marquee_rect.w > 0 and grid_selector.marquee_rect.h > 0) {
+    if (grid_selector.internal.marquee_active and grid_selector.internal.marquee_rect.w > 0 and grid_selector.internal.marquee_rect.h > 0) {
         const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
         try commands.append(allocator, .{ .box = .{
-            .bounds = grid_selector.marquee_rect,
+            .bounds = grid_selector.internal.marquee_rect,
             .color = fill,
             .border_color = theme.accent,
             .border_width = 1,
@@ -1032,14 +1032,14 @@ fn emitGridItem(
     _: ?*const layout.TextMeasureCtx,
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
-    const fill = if (grid_item.drag.active)
+    const fill = if (grid_item.internal.drag.active)
         style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
     else
         selectableBg(node, grid_item.selected, theme);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = fill,
-        .border_color = if (grid_item.drop_preview or grid_item.selected) theme.accent else resolved.border,
+        .border_color = if (grid_item.internal.drop_preview or grid_item.selected) theme.accent else resolved.border,
         .border_width = if (grid_item.selected) 1 else resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
@@ -1097,21 +1097,21 @@ fn emitTable(
     const rect = snappedRect(paint_ctx.paintRect(node.layout_rect));
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
-        .color = if (table.drop_preview_background)
+        .color = if (table.internal.drop_preview_background)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
         else
             resolved.bg,
-        .border_color = if (table.drop_preview_background) theme.accent else resolved.border,
+        .border_color = if (table.internal.drop_preview_background) theme.accent else resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
 
     try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
-    if (table.marquee_active and table.marquee_rect.w > 0 and table.marquee_rect.h > 0) {
+    if (table.internal.marquee_active and table.internal.marquee_rect.w > 0 and table.internal.marquee_rect.h > 0) {
         const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
         try commands.append(allocator, .{ .box = .{
-            .bounds = table.marquee_rect,
+            .bounds = table.internal.marquee_rect,
             .color = fill,
             .border_color = theme.accent,
             .border_width = 1,
@@ -1167,7 +1167,7 @@ fn emitTableRow(
         } });
     }
 
-    if (row.drop_preview and row_fill_rect.w > 0 and row_fill_rect.h > 0) {
+    if (row.internal.drop_preview and row_fill_rect.w > 0 and row_fill_rect.h > 0) {
         try commands.append(allocator, .{ .box = .{
             .bounds = row_fill_rect,
             .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 36),
@@ -1572,7 +1572,7 @@ fn emitDragValue(
     } });
     const value_bounds = defaultTextBounds(rect, resolved);
     if (drag_value.editing) {
-        try emitInlineEditorContents(value_bounds, &drag_value.editor, resolved, theme, commands, allocator, text_ctx, true);
+        try emitInlineEditorContents(value_bounds, &drag_value.internal.editor, resolved, theme, commands, allocator, text_ctx, true);
     } else {
         try appendTextCommand(commands, allocator, value_bounds, drag_value.displayValue(), resolved.fg, resolved.font_size, .start, .clip);
     }
@@ -1625,7 +1625,7 @@ fn emitSpinBox(
     try appendTextCommand(commands, allocator, dec_text_bounds, "-", resolved.fg, resolved.font_size, .center, .visible);
     try appendTextCommand(commands, allocator, inc_text_bounds, "+", resolved.fg, resolved.font_size, .center, .visible);
     if (spinbox.editing) {
-        try emitInlineEditorContents(field_text_bounds, &spinbox.editor, resolved, theme, commands, allocator, text_ctx, true);
+        try emitInlineEditorContents(field_text_bounds, &spinbox.internal.editor, resolved, theme, commands, allocator, text_ctx, true);
     } else {
         try appendTextCommand(commands, allocator, field_text_bounds, spinbox.displayValue(), resolved.fg, resolved.font_size, .start, .clip);
     }
@@ -2122,7 +2122,7 @@ fn tableRowFill(
     row: widget.WidgetKind.TableRow,
     theme: style.Theme,
 ) style.Color {
-    if (row.drag.active) return style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72);
+    if (row.internal.drag.active) return style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72);
     if (row.selected) return theme.selection_bg;
     if (row.header) return theme.bg_active;
     if (widget.tableRowSelectable(tree, handle) and node.interaction.hovered) {
@@ -2424,11 +2424,11 @@ fn treeItemChrome(
     const has_custom_border = node.style_override.border != null or node.style_override.border_width != null;
 
     return .{
-        .color = if (item.drag.active)
+        .color = if (item.internal.drag.active)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
         else if (node.interaction.drop_hovered)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
-        else if (item.drop_preview == .into)
+        else if (item.internal.drop_preview == .into)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
         else if (item.selected)
             theme.selection_bg
@@ -2440,13 +2440,13 @@ fn treeItemChrome(
             theme.bg_hover
         else
             .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-        .border_color = if (node.interaction.drop_hovered or item.drop_preview == .into)
+        .border_color = if (node.interaction.drop_hovered or item.internal.drop_preview == .into)
             theme.accent
         else if (has_custom_border)
             resolved.border
         else
             .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-        .border_width = if (node.interaction.drop_hovered or item.drop_preview == .into)
+        .border_width = if (node.interaction.drop_hovered or item.internal.drop_preview == .into)
             @max(resolved.border_width, 1)
         else if (has_custom_border)
             resolved.border_width
@@ -2463,7 +2463,7 @@ fn emitTreeItemDropIndicator(
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
 ) !void {
-    const preview = item.drop_preview orelse return;
+    const preview = item.internal.drop_preview orelse return;
     const indicator_bounds = switch (preview) {
         .before => Rect{
             .x = rect.x + resolved.padding.left,
@@ -2804,25 +2804,25 @@ fn emitDragGhosts(
         if (!node.alive) continue;
         switch (node.kind) {
             .tree_item => |item| {
-                if (!item.drag.active or item.drag.rect.w <= 0 or item.drag.rect.h <= 0) continue;
+                if (!item.internal.drag.active or item.internal.drag.rect.w <= 0 or item.internal.drag.rect.h <= 0) continue;
                 const resolved = node.style_override.resolve(theme);
-                try emitDragGhostRect(item.drag.rect, resolved, theme, commands, allocator);
-                const label_x = item.drag.rect.x + resolved.padding.left;
-                const label_bounds = customTextBounds(item.drag.rect, resolved, label_x, rectRight(item.drag.rect) - resolved.padding.right - label_x);
+                try emitDragGhostRect(item.internal.drag.rect, resolved, theme, commands, allocator);
+                const label_x = item.internal.drag.rect.x + resolved.padding.left;
+                const label_bounds = customTextBounds(item.internal.drag.rect, resolved, label_x, rectRight(item.internal.drag.rect) - resolved.padding.right - label_x);
                 try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .start, .clip);
             },
             .selectable => |item| {
-                if (!item.drag.active or item.drag.rect.w <= 0 or item.drag.rect.h <= 0) continue;
+                if (!item.internal.drag.active or item.internal.drag.rect.w <= 0 or item.internal.drag.rect.h <= 0) continue;
                 const resolved = node.style_override.resolve(theme);
-                try emitDragGhostRect(item.drag.rect, resolved, theme, commands, allocator);
-                const label_bounds = defaultTextBounds(item.drag.rect, resolved);
+                try emitDragGhostRect(item.internal.drag.rect, resolved, theme, commands, allocator);
+                const label_bounds = defaultTextBounds(item.internal.drag.rect, resolved);
                 try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .start, .clip);
             },
             .grid_item => |item| {
-                if (!item.drag.active or item.drag.rect.w <= 0 or item.drag.rect.h <= 0) continue;
+                if (!item.internal.drag.active or item.internal.drag.rect.w <= 0 or item.internal.drag.rect.h <= 0) continue;
                 const resolved = node.style_override.resolve(theme);
-                try emitDragGhostRect(item.drag.rect, resolved, theme, commands, allocator);
-                const inner = defaultTextBounds(item.drag.rect, resolved);
+                try emitDragGhostRect(item.internal.drag.rect, resolved, theme, commands, allocator);
+                const inner = defaultTextBounds(item.internal.drag.rect, resolved);
                 const icon_size = @max(@min(inner.w, inner.h - resolved.font_size - theme.spacing), 0);
                 if (icon_size > 8) {
                     const icon_rect = Rect{
@@ -2841,16 +2841,16 @@ fn emitDragGhosts(
                 }
                 const label_bounds = Rect{
                     .x = inner.x,
-                    .y = item.drag.rect.y + item.drag.rect.h - resolved.padding.bottom - resolved.font_size * 1.4,
+                    .y = item.internal.drag.rect.y + item.internal.drag.rect.h - resolved.padding.bottom - resolved.font_size * 1.4,
                     .w = inner.w,
                     .h = resolved.font_size * 1.4,
                 };
                 try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .center, .ellipsis);
             },
             .table_row => |row| {
-                if (!row.drag.active or row.drag.rect.w <= 0 or row.drag.rect.h <= 0) continue;
+                if (!row.internal.drag.active or row.internal.drag.rect.w <= 0 or row.internal.drag.rect.h <= 0) continue;
                 const resolved = node.style_override.resolve(theme);
-                try emitDragGhostRect(row.drag.rect, resolved, theme, commands, allocator);
+                try emitDragGhostRect(row.internal.drag.rect, resolved, theme, commands, allocator);
             },
             else => {},
         }

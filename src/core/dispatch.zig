@@ -19,35 +19,21 @@ pub const TreeDrop = struct {
     position: widget.WidgetKind.TreeItem.DropPosition,
 };
 
-pub const GridDrop = struct {
+/// A drop reported on a list-box, grid-selector, or table. The three
+/// container kinds shared identical struct shapes and an `{item,
+/// background}` position enum (table called "item" "row"). They all
+/// resolve to this one struct now; the source container kind stays
+/// distinguishable through the `Drop` union arm (`.grid`, `.list`,
+/// `.table`).
+pub const ContainerDrop = struct {
     source: widget.NodeHandle,
     target: widget.NodeHandle,
     position: Position,
 
     pub const Position = enum {
+        /// Dropped onto an item / row inside the container.
         item,
-        background,
-    };
-};
-
-pub const ListDrop = struct {
-    source: widget.NodeHandle,
-    target: widget.NodeHandle,
-    position: Position,
-
-    pub const Position = enum {
-        item,
-        background,
-    };
-};
-
-pub const TableDrop = struct {
-    source: widget.NodeHandle,
-    target: widget.NodeHandle,
-    position: Position,
-
-    pub const Position = enum {
-        row,
+        /// Dropped onto the empty container background.
         background,
     };
 };
@@ -63,28 +49,20 @@ pub const WidgetDrop = struct {
 
 pub const Drop = union(enum) {
     tree: TreeDrop,
-    grid: GridDrop,
-    list: ListDrop,
-    table: TableDrop,
+    grid: ContainerDrop,
+    list: ContainerDrop,
+    table: ContainerDrop,
     widget: WidgetDrop,
 
     pub fn source(self: Drop) widget.NodeHandle {
         return switch (self) {
-            .tree => |drop| drop.source,
-            .grid => |drop| drop.source,
-            .list => |drop| drop.source,
-            .table => |drop| drop.source,
-            .widget => |drop| drop.source,
+            inline else => |drop| drop.source,
         };
     }
 
     pub fn target(self: Drop) widget.NodeHandle {
         return switch (self) {
-            .tree => |drop| drop.target,
-            .grid => |drop| drop.target,
-            .list => |drop| drop.target,
-            .table => |drop| drop.target,
-            .widget => |drop| drop.target,
+            inline else => |drop| drop.target,
         };
     }
 };
@@ -123,11 +101,11 @@ pub const MouseState = struct {
     /// Active tree drop preview while dragging an outline row.
     tree_drop_preview: ?TreeDrop = null,
     /// Active grid drop preview while dragging a grid item.
-    grid_drop_preview: ?GridDrop = null,
+    grid_drop_preview: ?ContainerDrop = null,
     /// Active list drop preview while dragging a selectable row.
-    list_drop_preview: ?ListDrop = null,
+    list_drop_preview: ?ContainerDrop = null,
     /// Active table drop preview while dragging a table row.
-    table_drop_preview: ?TableDrop = null,
+    table_drop_preview: ?ContainerDrop = null,
     /// Active generic drop target while dragging an item.
     widget_drop_preview: ?WidgetDrop = null,
     /// The most recent completed drop committed this frame.
@@ -190,42 +168,42 @@ pub fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
         node.interaction.drop_received = false;
         switch (node.kind) {
             .tree_item => |*item| {
-                item.drag.active = false;
-                item.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                item.drop_preview = null;
+                item.internal.drag.active = false;
+                item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                item.internal.drop_preview = null;
             },
             .list_box => |*list_box| {
-                list_box.marquee_active = false;
-                list_box.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                list_box.drop_preview_background = false;
+                list_box.internal.marquee_active = false;
+                list_box.internal.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                list_box.internal.drop_preview_background = false;
             },
             .selectable => |*item| {
-                item.marquee_base_selected = false;
-                item.drag.active = false;
-                item.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                item.drop_preview = false;
+                item.internal.marquee_base_selected = false;
+                item.internal.drag.active = false;
+                item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                item.internal.drop_preview = false;
             },
             .grid_selector => |*selector| {
-                selector.marquee_active = false;
-                selector.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                selector.drop_preview_background = false;
+                selector.internal.marquee_active = false;
+                selector.internal.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                selector.internal.drop_preview_background = false;
             },
             .grid_item => |*item| {
-                item.marquee_base_selected = false;
-                item.drag.active = false;
-                item.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                item.drop_preview = false;
+                item.internal.marquee_base_selected = false;
+                item.internal.drag.active = false;
+                item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                item.internal.drop_preview = false;
             },
             .table => |*table| {
-                table.marquee_active = false;
-                table.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                table.drop_preview_background = false;
+                table.internal.marquee_active = false;
+                table.internal.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                table.internal.drop_preview_background = false;
             },
             .table_row => |*row| {
-                row.marquee_base_selected = false;
-                row.drag.active = false;
-                row.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                row.drop_preview = false;
+                row.internal.marquee_base_selected = false;
+                row.internal.drag.active = false;
+                row.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                row.internal.drop_preview = false;
             },
             else => {},
         }
@@ -763,9 +741,9 @@ fn focusedTextEditor(tree: *widget.Tree, handle: widget.NodeHandle) ?*widget.Wid
     const node = tree.get(handle);
     return switch (node.kind) {
         .text_input => &node.kind.text_input,
-        .tree_item => if (node.kind.tree_item.editing) &node.kind.tree_item.editor else null,
-        .drag_value => if (node.kind.drag_value.editing) &node.kind.drag_value.editor else null,
-        .spinbox => if (node.kind.spinbox.editing) &node.kind.spinbox.editor else null,
+        .tree_item => if (node.kind.tree_item.editing) &node.kind.tree_item.internal.editor else null,
+        .drag_value => if (node.kind.drag_value.editing) &node.kind.drag_value.internal.editor else null,
+        .spinbox => if (node.kind.spinbox.editing) &node.kind.spinbox.internal.editor else null,
         else => null,
     };
 }
@@ -825,11 +803,11 @@ fn beginNumericEditorTextInput(tree: *widget.Tree, handle: widget.NodeHandle, co
     switch (tree.getConst(handle).kind) {
         .drag_value => {
             beginDragValueEdit(tree, handle);
-            tree.get(handle).kind.drag_value.editor.insertCodepoint(codepoint);
+            tree.get(handle).kind.drag_value.internal.editor.insertCodepoint(codepoint);
         },
         .spinbox => {
             beginSpinBoxEdit(tree, handle);
-            tree.get(handle).kind.spinbox.editor.insertCodepoint(codepoint);
+            tree.get(handle).kind.spinbox.internal.editor.insertCodepoint(codepoint);
         },
         else => {},
     }
@@ -907,9 +885,9 @@ fn beginTreeDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseSta
     mouse.drag_target = source;
     {
         const item = &tree.get(source).kind.tree_item;
-        item.drag.active = true;
-        item.drag.offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
-        item.drag.offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
+        item.internal.drag.active = true;
+        item.internal.drag.offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
+        item.internal.drag.offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
     }
     updateTreeDragPreview(tree, source, mouse);
 }
@@ -928,7 +906,7 @@ fn updateTreeDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mouse: *
     if (target_item.group != source_item.group) return;
 
     const position = treeDropPositionAtY(tree.getConst(target).layout_rect, mouse.y);
-    tree.get(target).kind.tree_item.drop_preview = position;
+    tree.get(target).kind.tree_item.internal.drop_preview = position;
     mouse.tree_drop_preview = .{
         .source = source,
         .target = target,
@@ -939,8 +917,8 @@ fn updateTreeDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mouse: *
 fn finalizeTreeDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
     if (tree.isAlive(source) and tree.getConst(source).kind == .tree_item) {
         const item = &tree.get(source).kind.tree_item;
-        item.drag.active = false;
-        item.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+        item.internal.drag.active = false;
+        item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.tree_drop_preview) |preview| {
 
@@ -956,16 +934,16 @@ fn finalizeTreeDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *Mouse
 fn clearTreeDragPreview(tree: *widget.Tree) void {
     for (tree.nodes.items) |*node| {
         if (!node.alive or node.kind != .tree_item) continue;
-        node.kind.tree_item.drop_preview = null;
+        node.kind.tree_item.internal.drop_preview = null;
     }
 }
 
 fn updateTreeDragGhostRect(tree: *widget.Tree, source: widget.NodeHandle, mouse: *const MouseState) void {
     const source_rect = tree.getConst(source).layout_rect;
     const item = &tree.get(source).kind.tree_item;
-    item.drag.rect = .{
-        .x = mouse.x - item.drag.offset_x,
-        .y = mouse.y - item.drag.offset_y,
+    item.internal.drag.rect = .{
+        .x = mouse.x - item.internal.drag.offset_x,
+        .y = mouse.y - item.internal.drag.offset_y,
         .w = source_rect.w,
         .h = source_rect.h,
     };
@@ -979,9 +957,9 @@ fn beginSelectableDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *Mo
     mouse.drag_target = source;
     {
         const item = &tree.get(source).kind.selectable;
-        item.drag.active = true;
-        item.drag.offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
-        item.drag.offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
+        item.internal.drag.active = true;
+        item.internal.drag.offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
+        item.internal.drag.offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
     }
     updateSelectableDragPreview(tree, source, mouse);
 }
@@ -998,7 +976,7 @@ fn updateSelectableDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mo
         if (target.eql(source)) return;
         if (selectableParentListBox(tree, target)) |target_list_box| {
             if (target_list_box.eql(list_box)) {
-                tree.get(target).kind.selectable.drop_preview = true;
+                tree.get(target).kind.selectable.internal.drop_preview = true;
                 mouse.list_drop_preview = .{
                     .source = source,
                     .target = target,
@@ -1010,7 +988,7 @@ fn updateSelectableDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mo
     }
 
     if (hittest.pointInRect(mouse.x, mouse.y, tree.getConst(list_box).layout_rect)) {
-        tree.get(list_box).kind.list_box.drop_preview_background = true;
+        tree.get(list_box).kind.list_box.internal.drop_preview_background = true;
         mouse.list_drop_preview = .{
             .source = source,
             .target = list_box,
@@ -1022,8 +1000,8 @@ fn updateSelectableDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mo
 fn finalizeSelectableDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
     if (tree.isAlive(source) and tree.getConst(source).kind == .selectable) {
         const item = &tree.get(source).kind.selectable;
-        item.drag.active = false;
-        item.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+        item.internal.drag.active = false;
+        item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.list_drop_preview) |preview| {
 
@@ -1037,8 +1015,8 @@ fn clearListDragPreview(tree: *widget.Tree) void {
     for (tree.nodes.items) |*node| {
         if (!node.alive) continue;
         switch (node.kind) {
-            .list_box => node.kind.list_box.drop_preview_background = false,
-            .selectable => node.kind.selectable.drop_preview = false,
+            .list_box => node.kind.list_box.internal.drop_preview_background = false,
+            .selectable => node.kind.selectable.internal.drop_preview = false,
             else => {},
         }
     }
@@ -1047,9 +1025,9 @@ fn clearListDragPreview(tree: *widget.Tree) void {
 fn updateSelectableDragGhostRect(tree: *widget.Tree, source: widget.NodeHandle, mouse: *const MouseState) void {
     const source_rect = tree.getConst(source).layout_rect;
     const item = &tree.get(source).kind.selectable;
-    item.drag.rect = .{
-        .x = mouse.x - item.drag.offset_x,
-        .y = mouse.y - item.drag.offset_y,
+    item.internal.drag.rect = .{
+        .x = mouse.x - item.internal.drag.offset_x,
+        .y = mouse.y - item.internal.drag.offset_y,
         .w = source_rect.w,
         .h = source_rect.h,
     };
@@ -1062,9 +1040,9 @@ fn beginGridItemDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *Mous
     mouse.drag_target = source;
     {
         const item = &tree.get(source).kind.grid_item;
-        item.drag.active = true;
-        item.drag.offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
-        item.drag.offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
+        item.internal.drag.active = true;
+        item.internal.drag.offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
+        item.internal.drag.offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
     }
     updateGridItemDragPreview(tree, source, mouse);
 }
@@ -1081,7 +1059,7 @@ fn updateGridItemDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mous
         if (target.eql(source)) return;
         if (widget.gridItemParentSelector(tree, target)) |target_selector| {
             if (target_selector.eql(selector)) {
-                tree.get(target).kind.grid_item.drop_preview = true;
+                tree.get(target).kind.grid_item.internal.drop_preview = true;
                 mouse.grid_drop_preview = .{
                     .source = source,
                     .target = target,
@@ -1093,7 +1071,7 @@ fn updateGridItemDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mous
     }
 
     if (hittest.pointInRect(mouse.x, mouse.y, tree.getConst(selector).layout_rect)) {
-        tree.get(selector).kind.grid_selector.drop_preview_background = true;
+        tree.get(selector).kind.grid_selector.internal.drop_preview_background = true;
         mouse.grid_drop_preview = .{
             .source = source,
             .target = selector,
@@ -1105,8 +1083,8 @@ fn updateGridItemDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mous
 fn finalizeGridItemDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
     if (tree.isAlive(source) and tree.getConst(source).kind == .grid_item) {
         const item = &tree.get(source).kind.grid_item;
-        item.drag.active = false;
-        item.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+        item.internal.drag.active = false;
+        item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.grid_drop_preview) |preview| {
 
@@ -1120,8 +1098,8 @@ fn clearGridDragPreview(tree: *widget.Tree) void {
     for (tree.nodes.items) |*node| {
         if (!node.alive) continue;
         switch (node.kind) {
-            .grid_selector => node.kind.grid_selector.drop_preview_background = false,
-            .grid_item => node.kind.grid_item.drop_preview = false,
+            .grid_selector => node.kind.grid_selector.internal.drop_preview_background = false,
+            .grid_item => node.kind.grid_item.internal.drop_preview = false,
             else => {},
         }
     }
@@ -1130,9 +1108,9 @@ fn clearGridDragPreview(tree: *widget.Tree) void {
 fn updateGridItemDragGhostRect(tree: *widget.Tree, source: widget.NodeHandle, mouse: *const MouseState) void {
     const source_rect = tree.getConst(source).layout_rect;
     const item = &tree.get(source).kind.grid_item;
-    item.drag.rect = .{
-        .x = mouse.x - item.drag.offset_x,
-        .y = mouse.y - item.drag.offset_y,
+    item.internal.drag.rect = .{
+        .x = mouse.x - item.internal.drag.offset_x,
+        .y = mouse.y - item.internal.drag.offset_y,
         .w = source_rect.w,
         .h = source_rect.h,
     };
@@ -1155,17 +1133,17 @@ fn beginListBoxMarquee(tree: *widget.Tree, list_box: widget.NodeHandle, mouse: *
     mouse.drag_origin_x = mouse.press_origin_x;
     mouse.drag_origin_y = mouse.press_origin_y;
     snapshotListBoxSelection(tree, list_box);
-    tree.get(list_box).kind.list_box.marquee_active = true;
+    tree.get(list_box).kind.list_box.internal.marquee_active = true;
     updateListBoxMarquee(tree, list_box, mouse);
 }
 
 fn updateListBoxMarquee(tree: *widget.Tree, list_box: widget.NodeHandle, mouse: *const MouseState) void {
     if (!tree.isAlive(list_box) or tree.getConst(list_box).kind != .list_box) return;
-    if (!tree.getConst(list_box).kind.list_box.marquee_active) return;
+    if (!tree.getConst(list_box).kind.list_box.internal.marquee_active) return;
 
     const list_rect = tree.getConst(list_box).layout_rect;
     const marquee_rect = clampRectToBounds(normalizedRect(mouse.drag_origin_x, mouse.drag_origin_y, mouse.x, mouse.y), list_rect);
-    tree.get(list_box).kind.list_box.marquee_rect = marquee_rect;
+    tree.get(list_box).kind.list_box.internal.marquee_rect = marquee_rect;
 
     var changed = false;
     var iter = tree.children(list_box);
@@ -1173,7 +1151,7 @@ fn updateListBoxMarquee(tree: *widget.Tree, list_box: widget.NodeHandle, mouse: 
         if (tree.getConst(child).kind != .selectable) continue;
         const child_node = tree.getConst(child);
         const should_select = rectsIntersect(marquee_rect, child_node.layout_rect) or
-            (mouse.ctrl_down and child_node.kind.selectable.marquee_base_selected);
+            (mouse.ctrl_down and child_node.kind.selectable.internal.marquee_base_selected);
         if (child_node.kind.selectable.selected != should_select) {
             tree.get(child).kind.selectable.selected = should_select;
             changed = true;
@@ -1185,13 +1163,13 @@ fn updateListBoxMarquee(tree: *widget.Tree, list_box: widget.NodeHandle, mouse: 
 fn finalizeListBoxMarquee(tree: *widget.Tree, list_box: widget.NodeHandle) void {
     if (!tree.isAlive(list_box) or tree.getConst(list_box).kind != .list_box) return;
     const node = &tree.get(list_box).kind.list_box;
-    node.marquee_active = false;
-    node.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    node.internal.marquee_active = false;
+    node.internal.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
 
     var iter = tree.children(list_box);
     while (iter.next()) |child| {
         if (tree.getConst(child).kind != .selectable) continue;
-        tree.get(child).kind.selectable.marquee_base_selected = false;
+        tree.get(child).kind.selectable.internal.marquee_base_selected = false;
     }
 }
 
@@ -1199,7 +1177,7 @@ fn snapshotListBoxSelection(tree: *widget.Tree, list_box: widget.NodeHandle) voi
     var iter = tree.children(list_box);
     while (iter.next()) |child| {
         if (tree.getConst(child).kind != .selectable) continue;
-        tree.get(child).kind.selectable.marquee_base_selected = tree.getConst(child).kind.selectable.selected;
+        tree.get(child).kind.selectable.internal.marquee_base_selected = tree.getConst(child).kind.selectable.selected;
     }
 }
 
@@ -1210,7 +1188,7 @@ fn beginGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle, mou
     mouse.drag_origin_x = mouse.press_origin_x;
     mouse.drag_origin_y = mouse.press_origin_y;
     snapshotGridSelectorSelection(tree, selector);
-    tree.get(selector).kind.grid_selector.marquee_active = true;
+    tree.get(selector).kind.grid_selector.internal.marquee_active = true;
     updateGridSelectorMarquee(tree, selector, mouse);
 }
 
@@ -1219,7 +1197,7 @@ fn updateGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle, mo
 
     const selector_rect = tree.getConst(selector).layout_rect;
     const marquee_rect = clampRectToBounds(normalizedRect(mouse.drag_origin_x, mouse.drag_origin_y, mouse.x, mouse.y), selector_rect);
-    tree.get(selector).kind.grid_selector.marquee_rect = marquee_rect;
+    tree.get(selector).kind.grid_selector.internal.marquee_rect = marquee_rect;
 
     var changed = false;
     var iter = tree.children(selector);
@@ -1227,7 +1205,7 @@ fn updateGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle, mo
         if (tree.getConst(child).kind != .grid_item) continue;
         const child_node = tree.getConst(child);
         const should_select = rectsIntersect(marquee_rect, child_node.layout_rect) or
-            (mouse.ctrl_down and child_node.kind.grid_item.marquee_base_selected);
+            (mouse.ctrl_down and child_node.kind.grid_item.internal.marquee_base_selected);
         if (child_node.kind.grid_item.selected != should_select) {
             tree.get(child).kind.grid_item.selected = should_select;
             changed = true;
@@ -1239,13 +1217,13 @@ fn updateGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle, mo
 fn finalizeGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle) void {
     if (!tree.isAlive(selector) or tree.getConst(selector).kind != .grid_selector) return;
     const grid_selector = &tree.get(selector).kind.grid_selector;
-    grid_selector.marquee_active = false;
-    grid_selector.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    grid_selector.internal.marquee_active = false;
+    grid_selector.internal.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
 
     var iter = tree.children(selector);
     while (iter.next()) |child| {
         if (tree.getConst(child).kind != .grid_item) continue;
-        tree.get(child).kind.grid_item.marquee_base_selected = false;
+        tree.get(child).kind.grid_item.internal.marquee_base_selected = false;
     }
 }
 
@@ -1253,7 +1231,7 @@ fn snapshotGridSelectorSelection(tree: *widget.Tree, selector: widget.NodeHandle
     var iter = tree.children(selector);
     while (iter.next()) |child| {
         if (tree.getConst(child).kind != .grid_item) continue;
-        tree.get(child).kind.grid_item.marquee_base_selected = tree.getConst(child).kind.grid_item.selected;
+        tree.get(child).kind.grid_item.internal.marquee_base_selected = tree.getConst(child).kind.grid_item.selected;
     }
 }
 
@@ -1265,9 +1243,9 @@ fn beginTableRowDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *Mous
     mouse.drag_target = source;
     {
         const row = &tree.get(source).kind.table_row;
-        row.drag.active = true;
-        row.drag.offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
-        row.drag.offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
+        row.internal.drag.active = true;
+        row.internal.drag.offset_x = mouse.press_origin_x - tree.getConst(source).layout_rect.x;
+        row.internal.drag.offset_y = mouse.press_origin_y - tree.getConst(source).layout_rect.y;
     }
     updateTableRowDragPreview(tree, source, mouse);
 }
@@ -1286,18 +1264,18 @@ fn updateTableRowDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mous
         if (!target.eql(source) and tree.getConst(target).parent != null and tree.getConst(target).parent.?.eql(table_handle) and
             tree.getConst(target).kind == .table_row and !tree.getConst(target).kind.table_row.header)
         {
-            tree.get(target).kind.table_row.drop_preview = true;
+            tree.get(target).kind.table_row.internal.drop_preview = true;
             mouse.table_drop_preview = .{
                 .source = source,
                 .target = target,
-                .position = .row,
+                .position = .item,
             };
             return;
         }
     }
 
     if (hittest.pointInRect(mouse.x, mouse.y, tree.getConst(table_handle).layout_rect)) {
-        tree.get(table_handle).kind.table.drop_preview_background = true;
+        tree.get(table_handle).kind.table.internal.drop_preview_background = true;
         mouse.table_drop_preview = .{
             .source = source,
             .target = table_handle,
@@ -1309,8 +1287,8 @@ fn updateTableRowDragPreview(tree: *widget.Tree, source: widget.NodeHandle, mous
 fn finalizeTableRowDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
     if (tree.isAlive(source) and tree.getConst(source).kind == .table_row) {
         const row = &tree.get(source).kind.table_row;
-        row.drag.active = false;
-        row.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+        row.internal.drag.active = false;
+        row.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.table_drop_preview) |preview| {
 
@@ -1324,8 +1302,8 @@ fn clearTableDragPreview(tree: *widget.Tree) void {
     for (tree.nodes.items) |*node| {
         if (!node.alive) continue;
         switch (node.kind) {
-            .table => node.kind.table.drop_preview_background = false,
-            .table_row => node.kind.table_row.drop_preview = false,
+            .table => node.kind.table.internal.drop_preview_background = false,
+            .table_row => node.kind.table_row.internal.drop_preview = false,
             else => {},
         }
     }
@@ -1334,9 +1312,9 @@ fn clearTableDragPreview(tree: *widget.Tree) void {
 fn updateTableRowDragGhostRect(tree: *widget.Tree, source: widget.NodeHandle, mouse: *const MouseState) void {
     const source_rect = tree.getConst(source).layout_rect;
     const row = &tree.get(source).kind.table_row;
-    row.drag.rect = .{
-        .x = mouse.x - row.drag.offset_x,
-        .y = mouse.y - row.drag.offset_y,
+    row.internal.drag.rect = .{
+        .x = mouse.x - row.internal.drag.offset_x,
+        .y = mouse.y - row.internal.drag.offset_y,
         .w = source_rect.w,
         .h = source_rect.h,
     };
@@ -1420,17 +1398,17 @@ fn beginTableMarquee(tree: *widget.Tree, table: widget.NodeHandle, mouse: *Mouse
     mouse.drag_origin_x = mouse.press_origin_x;
     mouse.drag_origin_y = mouse.press_origin_y;
     snapshotTableSelection(tree, table);
-    tree.get(table).kind.table.marquee_active = true;
+    tree.get(table).kind.table.internal.marquee_active = true;
     updateTableMarquee(tree, table, mouse);
 }
 
 fn updateTableMarquee(tree: *widget.Tree, table: widget.NodeHandle, mouse: *const MouseState) void {
     if (!tree.isAlive(table) or tree.getConst(table).kind != .table) return;
-    if (!tree.getConst(table).kind.table.marquee_active) return;
+    if (!tree.getConst(table).kind.table.internal.marquee_active) return;
 
     const table_rect = tree.getConst(table).layout_rect;
     const marquee_rect = clampRectToBounds(normalizedRect(mouse.drag_origin_x, mouse.drag_origin_y, mouse.x, mouse.y), table_rect);
-    tree.get(table).kind.table.marquee_rect = marquee_rect;
+    tree.get(table).kind.table.internal.marquee_rect = marquee_rect;
 
     var changed = false;
     var iter = tree.children(table);
@@ -1438,7 +1416,7 @@ fn updateTableMarquee(tree: *widget.Tree, table: widget.NodeHandle, mouse: *cons
         const child_node = tree.getConst(child);
         if (child_node.kind != .table_row or child_node.kind.table_row.header) continue;
         const should_select = rectsIntersect(marquee_rect, child_node.layout_rect) or
-            (mouse.ctrl_down and child_node.kind.table_row.marquee_base_selected);
+            (mouse.ctrl_down and child_node.kind.table_row.internal.marquee_base_selected);
         if (child_node.kind.table_row.selected != should_select) {
             tree.get(child).kind.table_row.selected = should_select;
             changed = true;
@@ -1450,13 +1428,13 @@ fn updateTableMarquee(tree: *widget.Tree, table: widget.NodeHandle, mouse: *cons
 fn finalizeTableMarquee(tree: *widget.Tree, table: widget.NodeHandle) void {
     if (!tree.isAlive(table) or tree.getConst(table).kind != .table) return;
     const node = &tree.get(table).kind.table;
-    node.marquee_active = false;
-    node.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    node.internal.marquee_active = false;
+    node.internal.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
 
     var iter = tree.children(table);
     while (iter.next()) |child| {
         if (tree.getConst(child).kind != .table_row) continue;
-        tree.get(child).kind.table_row.marquee_base_selected = false;
+        tree.get(child).kind.table_row.internal.marquee_base_selected = false;
     }
 }
 
@@ -1465,7 +1443,7 @@ fn snapshotTableSelection(tree: *widget.Tree, table: widget.NodeHandle) void {
     while (iter.next()) |child| {
         const child_node = tree.getConst(child);
         if (child_node.kind != .table_row or child_node.kind.table_row.header) continue;
-        tree.get(child).kind.table_row.marquee_base_selected = child_node.kind.table_row.selected;
+        tree.get(child).kind.table_row.internal.marquee_base_selected = child_node.kind.table_row.selected;
     }
 }
 
@@ -1688,7 +1666,7 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
                 if (tree.getConst(t).kind.drag_value.editing) {
                     if (textEditorTextX(tree, t, theme)) |text_x| {
                         const resolved = tree.getConst(t).style_override.resolve(theme);
-                        const editor = &tree.get(t).kind.drag_value.editor;
+                        const editor = &tree.get(t).kind.drag_value.internal.editor;
                         handleInlineTextEditorPress(editor, editor.content(), mouse.x, text_x, resolved.font_size, mouse, mb, text_ctx);
                     }
                 } else {
@@ -1761,7 +1739,7 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
                 } else if (tree.getConst(t).kind.spinbox.editing) {
                     if (textEditorTextX(tree, t, theme)) |text_x| {
                         const resolved = tree.getConst(t).style_override.resolve(theme);
-                        const editor = &tree.get(t).kind.spinbox.editor;
+                        const editor = &tree.get(t).kind.spinbox.internal.editor;
                         handleInlineTextEditorPress(editor, editor.content(), mouse.x, text_x, resolved.font_size, mouse, mb, text_ctx);
                     }
                 }
@@ -2337,7 +2315,7 @@ fn selectSelectable(tree: *widget.Tree, handle: widget.NodeHandle) bool {
             index += 1;
         }
         if (tree.getConst(parent_handle).kind == .list_box) {
-            tree.get(parent_handle).kind.list_box.anchor_index = selected_index;
+            tree.get(parent_handle).kind.list_box.internal.anchor_index = selected_index;
         }
         return changed;
     }
@@ -2378,7 +2356,7 @@ fn selectGridItem(tree: *widget.Tree, handle: widget.NodeHandle) bool {
     }
 
     const selector_node = tree.get(selector);
-    selector_node.kind.grid_selector.anchor_index = selected_index;
+    selector_node.kind.grid_selector.internal.anchor_index = selected_index;
     if (changed) selector_node.interaction.changed = true;
     return changed;
 }
@@ -2393,13 +2371,13 @@ fn selectGridItemsMulti(
     const grid_selector = &tree.get(selector).kind.grid_selector;
 
     if (mouse.shift_down) {
-        const anchor = grid_selector.anchor_index orelse clicked_index;
+        const anchor = grid_selector.internal.anchor_index orelse clicked_index;
         const changed = selectGridRange(tree, selector, @min(anchor, clicked_index), @max(anchor, clicked_index), mouse.ctrl_down);
-        grid_selector.anchor_index = anchor;
+        grid_selector.internal.anchor_index = anchor;
         return changed;
     }
 
-    grid_selector.anchor_index = clicked_index;
+    grid_selector.internal.anchor_index = clicked_index;
     if (mouse.ctrl_down) {
         return toggleGridItem(tree, selector, handle);
     }
@@ -2453,7 +2431,7 @@ fn clearGridSelectorSelection(tree: *widget.Tree, selector: widget.NodeHandle) b
         }
     }
 
-    node.kind.grid_selector.anchor_index = null;
+    node.kind.grid_selector.internal.anchor_index = null;
     if (changed) node.interaction.changed = true;
     return changed;
 }
@@ -2473,7 +2451,7 @@ fn selectAllGridSelector(tree: *widget.Tree, selector: widget.NodeHandle) bool {
         index += 1;
     }
     if (changed) {
-        tree.get(selector).kind.grid_selector.anchor_index = last_index;
+        tree.get(selector).kind.grid_selector.internal.anchor_index = last_index;
         tree.get(selector).interaction.changed = true;
     }
     return changed;
@@ -2498,7 +2476,7 @@ fn selectTableRow(tree: *widget.Tree, handle: widget.NodeHandle) bool {
     }
 
     const table = &tree.get(table_handle).kind.table;
-    table.anchor_row = selected_index;
+    table.internal.anchor_row = selected_index;
     if (changed) table.selection_changed = true;
     return changed;
 }
@@ -2513,13 +2491,13 @@ fn selectTableRowsMulti(
     const table = &tree.get(table_handle).kind.table;
 
     if (mouse.shift_down) {
-        const anchor = table.anchor_row orelse row_index;
+        const anchor = table.internal.anchor_row orelse row_index;
         const changed = selectTableRowRange(tree, table_handle, @min(anchor, row_index), @max(anchor, row_index), mouse.ctrl_down);
-        table.anchor_row = anchor;
+        table.internal.anchor_row = anchor;
         return changed;
     }
 
-    table.anchor_row = row_index;
+    table.internal.anchor_row = row_index;
     if (mouse.ctrl_down) {
         return toggleTableRow(tree, table_handle, row_handle);
     }
@@ -2571,13 +2549,13 @@ fn selectListBoxMulti(
     std.debug.assert(list_box_node.kind == .list_box);
 
     if (mouse.shift_down) {
-        const anchor = list_box_node.kind.list_box.anchor_index orelse clicked_index;
+        const anchor = list_box_node.kind.list_box.internal.anchor_index orelse clicked_index;
         const changed = selectListBoxRange(tree, list_box, @min(anchor, clicked_index), @max(anchor, clicked_index), mouse.ctrl_down);
-        list_box_node.kind.list_box.anchor_index = anchor;
+        list_box_node.kind.list_box.internal.anchor_index = anchor;
         return changed;
     }
 
-    list_box_node.kind.list_box.anchor_index = clicked_index;
+    list_box_node.kind.list_box.internal.anchor_index = clicked_index;
     if (mouse.ctrl_down) {
         return toggleListBoxSelectable(tree, list_box, handle);
     }
@@ -4082,7 +4060,7 @@ test "multi-select list box supports ctrl-toggle and additive shift range" {
     try std.testing.expect(tree.getConst(first).kind.selectable.selected);
     try std.testing.expect(tree.getConst(second).kind.selectable.selected);
     try std.testing.expect(!tree.getConst(third).kind.selectable.selected);
-    try std.testing.expectEqual(@as(?u16, 1), tree.getConst(list_box).kind.list_box.anchor_index);
+    try std.testing.expectEqual(@as(?u16, 1), tree.getConst(list_box).kind.list_box.internal.anchor_index);
 
     tree.get(list_box).interaction.changed = false;
 
@@ -4135,7 +4113,7 @@ test "grid selector marquee selects intersecting tiles" {
     try std.testing.expect(!tree.getConst(third).kind.grid_item.selected);
     try std.testing.expect(!tree.getConst(fourth).kind.grid_item.selected);
     try std.testing.expect(tree.getConst(grid).interaction.changed);
-    try std.testing.expect(!tree.getConst(grid).kind.grid_selector.marquee_active);
+    try std.testing.expect(!tree.getConst(grid).kind.grid_selector.internal.marquee_active);
 }
 
 test "grid item drag reports drop target" {
@@ -4168,19 +4146,19 @@ test "grid item drag reports drop target" {
     }, &mouse, style.Theme.default);
 
     try std.testing.expect(mouse.drag_target != null);
-    try std.testing.expect(tree.getConst(first).kind.grid_item.drag.active);
-    try std.testing.expect(tree.getConst(second).kind.grid_item.drop_preview);
+    try std.testing.expect(tree.getConst(first).kind.grid_item.internal.drag.active);
+    try std.testing.expect(tree.getConst(second).kind.grid_item.internal.drop_preview);
 
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 146, .y = 40 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(!tree.getConst(first).kind.grid_item.drag.active);
-    try std.testing.expect(!tree.getConst(second).kind.grid_item.drop_preview);
+    try std.testing.expect(!tree.getConst(first).kind.grid_item.internal.drag.active);
+    try std.testing.expect(!tree.getConst(second).kind.grid_item.internal.drop_preview);
     const drop = mouse.last_drop.?.grid;
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
-    try std.testing.expectEqual(GridDrop.Position.item, drop.position);
+    try std.testing.expectEqual(ContainerDrop.Position.item, drop.position);
 }
 
 test "cancel pointer gesture clears active grid drag" {
@@ -4210,8 +4188,8 @@ test "cancel pointer gesture clears active grid drag" {
     try std.testing.expect(mouse.left_down);
     try std.testing.expect(mouse.drag_target != null);
     try std.testing.expect(mouse.grid_drop_preview != null);
-    try std.testing.expect(tree.getConst(first).kind.grid_item.drag.active);
-    try std.testing.expect(tree.getConst(second).kind.grid_item.drop_preview);
+    try std.testing.expect(tree.getConst(first).kind.grid_item.internal.drag.active);
+    try std.testing.expect(tree.getConst(second).kind.grid_item.internal.drop_preview);
 
     cancelPointerGesture(&tree, &mouse);
 
@@ -4219,8 +4197,8 @@ test "cancel pointer gesture clears active grid drag" {
     try std.testing.expect(mouse.press_target == null);
     try std.testing.expect(mouse.drag_target == null);
     try std.testing.expect(mouse.grid_drop_preview == null);
-    try std.testing.expect(!tree.getConst(first).kind.grid_item.drag.active);
-    try std.testing.expect(!tree.getConst(second).kind.grid_item.drop_preview);
+    try std.testing.expect(!tree.getConst(first).kind.grid_item.internal.drag.active);
+    try std.testing.expect(!tree.getConst(second).kind.grid_item.internal.drop_preview);
 }
 
 test "generic drop target receives item drag" {
@@ -4296,7 +4274,7 @@ test "table rows support multi-select and additive shift range" {
     try std.testing.expect(tree.getConst(first).kind.table_row.selected);
     try std.testing.expect(tree.getConst(second).kind.table_row.selected);
     try std.testing.expect(!tree.getConst(third).kind.table_row.selected);
-    try std.testing.expectEqual(@as(?u16, 1), tree.getConst(table).kind.table.anchor_row);
+    try std.testing.expectEqual(@as(?u16, 1), tree.getConst(table).kind.table.internal.anchor_row);
     try std.testing.expect(tree.getConst(table).kind.table.selection_changed);
 
     tree.get(table).kind.table.selection_changed = false;
@@ -4341,7 +4319,7 @@ test "table row keyboard navigation moves focus and extends selection" {
 
     var mouse = MouseState{ .focused = first };
     focus.syncFocusFlags(&tree, mouse.focused);
-    tree.get(table).kind.table.anchor_row = 0;
+    tree.get(table).kind.table.internal.anchor_row = 0;
 
     process(&tree, &.{.{ .key = .{ .scancode = 108, .keycode = .down, .state = .pressed } }}, &mouse, style.Theme.default);
     try std.testing.expect(mouse.focused.?.eql(second));
@@ -4537,8 +4515,8 @@ test "tree item drag reports drop target and position" {
         .{ .mouse_move = .{ .x = 40, .y = 56 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(tree.getConst(first).kind.tree_item.drag.active);
-    try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, tree.getConst(second).kind.tree_item.drop_preview.?);
+    try std.testing.expect(tree.getConst(first).kind.tree_item.internal.drag.active);
+    try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, tree.getConst(second).kind.tree_item.internal.drop_preview.?);
 
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 40, .y = 56 } },
@@ -4549,8 +4527,8 @@ test "tree item drag reports drop target and position" {
     try std.testing.expect(drop.target.eql(second));
     try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, drop.position);
     try std.testing.expect(tree.getConst(second).interaction.drop_received);
-    try std.testing.expect(!tree.getConst(first).kind.tree_item.drag.active);
-    try std.testing.expect(tree.getConst(second).kind.tree_item.drop_preview == null);
+    try std.testing.expect(!tree.getConst(first).kind.tree_item.internal.drag.active);
+    try std.testing.expect(tree.getConst(second).kind.tree_item.internal.drop_preview == null);
 }
 
 test "dropdown menu item selection updates dropdown state" {
@@ -4721,7 +4699,7 @@ test "list box marquee selects intersecting rows" {
     try std.testing.expect(tree.getConst(second).kind.selectable.selected);
     try std.testing.expect(tree.getConst(third).kind.selectable.selected);
     try std.testing.expect(tree.getConst(list_box).interaction.changed);
-    try std.testing.expect(!tree.getConst(list_box).kind.list_box.marquee_active);
+    try std.testing.expect(!tree.getConst(list_box).kind.list_box.internal.marquee_active);
 }
 
 test "selectable drag reports list drop target" {
@@ -4745,8 +4723,8 @@ test "selectable drag reports list drop target" {
         .{ .mouse_move = .{ .x = 40, .y = 50 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(tree.getConst(first).kind.selectable.drag.active);
-    try std.testing.expect(tree.getConst(second).kind.selectable.drop_preview);
+    try std.testing.expect(tree.getConst(first).kind.selectable.internal.drag.active);
+    try std.testing.expect(tree.getConst(second).kind.selectable.internal.drop_preview);
 
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 40, .y = 50 } },
@@ -4755,9 +4733,9 @@ test "selectable drag reports list drop target" {
     const drop = mouse.last_drop.?.list;
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
-    try std.testing.expectEqual(ListDrop.Position.item, drop.position);
-    try std.testing.expect(!tree.getConst(first).kind.selectable.drag.active);
-    try std.testing.expect(!tree.getConst(second).kind.selectable.drop_preview);
+    try std.testing.expectEqual(ContainerDrop.Position.item, drop.position);
+    try std.testing.expect(!tree.getConst(first).kind.selectable.internal.drag.active);
+    try std.testing.expect(!tree.getConst(second).kind.selectable.internal.drop_preview);
 }
 
 test "table marquee selects intersecting rows" {
@@ -4788,7 +4766,7 @@ test "table marquee selects intersecting rows" {
     try std.testing.expect(tree.getConst(second).kind.table_row.selected);
     try std.testing.expect(tree.getConst(third).kind.table_row.selected);
     try std.testing.expect(tree.getConst(table).kind.table.selection_changed);
-    try std.testing.expect(!tree.getConst(table).kind.table.marquee_active);
+    try std.testing.expect(!tree.getConst(table).kind.table.internal.marquee_active);
 }
 
 test "table row drag reports table drop target" {
@@ -4812,8 +4790,8 @@ test "table row drag reports table drop target" {
         .{ .mouse_move = .{ .x = 40, .y = 50 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(tree.getConst(first).kind.table_row.drag.active);
-    try std.testing.expect(tree.getConst(second).kind.table_row.drop_preview);
+    try std.testing.expect(tree.getConst(first).kind.table_row.internal.drag.active);
+    try std.testing.expect(tree.getConst(second).kind.table_row.internal.drop_preview);
 
     process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 40, .y = 50 } },
@@ -4822,9 +4800,9 @@ test "table row drag reports table drop target" {
     const drop = mouse.last_drop.?.table;
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
-    try std.testing.expectEqual(TableDrop.Position.row, drop.position);
-    try std.testing.expect(!tree.getConst(first).kind.table_row.drag.active);
-    try std.testing.expect(!tree.getConst(second).kind.table_row.drop_preview);
+    try std.testing.expectEqual(ContainerDrop.Position.item, drop.position);
+    try std.testing.expect(!tree.getConst(first).kind.table_row.internal.drag.active);
+    try std.testing.expect(!tree.getConst(second).kind.table_row.internal.drop_preview);
 }
 
 test {

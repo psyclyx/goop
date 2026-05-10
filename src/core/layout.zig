@@ -384,7 +384,7 @@ fn emitTreeItem(
     theme: style_mod.Theme,
 ) void {
     const node = tree.getConst(handle);
-    const label = if (item.editing) node.kind.tree_item.editor.content() else item.label;
+    const label = if (item.editing) node.kind.tree_item.internal.editor.content() else item.label;
     const depth = treeDepth(tree, handle);
     const left_indent = @as(f32, @floatFromInt(depth)) * treeIndent(theme, resolved);
     var header_padding = resolved.padding;
@@ -1749,9 +1749,9 @@ fn syncGridSelectorLayout(tree: *widget.Tree, theme: style_mod.Theme) bool {
             @as(f32, @floatFromInt(rows)) * item_height +
             @as(f32, @floatFromInt(rows - 1)) * row_gap;
 
-        if (grid_selector.computed_columns != columns or @abs(grid_selector.content_height - content_height) > 0.01) {
+        if (grid_selector.computed_columns != columns or @abs(grid_selector.internal.content_height - content_height) > 0.01) {
             grid_selector.computed_columns = columns;
-            grid_selector.content_height = content_height;
+            grid_selector.internal.content_height = content_height;
             changed = true;
         }
 

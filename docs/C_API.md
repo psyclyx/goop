@@ -13,7 +13,7 @@ Typical frame order:
 3. Queue input with `goop_context_push_event`.
 4. Run `goop_context_do_layout`.
 5. Run `goop_context_process_events`.
-6. Query widget state with helpers such as `goop_context_was_clicked`.
+6. Query widget state with `goop_context_node`, which returns a `goop_node_view_t` snapshot (rect, per-frame interaction flags, and the kind-specific view).
 7. Generate draw commands with `goop_context_generate_draw_list`.
 
 `goop_context_process_events` can trigger another internal layout pass when
@@ -32,9 +32,8 @@ Incoming descriptor strings are generally borrowed:
 
 Returned strings are borrowed from `goop`:
 
-- `goop_context_text_input_value`
-- `goop_context_tree_item_label`
-- `goop_context_dropdown_value`
+- `goop_string_t` slices on `goop_node_view_t` (e.g. `view.text_input.content`,
+  `view.tree_item.label`, `view.dropdown.selected_text`)
 - draw-list text slices
 
 Copy returned strings if you need them to outlive the current widget/context

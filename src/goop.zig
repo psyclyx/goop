@@ -50,6 +50,22 @@ pub const WidgetDesc = widget.WidgetDesc;
 pub const WidgetView = widget.WidgetView;
 pub const NodeView = widget.NodeView;
 pub const kindFromDesc = widget.kindFromDesc;
+
+// Tree-walking helpers commonly reached for by embedders. Internal
+// helpers (gridItemParentSelector, tableEffectiveColumnCount,
+// syncDerivedState) intentionally stay in the `widget` namespace.
+pub const tableHeaderRow = widget.tableHeaderRow;
+pub const tableReferenceRow = widget.tableReferenceRow;
+pub const tableRowCellCount = widget.tableRowCellCount;
+pub const tableCellAt = widget.tableCellAt;
+pub const tableResizeHandleRect = widget.tableResizeHandleRect;
+pub const tableResizeHandleIndexAtPoint = widget.tableResizeHandleIndexAtPoint;
+pub const tableHeaderCellIndexAtPoint = widget.tableHeaderCellIndexAtPoint;
+pub const tableRowSelectable = widget.tableRowSelectable;
+pub const tableDataRowIndex = widget.tableDataRowIndex;
+pub const gridSelectorItemCount = widget.gridSelectorItemCount;
+pub const gridItemAt = widget.gridItemAt;
+pub const gridItemIndex = widget.gridItemIndex;
 pub const Rect = draw.Rect;
 pub const Event = event.Event;
 pub const Theme = style.Theme;
@@ -71,9 +87,10 @@ pub const TextDimensions = layout.TextDimensions;
 pub const Clipboard = dispatch.Clipboard;
 pub const SecondaryClick = dispatch.SecondaryClick;
 pub const TreeDrop = dispatch.TreeDrop;
-pub const GridDrop = dispatch.GridDrop;
-pub const ListDrop = dispatch.ListDrop;
-pub const TableDrop = dispatch.TableDrop;
+/// Shared container-drop type used by `.grid`, `.list`, and `.table`
+/// arms of the `Drop` union — the source container kind is still
+/// distinguishable through the union arm.
+pub const ContainerDrop = dispatch.ContainerDrop;
 pub const WidgetDrop = dispatch.WidgetDrop;
 pub const Drop = dispatch.Drop;
 
@@ -220,7 +237,9 @@ pub const Runtime = struct {
 
     /// Clear transient activation/change flags. Call at the start of each
     /// frame so clicks, toggles, and selection changes are only observed
-    /// for one frame.
+    /// for one frame. Per-kind event fields are reset by the kind's
+    /// `resetPerFrameEvents` method (when present), so each kind owns
+    /// what it considers per-frame state.
     pub fn clearClickedFlags(self: *Runtime, tree: *Tree) void {
         self.mouse.last_secondary_click = null;
         self.mouse.last_drop = null;
@@ -232,15 +251,11 @@ pub const Runtime = struct {
             node.interaction.changed = false;
             node.interaction.toggled = false;
             switch (node.kind) {
-                .tree_item => |*tree_item| {
-                    tree_item.rename_committed = false;
+                inline else => |*payload| {
+                    if (@hasDecl(@TypeOf(payload.*), "resetPerFrameEvents")) {
+                        payload.resetPerFrameEvents();
+                    }
                 },
-                .table => |*table| {
-                    table.resized_column = null;
-                    table.sort_changed = false;
-                    table.selection_changed = false;
-                },
-                else => {},
             }
         }
     }
@@ -441,12 +456,16 @@ pub const Runtime = struct {
 /// just enough so the common single-tree case doesn't have to declare
 /// each piece separately.
 ///
-/// The methods on `Context` are intentionally minimal: only the
-/// frame-loop entry points that bundle multiple fields (events,
-/// layout, draw, dimensions) and the constructor/destructor. Per-
-/// handle queries and mutations live on `Runtime` and are reached
-/// through `ctx.runtime.foo(&ctx.tree, ...)`. Embedders that drive
-/// multiple trees use `Runtime` directly with caller-owned trees.
+/// Every method here is a thin forward to the matching `Runtime` /
+/// `Tree` method, with the bundled tree/theme/clipboard supplied
+/// implicitly. Embedders that drive multiple trees from one runtime
+/// (e.g. main window plus detached popup surfaces) wire up `Runtime`
+/// directly with caller-owned trees instead.
+///
+/// Read-only access to `tree`, `theme`, `runtime`, and `clipboard` is
+/// fine. Mutating state should go through the methods below
+/// (especially `setTheme` / `setClipboard`) so the layout/draw caches
+/// invalidate.
 pub const Context = struct {
     tree: Tree,
     theme: Theme,
@@ -468,6 +487,8 @@ pub const Context = struct {
         self.runtime.deinit();
         self.tree.deinit();
     }
+
+    // --- Frame loop ----------------------------------------------------
 
     /// Queue an input event for processing. See `Runtime.pushEvent` for
     /// the coalescing contract on consecutive mouse_move and mouse_scroll
@@ -511,6 +532,72 @@ pub const Context = struct {
         self.runtime.setDimensions(width, height);
     }
 
+    // --- Settings ------------------------------------------------------
+
+    /// Replace the active theme. Invalidates layout/draw caches.
+    pub fn setTheme(self: *Context, theme: Theme) void {
+        self.theme = theme;
+        self.runtime.invalidate();
+    }
+
+    /// Set or clear the embedder-supplied clipboard provider. Pass null
+    /// to detach. No invalidation needed — clipboard only takes effect on
+    /// the next event dispatch.
+    pub fn setClipboard(self: *Context, clipboard: ?Clipboard) void {
+        self.clipboard = clipboard;
+    }
+
+    // --- Per-handle mutations (forward to Runtime) --------------------
+
+    /// Replace a widget's payload. See `Runtime.updateWidget`.
+    pub fn updateWidget(self: *Context, handle: NodeHandle, desc: WidgetDesc) bool {
+        return self.runtime.updateWidget(&self.tree, handle, desc);
+    }
+
+    /// Replace a widget's per-node style overrides. See `Runtime.setStyle`.
+    pub fn setStyle(self: *Context, handle: NodeHandle, override: Style) bool {
+        return self.runtime.setStyle(&self.tree, handle, override);
+    }
+
+    /// Borrow a mutable pointer to a widget's payload for in-place
+    /// edits. See `Runtime.mutateKind`.
+    pub fn mutateKind(self: *Context, handle: NodeHandle) ?*WidgetKind {
+        return self.runtime.mutateKind(&self.tree, handle);
+    }
+
+    /// Mark a widget as embedder-rendered. See `Runtime.setCustomDraw`.
+    pub fn setCustomDraw(self: *Context, handle: NodeHandle, custom: bool) bool {
+        return self.runtime.setCustomDraw(&self.tree, handle, custom);
+    }
+
+    /// Mark cached layout and draw output stale after caller-owned
+    /// state changes. See `Runtime.invalidate`.
+    pub fn invalidate(self: *Context) void {
+        self.runtime.invalidate();
+    }
+
+    // --- Per-frame snapshot / focus / gestures -------------------------
+
+    /// Snapshot per-frame interaction state. See `Runtime.frame`.
+    pub fn frame(self: *const Context) FrameSnapshot {
+        return self.runtime.frame(&self.tree);
+    }
+
+    /// Set keyboard focus to a live widget. See `Runtime.focusWidget`.
+    pub fn focusWidget(self: *Context, handle: NodeHandle) bool {
+        return self.runtime.focusWidget(&self.tree, handle);
+    }
+
+    /// Clear keyboard focus. See `Runtime.clearFocus`.
+    pub fn clearFocus(self: *Context) void {
+        self.runtime.clearFocus(&self.tree);
+    }
+
+    /// Cancel the active pointer gesture. See `Runtime.cancelPointerGesture`.
+    pub fn cancelPointerGesture(self: *Context) void {
+        self.runtime.cancelPointerGesture(&self.tree);
+    }
+
     pub const InitOptions = struct {
         width: u32 = 800,
         height: u32 = 600,
@@ -518,9 +605,12 @@ pub const Context = struct {
     };
 };
 
-// Small view-based helpers used by tests below. Embedders that want
-// the same conveniences are expected to write their own — these are
-// intentionally not part of the public API.
+// =============================================================
+// Test-only helpers (file-private, used by the tests below this
+// block). Not part of the public API. Embedders that want similar
+// conveniences should write their own off the `WidgetView` /
+// `NodeView` snapshots returned by `tree.node(handle)`.
+// =============================================================
 
 fn testIsChecked(ctx: *const Context, h: NodeHandle) bool {
     const n = ctx.tree.node(h) orelse return false;
@@ -1164,7 +1254,7 @@ test "grid item drop is reported across context frames" {
     const drop = f2.last_drop.?.grid;
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
-    try std.testing.expectEqual(dispatch.GridDrop.Position.item, drop.position);
+    try std.testing.expectEqual(dispatch.ContainerDrop.Position.item, drop.position);
     try std.testing.expect(!f2.buttons.left);
 
     ctx.clearClickedFlags();

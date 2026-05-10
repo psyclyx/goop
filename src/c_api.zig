@@ -134,7 +134,7 @@ const CTreeDropPosition = enum(c_int) {
     after = 2,
 };
 
-const CGridDropPosition = enum(c_int) {
+const CContainerDropPosition = enum(c_int) {
     item = 0,
     background = 1,
 };
@@ -828,20 +828,10 @@ const CTreeDrop = extern struct {
     position: CTreeDropPosition = .into,
 };
 
-const CGridDrop = extern struct {
+const CContainerDrop = extern struct {
     source: CHandle = .{},
     target: CHandle = .{},
-    position: CGridDropPosition = .item,
-};
-
-const CListDrop = extern struct {
-    source: CHandle = .{},
-    target: CHandle = .{},
-};
-
-const CTableDrop = extern struct {
-    source: CHandle = .{},
-    target: CHandle = .{},
+    position: CContainerDropPosition = .item,
 };
 
 const CWidgetDrop = extern struct {
@@ -861,9 +851,9 @@ const CDrop = extern struct {
     kind: CDropKind = .tree,
     data: extern union {
         tree: CTreeDrop,
-        grid: CGridDrop,
-        list: CListDrop,
-        table: CTableDrop,
+        grid: CContainerDrop,
+        list: CContainerDrop,
+        table: CContainerDrop,
         widget: CWidgetDrop,
     } = .{ .tree = .{} },
 };
@@ -892,367 +882,185 @@ fn toCStr(str: []const u8) CStr {
     return .{ .ptr = @ptrCast(str.ptr), .len = str.len };
 }
 
+// Generic C ↔ Zig value conversion. Walks struct fields by name and
+// dispatches per-pair through a small table of known type pairs.
+// Replaces ~600 lines of mechanical hand-written converters.
+
+fn cToZ(comptime DstT: type, src: anytype) DstT {
+    const SrcT = @TypeOf(src);
+    if (DstT == SrcT) return src;
+
+    if (DstT == []const u8 and SrcT == CStr) return fromCStr(src);
+    if (DstT == widget.NodeHandle and SrcT == CHandle)
+        return .{ .index = src.index, .generation = src.generation };
+    if (DstT == style.Color and SrcT == CColor)
+        return .{ .r = src.r, .g = src.g, .b = src.b, .a = src.a };
+    if (DstT == style.Edges and SrcT == CEdges)
+        return .{ .top = src.top, .right = src.right, .bottom = src.bottom, .left = src.left };
+    if (DstT == draw.Rect and SrcT == CRect)
+        return .{ .x = src.x, .y = src.y, .w = src.w, .h = src.h };
+
+    // C-side optional pattern (struct { has_value, value }) → ?T
+    if (@typeInfo(DstT) == .optional and (SrcT == COptionalU8 or SrcT == COptionalU16)) {
+        return if (src.has_value) src.value else null;
+    }
+
+    // Same-tag-name enums
+    if (@typeInfo(DstT) == .@"enum" and @typeInfo(SrcT) == .@"enum") {
+        return std.meta.stringToEnum(DstT, @tagName(src)) orelse @panic("unknown enum tag");
+    }
+
+    // Integer width adjustment (e.g. u32 codepoint → u21).
+    if (@typeInfo(DstT) == .int and @typeInfo(SrcT) == .int) {
+        return @intCast(src);
+    }
+
+    // Struct-to-struct: walk DstT fields by name
+    if (@typeInfo(DstT) == .@"struct" and @typeInfo(SrcT) == .@"struct") {
+        var result: DstT = undefined;
+        inline for (std.meta.fields(DstT)) |f| {
+            @field(result, f.name) = cToZ(f.type, @field(src, f.name));
+        }
+        return result;
+    }
+
+    @compileError("no cToZ from " ++ @typeName(SrcT) ++ " to " ++ @typeName(DstT));
+}
+
+fn zToC(comptime DstT: type, src: anytype) DstT {
+    const SrcT = @TypeOf(src);
+    if (DstT == SrcT) return src;
+
+    if (DstT == CStr and SrcT == []const u8) return toCStr(src);
+    if (DstT == CHandle and SrcT == widget.NodeHandle)
+        return .{ .index = src.index, .generation = src.generation };
+    if (DstT == CColor and SrcT == style.Color)
+        return .{ .r = src.r, .g = src.g, .b = src.b, .a = src.a };
+    if (DstT == CEdges and SrcT == style.Edges)
+        return .{ .top = src.top, .right = src.right, .bottom = src.bottom, .left = src.left };
+    if (DstT == CRect and SrcT == draw.Rect)
+        return .{ .x = src.x, .y = src.y, .w = src.w, .h = src.h };
+
+    // ?T → C-side optional pattern
+    if (DstT == COptionalU8 and @typeInfo(SrcT) == .optional)
+        return if (src) |v| .{ .has_value = true, .value = v } else .{};
+    if (DstT == COptionalU16 and @typeInfo(SrcT) == .optional)
+        return if (src) |v| .{ .has_value = true, .value = v } else .{};
+
+    // Same-tag-name enums
+    if (@typeInfo(DstT) == .@"enum" and @typeInfo(SrcT) == .@"enum") {
+        return std.meta.stringToEnum(DstT, @tagName(src)) orelse @panic("unknown enum tag");
+    }
+
+    // Integer width adjustment.
+    if (@typeInfo(DstT) == .int and @typeInfo(SrcT) == .int) {
+        return @intCast(src);
+    }
+
+    // Struct-to-struct: walk DstT fields by name
+    if (@typeInfo(DstT) == .@"struct" and @typeInfo(SrcT) == .@"struct") {
+        var result: DstT = undefined;
+        inline for (std.meta.fields(DstT)) |f| {
+            @field(result, f.name) = zToC(f.type, @field(src, f.name));
+        }
+        return result;
+    }
+
+    @compileError("no zToC from " ++ @typeName(SrcT) ++ " to " ++ @typeName(DstT));
+}
+
 fn handleFromC(handle: CHandle) widget.NodeHandle {
-    return .{ .index = handle.index, .generation = handle.generation };
+    return cToZ(widget.NodeHandle, handle);
 }
 
 fn handleToC(handle: widget.NodeHandle) CHandle {
-    return .{ .index = handle.index, .generation = handle.generation };
+    return zToC(CHandle, handle);
 }
 
 fn rectToC(rect: draw.Rect) CRect {
-    return .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = rect.h };
+    return zToC(CRect, rect);
 }
 
-fn colorFromC(color: CColor) style.Color {
-    return .{ .r = color.r, .g = color.g, .b = color.b, .a = color.a };
-}
-
-fn colorToC(color: style.Color) CColor {
-    return .{ .r = color.r, .g = color.g, .b = color.b, .a = color.a };
-}
-
-fn edgesFromC(edges: CEdges) style.Edges {
-    return .{
-        .top = edges.top,
-        .right = edges.right,
-        .bottom = edges.bottom,
-        .left = edges.left,
-    };
-}
-
-fn edgesToC(edges: style.Edges) CEdges {
-    return .{
-        .top = edges.top,
-        .right = edges.right,
-        .bottom = edges.bottom,
-        .left = edges.left,
-    };
-}
-
-fn themeFromC(theme: CTheme) style.Theme {
-    return .{
-        .bg = colorFromC(theme.bg),
-        .fg = colorFromC(theme.fg),
-        .accent = colorFromC(theme.accent),
-        .border = colorFromC(theme.border),
-        .bg_hover = colorFromC(theme.bg_hover),
-        .bg_active = colorFromC(theme.bg_active),
-        .focus_ring = colorFromC(theme.focus_ring),
-        .placeholder_fg = colorFromC(theme.placeholder_fg),
-        .selection_bg = colorFromC(theme.selection_bg),
-        .tree_guide = colorFromC(theme.tree_guide),
-        .font_size = theme.font_size,
-        .padding = edgesFromC(theme.padding),
-        .border_radius = theme.border_radius,
-        .border_width = theme.border_width,
-        .spacing = theme.spacing,
-        .thumb_width = theme.thumb_width,
-    };
+fn themeFromC(c_theme: CTheme) style.Theme {
+    return cToZ(style.Theme, c_theme);
 }
 
 fn themeToC(theme: style.Theme) CTheme {
-    return .{
-        .bg = colorToC(theme.bg),
-        .fg = colorToC(theme.fg),
-        .accent = colorToC(theme.accent),
-        .border = colorToC(theme.border),
-        .bg_hover = colorToC(theme.bg_hover),
-        .bg_active = colorToC(theme.bg_active),
-        .focus_ring = colorToC(theme.focus_ring),
-        .placeholder_fg = colorToC(theme.placeholder_fg),
-        .selection_bg = colorToC(theme.selection_bg),
-        .tree_guide = colorToC(theme.tree_guide),
-        .font_size = theme.font_size,
-        .padding = edgesToC(theme.padding),
-        .border_radius = theme.border_radius,
-        .border_width = theme.border_width,
-        .spacing = theme.spacing,
-        .thumb_width = theme.thumb_width,
-    };
+    return zToC(CTheme, theme);
 }
 
+/// CStyle uses a flat `has_X: bool, X: T` pair per Style field rather
+/// than a nested optional struct, so it doesn't fit the generic walker.
 fn styleFromC(c_style: CStyle) style.Style {
-    return .{
-        .bg = if (c_style.has_bg) colorFromC(c_style.bg) else null,
-        .fg = if (c_style.has_fg) colorFromC(c_style.fg) else null,
-        .accent = if (c_style.has_accent) colorFromC(c_style.accent) else null,
-        .border = if (c_style.has_border) colorFromC(c_style.border) else null,
-        .bg_hover = if (c_style.has_bg_hover) colorFromC(c_style.bg_hover) else null,
-        .bg_active = if (c_style.has_bg_active) colorFromC(c_style.bg_active) else null,
-        .focus_ring = if (c_style.has_focus_ring) colorFromC(c_style.focus_ring) else null,
-        .placeholder_fg = if (c_style.has_placeholder_fg) colorFromC(c_style.placeholder_fg) else null,
-        .selection_bg = if (c_style.has_selection_bg) colorFromC(c_style.selection_bg) else null,
-        .tree_guide = if (c_style.has_tree_guide) colorFromC(c_style.tree_guide) else null,
-        .font_size = if (c_style.has_font_size) c_style.font_size else null,
-        .padding = if (c_style.has_padding) edgesFromC(c_style.padding) else null,
-        .border_radius = if (c_style.has_border_radius) c_style.border_radius else null,
-        .border_width = if (c_style.has_border_width) c_style.border_width else null,
-        .spacing = if (c_style.has_spacing) c_style.spacing else null,
-        .thumb_width = if (c_style.has_thumb_width) c_style.thumb_width else null,
-    };
+    var result: style.Style = .{};
+    inline for (std.meta.fields(style.Style)) |f| {
+        if (@field(c_style, "has_" ++ f.name)) {
+            const Inner = @typeInfo(f.type).optional.child;
+            @field(result, f.name) = cToZ(Inner, @field(c_style, f.name));
+        }
+    }
+    return result;
 }
 
-fn directionFromC(direction: CDirection) widget.WidgetKind.Container.Direction {
-    return switch (direction) {
-        .row => .row,
-        .column => .column,
-    };
-}
-
-fn placementFromC(placement: CPopupPlacement) widget.WidgetKind.Popup.Placement {
-    return switch (placement) {
-        .absolute => .absolute,
-        .below_start => .below_start,
-        .below_end => .below_end,
-        .right_start => .right_start,
-    };
-}
-
-fn renameTriggerFromC(trigger: CRenameTrigger) widget.WidgetKind.TreeItem.RenameTrigger {
-    return switch (trigger) {
-        .none => .none,
-        .selected_click => .selected_click,
-        .double_click => .double_click,
-    };
-}
-
-fn listSelectionModeFromC(mode: CListSelectionMode) widget.WidgetKind.ListBox.SelectionMode {
-    return switch (mode) {
-        .single => .single,
-        .multiple => .multiple,
-    };
-}
-
-fn tableSelectionModeFromC(mode: CTableSelectionMode) widget.WidgetKind.Table.SelectionMode {
-    return switch (mode) {
-        .none => .none,
-        .single => .single,
-        .multiple => .multiple,
-    };
-}
-
-fn sortDirectionFromC(direction: CSortDirection) widget.WidgetKind.Table.SortDirection {
-    return switch (direction) {
-        .ascending => .ascending,
-        .descending => .descending,
-    };
-}
-
-fn sortDirectionToC(direction: widget.WidgetKind.Table.SortDirection) CSortDirection {
-    return switch (direction) {
-        .ascending => .ascending,
-        .descending => .descending,
-    };
-}
-
-fn treeDropPositionToC(position: widget.WidgetKind.TreeItem.DropPosition) CTreeDropPosition {
-    return switch (position) {
-        .before => .before,
-        .into => .into,
-        .after => .after,
-    };
-}
-
-fn gridDropPositionToC(position: dispatch.GridDrop.Position) CGridDropPosition {
-    return switch (position) {
-        .item => .item,
-        .background => .background,
-    };
-}
-
-fn directionToC(direction: widget.WidgetKind.Container.Direction) CDirection {
-    return switch (direction) {
-        .row => .row,
-        .column => .column,
-    };
-}
-
-fn placementToC(placement: widget.WidgetKind.Popup.Placement) CPopupPlacement {
-    return switch (placement) {
-        .absolute => .absolute,
-        .below_start => .below_start,
-        .below_end => .below_end,
-        .right_start => .right_start,
-    };
-}
-
-fn optionalU16(value: ?u16) COptionalU16 {
-    return if (value) |v| .{ .has_value = true, .value = v } else .{};
-}
-
-fn optionalU8(value: ?u8) COptionalU8 {
-    return if (value) |v| .{ .has_value = true, .value = v } else .{};
+/// Build a per-kind C view by walking the C view's struct fields and
+/// pulling each field from either the WidgetView arm or, if the arm
+/// lacks it, from the parent NodeView (which carries the cross-kind
+/// per-frame flags `clicked`, `toggled`, `changed`, `drop_received`,
+/// `secondary_clicked`).
+fn viewArmToC(comptime DstT: type, payload: anytype, node: api.NodeView) DstT {
+    if (DstT == CUnitWidget) return .{};
+    const PayloadT = @TypeOf(payload);
+    var result: DstT = undefined;
+    inline for (std.meta.fields(DstT)) |f| {
+        if (PayloadT != void and @hasField(PayloadT, f.name)) {
+            @field(result, f.name) = zToC(f.type, @field(payload, f.name));
+        } else if (@hasField(api.NodeView, f.name)) {
+            @field(result, f.name) = zToC(f.type, @field(node, f.name));
+        } else {
+            @compileError("CView field '" ++ f.name ++ "' has no source on " ++
+                @typeName(PayloadT) ++ " or NodeView");
+        }
+    }
+    return result;
 }
 
 fn widgetViewToC(node: api.NodeView) CWidgetView {
+    const Data = @FieldType(CWidgetView, "data");
     return switch (node.kind) {
-        .container => |v| .{ .kind = .container, .data = .{ .container = .{ .direction = directionToC(v.direction) } } },
-        .text => |v| .{ .kind = .text, .data = .{ .text = .{ .content = toCStr(v.content) } } },
-        .button => |v| .{ .kind = .button, .data = .{ .button = .{ .label = toCStr(v.label), .clicked = node.clicked } } },
-        .checkbox => |v| .{ .kind = .checkbox, .data = .{ .checkbox = .{
-            .label = toCStr(v.label),
-            .checked = v.checked,
-            .clicked = node.clicked,
-        } } },
-        .radio_button => |v| .{ .kind = .radio_button, .data = .{ .radio_button = .{
-            .label = toCStr(v.label),
-            .group = v.group,
-            .selected = v.selected,
-            .clicked = node.clicked,
-        } } },
-        .tree_item => |v| .{ .kind = .tree_item, .data = .{ .tree_item = .{
-            .label = toCStr(v.label),
-            .group = v.group,
-            .has_children = v.has_children,
-            .expanded = v.expanded,
-            .selected = v.selected,
-            .editing = v.editing,
-            .clicked = node.clicked,
-            .toggled = node.toggled,
-            .dragging = v.dragging,
-            .drop_received = node.drop_received,
-            .rename_committed = v.rename_committed,
-        } } },
-        .dropdown => |v| .{ .kind = .dropdown, .data = .{ .dropdown = .{
-            .placeholder = toCStr(v.placeholder),
-            .selected_text = toCStr(v.selected_text),
-            .selected_index = optionalU16(v.selected_index),
-            .open = v.open,
-            .clicked = node.clicked,
-            .changed = node.changed,
-        } } },
-        .list_box => .{ .kind = .list_box, .data = .{ .list_box = .{ .changed = node.changed } } },
-        .selectable => |v| .{ .kind = .selectable, .data = .{ .selectable = .{
-            .label = toCStr(v.label),
-            .group = v.group,
-            .selected = v.selected,
-            .clicked = node.clicked,
-            .dragging = v.dragging,
-        } } },
-        .grid_selector => |v| .{ .kind = .grid_selector, .data = .{ .grid_selector = .{
-            .changed = node.changed,
-            .computed_columns = v.computed_columns,
-        } } },
-        .grid_item => |v| .{ .kind = .grid_item, .data = .{ .grid_item = .{
-            .label = toCStr(v.label),
-            .selected = v.selected,
-            .clicked = node.clicked,
-            .dragging = v.dragging,
-        } } },
-        .table => |v| .{ .kind = .table, .data = .{ .table = .{
-            .active_columns = v.active_columns,
-            .changed = node.changed,
-            .resized_column = optionalU8(v.resized_column),
-            .sorted_column = optionalU8(v.sorted_column),
-            .sort_direction = sortDirectionToC(v.sort_direction),
-            .sort_changed = v.sort_changed,
-            .selection_changed = v.selection_changed,
-        } } },
-        .table_row => |v| .{ .kind = .table_row, .data = .{ .table_row = .{
-            .header = v.header,
-            .selected = v.selected,
-            .dragging = v.dragging,
-        } } },
-        .table_cell => .{ .kind = .table_cell, .data = .{ .table_cell = .{} } },
-        .toolbar => .{ .kind = .toolbar, .data = .{ .toolbar = .{} } },
-        .status_bar => .{ .kind = .status_bar, .data = .{ .status_bar = .{} } },
-        .menu_bar => .{ .kind = .menu_bar, .data = .{ .menu_bar = .{} } },
-        .menu => |v| .{ .kind = .menu, .data = .{ .menu = .{ .label = toCStr(v.label), .clicked = node.clicked } } },
-        .popup => |v| .{ .kind = .popup, .data = .{ .popup = .{
-            .placement = placementToC(v.placement),
-            .x = v.x,
-            .y = v.y,
-            .visible = v.visible,
-            .z_index = v.z_index,
-        } } },
-        .tooltip => |v| .{ .kind = .tooltip, .data = .{ .tooltip = .{
-            .placement = placementToC(v.placement),
-            .x = v.x,
-            .y = v.y,
-            .z_index = v.z_index,
-        } } },
-        .menu_item => |v| .{ .kind = .menu_item, .data = .{ .menu_item = .{
-            .label = toCStr(v.label),
-            .shortcut = toCStr(v.shortcut),
-            .checked = v.checked,
-            .disabled = v.disabled,
-            .clicked = node.clicked,
-        } } },
-        .drag_value => |v| .{ .kind = .drag_value, .data = .{ .drag_value = .{
-            .value = v.value,
-            .changed = node.changed,
-            .editing = v.editing,
-            .display_text = toCStr(v.display_text),
-        } } },
-        .spinbox => |v| .{ .kind = .spinbox, .data = .{ .spinbox = .{
-            .value = v.value,
-            .changed = node.changed,
-            .editing = v.editing,
-            .display_text = toCStr(v.display_text),
-        } } },
-        .tab_bar => .{ .kind = .tab_bar, .data = .{ .tab_bar = .{} } },
-        .tab_item => |v| .{ .kind = .tab_item, .data = .{ .tab_item = .{
-            .label = toCStr(v.label),
-            .selected = v.selected,
-            .clicked = node.clicked,
-        } } },
-        .splitter => |v| .{ .kind = .splitter, .data = .{ .splitter = .{ .ratio = v.ratio, .changed = node.changed } } },
-        .slider => |v| .{ .kind = .slider, .data = .{ .slider = .{ .value = v.value } } },
-        .spacer => .{ .kind = .spacer, .data = .{ .spacer = .{} } },
-        .scroll_area => |v| .{ .kind = .scroll_area, .data = .{ .scroll_area = .{
-            .scroll_x = v.scroll_x,
-            .scroll_y = v.scroll_y,
-        } } },
-        .text_input => |v| .{ .kind = .text_input, .data = .{ .text_input = .{
-            .content = toCStr(v.content),
-            .cursor = v.cursor,
-            .selection_anchor = optionalU8(v.selection_anchor),
-        } } },
+        inline else => |payload, tag| .{
+            .kind = @field(CWidgetKind, @tagName(tag)),
+            .data = @unionInit(
+                Data,
+                @tagName(tag),
+                viewArmToC(@FieldType(Data, @tagName(tag)), payload, node),
+            ),
+        },
     };
 }
 
 fn nodeViewToC(node: api.NodeView) CNodeView {
-    return .{
-        .rect = rectToC(node.rect),
-        .user_id = node.user_id,
-        .custom_draw = node.custom_draw,
-        .focused = node.focused,
-        .accepts_drop = node.accepts_drop,
-        .drop_hovered = node.drop_hovered,
-        .drop_received = node.drop_received,
-        .clicked = node.clicked,
-        .secondary_clicked = node.secondary_clicked,
-        .changed = node.changed,
-        .toggled = node.toggled,
-        .kind = widgetViewToC(node),
-    };
+    var result: CNodeView = undefined;
+    inline for (std.meta.fields(CNodeView)) |f| {
+        if (comptime std.mem.eql(u8, f.name, "kind")) {
+            result.kind = widgetViewToC(node);
+        } else {
+            @field(result, f.name) = zToC(f.type, @field(node, f.name));
+        }
+    }
+    return result;
 }
 
 fn dropToC(drop: dispatch.Drop) CDrop {
+    const Data = @FieldType(CDrop, "data");
     return switch (drop) {
-        .tree => |d| .{ .kind = .tree, .data = .{ .tree = .{
-            .source = handleToC(d.source),
-            .target = handleToC(d.target),
-            .position = treeDropPositionToC(d.position),
-        } } },
-        .grid => |d| .{ .kind = .grid, .data = .{ .grid = .{
-            .source = handleToC(d.source),
-            .target = handleToC(d.target),
-            .position = gridDropPositionToC(d.position),
-        } } },
-        .list => |d| .{ .kind = .list, .data = .{ .list = .{
-            .source = handleToC(d.source),
-            .target = handleToC(d.target),
-        } } },
-        .table => |d| .{ .kind = .table, .data = .{ .table = .{
-            .source = handleToC(d.source),
-            .target = handleToC(d.target),
-        } } },
-        .widget => |d| .{ .kind = .widget, .data = .{ .widget = .{
-            .source = handleToC(d.source),
-            .target = handleToC(d.target),
-        } } },
+        inline else => |payload, tag| .{
+            .kind = @field(CDropKind, @tagName(tag)),
+            .data = @unionInit(
+                Data,
+                @tagName(tag),
+                zToC(@FieldType(Data, @tagName(tag)), payload),
+            ),
+        },
     };
 }
 
@@ -1260,11 +1068,7 @@ fn frameSnapshotToC(snap: api.FrameSnapshot) CFrameSnapshot {
     return .{
         .pointer_x = snap.pointer.x,
         .pointer_y = snap.pointer.y,
-        .buttons = .{
-            .left = snap.buttons.left,
-            .right = snap.buttons.right,
-            .middle = snap.buttons.middle,
-        },
+        .buttons = zToC(CFrameButtons, snap.buttons),
         .has_focused = snap.focused != null,
         .focused = if (snap.focused) |h| handleToC(h) else .{},
         .has_drag_source = snap.drag_source != null,
@@ -1272,36 +1076,9 @@ fn frameSnapshotToC(snap: api.FrameSnapshot) CFrameSnapshot {
         .has_last_drop = snap.last_drop != null,
         .last_drop = if (snap.last_drop) |d| dropToC(d) else .{},
         .has_last_secondary_click = snap.last_secondary_click != null,
-        .last_secondary_click = if (snap.last_secondary_click) |c| .{
-            .target = handleToC(c.target),
-            .x = c.x,
-            .y = c.y,
-        } else .{},
+        .last_secondary_click = if (snap.last_secondary_click) |c| zToC(CSecondaryClick, c) else .{},
         .last_primary_press_ms = snap.last_primary_press_ms,
     };
-}
-
-fn keycodeFromC(keycode: CKeycode) event.Event.Keycode {
-    // CKeycode and Event.Keycode share tag names; cast through the
-    // shared name list rather than maintaining a giant switch.
-    const tag_name = @tagName(keycode);
-    return std.meta.stringToEnum(event.Event.Keycode, tag_name) orelse .unknown;
-}
-
-fn modifiersFromC(mods: CModifiers) event.Event.Modifiers {
-    return .{
-        .shift = mods.shift,
-        .ctrl = mods.ctrl,
-        .alt = mods.alt,
-        .super = mods.super,
-        .caps_lock = mods.caps_lock,
-        .num_lock = mods.num_lock,
-    };
-}
-
-fn setTextInputValue(ti: *widget.WidgetKind.TextInput, placeholder: []const u8, value: []const u8) void {
-    ti.* = .{ .placeholder = placeholder };
-    if (value.len > 0) ti.insertSlice(value);
 }
 
 /// Apply the C-side text-input initial value to the constructed widget.
@@ -1314,369 +1091,76 @@ fn applyTextInputSeedValue(node_kind: *widget.WidgetKind, desc: CWidget) void {
     node_kind.text_input.insertSlice(value);
 }
 
+/// Build a WidgetDesc arm from the matching CWidget arm. Walks each
+/// Zig field; if C side has the same name, copy it through `cToZ`,
+/// otherwise fall back to the field's compile-time default. This
+/// lets fields like `WidgetDesc.Text.overflow` (Zig-only with a
+/// default) coexist with `text_input.value` (C-only, ignored here —
+/// applied separately via `applyTextInputSeedValue`).
+fn descArmFromC(comptime DstT: type, c_payload: anytype) DstT {
+    const PT = @TypeOf(c_payload);
+    var result: DstT = undefined;
+    inline for (std.meta.fields(DstT)) |f| {
+        if (@hasField(PT, f.name)) {
+            @field(result, f.name) = cToZ(f.type, @field(c_payload, f.name));
+        } else {
+            const default_ptr = f.default_value_ptr orelse @compileError(
+                "WidgetDesc field " ++ @typeName(DstT) ++ "." ++ f.name ++
+                    " has no C counterpart and no Zig default",
+            );
+            const typed: *const f.type = @ptrCast(@alignCast(default_ptr));
+            @field(result, f.name) = typed.*;
+        }
+    }
+    return result;
+}
+
 fn buildWidgetDesc(desc: CWidget) widget.WidgetDesc {
     return switch (desc.kind) {
-        .container => .{ .container = .{ .direction = directionFromC(desc.data.container.direction) } },
-        .text => .{ .text = .{ .content = fromCStr(desc.data.text.content) } },
-        .button => .{ .button = .{ .label = fromCStr(desc.data.button.label) } },
-        .checkbox => .{ .checkbox = .{
-            .label = fromCStr(desc.data.checkbox.label),
-            .checked = desc.data.checkbox.checked,
-        } },
-        .radio_button => .{ .radio_button = .{
-            .label = fromCStr(desc.data.radio_button.label),
-            .group = desc.data.radio_button.group,
-            .selected = desc.data.radio_button.selected,
-        } },
-        .tree_item => .{ .tree_item = .{
-            .label = fromCStr(desc.data.tree_item.label),
-            .group = desc.data.tree_item.group,
-            .editable = desc.data.tree_item.editable,
-            .rename_trigger = renameTriggerFromC(desc.data.tree_item.rename_trigger),
-            .expanded = desc.data.tree_item.expanded,
-            .selected = desc.data.tree_item.selected,
-        } },
-        .dropdown => .{ .dropdown = .{
-            .placeholder = fromCStr(desc.data.dropdown.placeholder),
-            .selected_text = fromCStr(desc.data.dropdown.selected_text),
-            .selected_index = if (desc.data.dropdown.selected_index.has_value) desc.data.dropdown.selected_index.value else null,
-            .open = desc.data.dropdown.open,
-        } },
-        .list_box => .{ .list_box = .{
-            .selection_mode = listSelectionModeFromC(desc.data.list_box.selection_mode),
-        } },
-        .selectable => .{ .selectable = .{
-            .label = fromCStr(desc.data.selectable.label),
-            .group = desc.data.selectable.group,
-            .selected = desc.data.selectable.selected,
-        } },
-        .grid_selector => .{ .grid_selector = .{
-            .selection_mode = listSelectionModeFromC(desc.data.grid_selector.selection_mode),
-            .item_width = desc.data.grid_selector.item_width,
-            .item_height = desc.data.grid_selector.item_height,
-            .column_gap = desc.data.grid_selector.column_gap,
-            .row_gap = desc.data.grid_selector.row_gap,
-        } },
-        .grid_item => .{ .grid_item = .{
-            .label = fromCStr(desc.data.grid_item.label),
-            .selected = desc.data.grid_item.selected,
-        } },
-        .table => .{ .table = .{
-            .columns = desc.data.table.columns,
-            .striped = desc.data.table.striped,
-            .resizable = desc.data.table.resizable,
-            .sortable = desc.data.table.sortable,
-            .selection_mode = tableSelectionModeFromC(desc.data.table.selection_mode),
-            .min_column_width = desc.data.table.min_column_width,
-            .sorted_column = if (desc.data.table.sorted_column.has_value) desc.data.table.sorted_column.value else null,
-            .sort_direction = sortDirectionFromC(desc.data.table.sort_direction),
-        } },
-        .table_row => .{ .table_row = .{
-            .header = desc.data.table_row.header,
-            .selected = desc.data.table_row.selected,
-        } },
-        .table_cell => .{ .table_cell = .{} },
-        .toolbar => .{ .toolbar = .{} },
-        .status_bar => .{ .status_bar = .{} },
-        .menu_bar => .{ .menu_bar = .{} },
-        .menu => .{ .menu = .{ .label = fromCStr(desc.data.menu.label) } },
-        .popup => .{ .popup = .{
-            .placement = placementFromC(desc.data.popup.placement),
-            .x = desc.data.popup.x,
-            .y = desc.data.popup.y,
-            .visible = desc.data.popup.visible,
-            .close_on_outside_click = desc.data.popup.close_on_outside_click,
-            .z_index = desc.data.popup.z_index,
-            .pointer_passthrough = desc.data.popup.pointer_passthrough,
-        } },
-        .tooltip => .{ .tooltip = .{
-            .placement = placementFromC(desc.data.tooltip.placement),
-            .x = desc.data.tooltip.x,
-            .y = desc.data.tooltip.y,
-            .z_index = desc.data.tooltip.z_index,
-        } },
-        .menu_item => .{ .menu_item = .{
-            .label = fromCStr(desc.data.menu_item.label),
-            .shortcut = fromCStr(desc.data.menu_item.shortcut),
-            .checked = desc.data.menu_item.checked,
-            .disabled = desc.data.menu_item.disabled,
-        } },
-        .drag_value => .{ .drag_value = .{
-            .value = desc.data.drag_value.value,
-            .min = desc.data.drag_value.min,
-            .max = desc.data.drag_value.max,
-            .speed = desc.data.drag_value.speed,
-            .precision = desc.data.drag_value.precision,
-        } },
-        .spinbox => .{ .spinbox = .{
-            .value = desc.data.spinbox.value,
-            .min = desc.data.spinbox.min,
-            .max = desc.data.spinbox.max,
-            .step = desc.data.spinbox.step,
-            .precision = desc.data.spinbox.precision,
-        } },
-        .tab_bar => .{ .tab_bar = .{} },
-        .tab_item => .{ .tab_item = .{
-            .label = fromCStr(desc.data.tab_item.label),
-            .selected = desc.data.tab_item.selected,
-        } },
-        .splitter => .{ .splitter = .{
-            .direction = directionFromC(desc.data.splitter.direction),
-            .ratio = desc.data.splitter.ratio,
-            .min_first = desc.data.splitter.min_first,
-            .min_second = desc.data.splitter.min_second,
-            .thickness = desc.data.splitter.thickness,
-            .keyboard_step = desc.data.splitter.keyboard_step,
-        } },
-        .slider => .{ .slider = .{
-            .value = desc.data.slider.value,
-            .min = desc.data.slider.min,
-            .max = desc.data.slider.max,
-        } },
-        .scroll_area => .{ .scroll_area = .{
-            .scroll_x = desc.data.scroll_area.scroll_x,
-            .scroll_y = desc.data.scroll_area.scroll_y,
-            .disable_horizontal_scroll = desc.data.scroll_area.disable_horizontal_scroll,
-            .disable_vertical_scroll = desc.data.scroll_area.disable_vertical_scroll,
-        } },
-        .text_input => .{ .text_input = .{
-            .placeholder = fromCStr(desc.data.text_input.placeholder),
-        } },
-        .spacer => .{ .spacer = .{
-            .width = desc.data.spacer.width,
-            .height = desc.data.spacer.height,
-        } },
+        inline else => |tag| @unionInit(
+            widget.WidgetDesc,
+            @tagName(tag),
+            descArmFromC(@FieldType(widget.WidgetDesc, @tagName(tag)), @field(desc.data, @tagName(tag))),
+        ),
     };
 }
 
+/// Replace a widget's kind payload with the matching C desc. Walks
+/// the Zig kind's fields and assigns each one whose name appears on
+/// the C payload through `cToZ`. text_input gets special-cased — its
+/// `buffer` doesn't exist on C side, and the C `value` field seeds
+/// the buffer separately.
 fn updateWidgetKind(kind: *widget.WidgetKind, desc: CWidget) bool {
-    switch (kind.*) {
-        .container => |*container| {
-            if (desc.kind != .container) return false;
-            container.direction = directionFromC(desc.data.container.direction);
+    return switch (kind.*) {
+        inline else => |*payload, tag| blk: {
+            const tag_name = @tagName(tag);
+            if (desc.kind != @field(CWidgetKind, tag_name)) break :blk false;
+            const c_payload = @field(desc.data, tag_name);
+            const PayloadT = @TypeOf(payload.*);
+            const CPayloadT = @TypeOf(c_payload);
+            if (tag == .text_input) {
+                payload.* = .{ .placeholder = fromCStr(c_payload.placeholder) };
+                if (c_payload.value.len > 0) payload.insertSlice(fromCStr(c_payload.value));
+            } else {
+                inline for (std.meta.fields(PayloadT)) |f| {
+                    if (@hasField(CPayloadT, f.name)) {
+                        @field(payload, f.name) = cToZ(f.type, @field(c_payload, f.name));
+                    }
+                }
+            }
+            widget.syncDerivedState(kind);
+            break :blk true;
         },
-        .text => |*text| {
-            if (desc.kind != .text) return false;
-            text.content = fromCStr(desc.data.text.content);
-        },
-        .button => |*button| {
-            if (desc.kind != .button) return false;
-            button.label = fromCStr(desc.data.button.label);
-        },
-        .checkbox => |*checkbox| {
-            if (desc.kind != .checkbox) return false;
-            checkbox.label = fromCStr(desc.data.checkbox.label);
-            checkbox.checked = desc.data.checkbox.checked;
-        },
-        .radio_button => |*radio_button| {
-            if (desc.kind != .radio_button) return false;
-            radio_button.label = fromCStr(desc.data.radio_button.label);
-            radio_button.group = desc.data.radio_button.group;
-            radio_button.selected = desc.data.radio_button.selected;
-        },
-        .tree_item => |*tree_item| {
-            if (desc.kind != .tree_item) return false;
-            tree_item.label = fromCStr(desc.data.tree_item.label);
-            tree_item.group = desc.data.tree_item.group;
-            tree_item.editable = desc.data.tree_item.editable;
-            tree_item.rename_trigger = renameTriggerFromC(desc.data.tree_item.rename_trigger);
-            tree_item.expanded = desc.data.tree_item.expanded;
-            tree_item.selected = desc.data.tree_item.selected;
-        },
-        .dropdown => |*dropdown| {
-            if (desc.kind != .dropdown) return false;
-            dropdown.placeholder = fromCStr(desc.data.dropdown.placeholder);
-            dropdown.selected_text = fromCStr(desc.data.dropdown.selected_text);
-            dropdown.selected_index = if (desc.data.dropdown.selected_index.has_value) desc.data.dropdown.selected_index.value else null;
-            dropdown.open = desc.data.dropdown.open;
-        },
-        .list_box => |*list_box| {
-            if (desc.kind != .list_box) return false;
-            list_box.selection_mode = listSelectionModeFromC(desc.data.list_box.selection_mode);
-        },
-        .selectable => |*selectable| {
-            if (desc.kind != .selectable) return false;
-            selectable.label = fromCStr(desc.data.selectable.label);
-            selectable.group = desc.data.selectable.group;
-            selectable.selected = desc.data.selectable.selected;
-        },
-        .grid_selector => |*grid_selector| {
-            if (desc.kind != .grid_selector) return false;
-            grid_selector.selection_mode = listSelectionModeFromC(desc.data.grid_selector.selection_mode);
-            grid_selector.item_width = desc.data.grid_selector.item_width;
-            grid_selector.item_height = desc.data.grid_selector.item_height;
-            grid_selector.column_gap = desc.data.grid_selector.column_gap;
-            grid_selector.row_gap = desc.data.grid_selector.row_gap;
-        },
-        .grid_item => |*grid_item| {
-            if (desc.kind != .grid_item) return false;
-            grid_item.label = fromCStr(desc.data.grid_item.label);
-            grid_item.selected = desc.data.grid_item.selected;
-        },
-        .table => |*table| {
-            if (desc.kind != .table) return false;
-            table.columns = desc.data.table.columns;
-            table.striped = desc.data.table.striped;
-            table.resizable = desc.data.table.resizable;
-            table.sortable = desc.data.table.sortable;
-            table.selection_mode = tableSelectionModeFromC(desc.data.table.selection_mode);
-            table.min_column_width = desc.data.table.min_column_width;
-            table.syncColumns(desc.data.table.columns);
-            table.sorted_column = if (desc.data.table.sorted_column.has_value) desc.data.table.sorted_column.value else null;
-            table.sort_direction = sortDirectionFromC(desc.data.table.sort_direction);
-        },
-        .table_row => |*table_row| {
-            if (desc.kind != .table_row) return false;
-            table_row.header = desc.data.table_row.header;
-            table_row.selected = desc.data.table_row.selected;
-        },
-        .table_cell => {
-            if (desc.kind != .table_cell) return false;
-        },
-        .toolbar => {
-            if (desc.kind != .toolbar) return false;
-        },
-        .status_bar => {
-            if (desc.kind != .status_bar) return false;
-        },
-        .menu_bar => {
-            if (desc.kind != .menu_bar) return false;
-        },
-        .menu => |*menu| {
-            if (desc.kind != .menu) return false;
-            menu.label = fromCStr(desc.data.menu.label);
-        },
-        .popup => |*popup| {
-            if (desc.kind != .popup) return false;
-            popup.placement = placementFromC(desc.data.popup.placement);
-            popup.x = desc.data.popup.x;
-            popup.y = desc.data.popup.y;
-            popup.visible = desc.data.popup.visible;
-            popup.close_on_outside_click = desc.data.popup.close_on_outside_click;
-            popup.z_index = desc.data.popup.z_index;
-            popup.pointer_passthrough = desc.data.popup.pointer_passthrough;
-        },
-        .tooltip => |*tooltip| {
-            if (desc.kind != .tooltip) return false;
-            tooltip.placement = placementFromC(desc.data.tooltip.placement);
-            tooltip.x = desc.data.tooltip.x;
-            tooltip.y = desc.data.tooltip.y;
-            tooltip.z_index = desc.data.tooltip.z_index;
-        },
-        .menu_item => |*menu_item| {
-            if (desc.kind != .menu_item) return false;
-            menu_item.label = fromCStr(desc.data.menu_item.label);
-            menu_item.shortcut = fromCStr(desc.data.menu_item.shortcut);
-            menu_item.checked = desc.data.menu_item.checked;
-            menu_item.disabled = desc.data.menu_item.disabled;
-        },
-        .drag_value => |*drag_value| {
-            if (desc.kind != .drag_value) return false;
-            drag_value.value = desc.data.drag_value.value;
-            drag_value.min = desc.data.drag_value.min;
-            drag_value.max = desc.data.drag_value.max;
-            drag_value.speed = desc.data.drag_value.speed;
-            drag_value.precision = desc.data.drag_value.precision;
-            drag_value.syncLabel();
-        },
-        .spinbox => |*spinbox| {
-            if (desc.kind != .spinbox) return false;
-            spinbox.value = desc.data.spinbox.value;
-            spinbox.min = desc.data.spinbox.min;
-            spinbox.max = desc.data.spinbox.max;
-            spinbox.step = desc.data.spinbox.step;
-            spinbox.precision = desc.data.spinbox.precision;
-            spinbox.syncLabel();
-        },
-        .tab_bar => {
-            if (desc.kind != .tab_bar) return false;
-        },
-        .tab_item => |*tab_item| {
-            if (desc.kind != .tab_item) return false;
-            tab_item.label = fromCStr(desc.data.tab_item.label);
-            tab_item.selected = desc.data.tab_item.selected;
-        },
-        .splitter => |*splitter| {
-            if (desc.kind != .splitter) return false;
-            splitter.direction = directionFromC(desc.data.splitter.direction);
-            splitter.ratio = desc.data.splitter.ratio;
-            splitter.min_first = desc.data.splitter.min_first;
-            splitter.min_second = desc.data.splitter.min_second;
-            splitter.thickness = desc.data.splitter.thickness;
-            splitter.keyboard_step = desc.data.splitter.keyboard_step;
-        },
-        .slider => |*slider| {
-            if (desc.kind != .slider) return false;
-            slider.value = desc.data.slider.value;
-            slider.min = desc.data.slider.min;
-            slider.max = desc.data.slider.max;
-        },
-        .scroll_area => |*scroll_area| {
-            if (desc.kind != .scroll_area) return false;
-            scroll_area.scroll_x = desc.data.scroll_area.scroll_x;
-            scroll_area.scroll_y = desc.data.scroll_area.scroll_y;
-            scroll_area.disable_horizontal_scroll = desc.data.scroll_area.disable_horizontal_scroll;
-            scroll_area.disable_vertical_scroll = desc.data.scroll_area.disable_vertical_scroll;
-        },
-        .text_input => |*text_input| {
-            if (desc.kind != .text_input) return false;
-            setTextInputValue(text_input, fromCStr(desc.data.text_input.placeholder), fromCStr(desc.data.text_input.value));
-        },
-        .spacer => |*spacer| {
-            if (desc.kind != .spacer) return false;
-            spacer.width = desc.data.spacer.width;
-            spacer.height = desc.data.spacer.height;
-        },
-    }
-    return true;
+    };
 }
 
 fn convertEvent(ev: CEvent) event.Event {
     return switch (ev.kind) {
-        .mouse_move => .{ .mouse_move = .{
-            .x = ev.data.mouse_move.x,
-            .y = ev.data.mouse_move.y,
-        } },
-        .mouse_button => .{ .mouse_button = .{
-            .button = switch (ev.data.mouse_button.button) {
-                .left => .left,
-                .right => .right,
-                .middle => .middle,
-            },
-            .state = switch (ev.data.mouse_button.state) {
-                .pressed => .pressed,
-                .released => .released,
-            },
-            .x = ev.data.mouse_button.x,
-            .y = ev.data.mouse_button.y,
-            .timestamp_ms = ev.data.mouse_button.timestamp_ms,
-            .mods = modifiersFromC(ev.data.mouse_button.mods),
-        } },
-        .mouse_scroll => .{ .mouse_scroll = .{
-            .dx = ev.data.mouse_scroll.dx,
-            .dy = ev.data.mouse_scroll.dy,
-            .mods = modifiersFromC(ev.data.mouse_scroll.mods),
-        } },
-        .key => .{ .key = .{
-            .scancode = ev.data.key.scancode,
-            .keycode = keycodeFromC(ev.data.key.keycode),
-            .mods = modifiersFromC(ev.data.key.mods),
-            .state = switch (ev.data.key.state) {
-                .pressed => .pressed,
-                .released => .released,
-                .repeat => .repeat,
-            },
-        } },
-        .text => .{ .text = .{
-            .codepoint = @intCast(ev.data.text.codepoint),
-        } },
-        .focus => .{ .focus = .{
-            .focused = ev.data.focus.focused,
-        } },
-        .resize => .{ .resize = .{
-            .width = ev.data.resize.width,
-            .height = ev.data.resize.height,
-        } },
+        inline else => |tag| @unionInit(
+            event.Event,
+            @tagName(tag),
+            cToZ(@FieldType(event.Event, @tagName(tag)), @field(ev.data, @tagName(tag))),
+        ),
     };
 }
 
@@ -1689,59 +1173,24 @@ fn validHandle(ctx: *const CContext, handle: CHandle) bool {
 }
 
 fn convertDrawCommand(cmd: draw.DrawCommand) CDrawCommand {
+    const Data = @FieldType(CDrawCommand, "data");
     return switch (cmd) {
-        .rect => |rect_cmd| .{
-            .kind = .rect,
-            .data = .{ .rect = .{
-                .bounds = rectToC(rect_cmd.bounds),
-                .color = colorToC(rect_cmd.color),
-                .border_color = colorToC(rect_cmd.border_color),
-                .border_width = rect_cmd.border_width,
-                .corner_radius = rect_cmd.corner_radius,
-            } },
-        },
-        .text => |text_cmd| .{
-            .kind = .text,
-            .data = .{ .text = .{
-                .bounds = rectToC(text_cmd.bounds),
-                .baseline_y = text_cmd.baseline_y,
-                .text = toCStr(text_cmd.text),
-                .color = colorToC(text_cmd.color),
-                .font_size = text_cmd.font_size,
-                .text_align = switch (text_cmd.text_align) {
-                    .start => .start,
-                    .center => .center,
-                    .end => .end,
-                },
-                .overflow = switch (text_cmd.overflow) {
-                    .visible => .visible,
-                    .wrap => .wrap,
-                    .clip => .clip,
-                    .ellipsis => .ellipsis,
-                },
-            } },
-        },
+        // Clip uses the flat `has_bounds + bounds` C optional pattern,
+        // which the generic struct walker doesn't model.
         .clip => |clip_cmd| .{
             .kind = .clip,
             .data = .{ .clip = .{
                 .has_bounds = clip_cmd.bounds != null,
-                .bounds = if (clip_cmd.bounds) |bounds| rectToC(bounds) else .{},
+                .bounds = if (clip_cmd.bounds) |b| zToC(CRect, b) else .{},
             } },
         },
-        .icon => |icon_cmd| .{
-            .kind = .icon,
-            .data = .{ .icon = .{
-                .bounds = rectToC(icon_cmd.bounds),
-                .kind = icon_cmd.kind,
-                .color = colorToC(icon_cmd.color),
-            } },
-        },
-        .custom => |custom_cmd| .{
-            .kind = .custom,
-            .data = .{ .custom = .{
-                .handle = handleToC(custom_cmd.handle),
-                .bounds = rectToC(custom_cmd.bounds),
-            } },
+        inline else => |payload, tag| .{
+            .kind = @field(CDrawCommandKind, @tagName(tag)),
+            .data = @unionInit(
+                Data,
+                @tagName(tag),
+                zToC(@FieldType(Data, @tagName(tag)), payload),
+            ),
         },
     };
 }
@@ -1815,8 +1264,7 @@ export fn goop_context_destroy(ctx: ?*CContext) void {
 export fn goop_context_set_theme(ctx: ?*CContext, theme: ?*const CTheme) bool {
     const context = ctx orelse return false;
     const next_theme = theme orelse return false;
-    context.ctx.theme = themeFromC(next_theme.*);
-    markDirty(context);
+    context.ctx.setTheme(themeFromC(next_theme.*));
     return true;
 }
 
@@ -1826,18 +1274,18 @@ export fn goop_context_set_clipboard(ctx: ?*CContext, clipboard: ?*const CClipbo
         context.clipboard_provider = provider.*;
         context.clipboard_enabled = provider.get_text_fn != null and provider.set_text_fn != null;
         if (context.clipboard_enabled) {
-            context.ctx.clipboard = .{
+            context.ctx.setClipboard(.{
                 .ptr = @ptrCast(context),
                 .getTextFn = &cClipboardGet,
                 .setTextFn = &cClipboardSet,
-            };
+            });
         } else {
-            context.ctx.clipboard = null;
+            context.ctx.setClipboard(null);
         }
     } else {
         context.clipboard_provider = .{};
         context.clipboard_enabled = false;
-        context.ctx.clipboard = null;
+        context.ctx.setClipboard(null);
     }
     return true;
 }
@@ -1971,7 +1419,7 @@ export fn goop_context_node(ctx: ?*const CContext, handle: CHandle, out_node: ?*
 export fn goop_context_frame(ctx: ?*const CContext, out_snapshot: ?*CFrameSnapshot) bool {
     const context = ctx orelse return false;
     const out = out_snapshot orelse return false;
-    out.* = frameSnapshotToC(context.ctx.runtime.frame(&context.ctx.tree));
+    out.* = frameSnapshotToC(context.ctx.frame());
     return true;
 }
 
@@ -1986,7 +1434,7 @@ export fn goop_context_table_column_fraction(ctx: ?*const CContext, handle: CHan
 // Mark layout and draw caches stale after caller-owned state changes.
 export fn goop_context_invalidate(ctx: ?*CContext) bool {
     const context = ctx orelse return false;
-    context.ctx.runtime.invalidate();
+    context.ctx.invalidate();
     return true;
 }
 
@@ -2005,7 +1453,7 @@ export fn goop_context_user_id(ctx: ?*const CContext, handle: CHandle) u64 {
 export fn goop_context_set_custom_draw(ctx: ?*CContext, handle: CHandle, custom: bool) bool {
     const context = ctx orelse return false;
     if (!validHandle(context, handle)) return false;
-    return context.ctx.runtime.setCustomDraw(&context.ctx.tree, handleFromC(handle), custom);
+    return context.ctx.setCustomDraw(handleFromC(handle), custom);
 }
 
 export fn goop_context_set_drop_target(ctx: ?*CContext, handle: CHandle, accepts_drop: bool) bool {
@@ -2017,18 +1465,18 @@ export fn goop_context_set_drop_target(ctx: ?*CContext, handle: CHandle, accepts
 
 export fn goop_context_focus_widget(ctx: ?*CContext, handle: CHandle) bool {
     const context = ctx orelse return false;
-    return context.ctx.runtime.focusWidget(&context.ctx.tree, handleFromC(handle));
+    return context.ctx.focusWidget(handleFromC(handle));
 }
 
 export fn goop_context_clear_focus(ctx: ?*CContext) bool {
     const context = ctx orelse return false;
-    context.ctx.runtime.clearFocus(&context.ctx.tree);
+    context.ctx.clearFocus();
     return true;
 }
 
 export fn goop_context_cancel_pointer_gesture(ctx: ?*CContext) bool {
     const context = ctx orelse return false;
-    context.ctx.runtime.cancelPointerGesture(&context.ctx.tree);
+    context.ctx.cancelPointerGesture();
     return true;
 }
 
@@ -2208,9 +1656,7 @@ test "c header parses" {
         .{ .Z = CContextOptions, .C = c.goop_context_options_t },
         .{ .Z = CSecondaryClick, .C = c.goop_secondary_click_t },
         .{ .Z = CTreeDrop, .C = c.goop_tree_drop_t },
-        .{ .Z = CGridDrop, .C = c.goop_grid_drop_t },
-        .{ .Z = CListDrop, .C = c.goop_list_drop_t },
-        .{ .Z = CTableDrop, .C = c.goop_table_drop_t },
+        .{ .Z = CContainerDrop, .C = c.goop_container_drop_t },
         .{ .Z = CWidgetDrop, .C = c.goop_widget_drop_t },
         .{ .Z = CDrop, .C = c.goop_drop_t },
 

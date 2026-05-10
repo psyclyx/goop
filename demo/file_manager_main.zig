@@ -1582,7 +1582,7 @@ pub fn beginRenameEntry(state: *State, ctx: *goop.Context, entry: BrowserEntry) 
     state.rename_input.selection_anchor = 0;
     state.rename_input.cursor = state.rename_input.len;
     state.status_note = null;
-    ctx.runtime.invalidate();
+    ctx.invalidate();
 }
 
 fn cancelActiveRename(state: *State) bool {
@@ -1647,7 +1647,7 @@ fn commitActiveRename(state: *State) !RenameFinish {
 }
 
 fn currentPrimaryClickTimestampMs(ctx: *const goop.Context, io: std.Io) u64 {
-    const event_ms = ctx.runtime.frame(&ctx.tree).last_primary_press_ms;
+    const event_ms = ctx.frame().last_primary_press_ms;
     if (event_ms != 0) return event_ms;
     return getMonotonicNs(io) / std.time.ns_per_ms;
 }
@@ -1783,8 +1783,8 @@ fn borrowedDropDestinationPathForUserId(state: *const State, user_id: u64) ?[]co
     };
 }
 
-fn handleAssetTableDrop(state: *State, ctx: *const goop.Context, drop: goop.TableDrop) !bool {
-    if (drop.position != .row) return false;
+fn handleAssetTableDrop(state: *State, ctx: *const goop.Context, drop: goop.ContainerDrop) !bool {
+    if (drop.position != .item) return false;
     const source_index = assetEntryIndexFromUserId(state, ctx.tree.userId(drop.source)) orelse return false;
     const target_index = assetEntryIndexFromUserId(state, ctx.tree.userId(drop.target)) orelse return false;
     if (source_index == target_index) return false;
@@ -1799,7 +1799,7 @@ fn handleAssetTableDrop(state: *State, ctx: *const goop.Context, drop: goop.Tabl
     return moveDropPathsToDirectory(state, source_path, target_entry.navigationPath());
 }
 
-fn handleAssetGridDrop(state: *State, ctx: *const goop.Context, drop: goop.GridDrop) !bool {
+fn handleAssetGridDrop(state: *State, ctx: *const goop.Context, drop: goop.ContainerDrop) !bool {
     if (drop.position != .item) return false;
     const source_index = assetEntryIndexFromUserId(state, ctx.tree.userId(drop.source)) orelse return false;
     const target_index = assetEntryIndexFromUserId(state, ctx.tree.userId(drop.target)) orelse return false;
@@ -1833,7 +1833,7 @@ fn handleAssetWidgetDrop(state: *State, ctx: *const goop.Context, drop: goop.Wid
 
 fn maybeStartWaylandAssetDrag(state: *State, ctx: *goop.Context) !bool {
     if (state.drag_source != null) return false;
-    const f = ctx.runtime.frame(&ctx.tree);
+    const f = ctx.frame();
     if (!f.buttons.left) return false;
     const drag_target = f.drag_source orelse return false;
     const pointer = f.pointer;
@@ -1855,7 +1855,7 @@ fn maybeStartWaylandAssetDrag(state: *State, ctx: *goop.Context) !bool {
     };
 
     if (started) {
-        ctx.runtime.cancelPointerGesture(&ctx.tree);
+        ctx.cancelPointerGesture();
         state.asset_selection_rebuild_pending = false;
         state.needs_redraw = true;
     }
@@ -1921,7 +1921,7 @@ pub fn contextOpenLinkTargetEnabled(state: *const State) bool {
 }
 
 fn contextClickPosition(state: *const State, ctx: *const goop.Context) struct { x: f32, y: f32 } {
-    if (ctx.runtime.frame(&ctx.tree).last_secondary_click) |click| {
+    if (ctx.frame().last_secondary_click) |click| {
         return .{ .x = click.x, .y = click.y };
     }
     return .{ .x = state.mouse_x, .y = state.mouse_y };
@@ -1934,17 +1934,17 @@ fn showContextMenuForPath(state: *State, ctx: *goop.Context, path: []const u8) !
     state.context_x = position.x;
     state.context_y = position.y;
     state.context_visible = true;
-    ctx.runtime.invalidate();
+    ctx.invalidate();
 }
 
 fn hideContextMenu(state: *State, ctx: *goop.Context) void {
     state.context_visible = false;
     if (state.context_popup) |popup| {
         if (ctx.tree.isAlive(popup) and ctx.tree.getConst(popup).kind == .popup) {
-            if (ctx.runtime.mutateKind(&ctx.tree, popup)) |__k| { __k.popup.visible = false; }
+            if (ctx.mutateKind(popup)) |__k| { __k.popup.visible = false; }
         }
     }
-    ctx.runtime.invalidate();
+    ctx.invalidate();
 }
 
 fn syncContextPopupVisibleFromWidget(state: *State, ctx: *const goop.Context) void {
@@ -2275,10 +2275,10 @@ fn setTopMenuPopupVisible(state: *const State, ctx: *goop.Context, target: ?goop
         if (!ctx.tree.isAlive(popup) or ctx.tree.getConst(popup).kind != .popup) continue;
         const visible = if (target) |selected| selected.eql(popup) else false;
         if (ctx.tree.getConst(popup).kind.popup.visible == visible) continue;
-        if (ctx.runtime.mutateKind(&ctx.tree, popup)) |__k| { __k.popup.visible = visible; }
+        if (ctx.mutateKind(popup)) |__k| { __k.popup.visible = visible; }
         changed = true;
     }
-    if (changed) ctx.runtime.invalidate();
+    if (changed) ctx.invalidate();
 }
 
 fn toggleTopMenuPopup(state: *const State, ctx: *goop.Context, popup: ?goop.NodeHandle) void {
@@ -2468,7 +2468,7 @@ pub fn main(init: std.process.Init) !void {
     });
     defer ctx.deinit();
     state.ctx = &ctx;
-    ctx.clipboard = state.clipboard();
+    ctx.setClipboard(state.clipboard());
     try initializeBrowserState(&state);
     try buildWidgetTree(&state);
 
@@ -2570,8 +2570,8 @@ pub fn main(init: std.process.Init) !void {
             state.table_column_weights[3] = ctx.tree.tableColumnFraction(h, 3) orelse state.table_column_weights[3];
             if (state.asset_table_body) |body| {
                 if (ctx.tree.isAlive(body)) {
-                    applyAssetTableColumns(&ctx.runtime.mutateKind(&ctx.tree, body).?.table, &state);
-                    ctx.runtime.invalidate();
+                    applyAssetTableColumns(&ctx.mutateKind(body).?.table, &state);
+                    ctx.invalidate();
                 }
             }
         };
@@ -2840,7 +2840,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         var asset_primary_handled = false;
-        if (ctx.runtime.frame(&ctx.tree).last_drop) |drop| {
+        if (ctx.frame().last_drop) |drop| {
             const asset_drop = switch (drop) {
                 .widget => |widget_drop| assetEntryIndexFromUserId(&state, ctx.tree.userId(widget_drop.source)) != null,
                 .table => |table_drop| assetEntryIndexFromUserId(&state, ctx.tree.userId(table_drop.source)) != null,
@@ -2988,7 +2988,7 @@ pub fn main(init: std.process.Init) !void {
 
         if (!asset_primary_handled) {
             var selection_widget_changed = false;
-            const selection_drag_active = ctx.runtime.frame(&ctx.tree).buttons.left;
+            const selection_drag_active = ctx.frame().buttons.left;
             if (state.view_mode == .list) {
                 if (state.asset_table_body) |table| {
                     if (ctx.tree.isAlive(table) and ctx.tree.node(table).?.kind.table.selection_changed) {
@@ -3041,7 +3041,7 @@ pub fn main(init: std.process.Init) !void {
             if (selection_widget_changed) asset_primary_handled = true;
         }
 
-        if (!ctx.runtime.frame(&ctx.tree).buttons.left and state.asset_selection_rebuild_pending) {
+        if (!ctx.frame().buttons.left and state.asset_selection_rebuild_pending) {
             state.asset_selection_rebuild_pending = false;
             rebuild_ui = true;
         }

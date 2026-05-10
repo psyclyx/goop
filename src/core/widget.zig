@@ -129,10 +129,16 @@ pub const WidgetKind = union(enum) {
         expanded: bool = true,
         selected: bool = false,
         editing: bool = false,
-        drag: DragState = .{},
-        drop_preview: ?DropPosition = null,
         rename_committed: bool = false,
-        editor: TextInput = .{},
+        /// Internal state owned by dispatch/draw. Embedders should not
+        /// touch this field directly — use the public methods.
+        internal: Internal = .{},
+
+        pub const Internal = struct {
+            drag: DragState = .{},
+            drop_preview: ?DropPosition = null,
+            editor: TextInput = .{},
+        };
 
         pub const RenameTrigger = enum {
             none,
@@ -147,28 +153,32 @@ pub const WidgetKind = union(enum) {
         };
 
         pub fn displayLabel(self: *const TreeItem) []const u8 {
-            return if (self.editing) self.editor.content() else self.label;
+            return if (self.editing) self.internal.editor.content() else self.label;
         }
 
         pub fn beginRename(self: *TreeItem) void {
-            self.editor = .{};
-            self.editor.insertSlice(self.label);
-            self.editor.selection_anchor = 0;
-            self.editor.cursor = self.editor.len;
+            self.internal.editor = .{};
+            self.internal.editor.insertSlice(self.label);
+            self.internal.editor.selection_anchor = 0;
+            self.internal.editor.cursor = self.internal.editor.len;
             self.rename_committed = false;
             self.editing = true;
         }
 
         pub fn cancelRename(self: *TreeItem) void {
-            self.editor = .{};
+            self.internal.editor = .{};
             self.rename_committed = false;
             self.editing = false;
         }
 
         pub fn commitRename(self: *TreeItem) void {
-            self.label = self.editor.content();
+            self.label = self.internal.editor.content();
             self.rename_committed = true;
             self.editing = false;
+        }
+
+        pub fn resetPerFrameEvents(self: *TreeItem) void {
+            self.rename_committed = false;
         }
     };
 
@@ -181,10 +191,15 @@ pub const WidgetKind = union(enum) {
 
     pub const ListBox = struct {
         selection_mode: SelectionMode = .single,
-        anchor_index: ?u16 = null,
-        marquee_active: bool = false,
-        marquee_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-        drop_preview_background: bool = false,
+        /// Internal state owned by dispatch/draw. Don't touch.
+        internal: Internal = .{},
+
+        pub const Internal = struct {
+            anchor_index: ?u16 = null,
+            marquee_active: bool = false,
+            marquee_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+            drop_preview_background: bool = false,
+        };
 
         pub const SelectionMode = enum {
             single,
@@ -196,9 +211,14 @@ pub const WidgetKind = union(enum) {
         label: []const u8,
         group: u32 = 0,
         selected: bool = false,
-        marquee_base_selected: bool = false,
-        drag: DragState = .{},
-        drop_preview: bool = false,
+        /// Internal state owned by dispatch/draw. Don't touch.
+        internal: Internal = .{},
+
+        pub const Internal = struct {
+            marquee_base_selected: bool = false,
+            drag: DragState = .{},
+            drop_preview: bool = false,
+        };
     };
 
     pub const GridSelector = struct {
@@ -207,15 +227,20 @@ pub const WidgetKind = union(enum) {
         item_height: f32 = 96,
         column_gap: f32 = 8,
         row_gap: f32 = 8,
-        anchor_index: ?u16 = null,
         computed_columns: u16 = 1,
-        content_height: f32 = 0,
-        marquee_active: bool = false,
-        marquee_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-        drop_preview_background: bool = false,
+        /// Internal state owned by dispatch/draw/layout. Don't touch.
+        internal: Internal = .{},
+
+        pub const Internal = struct {
+            anchor_index: ?u16 = null,
+            content_height: f32 = 0,
+            marquee_active: bool = false,
+            marquee_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+            drop_preview_background: bool = false,
+        };
 
         pub fn layoutHeight(self: *const GridSelector, padding: style.Edges) f32 {
-            if (self.content_height > 0) return self.content_height;
+            if (self.internal.content_height > 0) return self.internal.content_height;
             return padding.top + padding.bottom + @max(self.item_height, 1);
         }
     };
@@ -224,9 +249,14 @@ pub const WidgetKind = union(enum) {
         label: []const u8,
         icon: []const u8 = "",
         selected: bool = false,
-        marquee_base_selected: bool = false,
-        drag: DragState = .{},
-        drop_preview: bool = false,
+        /// Internal state owned by dispatch/draw. Don't touch.
+        internal: Internal = .{},
+
+        pub const Internal = struct {
+            marquee_base_selected: bool = false,
+            drag: DragState = .{},
+            drop_preview: bool = false,
+        };
     };
 
     pub const Table = struct {
@@ -246,12 +276,17 @@ pub const WidgetKind = union(enum) {
         sorted_column: ?u8 = null,
         sort_direction: SortDirection = .ascending,
         selection_changed: bool = false,
-        anchor_row: ?u16 = null,
-        marquee_active: bool = false,
-        marquee_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-        drop_preview_background: bool = false,
         active_columns: u8 = 0,
-        column_weights: [max_columns]f32 = [_]f32{0} ** max_columns,
+        /// Internal state owned by dispatch/draw/layout. Don't touch.
+        internal: Internal = .{},
+
+        pub const Internal = struct {
+            anchor_row: ?u16 = null,
+            marquee_active: bool = false,
+            marquee_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+            drop_preview_background: bool = false,
+            column_weights: [max_columns]f32 = [_]f32{0} ** max_columns,
+        };
 
         pub const SortDirection = enum {
             ascending,
@@ -269,15 +304,15 @@ pub const WidgetKind = union(enum) {
             if (clamped == 0) {
                 self.active_columns = 0;
                 self.sorted_column = null;
-                self.anchor_row = null;
-                @memset(&self.column_weights, 0);
+                self.internal.anchor_row = null;
+                @memset(&self.internal.column_weights, 0);
                 return;
             }
 
             var sum: f32 = 0;
             var reset = self.active_columns != clamped;
             if (!reset) {
-                for (self.column_weights[0..clamped]) |weight| {
+                for (self.internal.column_weights[0..clamped]) |weight| {
                     if (!std.math.isFinite(weight) or weight <= 0) {
                         reset = true;
                         break;
@@ -291,22 +326,22 @@ pub const WidgetKind = union(enum) {
             if (self.sorted_column) |sorted| {
                 if (sorted >= clamped) self.sorted_column = null;
             }
-            @memset(self.column_weights[clamped..], 0);
+            @memset(self.internal.column_weights[clamped..], 0);
 
             if (reset) {
                 const equal = 1.0 / @as(f32, @floatFromInt(clamped));
-                for (self.column_weights[0..clamped]) |*weight| weight.* = equal;
+                for (self.internal.column_weights[0..clamped]) |*weight| weight.* = equal;
                 return;
             }
 
             if (@abs(sum - 1.0) > 0.0001) {
-                for (self.column_weights[0..clamped]) |*weight| weight.* /= sum;
+                for (self.internal.column_weights[0..clamped]) |*weight| weight.* /= sum;
             }
         }
 
         pub fn columnWeight(self: *const Table, index: usize) ?f32 {
             if (index >= self.active_columns) return null;
-            return self.column_weights[index];
+            return self.internal.column_weights[index];
         }
 
         pub fn resizeColumns(
@@ -327,10 +362,16 @@ pub const WidgetKind = union(enum) {
             if (@abs(new_left - origin_left_width) <= 0.01) return false;
 
             const new_right = pair_total - new_left;
-            self.column_weights[divider_index] = new_left / total_width;
-            self.column_weights[divider_index + 1] = new_right / total_width;
+            self.internal.column_weights[divider_index] = new_left / total_width;
+            self.internal.column_weights[divider_index + 1] = new_right / total_width;
             self.resized_column = divider_index;
             return true;
+        }
+
+        pub fn resetPerFrameEvents(self: *Table) void {
+            self.resized_column = null;
+            self.sort_changed = false;
+            self.selection_changed = false;
         }
 
         pub fn toggleSort(self: *Table, column: u8) bool {
@@ -357,9 +398,14 @@ pub const WidgetKind = union(enum) {
     pub const TableRow = struct {
         header: bool = false,
         selected: bool = false,
-        marquee_base_selected: bool = false,
-        drag: DragState = .{},
-        drop_preview: bool = false,
+        /// Internal state owned by dispatch/draw. Don't touch.
+        internal: Internal = .{},
+
+        pub const Internal = struct {
+            marquee_base_selected: bool = false,
+            drag: DragState = .{},
+            drop_preview: bool = false,
+        };
     };
 
     pub const TableCell = struct {};
@@ -412,34 +458,39 @@ pub const WidgetKind = union(enum) {
         speed: f32 = 0.1,
         precision: u8 = 2,
         editing: bool = false,
-        label_buf: [64]u8 = [_]u8{0} ** 64,
-        label_len: u8 = 0,
-        editor: TextInput = .{},
+        /// Internal state owned by dispatch. Don't touch.
+        internal: Internal = .{},
+
+        pub const Internal = struct {
+            label_buf: [64]u8 = [_]u8{0} ** 64,
+            label_len: u8 = 0,
+            editor: TextInput = .{},
+        };
 
         pub fn displayValue(self: *const DragValue) []const u8 {
-            return self.label_buf[0..self.label_len];
+            return self.internal.label_buf[0..self.internal.label_len];
         }
 
         pub fn syncLabel(self: *DragValue) void {
-            const label = formatScalarLabel(&self.label_buf, self.value, self.precision);
-            self.label_len = @intCast(label.len);
+            const label = formatScalarLabel(&self.internal.label_buf, self.value, self.precision);
+            self.internal.label_len = @intCast(label.len);
         }
 
         pub fn beginEdit(self: *DragValue) void {
-            self.editor = .{};
-            self.editor.insertSlice(self.displayValue());
-            self.editor.selection_anchor = 0;
-            self.editor.cursor = self.editor.len;
+            self.internal.editor = .{};
+            self.internal.editor.insertSlice(self.displayValue());
+            self.internal.editor.selection_anchor = 0;
+            self.internal.editor.cursor = self.internal.editor.len;
             self.editing = true;
         }
 
         pub fn cancelEdit(self: *DragValue) void {
-            self.editor = .{};
+            self.internal.editor = .{};
             self.editing = false;
         }
 
         pub fn commitEdit(self: *DragValue) CommitResult {
-            const next_value = std.fmt.parseFloat(f32, self.editor.content()) catch return .invalid;
+            const next_value = std.fmt.parseFloat(f32, self.internal.editor.content()) catch return .invalid;
             const clamped = std.math.clamp(next_value, self.min, self.max);
             const did_change = clamped != self.value;
             self.value = clamped;
@@ -456,34 +507,39 @@ pub const WidgetKind = union(enum) {
         step: f32 = 1,
         precision: u8 = 2,
         editing: bool = false,
-        label_buf: [64]u8 = [_]u8{0} ** 64,
-        label_len: u8 = 0,
-        editor: TextInput = .{},
+        /// Internal state owned by dispatch. Don't touch.
+        internal: Internal = .{},
+
+        pub const Internal = struct {
+            label_buf: [64]u8 = [_]u8{0} ** 64,
+            label_len: u8 = 0,
+            editor: TextInput = .{},
+        };
 
         pub fn displayValue(self: *const SpinBox) []const u8 {
-            return self.label_buf[0..self.label_len];
+            return self.internal.label_buf[0..self.internal.label_len];
         }
 
         pub fn syncLabel(self: *SpinBox) void {
-            const label = formatScalarLabel(&self.label_buf, self.value, self.precision);
-            self.label_len = @intCast(label.len);
+            const label = formatScalarLabel(&self.internal.label_buf, self.value, self.precision);
+            self.internal.label_len = @intCast(label.len);
         }
 
         pub fn beginEdit(self: *SpinBox) void {
-            self.editor = .{};
-            self.editor.insertSlice(self.displayValue());
-            self.editor.selection_anchor = 0;
-            self.editor.cursor = self.editor.len;
+            self.internal.editor = .{};
+            self.internal.editor.insertSlice(self.displayValue());
+            self.internal.editor.selection_anchor = 0;
+            self.internal.editor.cursor = self.internal.editor.len;
             self.editing = true;
         }
 
         pub fn cancelEdit(self: *SpinBox) void {
-            self.editor = .{};
+            self.internal.editor = .{};
             self.editing = false;
         }
 
         pub fn commitEdit(self: *SpinBox) CommitResult {
-            const next_value = std.fmt.parseFloat(f32, self.editor.content()) catch return .invalid;
+            const next_value = std.fmt.parseFloat(f32, self.internal.editor.content()) catch return .invalid;
             const clamped = std.math.clamp(next_value, self.min, self.max);
             const did_change = clamped != self.value;
             self.value = clamped;
@@ -1236,24 +1292,24 @@ pub const WidgetView = union(enum) {
                 .expanded = kind.tree_item.expanded,
                 .selected = kind.tree_item.selected,
                 .editing = kind.tree_item.editing,
-                .dragging = kind.tree_item.drag.active,
+                .dragging = kind.tree_item.internal.drag.active,
                 .rename_committed = kind.tree_item.rename_committed,
             } },
             .selectable => .{ .selectable = .{
                 .label = kind.selectable.label,
                 .group = kind.selectable.group,
                 .selected = kind.selectable.selected,
-                .dragging = kind.selectable.drag.active,
+                .dragging = kind.selectable.internal.drag.active,
             } },
             .grid_item => .{ .grid_item = .{
                 .label = kind.grid_item.label,
                 .selected = kind.grid_item.selected,
-                .dragging = kind.grid_item.drag.active,
+                .dragging = kind.grid_item.internal.drag.active,
             } },
             .table_row => .{ .table_row = .{
                 .header = kind.table_row.header,
                 .selected = kind.table_row.selected,
-                .dragging = kind.table_row.drag.active,
+                .dragging = kind.table_row.internal.drag.active,
             } },
             .drag_value => .{ .drag_value = .{
                 .value = kind.drag_value.value,

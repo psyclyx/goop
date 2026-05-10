@@ -59,7 +59,9 @@ pub const Theme = struct {
 /// Per-widget style overrides. Every field mirrors a `Theme` field;
 /// null inherits from the active theme. The comptime check below
 /// asserts the two field sets stay in sync — adding a field to Theme
-/// without adding it here is a compile error.
+/// without adding it here is a compile error. (Zig 0.16 removed
+/// `@Type` so we can't auto-derive the struct, but the assert keeps
+/// drift impossible.)
 pub const Style = struct {
     bg: ?Color = null,
     fg: ?Color = null,
@@ -114,8 +116,8 @@ comptime {
 
 test "style resolves against theme" {
     const theme = Theme.default;
-    const style = Style{ .bg = Color.rgb(255, 0, 0) };
-    const resolved = style.resolve(theme);
+    const s = Style{ .bg = Color.rgb(255, 0, 0) };
+    const resolved = s.resolve(theme);
     try std.testing.expectEqual(@as(u8, 255), resolved.bg.r);
     try std.testing.expectEqual(theme.fg, resolved.fg);
     try std.testing.expectEqual(theme.spacing, resolved.spacing);

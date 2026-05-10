@@ -145,9 +145,9 @@ typedef enum {
 } goop_tree_drop_position_t;
 
 typedef enum {
-    GOOP_GRID_DROP_ITEM = 0,
-    GOOP_GRID_DROP_BACKGROUND = 1,
-} goop_grid_drop_position_t;
+    GOOP_CONTAINER_DROP_ITEM = 0,
+    GOOP_CONTAINER_DROP_BACKGROUND = 1,
+} goop_container_drop_position_t;
 
 typedef enum {
     GOOP_WIDGET_CONTAINER = 0,
@@ -814,21 +814,14 @@ typedef struct {
     goop_tree_drop_position_t position;
 } goop_tree_drop_t;
 
+/* Shared container-drop layout used by .grid, .list, and .table arms
+ * of goop_drop_t. The container kind stays distinguishable through
+ * goop_drop_t.kind. */
 typedef struct {
     goop_node_handle_t source;
     goop_node_handle_t target;
-    goop_grid_drop_position_t position;
-} goop_grid_drop_t;
-
-typedef struct {
-    goop_node_handle_t source;
-    goop_node_handle_t target;
-} goop_list_drop_t;
-
-typedef struct {
-    goop_node_handle_t source;
-    goop_node_handle_t target;
-} goop_table_drop_t;
+    goop_container_drop_position_t position;
+} goop_container_drop_t;
 
 typedef struct {
     goop_node_handle_t source;
@@ -847,9 +840,9 @@ typedef struct {
     goop_drop_kind_t kind;
     union {
         goop_tree_drop_t tree;
-        goop_grid_drop_t grid;
-        goop_list_drop_t list;
-        goop_table_drop_t table;
+        goop_container_drop_t grid;
+        goop_container_drop_t list;
+        goop_container_drop_t table;
         goop_widget_drop_t widget;
     } data;
 } goop_drop_t;

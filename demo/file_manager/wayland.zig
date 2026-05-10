@@ -474,10 +474,10 @@ pub fn xdgPopupDone(data: ?*anyopaque, _: ?*wl.xdg_popup) callconv(.c) void {
     const state = popup.owner;
     if (state.ctx) |ctx| {
         if (ctx.tree.isAlive(popup.handle) and ctx.tree.getConst(popup.handle).kind == .popup) {
-            if (ctx.runtime.mutateKind(&ctx.tree, popup.handle)) |__k| {
+            if (ctx.mutateKind(popup.handle)) |__k| {
                 __k.popup.visible = false;
             }
-            ctx.runtime.invalidate();
+            ctx.invalidate();
         }
     }
     state.destroyPopupSurface(popup);
@@ -889,7 +889,7 @@ pub fn dataSourceFinished(data: ?*anyopaque, source: ?*wl.wl_data_source) callco
     const was_drag_source = state.drag_source == source;
     if (was_drag_source) {
         state.clearFinishedDragSource(source);
-        if (state.ctx) |ctx| ctx.runtime.cancelPointerGesture(&ctx.tree);
+        if (state.ctx) |ctx| ctx.cancelPointerGesture();
         state.needs_redraw = true;
     }
     if (source) |finished_source| wl.wl_data_source_destroy(finished_source);
@@ -931,7 +931,7 @@ pub fn dataSourceCancelled(data: ?*anyopaque, source: ?*wl.wl_data_source) callc
         state.clipboard_source = null;
     } else if (state.drag_source == source) {
         state.clearFinishedDragSource(source);
-        if (state.ctx) |ctx| ctx.runtime.cancelPointerGesture(&ctx.tree);
+        if (state.ctx) |ctx| ctx.cancelPointerGesture();
         state.needs_redraw = true;
     }
     if (source) |cancelled_source| wl.wl_data_source_destroy(cancelled_source);
@@ -1118,7 +1118,7 @@ pub fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, serial: u32, _: u32, 
     } }) catch {};
 
     if (key_state == 1) {
-        const focused_handle = ctx.runtime.frame(&ctx.tree).focused;
+        const focused_handle = ctx.frame().focused;
         const focused_is_text_input = if (focused_handle) |handle|
             ctx.tree.getConst(handle).kind == .text_input
         else

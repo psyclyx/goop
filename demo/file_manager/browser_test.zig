@@ -98,7 +98,7 @@ fn appendBrowserTestEntries(state: *State, count: usize) !void {
 }
 
 fn syncBrowserTestScrollFrame(state: *State, ctx: *goop.Context, text_measure_ctx: *const goop.TextMeasureCtx) !bool {
-    ctx.runtime.invalidate();
+    ctx.invalidate();
     ctx.doLayout(text_measure_ctx);
     if (try refreshAssetViewportIfNeeded(state)) {
         ctx.doLayout(text_measure_ctx);
@@ -401,7 +401,7 @@ test "file browser blank asset space starts marquee before any selection" {
     try ctx.pushEvent(.{ .mouse_move = .{ .x = row_x, .y = row_y } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.tree.getConst(state.asset_table_body.?).kind.table.marquee_active);
+    try std.testing.expect(ctx.tree.getConst(state.asset_table_body.?).kind.table.internal.marquee_active);
     try std.testing.expect(ctx.tree.getConst(state.row_handles.items[0]).kind.table_row.selected);
 }
 
@@ -595,7 +595,7 @@ test "sidebar scroll survives widget tree rebuild" {
     try buildWidgetTree(&state);
     ctx.doLayout(&text_measure_ctx);
     const first_scroll = state.sidebar_scroll.?;
-    if (ctx.runtime.mutateKind(&ctx.tree, first_scroll)) |__k| { __k.scroll_area.scroll_y = 73; }
+    if (ctx.mutateKind(first_scroll)) |__k| { __k.scroll_area.scroll_y = 73; }
 
     try buildWidgetTree(&state);
     ctx.doLayout(&text_measure_ctx);
@@ -702,7 +702,7 @@ test "file browser list scroll keeps existing window until the render range chan
     const start_before = state.asset_visible_start;
     const end_before = state.asset_visible_end;
 
-    if (ctx.runtime.mutateKind(&ctx.tree, scroll_handle)) |__k| { __k.scroll_area.scroll_y = target_scroll; }
+    if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = target_scroll; }
     const rebuilt = try syncBrowserTestScrollFrame(&state, &ctx, &text_measure_ctx);
 
     try std.testing.expect(!rebuilt);
@@ -735,12 +735,12 @@ test "file browser list preserves row continuity across virtualization boundarie
     const boundary_scroll = row_height * @as(f32, @floatFromInt(chunk_rows));
     const logical_entry_index = chunk_rows + browser_overscan_rows;
 
-    if (ctx.runtime.mutateKind(&ctx.tree, scroll_handle)) |__k| { __k.scroll_area.scroll_y = boundary_scroll - 1; }
+    if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = boundary_scroll - 1; }
     _ = try syncBrowserTestScrollFrame(&state, &ctx, &text_measure_ctx);
     const first_row = state.row_handles.items[logical_entry_index - state.asset_visible_start];
     const first_y = ctx.tree.getConst(first_row).layout_rect.y;
 
-    if (ctx.runtime.mutateKind(&ctx.tree, scroll_handle)) |__k| { __k.scroll_area.scroll_y = boundary_scroll; }
+    if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = boundary_scroll; }
     const rebuilt = try syncBrowserTestScrollFrame(&state, &ctx, &text_measure_ctx);
     const second_row = state.row_handles.items[logical_entry_index - state.asset_visible_start];
     const second_y = ctx.tree.getConst(second_row).layout_rect.y;
@@ -773,7 +773,7 @@ test "file browser list covers the viewport after a large scroll jump" {
     const target_scroll = row_height * @as(f32, @floatFromInt(target_row)) + row_height * 0.25;
     const visible_count = browserVisibleCount(state.file_panel_viewport_height, row_height);
 
-    if (ctx.runtime.mutateKind(&ctx.tree, scroll_handle)) |__k| { __k.scroll_area.scroll_y = target_scroll; }
+    if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = target_scroll; }
     const rebuilt = try syncBrowserTestScrollFrame(&state, &ctx, &text_measure_ctx);
 
     try std.testing.expect(rebuilt);

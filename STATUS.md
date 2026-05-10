@@ -13,12 +13,27 @@ fallback locations.
 
 ## Recent Progress
 
+- `Context` forwards every per-handle `Runtime` method (`mutateKind`,
+  `setStyle`, `setCustomDraw`, `updateWidget`, `frame`, `invalidate`,
+  `focusWidget`, `clearFocus`, `cancelPointerGesture`) plus
+  `setTheme`/`setClipboard`. Demo and C wrapper drop ~120 sites of
+  `ctx.runtime.X(&ctx.tree, …)` boilerplate
+- `WidgetKind` arms separate genuinely-internal per-frame state into
+  per-kind `Internal` substructs (`drag`, `marquee_*`, `drop_preview*`,
+  `anchor_*`, `column_weights`, editor buffers). `WidgetDesc` already
+  prevented construction-time seeding; the `Internal` boundary now
+  documents the dispatch/draw-owned region structurally
+- `GridDrop`/`ListDrop`/`TableDrop` collapsed into one `ContainerDrop`
+  (shape was already identical; `TableDrop.Position.row` aliased to
+  `.item`). C ABI matched. Drop union arms (`.grid`, `.list`, `.table`)
+  still distinguish container kind
+- Embedder-facing tree helpers (`tableHeaderRow`, `tableCellAt`,
+  `tableResizeHandleIndexAtPoint`, `gridItemAt`, …) re-exported on
+  `goop` so callers don't need to reach into `widget.*`
 - Tagged read-only `WidgetView` replaces ~30 per-widget query methods on
   `Runtime`/`Context` and the matching C exports
 - `Tree` mutations route through `setStyle`/`updateWidget`/`mutateKind`/
   `setCustomDraw` so the runtime always invalidates layout/draw caches
-- `Context` reduced to a single-tree convenience layer over `Runtime`;
-  multi-tree embedders use `Runtime` directly with caller-owned trees
 - `freeDrawList` / `freePaintList` no-ops removed; cached draw lists
   are owned by `Runtime` and freed automatically on invalidation
 - C/Zig bool field names synced (no more `disable_*` vs `allow_*` skew)
@@ -67,10 +82,3 @@ fallback locations.
 - MSAA sample count is hardcoded to `4` with no capability fallback
 - Text editing is still codepoint-based; grapheme clusters and IME composition are not implemented
 - `widget.zig` grew significantly with removal logic and should be watched
-- `WidgetKind` arm structs still mix construction-time inputs (label,
-  group, options) with interaction state (clicked, dragging, marquee).
-  The read API (`WidgetView`) hides this, but a future refactor should
-  split per-kind structs into `Desc` (input) and `State` (internal) so
-  embedders cannot accidentally seed widgets with output-flag values
-  (`.{ .button = .{ .label = "X", .clicked = true } }` currently
-  type-checks).

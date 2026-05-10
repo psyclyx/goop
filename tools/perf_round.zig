@@ -678,7 +678,7 @@ fn buildExplorerWorkload(ctx: *goop.Context, alloc: std.mem.Allocator, table_row
     _ = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "Help" } });
 
     const toolbar = try ctx.tree.addChild(root, .{ .toolbar = .{} });
-    _ = ctx.runtime.setStyle(&ctx.tree, toolbar, .{
+    _ = ctx.setStyle(toolbar, .{
         .bg = .rgb(232, 236, 243),
         .border = .rgb(203, 210, 223),
         .padding = goop.style.Edges.symmetric(10, 8),
@@ -691,7 +691,7 @@ fn buildExplorerWorkload(ctx: *goop.Context, alloc: std.mem.Allocator, table_row
     _ = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Sort" } });
     _ = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "View" } });
     const address_input = try ctx.tree.addChild(toolbar, .{ .text_input = .{} });
-    ctx.runtime.mutateKind(&ctx.tree, address_input).?.text_input.insertSlice("C:\\Workspace\\goop\\assets\\mock-project");
+    ctx.mutateKind(address_input).?.text_input.insertSlice("C:\\Workspace\\goop\\assets\\mock-project");
     _ = try ctx.tree.addChild(toolbar, .{ .text_input = .{ .placeholder = "Search mock-project" } });
 
     const content_split = try ctx.tree.addChild(root, .{ .splitter = .{
@@ -703,7 +703,7 @@ fn buildExplorerWorkload(ctx: *goop.Context, alloc: std.mem.Allocator, table_row
     } });
 
     const nav_panel = try ctx.tree.addChild(content_split, .{ .container = .{ .direction = .column } });
-    _ = ctx.runtime.setStyle(&ctx.tree, nav_panel, .{
+    _ = ctx.setStyle(nav_panel, .{
         .bg = .rgb(247, 249, 252),
         .border = .rgb(214, 220, 230),
         .padding = goop.style.Edges.symmetric(10, 10),
@@ -713,7 +713,7 @@ fn buildExplorerWorkload(ctx: *goop.Context, alloc: std.mem.Allocator, table_row
     try addNavTree(ctx, alloc, nav_panel);
 
     const main_panel = try ctx.tree.addChild(content_split, .{ .container = .{ .direction = .column } });
-    _ = ctx.runtime.setStyle(&ctx.tree, main_panel, .{
+    _ = ctx.setStyle(main_panel, .{
         .bg = .rgb(250, 252, 255),
         .border = .rgb(214, 220, 230),
         .padding = goop.style.Edges.symmetric(10, 10),
@@ -721,7 +721,7 @@ fn buildExplorerWorkload(ctx: *goop.Context, alloc: std.mem.Allocator, table_row
     });
 
     const crumb_bar = try ctx.tree.addChild(main_panel, .{ .toolbar = .{} });
-    _ = ctx.runtime.setStyle(&ctx.tree, crumb_bar, .{
+    _ = ctx.setStyle(crumb_bar, .{
         .bg = .rgb(255, 255, 255),
         .border = .rgb(214, 220, 230),
         .padding = goop.style.Edges.symmetric(10, 7),
@@ -754,16 +754,16 @@ fn buildExplorerWorkload(ctx: *goop.Context, alloc: std.mem.Allocator, table_row
         .min_column_width = 92,
     } });
     {
-        const table = &ctx.runtime.mutateKind(&ctx.tree, file_table).?.table;
-        table.column_weights[0] = 0.50;
-        table.column_weights[1] = 0.20;
-        table.column_weights[2] = 0.18;
-        table.column_weights[3] = 0.12;
+        const table = &ctx.mutateKind(file_table).?.table;
+        table.internal.column_weights[0] = 0.50;
+        table.internal.column_weights[1] = 0.20;
+        table.internal.column_weights[2] = 0.18;
+        table.internal.column_weights[3] = 0.12;
     }
     try addFileTable(ctx, alloc, file_table, table_rows);
 
     const preview = try ctx.tree.addChild(detail_split, .{ .container = .{ .direction = .column } });
-    _ = ctx.runtime.setStyle(&ctx.tree, preview, .{
+    _ = ctx.setStyle(preview, .{
         .bg = .rgb(246, 248, 252),
         .border = .rgb(214, 220, 230),
         .padding = goop.style.Edges.symmetric(10, 10),
@@ -775,7 +775,7 @@ fn buildExplorerWorkload(ctx: *goop.Context, alloc: std.mem.Allocator, table_row
     _ = try ctx.tree.addChild(preview, .{ .text = .{ .content = "Tags: Generated, Preview, Shared" } });
 
     const status_bar = try ctx.tree.addChild(root, .{ .status_bar = .{} });
-    _ = ctx.runtime.setStyle(&ctx.tree, status_bar, .{
+    _ = ctx.setStyle(status_bar, .{
         .bg = .rgb(232, 236, 243),
         .border = .rgb(203, 210, 223),
         .padding = goop.style.Edges.symmetric(10, 7),
