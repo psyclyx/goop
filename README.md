@@ -4,142 +4,127 @@
 
 Retained-mode GUI library for Zig. `goop` owns widget state, layout, and draw
 command generation; the embedder owns the native window, input delivery, text
-measurement, and final rendering backend.
+measurement, and final rendering.
 
 > [!WARNING]
-> `goop` is still WIP. The widget surface is growing quickly, APIs are not
-> stable yet, and the demo is a reference embedder rather than a polished end
-> user application.
+> `goop` is pre-1.0. Widgets land quickly and the API is still being shaped.
+> The shipped demos are reference embedders, not finished applications.
 
 ![File-manager reference demo, rendered headlessly via the goop offscreen pipeline](docs/assets/goop-file-manager-demo.png)
 
-The reference Wayland/EGL demo above is the file-manager example, rendered
-headlessly through the same offscreen pipeline goop ships for CI screenshots.
-It exercises menus, toolbars, breadcrumbs, sortable tables, splitters,
-sidebars, and the editor-style chrome that the library is being built around.
+The screenshot above is the file-manager example, rendered through the same
+offscreen pipeline goop ships for CI. It exercises menus, toolbars,
+breadcrumbs, sortable tables, splitters, sidebars, and the editor-style chrome
+the library is being built around.
 
 ## What it is
 
-`goop` is a retained tree of widgets plus three main runtime passes:
+`goop` is a retained widget tree plus three runtime passes:
 
 - layout through vendored `clay`
 - input dispatch over platform-neutral events
 - draw-list generation for an embedder-owned renderer
 
-The core does not create windows, own the event loop, or issue GPU commands.
-It tracks widget state, writes back layout rectangles, and emits simple draw
-commands (`rect`, `text`, `clip`, `icon`, `custom`) that a caller can render
-however it wants.
+The core does not create windows, own the event loop, or touch the GPU. It
+tracks widget state, writes back layout rectangles, and emits simple draw
+commands (`rect`, `text`, `clip`, `icon`, `custom`) the caller renders however
+it wants.
 
-Current pieces in-tree:
+In-tree:
 
 - retained widget tree with generational handles and subtree removal
 - Zig API in [src/goop.zig](src/goop.zig)
 - installable C API in [include/goop.h](include/goop.h)
-- reference Wayland/EGL/OpenGL demo in [demo/main.zig](demo/main.zig)
+- reference Wayland/EGL/OpenGL demos in [demo/](demo/)
 
-## Current scope
+## Widgets
 
-Widgets currently implemented:
+container, spacer, text, button, checkbox, radio button, tree item, dropdown,
+popup, tooltip, menu bar, menu, menu item, list box, selectable, grid
+selector, grid item, table, table row, table cell, drag value, spinbox,
+slider, text input, tab bar, tab item, splitter, scroll area, toolbar, status
+bar.
 
-- container, spacer, text, button, checkbox, radio button, tree item
-- dropdown, popup, tooltip, menu bar, menu, menu item
-- list box, selectable, grid selector, grid item
-- table, table row, table cell
-- drag value, spinbox, slider, text input
-- tab bar, tab item
-- splitter, scroll area
-- toolbar, status bar
-
-Still actively in progress:
-
-- API cleanup and broader documentation
-- fractional scaling and broader runtime portability
-- IME/composition, grapheme-cluster behavior, and richer text input polish
-- more embedder examples and validation beyond the current demo
-
-For the current engineering snapshot and rough edges, see
+For the engineering snapshot, priorities, and known rough edges, see
 [STATUS.md](STATUS.md).
 
 ## Build
 
-Use `nix-shell` first. The shell provides the pinned Zig 0.16.0 toolchain plus
-the demo's native dependencies, including `harfbuzz`, `fontconfig`, and Noto
-fonts for the demos.
+Use `nix-shell` first. The shell pins Zig 0.16.0 and the demo's native
+dependencies (`harfbuzz`, `fontconfig`, Noto fonts).
 
 ```sh
 nix-shell
-zig build test          # unit tests
-zig build               # library + demo
-zig build demo          # build and run the Wayland demo
-zig build file-manager-demo  # build and run the Linux file-browser Wayland demo
-zig build c-example     # build and run the headless C API example
-zig build perf-round    # run the headless retained-UI perf benchmark
-zig build screenshot    # re-render docs/assets/goop-file-manager-demo.png
-zig build install       # install static/shared libgoop, goop-demo, and goop.h to zig-out/
+zig build test               # unit tests
+zig build                    # library + demo
+zig build demo               # build and run the Wayland demo
+zig build file-manager-demo  # build and run the file-browser Wayland demo
+zig build c-example          # build and run the headless C API example
+zig build perf-round         # run the headless retained-UI perf benchmark
+zig build screenshot         # re-render docs/assets/goop-file-manager-demo.png
+zig build install            # install libgoop (.a + .so), goop-demo, and goop.h to zig-out/
 ```
 
-The core library only needs libc plus the vendored `clay` C source. The demo
-additionally needs Wayland, EGL, OpenGL, `xkbcommon`, and a `.ttf` font. The
-demos try `GOOP_DEMO_FONT_PATH` first, then resolve a font through
-`fontconfig`, then fall back to a few common system paths.
+The core library only needs libc and the vendored `clay` C source. The demos
+additionally need Wayland, EGL, OpenGL, `xkbcommon`, and a `.ttf` font. They
+try `GOOP_DEMO_FONT_PATH` first, then `fontconfig`, then a few common system
+paths.
 
 ## Zig usage
 
 ```zig
 const goop = @import("goop");
 
-var tree = goop.Tree.init(allocator);
-defer tree.deinit();
+var ctx = try goop.Context.init(allocator, .{ .width = 1280, .height = 720 });
+defer ctx.deinit();
 
-var runtime = try goop.Runtime.init(allocator, .{
-    .width = 1280,
-    .height = 720,
-});
-defer runtime.deinit();
+const root = try ctx.addRoot(.{ .container = .{ .direction = .column } });
+const button = try ctx.addChild(root, .{ .button = .{ .label = "Run" } });
 
-const theme: goop.Theme = .{};
+// One frame: clear last-frame flags, queue input, layout, dispatch, draw.
+ctx.clearClickedFlags();
+try ctx.pushEvent(.{ .mouse_move = .{ .x = 96, .y = 48 } });
+ctx.doLayout(null);
+ctx.processEvents();
+const draw_list = try ctx.generateDrawList();
 
-const root = try tree.addRoot(.{ .container = .{ .direction = .column } });
-const outline = try tree.addChild(root, .{ .tree_item = .{
-    .label = "Scene",
-    .group = 1,
-    .selected = true,
-} });
-const button = try tree.addChild(root, .{ .button = .{ .label = "Run" } });
-
-_ = outline;
-
-// Queue embedder input for the current frame.
-try runtime.pushEvent(.{ .mouse_move = .{ .x = 96, .y = 48 } });
-
-// Layout, dispatch, then generate draw commands.
-runtime.doLayout(&tree, theme, null);
-runtime.processEvents(&tree, theme, null);
-
-var draw_list = try runtime.generateDrawList(&tree, theme);
-defer runtime.freeDrawList(&draw_list);
-
-if (runtime.wasClicked(&tree, button)) {
-    // Handle the action in the embedder.
+// Read interaction state through the tagged view.
+if (ctx.wasClicked(button)) {
+    // Handle the click.
+}
+if (ctx.widget(button)) |view| switch (view) {
+    .button => |b| std.debug.print("label={s}\n", .{b.label}),
+    else => {},
 }
 ```
 
-If you want accurate text sizing, pass a `TextMeasureCtx` into `doLayout()`.
-If you pass `null`, `goop` falls back to a rough width estimate. For
-single-frame click/change flags, call `clearClickedFlags()` at the start of
-each frame before queuing new input. For best text alignment, your measure
-callback should return real line metrics in `TextDimensions.height`,
-`TextDimensions.ascent`, and `TextDimensions.descent`. When you mutate the
-caller-owned tree or theme outside event processing, call `runtime.invalidate()`
-before the next layout/draw pass. `goop.Context` remains available as a
-convenience wrapper if you want `goop` to bundle `Tree`, `Theme`, and `Runtime`
-for you.
+`Context` is the single-tree convenience layer over `Runtime`. Embedders that
+drive several trees from one runtime (e.g. main window plus detached popup
+surfaces) wire up `Runtime` directly with caller-owned `Tree`s — every
+`Context` method is a thin forward to the matching `Runtime` method.
+
+Notes on the runtime contract:
+
+- Pass a `goop.TextMeasureCtx` into `doLayout()` for accurate text sizing.
+  Pass `null` to fall back to a rough character-width estimate.
+- Returned `DrawList` and `PaintList` borrow from the runtime; they stay
+  valid until the next call that mutates state. There is no `freeDrawList`.
+- Use `ctx.setStyle(handle, ...)`, `ctx.updateWidget(handle, ...)`, or
+  `ctx.mutateKind(handle)` to change a widget after construction. These all
+  invalidate the layout/draw caches; reaching into `ctx.tree.get(handle)`
+  directly does not.
+- Read state through `ctx.widget(handle)`, which returns a tagged
+  `WidgetView` snapshot. Per-frame flags (`clicked`, `changed`, `toggled`)
+  live on that view and are cleared by `clearClickedFlags()`.
+- `pushEvent` coalesces consecutive `mouse_move` and `mouse_scroll` events
+  into the latest position / summed delta. Push a non-mouse event between
+  samples if your gesture math depends on every move.
 
 ## C API
 
-`#include "goop.h"` for the C-facing surface. The C layer mirrors the retained
-runtime rather than wrapping every Zig detail one-for-one.
+`#include "goop.h"` for the C surface. The C layer mirrors the retained
+runtime — same `Context`/event loop shape, same widget descriptors, same
+tagged read view.
 
 ```c
 #include "goop.h"
@@ -150,20 +135,24 @@ goop_context_t *ctx = goop_context_create(&(goop_context_options_t){
 });
 
 goop_node_handle_t root;
-goop_widget_t root_widget = {
+goop_context_add_root(ctx, &(goop_widget_t){
     .kind = GOOP_WIDGET_CONTAINER,
     .data.container = { .direction = GOOP_DIRECTION_COLUMN },
-};
-goop_context_add_root(ctx, &root_widget, &root);
+}, &root);
 
 goop_node_handle_t button;
-goop_widget_t button_widget = {
+goop_context_add_child(ctx, root, &(goop_widget_t){
     .kind = GOOP_WIDGET_BUTTON,
     .data.button = { .label = goop_string_from_cstr("Run") },
-};
-goop_context_add_child(ctx, root, &button_widget, &button);
+}, &button);
 
 goop_context_do_layout(ctx, NULL);
+goop_context_process_events(ctx);
+
+goop_widget_view_t view;
+if (goop_context_widget(ctx, button, &view) && view.kind == GOOP_WIDGET_BUTTON) {
+    /* view.data.button.label, view.data.button.clicked */
+}
 
 goop_draw_list_t draw_list;
 goop_context_generate_draw_list(ctx, &draw_list);
@@ -171,16 +160,11 @@ goop_context_generate_draw_list(ctx, &draw_list);
 goop_context_destroy(ctx);
 ```
 
-The installed header covers:
+The installed header covers context lifecycle, descriptor-based widget
+add/update/style/remove, platform-neutral event push (with a `mods` bitmask on
+key/mouse events), layout and draw-list generation, the tagged read view, and
+optional clipboard and text-measure callbacks.
 
-- context lifecycle
-- descriptor-based widget add/update/remove
-- platform-neutral event push
-- layout and draw-list generation
-- widget state queries
-- optional clipboard and text-measure callbacks
-
-See [include/goop.h](include/goop.h) for the full interface.
 For a complete headless example, see [examples/c/basic.c](examples/c/basic.c)
 and run it with `zig build c-example`.
 
@@ -194,8 +178,7 @@ Add `goop` to your `build.zig.zon`:
 },
 ```
 
-Then build a module rooted at `src/root.zig` and pull in the vendored C
-dependency:
+Build a module rooted at `src/root.zig` and pull in the vendored C source:
 
 ```zig
 const goop_dep = b.dependency("goop", .{});
@@ -208,59 +191,46 @@ const goop_mod = b.createModule(.{
 });
 goop_mod.addIncludePath(goop_dep.path("include"));
 goop_mod.addIncludePath(goop_dep.path("vendor/clay"));
-goop_mod.addCSourceFile(.{
-    .file = goop_dep.path("vendor/clay/clay.c"),
-});
+goop_mod.addCSourceFile(.{ .file = goop_dep.path("vendor/clay/clay.c") });
 
 exe.root_module.addImport("goop", goop_mod);
 ```
 
-The core library does not depend on `snail`. The current demo does, because it
-uses `snail` for text measurement and rendering.
+The core does not depend on `snail`. The bundled demos do, because they use
+`snail` for text measurement and rendering.
 
-## Demo
+## Demos
 
-The demo in [demo/main.zig](demo/main.zig) is the current reference embedder.
-It exercises:
-
-- Wayland input/event translation
-- EGL/OpenGL rendering
-- `snail`-backed text measurement
-- real Wayland clipboard selection handling
-- the current editor-oriented widget set
-
-Text draw commands now carry both a content box and an explicit baseline, so a
-renderer does not need to guess vertical alignment from `font_size`.
-
-Run it with:
+[demo/main.zig](demo/main.zig) is the reference Wayland embedder. It wires up
+Wayland input/event translation, EGL/OpenGL rendering, `snail`-backed text
+measurement, real Wayland clipboard selection handling, and exercises the full
+widget set.
 
 ```sh
 nix-shell --run 'zig build demo'
 ```
 
-A second reference example in [demo/file_manager_main.zig](demo/file_manager_main.zig)
-is a Linux-style file browser backed by the real filesystem: places on the
-left, clickable breadcrumbs, a sortable details table, and a live details pane
-on the right, all on the same Wayland/EGL/snail stack.
+[demo/file_manager_main.zig](demo/file_manager_main.zig) is a Linux-style file
+browser backed by the real filesystem: places sidebar, clickable breadcrumbs,
+sortable details table, live details pane, all on the same Wayland/EGL/snail
+stack.
 
 ```sh
 nix-shell --run 'zig build file-manager-demo'
 ```
 
 The same scene can be rendered without a display via
-[tools/screenshot.zig](tools/screenshot.zig). It builds the demo's State,
-runs one frame against an offscreen EGL pbuffer, reads the framebuffer back,
-and pipes the pixels through ImageMagick to refresh the README screenshot:
+[tools/screenshot.zig](tools/screenshot.zig). It builds the file-manager
+demo's State, runs one frame against an offscreen EGL pbuffer, reads the
+framebuffer back, and pipes the pixels through ImageMagick to refresh the
+README screenshot. CI re-runs this on every push.
 
 ```sh
 nix-shell --run 'zig build screenshot'
 ```
 
-CI re-runs this on every push to make sure the demo's render path stays
-healthy.
-
 ## Docs
 
-- [STATUS.md](STATUS.md): current snapshot, priorities, known issues
-- [docs/DESIGN.md](docs/DESIGN.md): architecture and constraints
-- [docs/C_API.md](docs/C_API.md): C embedding flow, lifetimes, and example notes
+- [STATUS.md](STATUS.md) — current snapshot, priorities, known issues
+- [docs/DESIGN.md](docs/DESIGN.md) — architecture and constraints
+- [docs/C_API.md](docs/C_API.md) — C embedding flow, lifetimes, example notes

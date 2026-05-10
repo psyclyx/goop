@@ -1388,7 +1388,7 @@ fn xdgPopupDone(data: ?*anyopaque, _: ?*wl.xdg_popup) callconv(.c) void {
     const state = popup.owner;
     if (state.ctx) |ctx| {
         if (ctx.isAlive(popup.handle) and ctx.tree.getConst(popup.handle).kind == .popup) {
-            ctx.tree.get(popup.handle).kind.popup.visible = false;
+            if (ctx.mutateKind(popup.handle)) |__k| { __k.popup.visible = false; }
             ctx.invalidate();
         }
     }
@@ -3257,13 +3257,19 @@ fn applyEntrySelectionClick(state: *State, entry_index: usize) !void {
 fn syncSelectedPathsFromTable(state: *State, ctx: *goop.Context, handle: goop.NodeHandle) !void {
     clearSelectedPaths(state);
 
-    const selected_count = ctx.tableSelectionCount(handle);
-    var selected_ordinal: u16 = 0;
-    while (selected_ordinal < selected_count) : (selected_ordinal += 1) {
-        const selected = ctx.selectedChild(handle, selected_ordinal) orelse break;
-        const entry_index = assetEntryIndexFromUserId(state, selected.user_id) orelse state.asset_visible_start + selected.index;
-        if (entry_index >= state.entries.items.len) continue;
-        try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[entry_index].path));
+    var row_index: u16 = 0;
+    var iter = ctx.tree.children(handle);
+    while (iter.next()) |child| {
+        const v = ctx.widget(child) orelse continue;
+        if (v != .table_row or v.table_row.header) continue;
+        if (v.table_row.selected) {
+            const user_id = ctx.runtime.userId(&ctx.tree, child);
+            const entry_index = assetEntryIndexFromUserId(state, user_id) orelse state.asset_visible_start + row_index;
+            if (entry_index < state.entries.items.len) {
+                try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[entry_index].path));
+            }
+        }
+        row_index += 1;
     }
 
     try syncPrimarySelection(state);
@@ -3272,13 +3278,19 @@ fn syncSelectedPathsFromTable(state: *State, ctx: *goop.Context, handle: goop.No
 fn syncSelectedPathsFromGrid(state: *State, ctx: *goop.Context, handle: goop.NodeHandle) !void {
     clearSelectedPaths(state);
 
-    const selected_count = ctx.gridSelectorSelectionCount(handle);
-    var selected_ordinal: u16 = 0;
-    while (selected_ordinal < selected_count) : (selected_ordinal += 1) {
-        const selected = ctx.selectedChild(handle, selected_ordinal) orelse break;
-        const entry_index = assetEntryIndexFromUserId(state, selected.user_id) orelse state.asset_visible_start + selected.index;
-        if (entry_index >= state.entries.items.len) continue;
-        try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[entry_index].path));
+    var item_index: u16 = 0;
+    var iter = ctx.tree.children(handle);
+    while (iter.next()) |child| {
+        const v = ctx.widget(child) orelse continue;
+        if (v != .grid_item) continue;
+        if (v.grid_item.selected) {
+            const user_id = ctx.runtime.userId(&ctx.tree, child);
+            const entry_index = assetEntryIndexFromUserId(state, user_id) orelse state.asset_visible_start + item_index;
+            if (entry_index < state.entries.items.len) {
+                try state.selected_paths.append(allocator, try allocator.dupe(u8, state.entries.items[entry_index].path));
+            }
+        }
+        item_index += 1;
     }
 
     try syncPrimarySelection(state);
@@ -3845,7 +3857,7 @@ fn hideContextMenu(state: *State, ctx: *goop.Context) void {
     state.context_visible = false;
     if (state.context_popup) |popup| {
         if (ctx.isAlive(popup) and ctx.tree.getConst(popup).kind == .popup) {
-            ctx.tree.get(popup).kind.popup.visible = false;
+            if (ctx.mutateKind(popup)) |__k| { __k.popup.visible = false; }
         }
     }
     ctx.invalidate();
@@ -4179,7 +4191,7 @@ fn setTopMenuPopupVisible(state: *const State, ctx: *goop.Context, target: ?goop
         if (!ctx.isAlive(popup) or ctx.tree.getConst(popup).kind != .popup) continue;
         const visible = if (target) |selected| selected.eql(popup) else false;
         if (ctx.tree.getConst(popup).kind.popup.visible == visible) continue;
-        ctx.tree.get(popup).kind.popup.visible = visible;
+        if (ctx.mutateKind(popup)) |__k| { __k.popup.visible = visible; }
         changed = true;
     }
     if (changed) ctx.invalidate();
@@ -4355,15 +4367,15 @@ fn browserGridWindow(state: *const State, viewport_width: f32, viewport_height: 
 
 fn addTextCell(state: *const State, ctx: *goop.Context, row: goop.NodeHandle, text: []const u8) !void {
     const cell = try ctx.tree.addChild(row, .{ .table_cell = .{} });
-    ctx.tree.get(cell).style_override = .{
+    _ = ctx.setStyle(cell, .{
         .border_width = browserTableDividerWidthPx(state),
-    };
+    });
     _ = try ctx.tree.addChild(cell, .{ .text = .{ .content = text, .overflow = .ellipsis } });
 }
 
 fn addNameHeaderCell(state: *const State, ctx: *goop.Context, row: goop.NodeHandle, text: []const u8) !void {
     const cell = try ctx.tree.addChild(row, .{ .table_cell = .{} });
-    ctx.tree.get(cell).style_override = .{
+    _ = ctx.setStyle(cell, .{
         .border_width = browserTableDividerWidthPx(state),
         .padding = .{
             .top = uiPx(state, 6),
@@ -4371,13 +4383,13 @@ fn addNameHeaderCell(state: *const State, ctx: *goop.Context, row: goop.NodeHand
             .bottom = uiPx(state, 6),
             .left = browserNameIconInsetLeftPx(state),
         },
-    };
+    });
     _ = try ctx.tree.addChild(cell, .{ .text = .{ .content = text, .overflow = .ellipsis } });
 }
 
 fn addNameCell(state: *State, ctx: *goop.Context, row: goop.NodeHandle, entry: BrowserEntry) !goop.NodeHandle {
     const cell = try ctx.tree.addChild(row, .{ .table_cell = .{} });
-    ctx.tree.get(cell).style_override = .{
+    _ = ctx.setStyle(cell, .{
         .border_width = browserTableDividerWidthPx(state),
         .padding = .{
             .top = uiPx(state, 6),
@@ -4385,11 +4397,11 @@ fn addNameCell(state: *State, ctx: *goop.Context, row: goop.NodeHandle, entry: B
             .bottom = uiPx(state, 6),
             .left = browserNameTextInsetLeftPx(state),
         },
-    };
-    ctx.tree.get(cell).custom_draw = true;
+    });
+    _ = ctx.setCustomDraw(cell, true);
     if (isRenamingPath(state, entry.path)) {
         const input = try ctx.tree.addChild(cell, .{ .text_input = state.rename_input });
-        ctx.tree.get(input).style_override = fileManagerRenameInputStyle(state);
+        _ = ctx.setStyle(input, fileManagerRenameInputStyle(state));
         state.rename_input_handle = input;
         _ = ctx.focusWidget(input);
     } else {
@@ -4580,7 +4592,7 @@ fn addStyledDetailText(
     style_override: goop.Style,
 ) !goop.NodeHandle {
     const handle = try addDetailText(ctx, parent, text, overflow);
-    ctx.tree.get(handle).style_override = style_override;
+    _ = ctx.setStyle(handle, style_override);
     return handle;
 }
 
@@ -4600,15 +4612,15 @@ fn buildListHeaderTable(state: *State, ctx: *goop.Context, parent: goop.NodeHand
         .selection_mode = .none,
         .min_column_width = uiPx(state, 96),
     } });
-    ctx.tree.get(state.asset_table.?).style_override = .{
+    _ = ctx.setStyle(state.asset_table.?, .{
         .bg = .{ .r = 255, .g = 255, .b = 255, .a = 255 },
         .border = .{ .r = 214, .g = 220, .b = 228, .a = 255 },
         .border_width = 0,
         .padding = goop.style.Edges.all(0),
         .border_radius = 0,
-    };
+    });
     {
-        const table = &ctx.tree.get(state.asset_table.?).kind.table;
+        const table = &ctx.mutateKind(state.asset_table.?).?.table;
         applyAssetTableColumns(table, state);
         table.sorted_column = @intFromEnum(state.sort_column);
         table.sort_direction = switch (state.sort_direction) {
@@ -4618,9 +4630,9 @@ fn buildListHeaderTable(state: *State, ctx: *goop.Context, parent: goop.NodeHand
     }
 
     const header_row = try ctx.tree.addChild(state.asset_table.?, .{ .table_row = .{ .header = true } });
-    ctx.tree.get(header_row).style_override = .{
+    _ = ctx.setStyle(header_row, .{
         .border_width = browserTableDividerWidthPx(state),
-    };
+    });
     try addNameHeaderCell(state, ctx, header_row, "Name");
     try addTextCell(state, ctx, header_row, "Modified");
     try addTextCell(state, ctx, header_row, "Type");
@@ -4630,7 +4642,7 @@ fn buildListHeaderTable(state: *State, ctx: *goop.Context, parent: goop.NodeHand
 fn buildListAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.NodeHandle, viewport_height: f32) !void {
     const window = browserListWindow(state, viewport_height);
     state.file_panel_scroll_y = window.scroll_y;
-    ctx.tree.get(scroll_handle).kind.scroll_area.scroll_y = window.scroll_y;
+    if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = window.scroll_y; }
     state.asset_visible_start = window.start;
     state.asset_visible_end = window.end;
     state.asset_visible_columns = 0;
@@ -4642,7 +4654,7 @@ fn buildListAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
         .min_column_width = uiPx(state, 96),
     } });
     state.asset_view_root = state.asset_table_body;
-    ctx.tree.get(state.asset_table_body.?).style_override = .{
+    _ = ctx.setStyle(state.asset_table_body.?, .{
         .bg = .{ .r = 255, .g = 255, .b = 255, .a = 255 },
         .border_width = 0,
         .padding = blk: {
@@ -4659,17 +4671,17 @@ fn buildListAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
             };
         },
         .border_radius = 0,
-    };
-    applyAssetTableColumns(&ctx.tree.get(state.asset_table_body.?).kind.table, state);
+    });
+    applyAssetTableColumns(&ctx.mutateKind(state.asset_table_body.?).?.table, state);
 
     for (state.entries.items[window.start..window.end], window.start..) |entry, entry_index| {
         const row = try ctx.tree.addChild(state.asset_table_body.?, .{ .table_row = .{
             .selected = isPathSelected(state, entry.path),
         } });
         ctx.setUserId(row, widgetUserId(.asset_entry, entry_index));
-        ctx.tree.get(row).style_override = .{
+        _ = ctx.setStyle(row, .{
             .border_width = browserTableDividerWidthPx(state),
-        };
+        });
         try state.row_handles.append(allocator, row);
         try state.name_cell_handles.append(allocator, try addNameCell(state, ctx, row, entry));
         try addTextCell(state, ctx, row, try allocAssetFormattedTimestamp(state, entry.modified_unix));
@@ -4691,19 +4703,19 @@ fn buildListAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
 fn buildGridAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.NodeHandle, viewport_width: f32, viewport_height: f32) !void {
     const window = browserGridWindow(state, viewport_width, viewport_height);
     state.file_panel_scroll_y = window.scroll_y;
-    ctx.tree.get(scroll_handle).kind.scroll_area.scroll_y = window.scroll_y;
+    if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = window.scroll_y; }
     state.asset_visible_start = window.start;
     state.asset_visible_end = window.end;
     state.asset_visible_columns = window.columns;
 
     state.asset_view_root = try ctx.tree.addChild(scroll_handle, .{ .container = .{ .direction = .column } });
-    ctx.tree.get(state.asset_view_root.?).style_override = .{
+    _ = ctx.setStyle(state.asset_view_root.?, .{
         .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
         .border_width = 0,
         .padding = goop.style.Edges.all(0),
         .spacing = 0,
         .border_radius = 0,
-    };
+    });
 
     state.asset_grid = try ctx.tree.addChild(state.asset_view_root.?, .{ .grid_selector = .{
         .selection_mode = .multiple,
@@ -4712,7 +4724,7 @@ fn buildGridAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
         .column_gap = browserGridColumnGapPx(state),
         .row_gap = browserGridRowGapPx(state),
     } });
-    ctx.tree.get(state.asset_grid.?).style_override = .{
+    _ = ctx.setStyle(state.asset_grid.?, .{
         .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
         .border_width = 0,
         .padding = .{
@@ -4741,7 +4753,7 @@ fn buildGridAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
             .left = browserGridPaddingHPx(state),
         },
         .border_radius = 0,
-    };
+    });
 
     for (state.entries.items[window.start..window.end], window.start..) |entry, entry_index| {
         const item = try ctx.tree.addChild(state.asset_grid.?, .{ .grid_item = .{
@@ -4749,8 +4761,8 @@ fn buildGridAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
             .selected = isPathSelected(state, entry.path),
         } });
         ctx.setUserId(item, widgetUserId(.asset_entry, entry_index));
-        ctx.tree.get(item).custom_draw = true;
-        ctx.tree.get(item).style_override = .{
+        _ = ctx.setCustomDraw(item, true);
+        _ = ctx.setStyle(item, .{
             .bg = if (entry.isDirectory())
                 .{ .r = 243, .g = 247, .b = 255, .a = 255 }
             else
@@ -4762,7 +4774,7 @@ fn buildGridAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.Nod
             .border_width = 0,
             .padding = uiEdgesSymmetric(state, 10, 10),
             .border_radius = uiPx(state, 10),
-        };
+        });
         try state.grid_handles.append(allocator, item);
     }
 
@@ -4784,7 +4796,7 @@ fn buildAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop.NodeHan
 
     if (state.entries.items.len == 0) {
         state.file_panel_scroll_y = 0;
-        ctx.tree.get(scroll_handle).kind.scroll_area.scroll_y = 0;
+        if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = 0; }
         state.asset_visible_start = 0;
         state.asset_visible_end = 0;
         state.asset_visible_columns = 0;
@@ -4851,7 +4863,7 @@ fn refreshAssetViewportIfNeeded(state: *State) !bool {
             const viewport_height_changed = @abs(previous_viewport_height - viewport_height) > 0.01;
             const scroll_clamped = @abs(current_scroll_y - window.scroll_y) > 0.01;
             if (scroll_clamped) {
-                ctx.tree.get(scroll_handle).kind.scroll_area.scroll_y = window.scroll_y;
+                if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = window.scroll_y; }
                 state.file_panel_scroll_y = window.scroll_y;
             }
             const needs_rebuild = !asset_alive or viewport_height_changed or state.asset_visible_start != window.start or state.asset_visible_end != window.end;
@@ -4882,7 +4894,7 @@ fn refreshAssetViewportIfNeeded(state: *State) !bool {
             const viewport_height_changed = @abs(previous_viewport_height - viewport_height) > 0.01;
             const scroll_clamped = @abs(current_scroll_y - window.scroll_y) > 0.01;
             if (scroll_clamped) {
-                ctx.tree.get(scroll_handle).kind.scroll_area.scroll_y = window.scroll_y;
+                if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = window.scroll_y; }
                 state.file_panel_scroll_y = window.scroll_y;
             }
             const needs_rebuild = !asset_alive or viewport_height_changed or state.asset_visible_start != window.start or state.asset_visible_end != window.end or state.asset_visible_columns != window.columns;
@@ -5822,7 +5834,7 @@ test "sidebar scroll survives widget tree rebuild" {
     try buildWidgetTree(&state);
     ctx.doLayout(&text_measure_ctx);
     const first_scroll = state.sidebar_scroll.?;
-    ctx.tree.get(first_scroll).kind.scroll_area.scroll_y = 73;
+    if (ctx.mutateKind(first_scroll)) |__k| { __k.scroll_area.scroll_y = 73; }
 
     try buildWidgetTree(&state);
     ctx.doLayout(&text_measure_ctx);
@@ -5929,7 +5941,7 @@ test "file browser list scroll keeps existing window until the render range chan
     const start_before = state.asset_visible_start;
     const end_before = state.asset_visible_end;
 
-    ctx.tree.get(scroll_handle).kind.scroll_area.scroll_y = target_scroll;
+    if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = target_scroll; }
     const rebuilt = try syncBrowserTestScrollFrame(&state, &ctx, &text_measure_ctx);
 
     try std.testing.expect(!rebuilt);
@@ -5962,12 +5974,12 @@ test "file browser list preserves row continuity across virtualization boundarie
     const boundary_scroll = row_height * @as(f32, @floatFromInt(chunk_rows));
     const logical_entry_index = chunk_rows + browser_overscan_rows;
 
-    ctx.tree.get(scroll_handle).kind.scroll_area.scroll_y = boundary_scroll - 1;
+    if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = boundary_scroll - 1; }
     _ = try syncBrowserTestScrollFrame(&state, &ctx, &text_measure_ctx);
     const first_row = state.row_handles.items[logical_entry_index - state.asset_visible_start];
     const first_y = ctx.tree.getConst(first_row).layout_rect.y;
 
-    ctx.tree.get(scroll_handle).kind.scroll_area.scroll_y = boundary_scroll;
+    if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = boundary_scroll; }
     const rebuilt = try syncBrowserTestScrollFrame(&state, &ctx, &text_measure_ctx);
     const second_row = state.row_handles.items[logical_entry_index - state.asset_visible_start];
     const second_y = ctx.tree.getConst(second_row).layout_rect.y;
@@ -6000,7 +6012,7 @@ test "file browser list covers the viewport after a large scroll jump" {
     const target_scroll = row_height * @as(f32, @floatFromInt(target_row)) + row_height * 0.25;
     const visible_count = browserVisibleCount(state.file_panel_viewport_height, row_height);
 
-    ctx.tree.get(scroll_handle).kind.scroll_area.scroll_y = target_scroll;
+    if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = target_scroll; }
     const rebuilt = try syncBrowserTestScrollFrame(&state, &ctx, &text_measure_ctx);
 
     try std.testing.expect(rebuilt);
@@ -6250,7 +6262,7 @@ fn allocSelectionPreview(state: *State) !SelectionPreview {
 
 fn addToolbarButton(state: *const State, ctx: *goop.Context, parent: goop.NodeHandle, label: []const u8, active: bool, enabled: bool) !goop.NodeHandle {
     const handle = try ctx.tree.addChild(parent, .{ .button = .{ .label = label } });
-    ctx.tree.get(handle).style_override = fileManagerToolbarButtonStyle(state, active, enabled);
+    _ = ctx.setStyle(handle, fileManagerToolbarButtonStyle(state, active, enabled));
     return handle;
 }
 
@@ -6270,9 +6282,9 @@ fn addMenuCommandItem(
         .label = label,
         .shortcut = shortcut,
         .checked = browserCommandChecked(state, command),
-        .enabled = browserCommandEnabled(state, command),
+        .disabled = !browserCommandEnabled(state, command),
     } });
-    ctx.tree.get(handle).style_override = fileManagerMenuItemStyle(state);
+    _ = ctx.setStyle(handle, fileManagerMenuItemStyle(state));
     return handle;
 }
 
@@ -6285,9 +6297,9 @@ fn addContextMenuItem(
 ) !goop.NodeHandle {
     const handle = try ctx.tree.addChild(parent, .{ .menu_item = .{
         .label = label,
-        .enabled = enabled,
+        .disabled = !enabled,
     } });
-    ctx.tree.get(handle).style_override = fileManagerMenuItemStyle(state);
+    _ = ctx.setStyle(handle, fileManagerMenuItemStyle(state));
     return handle;
 }
 
@@ -6303,7 +6315,7 @@ fn buildContextPopup(state: *State, ctx: *goop.Context) !void {
         .z_index = 140,
     } });
     state.context_popup = popup;
-    ctx.tree.get(popup).style_override = fileManagerMenuPopupStyle(state);
+    _ = ctx.setStyle(popup, fileManagerMenuPopupStyle(state));
 
     state.context_open = try addContextMenuItem(state, ctx, popup, "Open", contextOpenEnabled(state));
     state.context_copy = try addContextMenuItem(state, ctx, popup, "Copy", contextSelectionCommandEnabled(state));
@@ -6600,7 +6612,7 @@ fn addFolderTreeItem(
         .expanded = expanded,
         .selected = selected,
     } });
-    ctx.tree.get(handle).style_override = fileManagerFolderTreeItemStyle(state);
+    _ = ctx.setStyle(handle, fileManagerFolderTreeItemStyle(state));
     ctx.setDropTarget(handle, true);
     ctx.setUserId(handle, widgetUserId(.folder_tree, state.folder_tree_paths.items.len));
     try state.folder_tree_handles.append(allocator, handle);
@@ -6647,7 +6659,7 @@ fn buildFolderTreeBranch(
 
 fn buildFolderTree(state: *State, ctx: *goop.Context, parent: goop.NodeHandle) !void {
     const tree_root = try ctx.tree.addChild(parent, .{ .container = .{ .direction = .column } });
-    ctx.tree.get(tree_root).style_override = fileManagerFolderTreeStyle(state);
+    _ = ctx.setStyle(tree_root, fileManagerFolderTreeStyle(state));
 
     const root_expansion = folderTreeExpansion(state, "/");
     const root = try addFolderTreeItem(
@@ -6679,7 +6691,7 @@ pub fn buildWidgetTree(state: *State) !void {
 
     state.ui_root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
     const root = state.ui_root.?;
-    ctx.tree.get(root).style_override = fileManagerShellStyle(state);
+    _ = ctx.setStyle(root, fileManagerShellStyle(state));
 
     var directory_count: usize = 0;
     for (state.entries.items) |entry| {
@@ -6704,13 +6716,13 @@ pub fn buildWidgetTree(state: *State) !void {
 
     {
         const menu_bar = try ctx.tree.addChild(root, .{ .menu_bar = .{} });
-        ctx.tree.get(menu_bar).style_override = fileManagerMenuBarStyle(state);
+        _ = ctx.setStyle(menu_bar, fileManagerMenuBarStyle(state));
         {
             state.menu_file_button = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "File" } });
-            ctx.tree.get(state.menu_file_button.?).style_override = fileManagerMenuStyle(state);
+            _ = ctx.setStyle(state.menu_file_button.?, fileManagerMenuStyle(state));
             const popup = try ctx.tree.addChild(state.menu_file_button.?, .{ .popup = .{ .placement = .below_start, .visible = false } });
             state.menu_file_popup = popup;
-            ctx.tree.get(popup).style_override = fileManagerMenuPopupStyle(state);
+            _ = ctx.setStyle(popup, fileManagerMenuPopupStyle(state));
             state.menu_file_refresh = try addMenuCommandItem(state, ctx, popup, "Refresh", .refresh, "");
             state.menu_file_copy_path = try addMenuCommandItem(state, ctx, popup, "Copy Path", .copy_path, "");
             state.menu_file_open_target = try addMenuCommandItem(state, ctx, popup, "Open Link Target", .open_link_target, "");
@@ -6718,10 +6730,10 @@ pub fn buildWidgetTree(state: *State) !void {
         }
         {
             state.menu_edit_button = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "Edit" } });
-            ctx.tree.get(state.menu_edit_button.?).style_override = fileManagerMenuStyle(state);
+            _ = ctx.setStyle(state.menu_edit_button.?, fileManagerMenuStyle(state));
             const popup = try ctx.tree.addChild(state.menu_edit_button.?, .{ .popup = .{ .placement = .below_start, .visible = false } });
             state.menu_edit_popup = popup;
-            ctx.tree.get(popup).style_override = fileManagerMenuPopupStyle(state);
+            _ = ctx.setStyle(popup, fileManagerMenuPopupStyle(state));
             state.menu_edit_copy = try addMenuCommandItem(state, ctx, popup, "Copy", .copy, "Ctrl+C");
             state.menu_edit_cut = try addMenuCommandItem(state, ctx, popup, "Cut", .cut, "Ctrl+X");
             state.menu_edit_paste = try addMenuCommandItem(state, ctx, popup, "Paste", .paste, "Ctrl+V");
@@ -6733,10 +6745,10 @@ pub fn buildWidgetTree(state: *State) !void {
         }
         {
             state.menu_view_button = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "View" } });
-            ctx.tree.get(state.menu_view_button.?).style_override = fileManagerMenuStyle(state);
+            _ = ctx.setStyle(state.menu_view_button.?, fileManagerMenuStyle(state));
             const popup = try ctx.tree.addChild(state.menu_view_button.?, .{ .popup = .{ .placement = .below_start, .visible = false } });
             state.menu_view_popup = popup;
-            ctx.tree.get(popup).style_override = fileManagerMenuPopupStyle(state);
+            _ = ctx.setStyle(popup, fileManagerMenuPopupStyle(state));
             state.menu_view_sidebar = try addMenuCommandItem(state, ctx, popup, "Sidebar", .toggle_sidebar, "");
             state.menu_view_preview = try addMenuCommandItem(state, ctx, popup, "Preview", .toggle_preview, "");
             state.menu_view_info = try addMenuCommandItem(state, ctx, popup, "Details", .toggle_info, "");
@@ -6747,10 +6759,10 @@ pub fn buildWidgetTree(state: *State) !void {
         }
         {
             state.menu_go_button = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "Go" } });
-            ctx.tree.get(state.menu_go_button.?).style_override = fileManagerMenuStyle(state);
+            _ = ctx.setStyle(state.menu_go_button.?, fileManagerMenuStyle(state));
             const popup = try ctx.tree.addChild(state.menu_go_button.?, .{ .popup = .{ .placement = .below_start, .visible = false } });
             state.menu_go_popup = popup;
-            ctx.tree.get(popup).style_override = fileManagerMenuPopupStyle(state);
+            _ = ctx.setStyle(popup, fileManagerMenuPopupStyle(state));
             state.menu_go_back = try addMenuCommandItem(state, ctx, popup, "Back", .back, "");
             state.menu_go_forward = try addMenuCommandItem(state, ctx, popup, "Forward", .forward, "");
             state.menu_go_up = try addMenuCommandItem(state, ctx, popup, "Up", .up, "");
@@ -6758,16 +6770,16 @@ pub fn buildWidgetTree(state: *State) !void {
         }
         {
             state.menu_help_button = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "Help" } });
-            ctx.tree.get(state.menu_help_button.?).style_override = fileManagerMenuStyle(state);
+            _ = ctx.setStyle(state.menu_help_button.?, fileManagerMenuStyle(state));
             const popup = try ctx.tree.addChild(state.menu_help_button.?, .{ .popup = .{ .placement = .below_start, .visible = false } });
             state.menu_help_popup = popup;
-            ctx.tree.get(popup).style_override = fileManagerMenuPopupStyle(state);
+            _ = ctx.setStyle(popup, fileManagerMenuPopupStyle(state));
             state.menu_help_about = try addMenuCommandItem(state, ctx, popup, "About goop files", .about, "");
         }
     }
 
     const toolbar = try ctx.tree.addChild(root, .{ .toolbar = .{} });
-    ctx.tree.get(toolbar).style_override = fileManagerToolbarStyle(state);
+    _ = ctx.setStyle(toolbar, fileManagerToolbarStyle(state));
     state.btn_back = try addToolbarCommandButton(state, ctx, toolbar, "Back", .back);
     state.btn_forward = try addToolbarCommandButton(state, ctx, toolbar, "Forward", .forward);
     state.btn_up = try addToolbarCommandButton(state, ctx, toolbar, "Up", .up);
@@ -6781,7 +6793,7 @@ pub fn buildWidgetTree(state: *State) !void {
     state.btn_toggle_info = try addToolbarCommandButton(state, ctx, toolbar, "Details", .toggle_info);
     _ = try ctx.tree.addChild(toolbar, .{ .spacer = .{ .width = uiPx(state, 8) } });
     state.address_input_handle = try ctx.tree.addChild(toolbar, .{ .text_input = state.address_input });
-    ctx.tree.get(state.address_input_handle.?).style_override = fileManagerTextInputStyle(state);
+    _ = ctx.setStyle(state.address_input_handle.?, fileManagerTextInputStyle(state));
     state.btn_address_go = try addToolbarButton(state, ctx, toolbar, "Go", false, true);
     _ = try ctx.tree.addChild(toolbar, .{ .spacer = .{ .width = uiPx(state, 8) } });
     state.btn_list_view = try addToolbarCommandButton(state, ctx, toolbar, "List", .view_list);
@@ -6797,12 +6809,12 @@ pub fn buildWidgetTree(state: *State) !void {
             .thickness = uiPx(state, 8),
             .gap_thickness = 1,
         } });
-        ctx.tree.get(state.nav_splitter.?).style_override = fileManagerGutterStyle(state);
+        _ = ctx.setStyle(state.nav_splitter.?, fileManagerGutterStyle(state));
 
         const sidebar = try ctx.tree.addChild(state.nav_splitter.?, .{ .container = .{ .direction = .column } });
-        ctx.tree.get(sidebar).style_override = fileManagerPaneStyle(state, fileManagerSidebarColor());
+        _ = ctx.setStyle(sidebar, fileManagerPaneStyle(state, fileManagerSidebarColor()));
         const sidebar_header = try ctx.tree.addChild(sidebar, .{ .toolbar = .{} });
-        ctx.tree.get(sidebar_header).style_override = fileManagerPaneHeaderStyle(state);
+        _ = ctx.setStyle(sidebar_header, fileManagerPaneHeaderStyle(state));
         _ = try ctx.tree.addChild(sidebar_header, .{ .text = .{ .content = "Browse" } });
 
         const sidebar_scroll = try ctx.tree.addChild(sidebar, .{ .scroll_area = .{
@@ -6810,44 +6822,44 @@ pub fn buildWidgetTree(state: *State) !void {
             .scroll_y = state.sidebar_scroll_y,
         } });
         state.sidebar_scroll = sidebar_scroll;
-        ctx.tree.get(sidebar_scroll).style_override = .{
+        _ = ctx.setStyle(sidebar_scroll, .{
             .bg = transparent,
             .border_width = 0,
             .padding = uiEdgesSymmetric(state, 12, 12),
             .border_radius = 0,
-        };
+        });
         const sidebar_content = try ctx.tree.addChild(sidebar_scroll, .{ .container = .{ .direction = .column } });
-        ctx.tree.get(sidebar_content).style_override = .{
+        _ = ctx.setStyle(sidebar_content, .{
             .bg = transparent,
             .border_width = 0,
             .padding = uiEdgesAll(state, 0),
             .spacing = uiPx(state, 14),
             .border_radius = 0,
-        };
+        });
 
         const places_label = try ctx.tree.addChild(sidebar_content, .{ .text = .{ .content = "Places" } });
-        ctx.tree.get(places_label).style_override = fileManagerSectionLabelStyle(state);
+        _ = ctx.setStyle(places_label, fileManagerSectionLabelStyle(state));
         const places_list = try ctx.tree.addChild(sidebar_content, .{ .list_box = .{ .selection_mode = .single } });
         for (state.places.items, 0..) |place, place_index| {
             const handle = try ctx.tree.addChild(places_list, .{ .selectable = .{
                 .label = place.label,
                 .selected = std.mem.eql(u8, place.path, state.current_dir),
             } });
-            ctx.tree.get(handle).style_override = fileManagerPlaceItemStyle(state);
+            _ = ctx.setStyle(handle, fileManagerPlaceItemStyle(state));
             ctx.setDropTarget(handle, true);
             ctx.setUserId(handle, widgetUserId(.place, place_index));
             try state.place_handles.append(allocator, handle);
         }
 
         const folders_label = try ctx.tree.addChild(sidebar_content, .{ .text = .{ .content = "Folders" } });
-        ctx.tree.get(folders_label).style_override = fileManagerSectionLabelStyle(state);
+        _ = ctx.setStyle(folders_label, fileManagerSectionLabelStyle(state));
         try buildFolderTree(state, ctx, sidebar_content);
 
         content_host = try ctx.tree.addChild(state.nav_splitter.?, .{ .container = .{ .direction = .column } });
-        ctx.tree.get(content_host).style_override = fileManagerPaneStyle(state, transparent);
+        _ = ctx.setStyle(content_host, fileManagerPaneStyle(state, transparent));
     } else {
         content_host = try ctx.tree.addChild(root, .{ .container = .{ .direction = .column } });
-        ctx.tree.get(content_host).style_override = fileManagerPaneStyle(state, transparent);
+        _ = ctx.setStyle(content_host, fileManagerPaneStyle(state, transparent));
     }
 
     var file_panel: goop.NodeHandle = undefined;
@@ -6862,12 +6874,12 @@ pub fn buildWidgetTree(state: *State) !void {
             .thickness = uiPx(state, 8),
             .gap_thickness = 1,
         } });
-        ctx.tree.get(state.detail_splitter.?).style_override = fileManagerGutterStyle(state);
+        _ = ctx.setStyle(state.detail_splitter.?, fileManagerGutterStyle(state));
 
         file_panel = try ctx.tree.addChild(state.detail_splitter.?, .{ .container = .{ .direction = .column } });
-        ctx.tree.get(file_panel).style_override = fileManagerPaneStyle(state, fileManagerSurfaceColor());
+        _ = ctx.setStyle(file_panel, fileManagerPaneStyle(state, fileManagerSurfaceColor()));
         const inspector_host = try ctx.tree.addChild(state.detail_splitter.?, .{ .container = .{ .direction = .column } });
-        ctx.tree.get(inspector_host).style_override = fileManagerPaneStyle(state, fileManagerSidebarColor());
+        _ = ctx.setStyle(inspector_host, fileManagerPaneStyle(state, fileManagerSidebarColor()));
 
         if (state.show_preview and state.show_info) {
             state.preview_splitter = try ctx.tree.addChild(inspector_host, .{ .splitter = .{
@@ -6878,11 +6890,11 @@ pub fn buildWidgetTree(state: *State) !void {
                 .thickness = uiPx(state, 8),
                 .gap_thickness = 1,
             } });
-            ctx.tree.get(state.preview_splitter.?).style_override = fileManagerGutterStyle(state);
+            _ = ctx.setStyle(state.preview_splitter.?, fileManagerGutterStyle(state));
             preview_panel = try ctx.tree.addChild(state.preview_splitter.?, .{ .container = .{ .direction = .column } });
-            ctx.tree.get(preview_panel.?).style_override = fileManagerPaneStyle(state, fileManagerSidebarColor());
+            _ = ctx.setStyle(preview_panel.?, fileManagerPaneStyle(state, fileManagerSidebarColor()));
             detail_panel = try ctx.tree.addChild(state.preview_splitter.?, .{ .container = .{ .direction = .column } });
-            ctx.tree.get(detail_panel.?).style_override = fileManagerPaneStyle(state, fileManagerSidebarColor());
+            _ = ctx.setStyle(detail_panel.?, fileManagerPaneStyle(state, fileManagerSidebarColor()));
         } else if (state.show_preview) {
             preview_panel = inspector_host;
         } else if (state.show_info) {
@@ -6890,13 +6902,13 @@ pub fn buildWidgetTree(state: *State) !void {
         }
     } else {
         file_panel = try ctx.tree.addChild(content_host, .{ .container = .{ .direction = .column } });
-        ctx.tree.get(file_panel).style_override = fileManagerPaneStyle(state, fileManagerSurfaceColor());
+        _ = ctx.setStyle(file_panel, fileManagerPaneStyle(state, fileManagerSurfaceColor()));
     }
 
     const breadcrumb_bar = try ctx.tree.addChild(file_panel, .{ .toolbar = .{} });
-    ctx.tree.get(breadcrumb_bar).style_override = fileManagerPaneHeaderStyle(state);
+    _ = ctx.setStyle(breadcrumb_bar, fileManagerPaneHeaderStyle(state));
     const root_button = try ctx.tree.addChild(breadcrumb_bar, .{ .button = .{ .label = "/" } });
-    ctx.tree.get(root_button).style_override = fileManagerToolbarButtonStyle(state, false, true);
+    _ = ctx.setStyle(root_button, fileManagerToolbarButtonStyle(state, false, true));
     ctx.setDropTarget(root_button, true);
     ctx.setUserId(root_button, widgetUserId(.breadcrumb, state.breadcrumb_paths.items.len));
     try state.breadcrumb_handles.append(allocator, root_button);
@@ -6908,7 +6920,7 @@ pub fn buildWidgetTree(state: *State) !void {
             _ = try ctx.tree.addChild(breadcrumb_bar, .{ .text = .{ .content = "/" } });
             const segment = state.current_dir[start..end];
             const handle = try ctx.tree.addChild(breadcrumb_bar, .{ .button = .{ .label = try allocUiUtf8Lossy(state, segment) } });
-            ctx.tree.get(handle).style_override = fileManagerToolbarButtonStyle(state, false, true);
+            _ = ctx.setStyle(handle, fileManagerToolbarButtonStyle(state, false, true));
             ctx.setDropTarget(handle, true);
             ctx.setUserId(handle, widgetUserId(.breadcrumb, state.breadcrumb_paths.items.len));
             try state.breadcrumb_handles.append(allocator, handle);
@@ -6922,32 +6934,32 @@ pub fn buildWidgetTree(state: *State) !void {
     }
 
     state.file_panel_scroll = try ctx.tree.addChild(file_panel, .{ .scroll_area = .{ .scroll_y = state.file_panel_scroll_y } });
-    ctx.tree.get(state.file_panel_scroll.?).style_override = .{
+    _ = ctx.setStyle(state.file_panel_scroll.?, .{
         .bg = transparent,
         .border_width = 0,
         .padding = uiEdgesAll(state, 0),
         .border_radius = 0,
-    };
+    });
     try buildAssetView(state, ctx, state.file_panel_scroll.?);
 
     if (preview_panel) |panel| {
         const preview_header = try ctx.tree.addChild(panel, .{ .toolbar = .{} });
-        ctx.tree.get(preview_header).style_override = fileManagerPaneHeaderStyle(state);
+        _ = ctx.setStyle(preview_header, fileManagerPaneHeaderStyle(state));
         _ = try ctx.tree.addChild(preview_header, .{ .text = .{ .content = "Preview" } });
 
-        const preview_scroll = try ctx.tree.addChild(panel, .{ .scroll_area = .{ .allow_horizontal_scroll = false } });
-        ctx.tree.get(preview_scroll).style_override = .{
+        const preview_scroll = try ctx.tree.addChild(panel, .{ .scroll_area = .{ .disable_horizontal_scroll = true } });
+        _ = ctx.setStyle(preview_scroll, .{
             .bg = transparent,
             .border_width = 0,
             .padding = uiEdgesSymmetric(state, 12, 12),
             .border_radius = 0,
-        };
+        });
         const preview_content = try ctx.tree.addChild(preview_scroll, .{ .container = .{ .direction = .column } });
-        ctx.tree.get(preview_content).style_override = fileManagerDetailContentStyle(state);
+        _ = ctx.setStyle(preview_content, fileManagerDetailContentStyle(state));
         const preview = try allocSelectionPreview(state);
         const preview_text_parent = if (preview.framed) blk: {
             const preview_frame = try ctx.tree.addChild(preview_content, .{ .container = .{ .direction = .column } });
-            ctx.tree.get(preview_frame).style_override = fileManagerPreviewFrameStyle(state);
+            _ = ctx.setStyle(preview_frame, fileManagerPreviewFrameStyle(state));
             break :blk preview_frame;
         } else preview_content;
         _ = try addStyledDetailText(
@@ -6961,17 +6973,17 @@ pub fn buildWidgetTree(state: *State) !void {
 
     if (detail_panel) |panel| {
         const detail_header = try ctx.tree.addChild(panel, .{ .toolbar = .{} });
-        ctx.tree.get(detail_header).style_override = fileManagerPaneHeaderStyle(state);
+        _ = ctx.setStyle(detail_header, fileManagerPaneHeaderStyle(state));
         _ = try ctx.tree.addChild(detail_header, .{ .text = .{ .content = "Details" } });
-        const detail_scroll = try ctx.tree.addChild(panel, .{ .scroll_area = .{ .allow_horizontal_scroll = false } });
-        ctx.tree.get(detail_scroll).style_override = .{
+        const detail_scroll = try ctx.tree.addChild(panel, .{ .scroll_area = .{ .disable_horizontal_scroll = true } });
+        _ = ctx.setStyle(detail_scroll, .{
             .bg = transparent,
             .border_width = 0,
             .padding = uiEdgesSymmetric(state, 12, 12),
             .border_radius = 0,
-        };
+        });
         const detail_content = try ctx.tree.addChild(detail_scroll, .{ .container = .{ .direction = .column } });
-        ctx.tree.get(detail_content).style_override = fileManagerDetailContentStyle(state);
+        _ = ctx.setStyle(detail_content, fileManagerDetailContentStyle(state));
 
         if (selected_count == 1 and selectedEntry(state) != null) {
             const entry = selectedEntry(state).?;
@@ -7125,26 +7137,26 @@ pub fn buildWidgetTree(state: *State) !void {
 
     if (state.show_status_bar) {
         const status_bar = try ctx.tree.addChild(root, .{ .status_bar = .{} });
-        ctx.tree.get(status_bar).style_override = fileManagerToolbarStyle(state);
+        _ = ctx.setStyle(status_bar, fileManagerToolbarStyle(state));
         if (state.status_note) |note| {
             const handle = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = note } });
-            ctx.tree.get(handle).style_override = fileManagerStatusTextStyle(state);
+            _ = ctx.setStyle(handle, fileManagerStatusTextStyle(state));
         }
         {
             const handle = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "{d} items", .{state.entries.items.len}) } });
-            ctx.tree.get(handle).style_override = fileManagerStatusTextStyle(state);
+            _ = ctx.setStyle(handle, fileManagerStatusTextStyle(state));
         }
         {
             const handle = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "{d} selected", .{selected_count}) } });
-            ctx.tree.get(handle).style_override = fileManagerStatusTextStyle(state);
+            _ = ctx.setStyle(handle, fileManagerStatusTextStyle(state));
         }
         {
             const handle = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "View: {s}", .{browserViewModeLabel(state.view_mode)}) } });
-            ctx.tree.get(handle).style_override = fileManagerStatusTextStyle(state);
+            _ = ctx.setStyle(handle, fileManagerStatusTextStyle(state));
         }
         {
             const handle = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = try allocUiString(state, "Path: {f}", .{std.unicode.fmtUtf8(state.current_dir)}) } });
-            ctx.tree.get(handle).style_override = fileManagerStatusTextStyle(state);
+            _ = ctx.setStyle(handle, fileManagerStatusTextStyle(state));
         }
     }
 
@@ -7406,34 +7418,34 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        if (state.nav_splitter) |h| if (ctx.splitterChanged(h)) {
-            state.nav_ratio = ctx.splitterRatio(h);
+        if (state.nav_splitter) |h| if (ctx.widget(h).?.splitter.changed) {
+            state.nav_ratio = ctx.widget(h).?.splitter.ratio;
         };
-        if (state.detail_splitter) |h| if (ctx.splitterChanged(h)) {
-            state.detail_ratio = ctx.splitterRatio(h);
+        if (state.detail_splitter) |h| if (ctx.widget(h).?.splitter.changed) {
+            state.detail_ratio = ctx.widget(h).?.splitter.ratio;
         };
-        if (state.preview_splitter) |h| if (ctx.splitterChanged(h)) {
-            state.preview_ratio = ctx.splitterRatio(h);
+        if (state.preview_splitter) |h| if (ctx.widget(h).?.splitter.changed) {
+            state.preview_ratio = ctx.widget(h).?.splitter.ratio;
         };
 
-        if (state.asset_table) |h| if (ctx.tableChanged(h)) {
+        if (state.asset_table) |h| if (ctx.widget(h).?.table.changed) {
             state.table_column_weights[0] = ctx.tableColumnFraction(h, 0) orelse state.table_column_weights[0];
             state.table_column_weights[1] = ctx.tableColumnFraction(h, 1) orelse state.table_column_weights[1];
             state.table_column_weights[2] = ctx.tableColumnFraction(h, 2) orelse state.table_column_weights[2];
             state.table_column_weights[3] = ctx.tableColumnFraction(h, 3) orelse state.table_column_weights[3];
             if (state.asset_table_body) |body| {
                 if (ctx.isAlive(body)) {
-                    applyAssetTableColumns(&ctx.tree.get(body).kind.table, &state);
+                    applyAssetTableColumns(&ctx.mutateKind(body).?.table, &state);
                     ctx.invalidate();
                 }
             }
         };
 
-        if (state.asset_table) |h| if (ctx.tableSortChanged(h)) {
-            if (ctx.tableSortedColumn(h)) |sorted_column| {
+        if (state.asset_table) |h| if (ctx.widget(h).?.table.sort_changed) {
+            if (ctx.widget(h).?.table.sorted_column) |sorted_column| {
                 const previous_sort_column = state.sort_column;
                 state.sort_column = @enumFromInt(sorted_column);
-                state.sort_direction = switch (ctx.tableSortDirection(h).?) {
+                state.sort_direction = switch (ctx.widget(h).?.table.sort_direction) {
                     .ascending => .ascending,
                     .descending => .descending,
                 };
@@ -7728,21 +7740,21 @@ pub fn main(init: std.process.Init) !void {
         }
 
         for (state.folder_tree_handles.items, 0..) |handle, index| {
-            if (!ctx.treeItemToggled(handle)) continue;
+            if (!ctx.widget(handle).?.tree_item.toggled) continue;
             if (index >= state.folder_tree_paths.items.len) continue;
             const path = state.folder_tree_paths.items[index];
             const previous_expansion = folderTreeExpansion(&state, path);
             if (previous_expansion == .partial) {
                 rebuild_ui = try setFolderTreePathExpanded(&state, path, true) or rebuild_ui;
             } else {
-                const expanded = ctx.isExpanded(handle);
+                const expanded = ctx.widget(handle).?.tree_item.expanded;
                 rebuild_ui = try setFolderTreePathExpanded(&state, path, expanded) or rebuild_ui;
                 if (!expanded and std.mem.eql(u8, path, state.current_dir)) rebuild_ui = true;
             }
         }
 
         for (state.folder_tree_handles.items, 0..) |handle, index| {
-            if (!ctx.wasClicked(handle) or ctx.treeItemToggled(handle)) continue;
+            if (!ctx.wasClicked(handle) or ctx.widget(handle).?.tree_item.toggled) continue;
             if (index >= state.folder_tree_paths.items.len) continue;
             rebuild_ui = try setCurrentDirectory(&state, state.folder_tree_paths.items[index], true) or rebuild_ui;
             break;
@@ -7844,7 +7856,7 @@ pub fn main(init: std.process.Init) !void {
             const selection_drag_active = ctx.isPointerButtonDown(.left);
             if (state.view_mode == .list) {
                 if (state.asset_table_body) |table| {
-                    if (ctx.isAlive(table) and ctx.tableSelectionChanged(table)) {
+                    if (ctx.isAlive(table) and ctx.widget(table).?.table.selection_changed) {
                         selection_widget_changed = true;
                         if (state.rename_path != null) {
                             switch (try commitActiveRename(&state)) {
@@ -7868,7 +7880,7 @@ pub fn main(init: std.process.Init) !void {
                 }
             } else if (state.view_mode == .grid) {
                 if (state.asset_grid) |grid| {
-                    if (ctx.isAlive(grid) and ctx.gridSelectorChanged(grid)) {
+                    if (ctx.isAlive(grid) and ctx.widget(grid).?.grid_selector.changed) {
                         selection_widget_changed = true;
                         if (state.rename_path != null) {
                             switch (try commitActiveRename(&state)) {

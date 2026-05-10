@@ -984,10 +984,10 @@ fn emitMenuItem(
     theme: style_mod.Theme,
 ) void {
     const has_submenu = directPopupChild(tree, handle) != null;
-    const text_color = if (item.enabled)
-        resolved.fg
+    const text_color = if (item.disabled)
+        style_mod.Color.rgba(resolved.fg.r, resolved.fg.g, resolved.fg.b, 120)
     else
-        style_mod.Color.rgba(resolved.fg.r, resolved.fg.g, resolved.fg.b, 120);
+        resolved.fg;
     const reserve_width = @max(resolved.font_size, 12);
 
     c.Clay__OpenElement();
@@ -1529,8 +1529,8 @@ fn emitScrollArea(
         .floating = .{},
         .custom = .{},
         .clip = .{
-            .horizontal = scroll.allow_horizontal_scroll,
-            .vertical = scroll.allow_vertical_scroll,
+            .horizontal = !scroll.disable_horizontal_scroll,
+            .vertical = !scroll.disable_vertical_scroll,
             .childOffset = .{
                 .x = -scroll.effectiveScrollX(),
                 .y = -scroll.effectiveScrollY(),
@@ -2676,7 +2676,7 @@ test "wrapped text inside padded scroll area uses the visible content width" {
     var tree = widget.Tree.init(allocator);
     defer tree.deinit();
 
-    const scroll = try tree.addRoot(.{ .scroll_area = .{ .allow_horizontal_scroll = false } });
+    const scroll = try tree.addRoot(.{ .scroll_area = .{ .disable_horizontal_scroll = true } });
     tree.get(scroll).style_override = .{ .padding = style_mod.Edges.symmetric(12, 12) };
     const content = try tree.addChild(scroll, .{ .container = .{ .direction = .column } });
     tree.get(content).style_override = .{ .padding = style_mod.Edges.all(0), .spacing = 8 };

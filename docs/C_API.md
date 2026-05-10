@@ -55,17 +55,17 @@ be inserted at the exact point `goop` emitted it in draw order.
 
 `GOOP_DRAW_TEXT` carries:
 
-- `x`: the intended text start position
-- `y`: the top of the text content box
-- `bounds`: the full content box used for alignment
+- `bounds`: the content box used for alignment and clipping
 - `baseline_y`: the baseline in Y-down coordinates
+- `text_align`: horizontal alignment within `bounds`
+- `overflow`: clip / wrap / ellipsis policy
 
 If your renderer has baseline-aware text APIs, prefer `baseline_y` over
 guessing from `font_size`.
 
-The current C API matches the Zig runtime: `goop_context_free_draw_list()` is
-kept for API compatibility, but the `goop_context_t` still owns the memory.
-Call it anyway so your embedder stays compatible if that changes later.
+The draw list is owned by `goop_context_t` and is valid until the next call
+that mutates context state (events, tree edits, theme changes, resize).
+Copy it if you need it to outlive the next frame.
 
 ## Text And Clipboard
 

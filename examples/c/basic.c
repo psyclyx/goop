@@ -152,7 +152,14 @@ int main(void) {
         return 1;
     }
 
-    const goop_string_t value = goop_context_text_input_value(ctx, input);
+    goop_widget_view_t input_view = {0};
+    if (!goop_context_widget(ctx, input, &input_view) ||
+        input_view.kind != GOOP_WIDGET_TEXT_INPUT) {
+        fprintf(stderr, "failed to read text input view\n");
+        goop_context_destroy(ctx);
+        return 1;
+    }
+    const goop_string_t value = input_view.data.text_input.content;
     const bool clicked = goop_context_was_clicked(ctx, button);
 
     if (!clicked || value.len != 5 || !value.ptr ||
@@ -182,14 +189,12 @@ int main(void) {
                 "draw list contains %zu commands with unknown kind — "
                 "C header is likely out of sync with c_api.zig\n",
                 summary.unknown);
-        goop_context_free_draw_list(ctx, &draw_list);
         goop_context_destroy(ctx);
         return 1;
     }
 
     if (summary.rect + summary.text + summary.clip + summary.icon + summary.custom != draw_list.len) {
         fprintf(stderr, "draw summary did not classify every command\n");
-        goop_context_free_draw_list(ctx, &draw_list);
         goop_context_destroy(ctx);
         return 1;
     }
@@ -199,7 +204,6 @@ int main(void) {
                 "expected at least one text command (button label), got %zu — "
                 "draw command layout may be misaligned\n",
                 summary.text);
-        goop_context_free_draw_list(ctx, &draw_list);
         goop_context_destroy(ctx);
         return 1;
     }
@@ -218,12 +222,10 @@ int main(void) {
         fprintf(stderr,
                 "expected a text command with content \"Apply\" — "
                 "goop_draw_text_t field layout likely diverged from c_api.zig\n");
-        goop_context_free_draw_list(ctx, &draw_list);
         goop_context_destroy(ctx);
         return 1;
     }
 
-    goop_context_free_draw_list(ctx, &draw_list);
     goop_context_destroy(ctx);
     return 0;
 }

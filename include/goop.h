@@ -375,6 +375,185 @@ typedef struct {
     } data;
 } goop_widget_t;
 
+/* Read-only views over widget state. Returned by goop_context_widget(). */
+
+typedef struct { goop_direction_t direction; } goop_container_view_t;
+typedef struct { goop_string_t content; } goop_text_view_t;
+typedef struct { goop_string_t label; bool clicked; } goop_button_view_t;
+
+typedef struct {
+    goop_string_t label;
+    bool checked;
+    bool clicked;
+} goop_checkbox_view_t;
+
+typedef struct {
+    goop_string_t label;
+    uint32_t group;
+    bool selected;
+    bool clicked;
+} goop_radio_button_view_t;
+
+typedef struct {
+    goop_string_t label;
+    uint32_t group;
+    bool has_children;
+    bool expanded;
+    bool selected;
+    bool editing;
+    bool clicked;
+    bool toggled;
+    bool dragging;
+    bool drop_received;
+    bool rename_committed;
+} goop_tree_item_view_t;
+
+typedef struct {
+    goop_string_t placeholder;
+    goop_string_t selected_text;
+    goop_optional_u16_t selected_index;
+    bool open;
+    bool clicked;
+    bool changed;
+} goop_dropdown_view_t;
+
+typedef struct { bool changed; } goop_list_box_view_t;
+
+typedef struct {
+    goop_string_t label;
+    uint32_t group;
+    bool selected;
+    bool clicked;
+    bool dragging;
+} goop_selectable_view_t;
+
+typedef struct {
+    bool changed;
+    uint16_t computed_columns;
+} goop_grid_selector_view_t;
+
+typedef struct {
+    goop_string_t label;
+    bool selected;
+    bool clicked;
+    bool dragging;
+} goop_grid_item_view_t;
+
+typedef struct {
+    uint8_t active_columns;
+    bool changed;
+    goop_optional_u8_t resized_column;
+    goop_optional_u8_t sorted_column;
+    goop_sort_direction_t sort_direction;
+    bool sort_changed;
+    bool selection_changed;
+} goop_table_view_t;
+
+typedef struct {
+    bool header;
+    bool selected;
+    bool dragging;
+} goop_table_row_view_t;
+
+typedef struct { goop_string_t label; bool clicked; } goop_menu_view_t;
+
+typedef struct {
+    goop_popup_placement_t placement;
+    float x;
+    float y;
+    bool visible;
+    int16_t z_index;
+} goop_popup_view_t;
+
+typedef struct {
+    goop_popup_placement_t placement;
+    float x;
+    float y;
+    int16_t z_index;
+} goop_tooltip_view_t;
+
+typedef struct {
+    goop_string_t label;
+    goop_string_t shortcut;
+    bool checked;
+    bool disabled;
+    bool clicked;
+} goop_menu_item_view_t;
+
+typedef struct {
+    float value;
+    bool changed;
+    bool editing;
+    goop_string_t display_text;
+} goop_drag_value_view_t;
+
+typedef struct {
+    float value;
+    bool changed;
+    bool editing;
+    goop_string_t display_text;
+} goop_spinbox_view_t;
+
+typedef struct {
+    goop_string_t label;
+    bool selected;
+    bool clicked;
+} goop_tab_item_view_t;
+
+typedef struct {
+    float ratio;
+    bool changed;
+} goop_splitter_view_t;
+
+typedef struct { float value; } goop_slider_view_t;
+
+typedef struct {
+    float scroll_x;
+    float scroll_y;
+} goop_scroll_area_view_t;
+
+typedef struct {
+    goop_string_t content;
+    uint8_t cursor;
+    goop_optional_u8_t selection_anchor;
+} goop_text_input_view_t;
+
+typedef struct {
+    goop_widget_kind_t kind;
+    union {
+        goop_container_view_t container;
+        goop_text_view_t text;
+        goop_button_view_t button;
+        goop_checkbox_view_t checkbox;
+        goop_radio_button_view_t radio_button;
+        goop_tree_item_view_t tree_item;
+        goop_dropdown_view_t dropdown;
+        goop_list_box_view_t list_box;
+        goop_selectable_view_t selectable;
+        goop_grid_selector_view_t grid_selector;
+        goop_grid_item_view_t grid_item;
+        goop_table_view_t table;
+        goop_table_row_view_t table_row;
+        goop_unit_widget_t table_cell;
+        goop_unit_widget_t toolbar;
+        goop_unit_widget_t status_bar;
+        goop_unit_widget_t menu_bar;
+        goop_menu_view_t menu;
+        goop_popup_view_t popup;
+        goop_tooltip_view_t tooltip;
+        goop_menu_item_view_t menu_item;
+        goop_drag_value_view_t drag_value;
+        goop_spinbox_view_t spinbox;
+        goop_unit_widget_t tab_bar;
+        goop_tab_item_view_t tab_item;
+        goop_splitter_view_t splitter;
+        goop_slider_view_t slider;
+        goop_scroll_area_view_t scroll_area;
+        goop_text_input_view_t text_input;
+        goop_unit_widget_t spacer;
+    } data;
+} goop_widget_view_t;
+
 typedef enum {
     GOOP_MOUSE_LEFT = 0,
     GOOP_MOUSE_RIGHT = 1,
@@ -393,28 +572,52 @@ typedef enum {
 } goop_key_state_t;
 
 typedef enum {
-    GOOP_KEYCODE_TAB = 0,
-    GOOP_KEYCODE_ENTER = 1,
-    GOOP_KEYCODE_SPACE = 2,
-    GOOP_KEYCODE_ESCAPE = 3,
-    GOOP_KEYCODE_BACKSPACE = 4,
-    GOOP_KEYCODE_DELETE = 5,
-    GOOP_KEYCODE_LEFT = 6,
-    GOOP_KEYCODE_RIGHT = 7,
-    GOOP_KEYCODE_UP = 8,
-    GOOP_KEYCODE_DOWN = 9,
-    GOOP_KEYCODE_HOME = 10,
-    GOOP_KEYCODE_END = 11,
-    GOOP_KEYCODE_LEFT_SHIFT = 12,
-    GOOP_KEYCODE_RIGHT_SHIFT = 13,
-    GOOP_KEYCODE_LEFT_CTRL = 14,
-    GOOP_KEYCODE_RIGHT_CTRL = 15,
-    GOOP_KEYCODE_A = 16,
-    GOOP_KEYCODE_C = 17,
-    GOOP_KEYCODE_V = 18,
-    GOOP_KEYCODE_X = 19,
-    GOOP_KEYCODE_UNKNOWN = 20,
+    GOOP_KEYCODE_A = 0, GOOP_KEYCODE_B, GOOP_KEYCODE_C, GOOP_KEYCODE_D,
+    GOOP_KEYCODE_E, GOOP_KEYCODE_F, GOOP_KEYCODE_G, GOOP_KEYCODE_H,
+    GOOP_KEYCODE_I, GOOP_KEYCODE_J, GOOP_KEYCODE_K, GOOP_KEYCODE_L,
+    GOOP_KEYCODE_M, GOOP_KEYCODE_N, GOOP_KEYCODE_O, GOOP_KEYCODE_P,
+    GOOP_KEYCODE_Q, GOOP_KEYCODE_R, GOOP_KEYCODE_S, GOOP_KEYCODE_T,
+    GOOP_KEYCODE_U, GOOP_KEYCODE_V, GOOP_KEYCODE_W, GOOP_KEYCODE_X,
+    GOOP_KEYCODE_Y, GOOP_KEYCODE_Z,
+    GOOP_KEYCODE_DIGIT_0, GOOP_KEYCODE_DIGIT_1, GOOP_KEYCODE_DIGIT_2,
+    GOOP_KEYCODE_DIGIT_3, GOOP_KEYCODE_DIGIT_4, GOOP_KEYCODE_DIGIT_5,
+    GOOP_KEYCODE_DIGIT_6, GOOP_KEYCODE_DIGIT_7, GOOP_KEYCODE_DIGIT_8,
+    GOOP_KEYCODE_DIGIT_9,
+    GOOP_KEYCODE_F1, GOOP_KEYCODE_F2, GOOP_KEYCODE_F3, GOOP_KEYCODE_F4,
+    GOOP_KEYCODE_F5, GOOP_KEYCODE_F6, GOOP_KEYCODE_F7, GOOP_KEYCODE_F8,
+    GOOP_KEYCODE_F9, GOOP_KEYCODE_F10, GOOP_KEYCODE_F11, GOOP_KEYCODE_F12,
+    GOOP_KEYCODE_F13, GOOP_KEYCODE_F14, GOOP_KEYCODE_F15, GOOP_KEYCODE_F16,
+    GOOP_KEYCODE_F17, GOOP_KEYCODE_F18, GOOP_KEYCODE_F19, GOOP_KEYCODE_F20,
+    GOOP_KEYCODE_F21, GOOP_KEYCODE_F22, GOOP_KEYCODE_F23, GOOP_KEYCODE_F24,
+    GOOP_KEYCODE_SPACE, GOOP_KEYCODE_TAB, GOOP_KEYCODE_ENTER,
+    GOOP_KEYCODE_BACKSPACE, GOOP_KEYCODE_DELETE, GOOP_KEYCODE_INSERT,
+    GOOP_KEYCODE_LEFT, GOOP_KEYCODE_RIGHT, GOOP_KEYCODE_UP, GOOP_KEYCODE_DOWN,
+    GOOP_KEYCODE_HOME, GOOP_KEYCODE_END, GOOP_KEYCODE_PAGE_UP, GOOP_KEYCODE_PAGE_DOWN,
+    GOOP_KEYCODE_ESCAPE,
+    GOOP_KEYCODE_MINUS, GOOP_KEYCODE_EQUAL,
+    GOOP_KEYCODE_LEFT_BRACKET, GOOP_KEYCODE_RIGHT_BRACKET,
+    GOOP_KEYCODE_BACKSLASH, GOOP_KEYCODE_SEMICOLON, GOOP_KEYCODE_APOSTROPHE,
+    GOOP_KEYCODE_COMMA, GOOP_KEYCODE_PERIOD, GOOP_KEYCODE_SLASH, GOOP_KEYCODE_GRAVE,
+    GOOP_KEYCODE_LEFT_SHIFT, GOOP_KEYCODE_RIGHT_SHIFT,
+    GOOP_KEYCODE_LEFT_CTRL, GOOP_KEYCODE_RIGHT_CTRL,
+    GOOP_KEYCODE_LEFT_ALT, GOOP_KEYCODE_RIGHT_ALT,
+    GOOP_KEYCODE_LEFT_SUPER, GOOP_KEYCODE_RIGHT_SUPER,
+    GOOP_KEYCODE_CAPS_LOCK, GOOP_KEYCODE_NUM_LOCK,
+    GOOP_KEYCODE_UNKNOWN,
 } goop_keycode_t;
+
+/* Modifier-key state bitmask. The embedder fills `mods` on key,
+ * mouse_button, and mouse_scroll events to communicate which modifiers
+ * are held at the time of the event. Bit layout matches Zig's
+ * `Event.Modifiers` packed struct. */
+typedef uint32_t goop_modifiers_t;
+#define GOOP_MOD_NONE        ((goop_modifiers_t)0)
+#define GOOP_MOD_SHIFT       ((goop_modifiers_t)(1u << 0))
+#define GOOP_MOD_CTRL        ((goop_modifiers_t)(1u << 1))
+#define GOOP_MOD_ALT         ((goop_modifiers_t)(1u << 2))
+#define GOOP_MOD_SUPER       ((goop_modifiers_t)(1u << 3))
+#define GOOP_MOD_CAPS_LOCK   ((goop_modifiers_t)(1u << 4))
+#define GOOP_MOD_NUM_LOCK    ((goop_modifiers_t)(1u << 5))
 
 typedef enum {
     GOOP_EVENT_MOUSE_MOVE = 0,
@@ -437,17 +640,20 @@ typedef struct {
     float x;
     float y;
     uint64_t timestamp_ms;
+    goop_modifiers_t mods;
 } goop_mouse_button_event_t;
 
 typedef struct {
     float dx;
     float dy;
+    goop_modifiers_t mods;
 } goop_mouse_scroll_event_t;
 
 typedef struct {
-    uint32_t scancode;
     goop_keycode_t keycode;
+    goop_modifiers_t mods;
     goop_key_state_t state;
+    uint32_t scancode;
 } goop_key_event_t;
 
 typedef struct {
@@ -507,6 +713,7 @@ typedef struct {
 
 typedef struct {
     goop_rect_t bounds;
+    float baseline_y;
     goop_string_t text;
     goop_color_t color;
     float font_size;
@@ -609,7 +816,6 @@ bool goop_context_push_event(goop_context_t *ctx, const goop_event_t *ev);
 bool goop_context_process_events(goop_context_t *ctx);
 bool goop_context_do_layout(goop_context_t *ctx, const goop_text_measure_ctx_t *measure);
 bool goop_context_generate_draw_list(goop_context_t *ctx, goop_draw_list_t *out_draw_list);
-void goop_context_free_draw_list(goop_context_t *ctx, goop_draw_list_t *draw_list);
 bool goop_context_set_dimensions(goop_context_t *ctx, uint32_t width, uint32_t height);
 
 bool goop_context_add_root(goop_context_t *ctx, const goop_widget_t *desc, goop_node_handle_t *out_handle);
@@ -622,39 +828,8 @@ bool goop_context_layout_rect(const goop_context_t *ctx, goop_node_handle_t hand
 
 bool goop_context_was_clicked(const goop_context_t *ctx, goop_node_handle_t handle);
 bool goop_context_was_secondary_clicked(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_is_checked(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_is_selected(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_is_expanded(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_tree_item_toggled(const goop_context_t *ctx, goop_node_handle_t handle);
-goop_string_t goop_context_tree_item_label(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_tree_item_editing(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_tree_item_rename_committed(const goop_context_t *ctx, goop_node_handle_t handle);
-float goop_context_slider_value(const goop_context_t *ctx, goop_node_handle_t handle);
-float goop_context_drag_value(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_drag_value_changed(const goop_context_t *ctx, goop_node_handle_t handle);
-float goop_context_spinbox_value(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_spinbox_changed(const goop_context_t *ctx, goop_node_handle_t handle);
-float goop_context_splitter_ratio(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_splitter_changed(const goop_context_t *ctx, goop_node_handle_t handle);
-goop_string_t goop_context_text_input_value(const goop_context_t *ctx, goop_node_handle_t handle);
-goop_string_t goop_context_dropdown_value(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_dropdown_selected_index(const goop_context_t *ctx, goop_node_handle_t handle, uint16_t *out_index);
-bool goop_context_dropdown_changed(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_list_box_selected_index(const goop_context_t *ctx, goop_node_handle_t handle, uint16_t *out_index);
-bool goop_context_list_box_changed(const goop_context_t *ctx, goop_node_handle_t handle);
-uint16_t goop_context_list_box_selection_count(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_grid_selector_selected_index(const goop_context_t *ctx, goop_node_handle_t handle, uint16_t *out_index);
-bool goop_context_grid_selector_changed(const goop_context_t *ctx, goop_node_handle_t handle);
-uint16_t goop_context_grid_selector_selection_count(const goop_context_t *ctx, goop_node_handle_t handle);
+bool goop_context_widget(const goop_context_t *ctx, goop_node_handle_t handle, goop_widget_view_t *out_view);
 bool goop_context_table_column_fraction(const goop_context_t *ctx, goop_node_handle_t handle, uint8_t index, float *out_fraction);
-bool goop_context_table_changed(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_table_resized_column(const goop_context_t *ctx, goop_node_handle_t handle, uint8_t *out_index);
-bool goop_context_table_sorted_column(const goop_context_t *ctx, goop_node_handle_t handle, uint8_t *out_index);
-bool goop_context_table_sort_direction(const goop_context_t *ctx, goop_node_handle_t handle, goop_sort_direction_t *out_direction);
-bool goop_context_table_sort_changed(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_table_selection_changed(const goop_context_t *ctx, goop_node_handle_t handle);
-uint16_t goop_context_table_selection_count(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_table_selected_row_index(const goop_context_t *ctx, goop_node_handle_t handle, uint16_t *out_index);
 bool goop_context_last_secondary_click(const goop_context_t *ctx, goop_secondary_click_t *out_click);
 bool goop_context_last_tree_drop(const goop_context_t *ctx, goop_tree_drop_t *out_drop);
 bool goop_context_last_grid_drop(const goop_context_t *ctx, goop_grid_drop_t *out_drop);

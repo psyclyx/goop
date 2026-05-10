@@ -13,6 +13,21 @@ fallback locations.
 
 ## Recent Progress
 
+- Tagged read-only `WidgetView` replaces ~30 per-widget query methods on
+  `Runtime`/`Context` and the matching C exports
+- `Tree` mutations route through `setStyle`/`updateWidget`/`mutateKind`/
+  `setCustomDraw` so the runtime always invalidates layout/draw caches
+- `Context` reduced to a single-tree convenience layer over `Runtime`;
+  multi-tree embedders use `Runtime` directly with caller-owned trees
+- `freeDrawList` / `freePaintList` no-ops removed; cached draw lists
+  are owned by `Runtime` and freed automatically on invalidation
+- C/Zig bool field names synced (no more `disable_*` vs `allow_*` skew)
+- `Event.Keycode` expanded to a comprehensive named-key table; new
+  `Event.Modifiers` packed bitmask carried on key/mouse events
+- `dispatch` is now an internal-only namespace; not re-exported
+
+
+
 - HiDPI-aware Wayland demo sizing with logical-vs-buffer dimensions
 - UTF-8-safe text input editing, cursor movement, deletion, and clipboard paste
 - Demo-side UTF-8 text event delivery and on-demand font atlas growth
@@ -51,5 +66,11 @@ fallback locations.
 
 - MSAA sample count is hardcoded to `4` with no capability fallback
 - Text editing is still codepoint-based; grapheme clusters and IME composition are not implemented
-- `freeDrawList` is a no-op for compatibility; `Context` owns draw-list memory
 - `widget.zig` grew significantly with removal logic and should be watched
+- `WidgetKind` arm structs still mix construction-time inputs (label,
+  group, options) with interaction state (clicked, dragging, marquee).
+  The read API (`WidgetView`) hides this, but a future refactor should
+  split per-kind structs into `Desc` (input) and `State` (internal) so
+  embedders cannot accidentally seed widgets with output-flag values
+  (`.{ .button = .{ .label = "X", .clicked = true } }` currently
+  type-checks).

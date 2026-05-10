@@ -139,8 +139,9 @@ The core does not issue GPU calls. The repo currently ships one renderer in
 `demo/render.zig`, used by the Wayland demo.
 
 `Context.generateDrawList()` caches the last draw list and reuses it when
-`draw_dirty` is false. `freeDrawList()` is currently a compatibility no-op
-because the `Context` owns cached draw memory.
+`draw_dirty` is false. The cache is owned by the `Runtime` and freed when
+either invalidated by state changes or when the runtime is deinitialized;
+embedders never free draw lists themselves.
 
 ## Demo Integration
 

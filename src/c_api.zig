@@ -365,6 +365,193 @@ const CWidget = extern struct {
     } = .{ .container = .{} },
 };
 
+// Read-only views into widget state. Mirrors api.WidgetView one-for-one.
+
+const CContainerView = extern struct { direction: CDirection = .row };
+
+const CTextView = extern struct { content: CStr = .{} };
+
+const CButtonView = extern struct {
+    label: CStr = .{},
+    clicked: bool = false,
+};
+
+const CCheckboxView = extern struct {
+    label: CStr = .{},
+    checked: bool = false,
+    clicked: bool = false,
+};
+
+const CRadioButtonView = extern struct {
+    label: CStr = .{},
+    group: u32 = 0,
+    selected: bool = false,
+    clicked: bool = false,
+};
+
+const CTreeItemView = extern struct {
+    label: CStr = .{},
+    group: u32 = 0,
+    has_children: bool = false,
+    expanded: bool = false,
+    selected: bool = false,
+    editing: bool = false,
+    clicked: bool = false,
+    toggled: bool = false,
+    dragging: bool = false,
+    drop_received: bool = false,
+    rename_committed: bool = false,
+};
+
+const CDropdownView = extern struct {
+    placeholder: CStr = .{},
+    selected_text: CStr = .{},
+    selected_index: COptionalU16 = .{},
+    open: bool = false,
+    clicked: bool = false,
+    changed: bool = false,
+};
+
+const CListBoxView = extern struct { changed: bool = false };
+
+const CSelectableView = extern struct {
+    label: CStr = .{},
+    group: u32 = 0,
+    selected: bool = false,
+    clicked: bool = false,
+    dragging: bool = false,
+};
+
+const CGridSelectorView = extern struct {
+    changed: bool = false,
+    computed_columns: u16 = 0,
+};
+
+const CGridItemView = extern struct {
+    label: CStr = .{},
+    selected: bool = false,
+    clicked: bool = false,
+    dragging: bool = false,
+};
+
+const CTableView = extern struct {
+    active_columns: u8 = 0,
+    changed: bool = false,
+    resized_column: COptionalU8 = .{},
+    sorted_column: COptionalU8 = .{},
+    sort_direction: CSortDirection = .ascending,
+    sort_changed: bool = false,
+    selection_changed: bool = false,
+};
+
+const CTableRowView = extern struct {
+    header: bool = false,
+    selected: bool = false,
+    dragging: bool = false,
+};
+
+const CMenuView = extern struct {
+    label: CStr = .{},
+    clicked: bool = false,
+};
+
+const CPopupView = extern struct {
+    placement: CPopupPlacement = .absolute,
+    x: f32 = 0,
+    y: f32 = 0,
+    visible: bool = false,
+    z_index: i16 = 0,
+};
+
+const CTooltipView = extern struct {
+    placement: CPopupPlacement = .absolute,
+    x: f32 = 0,
+    y: f32 = 0,
+    z_index: i16 = 0,
+};
+
+const CMenuItemView = extern struct {
+    label: CStr = .{},
+    shortcut: CStr = .{},
+    checked: bool = false,
+    disabled: bool = false,
+    clicked: bool = false,
+};
+
+const CDragValueView = extern struct {
+    value: f32 = 0,
+    changed: bool = false,
+    editing: bool = false,
+    display_text: CStr = .{},
+};
+
+const CSpinboxView = extern struct {
+    value: f32 = 0,
+    changed: bool = false,
+    editing: bool = false,
+    display_text: CStr = .{},
+};
+
+const CTabItemView = extern struct {
+    label: CStr = .{},
+    selected: bool = false,
+    clicked: bool = false,
+};
+
+const CSplitterView = extern struct {
+    ratio: f32 = 0,
+    changed: bool = false,
+};
+
+const CSliderView = extern struct { value: f32 = 0 };
+
+const CScrollAreaView = extern struct {
+    scroll_x: f32 = 0,
+    scroll_y: f32 = 0,
+};
+
+const CTextInputView = extern struct {
+    content: CStr = .{},
+    cursor: u8 = 0,
+    selection_anchor: COptionalU8 = .{},
+};
+
+const CWidgetView = extern struct {
+    kind: CWidgetKind = .container,
+    data: extern union {
+        container: CContainerView,
+        text: CTextView,
+        button: CButtonView,
+        checkbox: CCheckboxView,
+        radio_button: CRadioButtonView,
+        tree_item: CTreeItemView,
+        dropdown: CDropdownView,
+        list_box: CListBoxView,
+        selectable: CSelectableView,
+        grid_selector: CGridSelectorView,
+        grid_item: CGridItemView,
+        table: CTableView,
+        table_row: CTableRowView,
+        table_cell: CUnitWidget,
+        toolbar: CUnitWidget,
+        status_bar: CUnitWidget,
+        menu_bar: CUnitWidget,
+        menu: CMenuView,
+        popup: CPopupView,
+        tooltip: CTooltipView,
+        menu_item: CMenuItemView,
+        drag_value: CDragValueView,
+        spinbox: CSpinboxView,
+        tab_bar: CUnitWidget,
+        tab_item: CTabItemView,
+        splitter: CSplitterView,
+        slider: CSliderView,
+        scroll_area: CScrollAreaView,
+        text_input: CTextInputView,
+        spacer: CUnitWidget,
+    } = .{ .container = .{} },
+};
+
 const CMouseButton = enum(c_int) {
     left = 0,
     right = 1,
@@ -383,27 +570,34 @@ const CKeyState = enum(c_int) {
 };
 
 const CKeycode = enum(c_int) {
-    tab = 0,
-    enter = 1,
-    space = 2,
-    escape = 3,
-    backspace = 4,
-    delete = 5,
-    left = 6,
-    right = 7,
-    up = 8,
-    down = 9,
-    home = 10,
-    end = 11,
-    left_shift = 12,
-    right_shift = 13,
-    left_ctrl = 14,
-    right_ctrl = 15,
-    a = 16,
-    c = 17,
-    v = 18,
-    x = 19,
-    unknown = 20,
+    a = 0, b, c, d, e, f, g, h, i, j, k, l, m,
+    n, o, p, q, r, s, t, u, v, w, x, y, z,
+    digit_0, digit_1, digit_2, digit_3, digit_4,
+    digit_5, digit_6, digit_7, digit_8, digit_9,
+    f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12,
+    f13, f14, f15, f16, f17, f18, f19, f20, f21, f22, f23, f24,
+    space, tab, enter,
+    backspace, delete, insert,
+    left, right, up, down, home, end, page_up, page_down,
+    escape,
+    minus, equal, left_bracket, right_bracket,
+    backslash, semicolon, apostrophe, comma, period, slash, grave,
+    left_shift, right_shift,
+    left_ctrl, right_ctrl,
+    left_alt, right_alt,
+    left_super, right_super,
+    caps_lock, num_lock,
+    unknown,
+};
+
+const CModifiers = packed struct(u32) {
+    shift: bool = false,
+    ctrl: bool = false,
+    alt: bool = false,
+    super: bool = false,
+    caps_lock: bool = false,
+    num_lock: bool = false,
+    _padding: u26 = 0,
 };
 
 const CEventKind = enum(c_int) {
@@ -427,17 +621,20 @@ const CMouseButtonEvent = extern struct {
     x: f32 = 0,
     y: f32 = 0,
     timestamp_ms: u64 = 0,
+    mods: CModifiers = .{},
 };
 
 const CMouseScrollEvent = extern struct {
     dx: f32 = 0,
     dy: f32 = 0,
+    mods: CModifiers = .{},
 };
 
 const CKeyEvent = extern struct {
-    scancode: u32 = 0,
     keycode: CKeycode = .unknown,
+    mods: CModifiers = .{},
     state: CKeyState = .pressed,
+    scancode: u32 = 0,
 };
 
 const CTextEvent = extern struct {
@@ -497,6 +694,7 @@ const CDrawRect = extern struct {
 
 const CDrawText = extern struct {
     bounds: CRect = .{},
+    baseline_y: f32 = 0,
     text: CStr = .{},
     color: CColor = .{},
     font_size: f32 = 0,
@@ -769,29 +967,172 @@ fn gridDropPositionToC(position: dispatch.GridDrop.Position) CGridDropPosition {
     };
 }
 
+fn directionToC(direction: widget.WidgetKind.Container.Direction) CDirection {
+    return switch (direction) {
+        .row => .row,
+        .column => .column,
+    };
+}
+
+fn placementToC(placement: widget.WidgetKind.Popup.Placement) CPopupPlacement {
+    return switch (placement) {
+        .absolute => .absolute,
+        .below_start => .below_start,
+        .below_end => .below_end,
+        .right_start => .right_start,
+    };
+}
+
+fn optionalU16(value: ?u16) COptionalU16 {
+    return if (value) |v| .{ .has_value = true, .value = v } else .{};
+}
+
+fn optionalU8(value: ?u8) COptionalU8 {
+    return if (value) |v| .{ .has_value = true, .value = v } else .{};
+}
+
+fn widgetViewToC(view: api.WidgetView) CWidgetView {
+    return switch (view) {
+        .container => |v| .{ .kind = .container, .data = .{ .container = .{ .direction = directionToC(v.direction) } } },
+        .text => |v| .{ .kind = .text, .data = .{ .text = .{ .content = toCStr(v.content) } } },
+        .button => |v| .{ .kind = .button, .data = .{ .button = .{ .label = toCStr(v.label), .clicked = v.clicked } } },
+        .checkbox => |v| .{ .kind = .checkbox, .data = .{ .checkbox = .{
+            .label = toCStr(v.label),
+            .checked = v.checked,
+            .clicked = v.clicked,
+        } } },
+        .radio_button => |v| .{ .kind = .radio_button, .data = .{ .radio_button = .{
+            .label = toCStr(v.label),
+            .group = v.group,
+            .selected = v.selected,
+            .clicked = v.clicked,
+        } } },
+        .tree_item => |v| .{ .kind = .tree_item, .data = .{ .tree_item = .{
+            .label = toCStr(v.label),
+            .group = v.group,
+            .has_children = v.has_children,
+            .expanded = v.expanded,
+            .selected = v.selected,
+            .editing = v.editing,
+            .clicked = v.clicked,
+            .toggled = v.toggled,
+            .dragging = v.dragging,
+            .drop_received = v.drop_received,
+            .rename_committed = v.rename_committed,
+        } } },
+        .dropdown => |v| .{ .kind = .dropdown, .data = .{ .dropdown = .{
+            .placeholder = toCStr(v.placeholder),
+            .selected_text = toCStr(v.selected_text),
+            .selected_index = optionalU16(v.selected_index),
+            .open = v.open,
+            .clicked = v.clicked,
+            .changed = v.changed,
+        } } },
+        .list_box => |v| .{ .kind = .list_box, .data = .{ .list_box = .{ .changed = v.changed } } },
+        .selectable => |v| .{ .kind = .selectable, .data = .{ .selectable = .{
+            .label = toCStr(v.label),
+            .group = v.group,
+            .selected = v.selected,
+            .clicked = v.clicked,
+            .dragging = v.dragging,
+        } } },
+        .grid_selector => |v| .{ .kind = .grid_selector, .data = .{ .grid_selector = .{
+            .changed = v.changed,
+            .computed_columns = v.computed_columns,
+        } } },
+        .grid_item => |v| .{ .kind = .grid_item, .data = .{ .grid_item = .{
+            .label = toCStr(v.label),
+            .selected = v.selected,
+            .clicked = v.clicked,
+            .dragging = v.dragging,
+        } } },
+        .table => |v| .{ .kind = .table, .data = .{ .table = .{
+            .active_columns = v.active_columns,
+            .changed = v.changed,
+            .resized_column = optionalU8(v.resized_column),
+            .sorted_column = optionalU8(v.sorted_column),
+            .sort_direction = sortDirectionToC(v.sort_direction),
+            .sort_changed = v.sort_changed,
+            .selection_changed = v.selection_changed,
+        } } },
+        .table_row => |v| .{ .kind = .table_row, .data = .{ .table_row = .{
+            .header = v.header,
+            .selected = v.selected,
+            .dragging = v.dragging,
+        } } },
+        .table_cell => .{ .kind = .table_cell, .data = .{ .table_cell = .{} } },
+        .toolbar => .{ .kind = .toolbar, .data = .{ .toolbar = .{} } },
+        .status_bar => .{ .kind = .status_bar, .data = .{ .status_bar = .{} } },
+        .menu_bar => .{ .kind = .menu_bar, .data = .{ .menu_bar = .{} } },
+        .menu => |v| .{ .kind = .menu, .data = .{ .menu = .{ .label = toCStr(v.label), .clicked = v.clicked } } },
+        .popup => |v| .{ .kind = .popup, .data = .{ .popup = .{
+            .placement = placementToC(v.placement),
+            .x = v.x,
+            .y = v.y,
+            .visible = v.visible,
+            .z_index = v.z_index,
+        } } },
+        .tooltip => |v| .{ .kind = .tooltip, .data = .{ .tooltip = .{
+            .placement = placementToC(v.placement),
+            .x = v.x,
+            .y = v.y,
+            .z_index = v.z_index,
+        } } },
+        .menu_item => |v| .{ .kind = .menu_item, .data = .{ .menu_item = .{
+            .label = toCStr(v.label),
+            .shortcut = toCStr(v.shortcut),
+            .checked = v.checked,
+            .disabled = v.disabled,
+            .clicked = v.clicked,
+        } } },
+        .drag_value => |v| .{ .kind = .drag_value, .data = .{ .drag_value = .{
+            .value = v.value,
+            .changed = v.changed,
+            .editing = v.editing,
+            .display_text = toCStr(v.display_text),
+        } } },
+        .spinbox => |v| .{ .kind = .spinbox, .data = .{ .spinbox = .{
+            .value = v.value,
+            .changed = v.changed,
+            .editing = v.editing,
+            .display_text = toCStr(v.display_text),
+        } } },
+        .tab_bar => .{ .kind = .tab_bar, .data = .{ .tab_bar = .{} } },
+        .tab_item => |v| .{ .kind = .tab_item, .data = .{ .tab_item = .{
+            .label = toCStr(v.label),
+            .selected = v.selected,
+            .clicked = v.clicked,
+        } } },
+        .splitter => |v| .{ .kind = .splitter, .data = .{ .splitter = .{ .ratio = v.ratio, .changed = v.changed } } },
+        .slider => |v| .{ .kind = .slider, .data = .{ .slider = .{ .value = v.value } } },
+        .spacer => .{ .kind = .spacer, .data = .{ .spacer = .{} } },
+        .scroll_area => |v| .{ .kind = .scroll_area, .data = .{ .scroll_area = .{
+            .scroll_x = v.scroll_x,
+            .scroll_y = v.scroll_y,
+        } } },
+        .text_input => |v| .{ .kind = .text_input, .data = .{ .text_input = .{
+            .content = toCStr(v.content),
+            .cursor = v.cursor,
+            .selection_anchor = optionalU8(v.selection_anchor),
+        } } },
+    };
+}
+
 fn keycodeFromC(keycode: CKeycode) event.Event.Keycode {
-    return switch (keycode) {
-        .tab => .tab,
-        .enter => .enter,
-        .space => .space,
-        .escape => .escape,
-        .backspace => .backspace,
-        .delete => .delete,
-        .left => .left,
-        .right => .right,
-        .up => .up,
-        .down => .down,
-        .home => .home,
-        .end => .end,
-        .left_shift => .left_shift,
-        .right_shift => .right_shift,
-        .left_ctrl => .left_ctrl,
-        .right_ctrl => .right_ctrl,
-        .a => .a,
-        .c => .c,
-        .v => .v,
-        .x => .x,
-        .unknown => .unknown,
+    // CKeycode and Event.Keycode share tag names; cast through the
+    // shared name list rather than maintaining a giant switch.
+    const tag_name = @tagName(keycode);
+    return std.meta.stringToEnum(event.Event.Keycode, tag_name) orelse .unknown;
+}
+
+fn modifiersFromC(mods: CModifiers) event.Event.Modifiers {
+    return .{
+        .shift = mods.shift,
+        .ctrl = mods.ctrl,
+        .alt = mods.alt,
+        .super = mods.super,
+        .caps_lock = mods.caps_lock,
+        .num_lock = mods.num_lock,
     };
 }
 
@@ -894,7 +1235,7 @@ fn buildWidgetKind(desc: CWidget) widget.WidgetKind {
             .label = fromCStr(desc.data.menu_item.label),
             .shortcut = fromCStr(desc.data.menu_item.shortcut),
             .checked = desc.data.menu_item.checked,
-            .enabled = !desc.data.menu_item.disabled,
+            .disabled = desc.data.menu_item.disabled,
         } },
         .drag_value => .{ .drag_value = .{
             .value = desc.data.drag_value.value,
@@ -931,8 +1272,8 @@ fn buildWidgetKind(desc: CWidget) widget.WidgetKind {
         .scroll_area => .{ .scroll_area = .{
             .scroll_x = desc.data.scroll_area.scroll_x,
             .scroll_y = desc.data.scroll_area.scroll_y,
-            .allow_horizontal_scroll = !desc.data.scroll_area.disable_horizontal_scroll,
-            .allow_vertical_scroll = !desc.data.scroll_area.disable_vertical_scroll,
+            .disable_horizontal_scroll = desc.data.scroll_area.disable_horizontal_scroll,
+            .disable_vertical_scroll = desc.data.scroll_area.disable_vertical_scroll,
         } },
         .text_input => .{ .text_input = buildTextInput(desc.data.text_input) },
         .spacer => .{ .spacer = .{
@@ -1061,7 +1402,7 @@ fn updateWidgetKind(kind: *widget.WidgetKind, desc: CWidget) bool {
             menu_item.label = fromCStr(desc.data.menu_item.label);
             menu_item.shortcut = fromCStr(desc.data.menu_item.shortcut);
             menu_item.checked = desc.data.menu_item.checked;
-            menu_item.enabled = !desc.data.menu_item.disabled;
+            menu_item.disabled = desc.data.menu_item.disabled;
         },
         .drag_value => |*drag_value| {
             if (desc.kind != .drag_value) return false;
@@ -1108,8 +1449,8 @@ fn updateWidgetKind(kind: *widget.WidgetKind, desc: CWidget) bool {
             if (desc.kind != .scroll_area) return false;
             scroll_area.scroll_x = desc.data.scroll_area.scroll_x;
             scroll_area.scroll_y = desc.data.scroll_area.scroll_y;
-            scroll_area.allow_horizontal_scroll = !desc.data.scroll_area.disable_horizontal_scroll;
-            scroll_area.allow_vertical_scroll = !desc.data.scroll_area.disable_vertical_scroll;
+            scroll_area.disable_horizontal_scroll = desc.data.scroll_area.disable_horizontal_scroll;
+            scroll_area.disable_vertical_scroll = desc.data.scroll_area.disable_vertical_scroll;
         },
         .text_input => |*text_input| {
             if (desc.kind != .text_input) return false;
@@ -1143,14 +1484,17 @@ fn convertEvent(ev: CEvent) event.Event {
             .x = ev.data.mouse_button.x,
             .y = ev.data.mouse_button.y,
             .timestamp_ms = ev.data.mouse_button.timestamp_ms,
+            .mods = modifiersFromC(ev.data.mouse_button.mods),
         } },
         .mouse_scroll => .{ .mouse_scroll = .{
             .dx = ev.data.mouse_scroll.dx,
             .dy = ev.data.mouse_scroll.dy,
+            .mods = modifiersFromC(ev.data.mouse_scroll.mods),
         } },
         .key => .{ .key = .{
             .scancode = ev.data.key.scancode,
             .keycode = keycodeFromC(ev.data.key.keycode),
+            .mods = modifiersFromC(ev.data.key.mods),
             .state = switch (ev.data.key.state) {
                 .pressed => .pressed,
                 .released => .released,
@@ -1194,6 +1538,7 @@ fn convertDrawCommand(cmd: draw.DrawCommand) CDrawCommand {
             .kind = .text,
             .data = .{ .text = .{
                 .bounds = rectToC(text_cmd.bounds),
+                .baseline_y = text_cmd.baseline_y,
                 .text = toCStr(text_cmd.text),
                 .color = colorToC(text_cmd.color),
                 .font_size = text_cmd.font_size,
@@ -1381,8 +1726,6 @@ export fn goop_context_generate_draw_list(ctx: ?*CContext, out_draw_list: ?*CDra
     return true;
 }
 
-export fn goop_context_free_draw_list(_: ?*CContext, _: ?*CDrawList) void {}
-
 export fn goop_context_set_dimensions(ctx: ?*CContext, width: u32, height: u32) bool {
     const context = ctx orelse return false;
     context.ctx.setDimensions(width, height);
@@ -1461,225 +1804,19 @@ export fn goop_context_was_secondary_clicked(ctx: ?*const CContext, handle: CHan
     return context.ctx.wasSecondaryClicked(handleFromC(handle));
 }
 
-export fn goop_context_is_checked(ctx: ?*const CContext, handle: CHandle) bool {
+export fn goop_context_widget(ctx: ?*const CContext, handle: CHandle, out_view: ?*CWidgetView) bool {
     const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.isChecked(handleFromC(handle));
-}
-
-export fn goop_context_is_selected(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.isSelected(handleFromC(handle));
-}
-
-export fn goop_context_is_expanded(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.isExpanded(handleFromC(handle));
-}
-
-export fn goop_context_tree_item_toggled(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.treeItemToggled(handleFromC(handle));
-}
-
-export fn goop_context_tree_item_label(ctx: ?*const CContext, handle: CHandle) CStr {
-    const context = ctx orelse return .{};
-    if (!validHandle(context, handle)) return .{};
-    return toCStr(context.ctx.treeItemLabel(handleFromC(handle)));
-}
-
-export fn goop_context_tree_item_editing(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.treeItemEditing(handleFromC(handle));
-}
-
-export fn goop_context_tree_item_rename_committed(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.treeItemRenameCommitted(handleFromC(handle));
-}
-
-export fn goop_context_slider_value(ctx: ?*const CContext, handle: CHandle) f32 {
-    const context = ctx orelse return 0;
-    if (!validHandle(context, handle)) return 0;
-    return context.ctx.sliderValue(handleFromC(handle));
-}
-
-export fn goop_context_drag_value(ctx: ?*const CContext, handle: CHandle) f32 {
-    const context = ctx orelse return 0;
-    if (!validHandle(context, handle)) return 0;
-    return context.ctx.dragValue(handleFromC(handle));
-}
-
-export fn goop_context_drag_value_changed(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.dragValueChanged(handleFromC(handle));
-}
-
-export fn goop_context_spinbox_value(ctx: ?*const CContext, handle: CHandle) f32 {
-    const context = ctx orelse return 0;
-    if (!validHandle(context, handle)) return 0;
-    return context.ctx.spinboxValue(handleFromC(handle));
-}
-
-export fn goop_context_spinbox_changed(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.spinboxChanged(handleFromC(handle));
-}
-
-export fn goop_context_splitter_ratio(ctx: ?*const CContext, handle: CHandle) f32 {
-    const context = ctx orelse return 0;
-    if (!validHandle(context, handle)) return 0;
-    return context.ctx.splitterRatio(handleFromC(handle));
-}
-
-export fn goop_context_splitter_changed(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.splitterChanged(handleFromC(handle));
-}
-
-export fn goop_context_text_input_value(ctx: ?*const CContext, handle: CHandle) CStr {
-    const context = ctx orelse return .{};
-    if (!validHandle(context, handle)) return .{};
-    return toCStr(context.ctx.textInputValue(handleFromC(handle)));
-}
-
-export fn goop_context_dropdown_value(ctx: ?*const CContext, handle: CHandle) CStr {
-    const context = ctx orelse return .{};
-    if (!validHandle(context, handle)) return .{};
-    return toCStr(context.ctx.dropdownValue(handleFromC(handle)));
-}
-
-export fn goop_context_dropdown_selected_index(ctx: ?*const CContext, handle: CHandle, out_index: ?*u16) bool {
-    const context = ctx orelse return false;
-    const index_ptr = out_index orelse return false;
-    if (!validHandle(context, handle)) return false;
-    const index = context.ctx.dropdownSelectedIndex(handleFromC(handle)) orelse return false;
-    index_ptr.* = index;
+    const view_ptr = out_view orelse return false;
+    const view = context.ctx.widget(handleFromC(handle)) orelse return false;
+    view_ptr.* = widgetViewToC(view);
     return true;
-}
-
-export fn goop_context_dropdown_changed(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.dropdownChanged(handleFromC(handle));
-}
-
-export fn goop_context_list_box_selected_index(ctx: ?*const CContext, handle: CHandle, out_index: ?*u16) bool {
-    const context = ctx orelse return false;
-    const index_ptr = out_index orelse return false;
-    if (!validHandle(context, handle)) return false;
-    const index = context.ctx.listBoxSelectedIndex(handleFromC(handle)) orelse return false;
-    index_ptr.* = index;
-    return true;
-}
-
-export fn goop_context_list_box_changed(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.listBoxChanged(handleFromC(handle));
-}
-
-export fn goop_context_list_box_selection_count(ctx: ?*const CContext, handle: CHandle) u16 {
-    const context = ctx orelse return 0;
-    if (!validHandle(context, handle)) return 0;
-    return context.ctx.listBoxSelectionCount(handleFromC(handle));
-}
-
-export fn goop_context_grid_selector_selected_index(ctx: ?*const CContext, handle: CHandle, out_index: ?*u16) bool {
-    const context = ctx orelse return false;
-    const index_ptr = out_index orelse return false;
-    if (!validHandle(context, handle)) return false;
-    const index = context.ctx.gridSelectorSelectedIndex(handleFromC(handle)) orelse return false;
-    index_ptr.* = index;
-    return true;
-}
-
-export fn goop_context_grid_selector_changed(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.gridSelectorChanged(handleFromC(handle));
-}
-
-export fn goop_context_grid_selector_selection_count(ctx: ?*const CContext, handle: CHandle) u16 {
-    const context = ctx orelse return 0;
-    if (!validHandle(context, handle)) return 0;
-    return context.ctx.gridSelectorSelectionCount(handleFromC(handle));
 }
 
 export fn goop_context_table_column_fraction(ctx: ?*const CContext, handle: CHandle, index: u8, out_fraction: ?*f32) bool {
     const context = ctx orelse return false;
     const fraction_ptr = out_fraction orelse return false;
-    if (!validHandle(context, handle)) return false;
     const fraction = context.ctx.tableColumnFraction(handleFromC(handle), index) orelse return false;
     fraction_ptr.* = fraction;
-    return true;
-}
-
-export fn goop_context_table_changed(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.tableChanged(handleFromC(handle));
-}
-
-export fn goop_context_table_resized_column(ctx: ?*const CContext, handle: CHandle, out_index: ?*u8) bool {
-    const context = ctx orelse return false;
-    const index_ptr = out_index orelse return false;
-    if (!validHandle(context, handle)) return false;
-    const index = context.ctx.tableResizedColumn(handleFromC(handle)) orelse return false;
-    index_ptr.* = index;
-    return true;
-}
-
-export fn goop_context_table_sorted_column(ctx: ?*const CContext, handle: CHandle, out_index: ?*u8) bool {
-    const context = ctx orelse return false;
-    const index_ptr = out_index orelse return false;
-    if (!validHandle(context, handle)) return false;
-    const index = context.ctx.tableSortedColumn(handleFromC(handle)) orelse return false;
-    index_ptr.* = index;
-    return true;
-}
-
-export fn goop_context_table_sort_direction(ctx: ?*const CContext, handle: CHandle, out_direction: ?*CSortDirection) bool {
-    const context = ctx orelse return false;
-    const direction_ptr = out_direction orelse return false;
-    if (!validHandle(context, handle)) return false;
-    const direction = context.ctx.tableSortDirection(handleFromC(handle)) orelse return false;
-    direction_ptr.* = sortDirectionToC(direction);
-    return true;
-}
-
-export fn goop_context_table_sort_changed(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.tableSortChanged(handleFromC(handle));
-}
-
-export fn goop_context_table_selection_changed(ctx: ?*const CContext, handle: CHandle) bool {
-    const context = ctx orelse return false;
-    if (!validHandle(context, handle)) return false;
-    return context.ctx.tableSelectionChanged(handleFromC(handle));
-}
-
-export fn goop_context_table_selection_count(ctx: ?*const CContext, handle: CHandle) u16 {
-    const context = ctx orelse return 0;
-    if (!validHandle(context, handle)) return 0;
-    return context.ctx.tableSelectionCount(handleFromC(handle));
-}
-
-export fn goop_context_table_selected_row_index(ctx: ?*const CContext, handle: CHandle, out_index: ?*u16) bool {
-    const context = ctx orelse return false;
-    const index_ptr = out_index orelse return false;
-    if (!validHandle(context, handle)) return false;
-    const index = context.ctx.tableSelectedRowIndex(handleFromC(handle)) orelse return false;
-    index_ptr.* = index;
     return true;
 }
 
@@ -1791,10 +1928,13 @@ test "c api menu item exposes checked state and defaults to enabled" {
         } },
     }, &item));
 
-    const internal = ctx.ctx.tree.getConst(handleFromC(item)).kind.menu_item;
-    try std.testing.expect(internal.enabled);
-    try std.testing.expectEqualStrings("Ctrl+B", internal.shortcut);
-    try std.testing.expect(goop_context_is_checked(ctx, item));
+    var view: CWidgetView = .{};
+    try std.testing.expect(goop_context_widget(ctx, item, &view));
+    try std.testing.expectEqual(CWidgetKind.menu_item, view.kind);
+    const v = view.data.menu_item;
+    try std.testing.expect(v.checked);
+    try std.testing.expect(!v.disabled);
+    try std.testing.expectEqual(@as(usize, 6), v.shortcut.len);
 }
 
 test "c header parses" {
@@ -1841,6 +1981,32 @@ test "c header parses" {
         .{ .Z = CSpacerWidget, .C = c.goop_spacer_widget_t },
         .{ .Z = CUnitWidget, .C = c.goop_unit_widget_t },
         .{ .Z = CWidget, .C = c.goop_widget_t },
+
+        .{ .Z = CContainerView, .C = c.goop_container_view_t },
+        .{ .Z = CTextView, .C = c.goop_text_view_t },
+        .{ .Z = CButtonView, .C = c.goop_button_view_t },
+        .{ .Z = CCheckboxView, .C = c.goop_checkbox_view_t },
+        .{ .Z = CRadioButtonView, .C = c.goop_radio_button_view_t },
+        .{ .Z = CTreeItemView, .C = c.goop_tree_item_view_t },
+        .{ .Z = CDropdownView, .C = c.goop_dropdown_view_t },
+        .{ .Z = CListBoxView, .C = c.goop_list_box_view_t },
+        .{ .Z = CSelectableView, .C = c.goop_selectable_view_t },
+        .{ .Z = CGridSelectorView, .C = c.goop_grid_selector_view_t },
+        .{ .Z = CGridItemView, .C = c.goop_grid_item_view_t },
+        .{ .Z = CTableView, .C = c.goop_table_view_t },
+        .{ .Z = CTableRowView, .C = c.goop_table_row_view_t },
+        .{ .Z = CMenuView, .C = c.goop_menu_view_t },
+        .{ .Z = CPopupView, .C = c.goop_popup_view_t },
+        .{ .Z = CTooltipView, .C = c.goop_tooltip_view_t },
+        .{ .Z = CMenuItemView, .C = c.goop_menu_item_view_t },
+        .{ .Z = CDragValueView, .C = c.goop_drag_value_view_t },
+        .{ .Z = CSpinboxView, .C = c.goop_spinbox_view_t },
+        .{ .Z = CTabItemView, .C = c.goop_tab_item_view_t },
+        .{ .Z = CSplitterView, .C = c.goop_splitter_view_t },
+        .{ .Z = CSliderView, .C = c.goop_slider_view_t },
+        .{ .Z = CScrollAreaView, .C = c.goop_scroll_area_view_t },
+        .{ .Z = CTextInputView, .C = c.goop_text_input_view_t },
+        .{ .Z = CWidgetView, .C = c.goop_widget_view_t },
 
         .{ .Z = CMouseMoveEvent, .C = c.goop_mouse_move_event_t },
         .{ .Z = CMouseButtonEvent, .C = c.goop_mouse_button_event_t },

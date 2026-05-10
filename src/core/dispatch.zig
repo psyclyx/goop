@@ -340,17 +340,15 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
                 const old_scroll_y = scroll.scroll_y;
                 const viewport = node.layout_rect;
                 const extent = contentExtentForAppliedScroll(tree, t, scroll.effectiveScrollX(), scroll.effectiveScrollY());
-                const scroll_dx = if (scroll.allow_horizontal_scroll)
-                    if (mouse.shift_down and ms.dx == 0) ms.dy else ms.dx
-                else
-                    0;
-                const scroll_dy = if (scroll.allow_vertical_scroll)
-                    if (mouse.shift_down and ms.dx == 0) 0 else ms.dy
-                else
-                    0;
+                const scroll_dx = if (scroll.disable_horizontal_scroll)
+                    0
+                else if (mouse.shift_down and ms.dx == 0) ms.dy else ms.dx;
+                const scroll_dy = if (scroll.disable_vertical_scroll)
+                    0
+                else if (mouse.shift_down and ms.dx == 0) 0 else ms.dy;
 
-                const max_x = if (scroll.allow_horizontal_scroll) @max(extent.w - viewport.w, 0) else 0;
-                const max_y = if (scroll.allow_vertical_scroll) @max(extent.h - viewport.h, 0) else 0;
+                const max_x = if (scroll.disable_horizontal_scroll) 0 else @max(extent.w - viewport.w, 0);
+                const max_y = if (scroll.disable_vertical_scroll) 0 else @max(extent.h - viewport.h, 0);
                 node.kind.scroll_area.scroll_x = std.math.clamp(old_scroll_x + scroll_dx, 0, max_x);
                 node.kind.scroll_area.scroll_y = std.math.clamp(old_scroll_y + scroll_dy, 0, max_y);
             }
@@ -361,6 +359,17 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
             }
         },
         .key => |k| {
+            // Modifier state is read from two sources:
+            //   1. `Key.mods` set by embedders that translate native modifier
+            //      state directly (preferred).
+            //   2. Discrete `left_shift`/`left_ctrl` press/release events
+            //      from embedders that don't fill `mods`.
+            // We update from `mods` here when any bit is set; the switch
+            // arms below cover the legacy press/release path.
+            if (k.mods.shift or k.mods.ctrl) {
+                mouse.shift_down = k.mods.shift;
+                mouse.ctrl_down = k.mods.ctrl;
+            }
             switch (k.keycode) {
                 .left_shift, .right_shift => {
                     mouse.shift_down = k.state == .pressed or k.state == .repeat;
@@ -1522,12 +1531,12 @@ fn verticalScrollbarMetrics(
     const node = tree.getConst(handle);
     if (node.kind != .scroll_area) return null;
     const scroll = node.kind.scroll_area;
-    if (!scroll.allow_vertical_scroll) return null;
+    if (scroll.disable_vertical_scroll) return null;
 
     const viewport = node.layout_rect;
     const extent = contentExtentForAppliedScroll(tree, handle, scroll.effectiveScrollX(), scroll.effectiveScrollY());
     if (extent.h <= viewport.h + 0.01) return null;
-    const has_horizontal_scrollbar = scroll.allow_horizontal_scroll and extent.w > viewport.w + 0.01;
+    const has_horizontal_scrollbar = !scroll.disable_horizontal_scroll and extent.w > viewport.w + 0.01;
 
     const resolved = node.style_override.resolve(theme);
     const scrollbar_inset: f32 = 2;
@@ -1563,12 +1572,12 @@ fn horizontalScrollbarMetrics(
     const node = tree.getConst(handle);
     if (node.kind != .scroll_area) return null;
     const scroll = node.kind.scroll_area;
-    if (!scroll.allow_horizontal_scroll) return null;
+    if (scroll.disable_horizontal_scroll) return null;
 
     const viewport = node.layout_rect;
     const extent = contentExtentForAppliedScroll(tree, handle, scroll.effectiveScrollX(), scroll.effectiveScrollY());
     if (extent.w <= viewport.w + 0.01) return null;
-    const has_vertical_scrollbar = scroll.allow_vertical_scroll and extent.h > viewport.h + 0.01;
+    const has_vertical_scrollbar = !scroll.disable_vertical_scroll and extent.h > viewport.h + 0.01;
 
     const resolved = node.style_override.resolve(theme);
     const scrollbar_inset: f32 = 2;
@@ -2172,8 +2181,8 @@ fn clampScroll(tree: *widget.Tree, handle: widget.NodeHandle) void {
     const viewport = node.layout_rect;
     const extent = contentExtentForAppliedScroll(tree, handle, scroll.effectiveScrollX(), scroll.effectiveScrollY());
 
-    const max_x = if (scroll.allow_horizontal_scroll) @max(extent.w - viewport.w, 0) else 0;
-    const max_y = if (scroll.allow_vertical_scroll) @max(extent.h - viewport.h, 0) else 0;
+    const max_x = if (scroll.disable_horizontal_scroll) 0 else @max(extent.w - viewport.w, 0);
+    const max_y = if (scroll.disable_vertical_scroll) 0 else @max(extent.h - viewport.h, 0);
 
     node.kind.scroll_area.scroll_x = std.math.clamp(node.kind.scroll_area.scroll_x, 0, max_x);
     node.kind.scroll_area.scroll_y = std.math.clamp(node.kind.scroll_area.scroll_y, 0, max_y);
@@ -2288,7 +2297,7 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
             toggleOwnedPopup(tree, handle, null);
         },
         .menu_item => {
-            if (!node.kind.menu_item.enabled) return;
+            if (node.kind.menu_item.disabled) return;
             node.interaction.primary_clicked = true;
             node.kind.menu_item.clicked = true;
             if (directPopupChild(tree, handle) != null) {
@@ -3656,7 +3665,7 @@ test "disabled horizontal scroll ignores shift mouse wheel" {
     var tree = widget.Tree.init(allocator);
     defer tree.deinit();
 
-    const scroll = try tree.addRoot(.{ .scroll_area = .{ .allow_horizontal_scroll = false } });
+    const scroll = try tree.addRoot(.{ .scroll_area = .{ .disable_horizontal_scroll = true } });
     const child = try tree.addChild(scroll, .{ .text = .{ .content = "wide content" } });
     tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 200 };
     tree.get(child).layout_rect = .{ .x = 0, .y = 0, .w = 600, .h = 200 };

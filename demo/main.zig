@@ -20,6 +20,51 @@ const egl = @cImport({
 
 const allocator = std.heap.smp_allocator;
 const clipboard_mime_utf8 = "text/plain;charset=utf-8";
+
+// Demo-side selection helpers built on top of the read-only WidgetView.
+// goop intentionally does not provide these — embedders fold their own
+// over the primitive child iterator.
+fn countSelectedSelectables(ctx: *const goop.Context, parent: goop.NodeHandle) u16 {
+    var count: u16 = 0;
+    var iter = ctx.tree.children(parent);
+    while (iter.next()) |child| {
+        const v = ctx.widget(child) orelse continue;
+        if (v == .selectable and v.selectable.selected) count += 1;
+    }
+    return count;
+}
+
+fn countSelectedGridItems(ctx: *const goop.Context, parent: goop.NodeHandle) u16 {
+    var count: u16 = 0;
+    var iter = ctx.tree.children(parent);
+    while (iter.next()) |child| {
+        const v = ctx.widget(child) orelse continue;
+        if (v == .grid_item and v.grid_item.selected) count += 1;
+    }
+    return count;
+}
+
+fn countSelectedDataRows(ctx: *const goop.Context, parent: goop.NodeHandle) u16 {
+    var count: u16 = 0;
+    var iter = ctx.tree.children(parent);
+    while (iter.next()) |child| {
+        const v = ctx.widget(child) orelse continue;
+        if (v == .table_row and !v.table_row.header and v.table_row.selected) count += 1;
+    }
+    return count;
+}
+
+fn firstSelectedDataRowIndex(ctx: *const goop.Context, parent: goop.NodeHandle) ?u16 {
+    var index: u16 = 0;
+    var iter = ctx.tree.children(parent);
+    while (iter.next()) |child| {
+        const v = ctx.widget(child) orelse continue;
+        if (v != .table_row or v.table_row.header) continue;
+        if (v.table_row.selected) return index;
+        index += 1;
+    }
+    return null;
+}
 const clipboard_mime_utf8_string = "UTF8_STRING";
 const clipboard_mime_text = "text/plain";
 
@@ -1047,12 +1092,12 @@ fn buildWidgetTree(state: *State) !void {
 
     // Toolbar chrome with common actions.
     const toolbar = try ctx.tree.addChild(root, .{ .toolbar = .{} });
-    ctx.tree.get(toolbar).style_override = .{
+    _ = ctx.setStyle(toolbar, .{
         .bg = .{ .r = 36, .g = 36, .b = 36, .a = 255 },
         .border = .{ .r = 68, .g = 68, .b = 68, .a = 255 },
         .padding = goop.style.Edges.symmetric(8, 6),
         .border_radius = 0,
-    };
+    });
     state.btn_a = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Translate" } });
     state.btn_b = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Rotate" } });
     state.btn_c = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Scale" } });
@@ -1131,7 +1176,7 @@ fn buildWidgetTree(state: *State) !void {
         .min_column_width = 96,
     } });
     {
-        const table = &ctx.tree.get(state.asset_table.?).kind.table;
+        const table = &ctx.mutateKind(state.asset_table.?).?.table;
         table.column_weights[0] = 0.56;
         table.column_weights[1] = 0.24;
         table.column_weights[2] = 0.20;
@@ -1252,12 +1297,12 @@ fn buildWidgetTree(state: *State) !void {
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 8" } });
 
     const status_bar = try ctx.tree.addChild(root, .{ .status_bar = .{} });
-    ctx.tree.get(status_bar).style_override = .{
+    _ = ctx.setStyle(status_bar, .{
         .bg = .{ .r = 34, .g = 34, .b = 34, .a = 255 },
         .border = .{ .r = 68, .g = 68, .b = 68, .a = 255 },
         .padding = goop.style.Edges.symmetric(8, 5),
         .border_radius = 0,
-    };
+    });
     _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "Scene: 3 items" } });
     _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "Render: Preview" } });
     _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "Status: Ready" } });
@@ -1510,7 +1555,7 @@ pub fn main(init: std.process.Init) !void {
 
         // Log checkbox state changes (checkbox toggles itself on click)
         if (state.checkbox) |h| if (ctx.wasClicked(h)) {
-            std.debug.print("Checkbox toggled: {}\n", .{ctx.isChecked(h)});
+            std.debug.print("Checkbox toggled: {}\n", .{ctx.widget(h).?.checkbox.checked});
         };
 
         // Log radio button selection
@@ -1518,17 +1563,17 @@ pub fn main(init: std.process.Init) !void {
         if (state.radio_b) |h| if (ctx.wasClicked(h)) std.debug.print("Radio: Option B selected\n", .{});
         if (state.radio_c) |h| if (ctx.wasClicked(h)) std.debug.print("Radio: Option C selected\n", .{});
         if (state.tree_parent) |h| {
-            if (ctx.treeItemToggled(h)) std.debug.print("Outline root expanded: {}\n", .{ctx.isExpanded(h)});
+            if (ctx.widget(h).?.tree_item.toggled) std.debug.print("Outline root expanded: {}\n", .{ctx.widget(h).?.tree_item.expanded});
             if (ctx.wasClicked(h)) std.debug.print("Outline selected: Scene\n", .{});
-            if (ctx.treeItemRenameCommitted(h)) std.debug.print("Outline renamed: {s}\n", .{ctx.treeItemLabel(h)});
+            if (ctx.widget(h).?.tree_item.rename_committed) std.debug.print("Outline renamed: {s}\n", .{ctx.widget(h).?.tree_item.label});
         }
         if (state.tree_child_a) |h| {
             if (ctx.wasClicked(h)) std.debug.print("Outline selected: Camera\n", .{});
-            if (ctx.treeItemRenameCommitted(h)) std.debug.print("Outline renamed: {s}\n", .{ctx.treeItemLabel(h)});
+            if (ctx.widget(h).?.tree_item.rename_committed) std.debug.print("Outline renamed: {s}\n", .{ctx.widget(h).?.tree_item.label});
         }
         if (state.tree_child_b) |h| {
             if (ctx.wasClicked(h)) std.debug.print("Outline selected: Directional Light\n", .{});
-            if (ctx.treeItemRenameCommitted(h)) std.debug.print("Outline renamed: {s}\n", .{ctx.treeItemLabel(h)});
+            if (ctx.widget(h).?.tree_item.rename_committed) std.debug.print("Outline renamed: {s}\n", .{ctx.widget(h).?.tree_item.label});
         }
         if (ctx.lastTreeDrop()) |drop| {
             const position_name = switch (drop.position) {
@@ -1537,19 +1582,19 @@ pub fn main(init: std.process.Init) !void {
                 .after => "after",
             };
             std.debug.print("Outline drop: {s} -> {s} ({s})\n", .{
-                ctx.treeItemLabel(drop.source),
-                ctx.treeItemLabel(drop.target),
+                ctx.widget(drop.source).?.tree_item.label,
+                ctx.widget(drop.target).?.tree_item.label,
                 position_name,
             });
         }
-        if (state.list_box) |h| if (ctx.listBoxChanged(h)) {
-            std.debug.print("List box selection count: {}\n", .{ctx.listBoxSelectionCount(h)});
+        if (state.list_box) |h| if (ctx.widget(h).?.list_box.changed) {
+            std.debug.print("List box selection count: {}\n", .{countSelectedSelectables(&ctx, h)});
         };
         if (state.selectable_scene) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Scene Collection\n", .{});
         if (state.selectable_camera) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Camera Rig\n", .{});
         if (state.selectable_light) |h| if (ctx.wasClicked(h)) std.debug.print("List row selected: Lighting Set\n", .{});
-        if (state.grid_selector) |h| if (ctx.gridSelectorChanged(h)) {
-            std.debug.print("Grid selection count: {}\n", .{ctx.gridSelectorSelectionCount(h)});
+        if (state.grid_selector) |h| if (ctx.widget(h).?.grid_selector.changed) {
+            std.debug.print("Grid selection count: {}\n", .{countSelectedGridItems(&ctx, h)});
         };
         if (state.grid_item_a) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: Brick\n", .{});
         if (state.grid_item_b) |h| if (ctx.wasClicked(h)) std.debug.print("Grid tile selected: Metal\n", .{});
@@ -1566,38 +1611,38 @@ pub fn main(init: std.process.Init) !void {
                 }),
             }
         }
-        if (state.asset_table) |h| if (ctx.tableChanged(h)) {
+        if (state.asset_table) |h| if (ctx.widget(h).?.table.changed) {
             std.debug.print("Asset table divider {} resized: [{d:.2}, {d:.2}, {d:.2}]\n", .{
-                ctx.tableResizedColumn(h).?,
+                ctx.widget(h).?.table.resized_column.?,
                 ctx.tableColumnFraction(h, 0).?,
                 ctx.tableColumnFraction(h, 1).?,
                 ctx.tableColumnFraction(h, 2).?,
             });
         };
-        if (state.asset_table) |h| if (ctx.tableSortChanged(h)) {
-            const column_name = switch (ctx.tableSortedColumn(h).?) {
+        if (state.asset_table) |h| if (ctx.widget(h).?.table.sort_changed) {
+            const column_name = switch (ctx.widget(h).?.table.sorted_column.?) {
                 0 => "Name",
                 1 => "Type",
                 2 => "Visible",
                 else => "Unknown",
             };
-            const direction_name = switch (ctx.tableSortDirection(h).?) {
+            const direction_name = switch (ctx.widget(h).?.table.sort_direction) {
                 .ascending => "ascending",
                 .descending => "descending",
             };
             std.debug.print("Asset table sort: {s} {s}\n", .{ column_name, direction_name });
         };
-        if (state.asset_table) |h| if (ctx.tableSelectionChanged(h)) {
+        if (state.asset_table) |h| if (ctx.widget(h).?.table.selection_changed) {
             std.debug.print("Asset table selection count: {}, first row: {?}\n", .{
-                ctx.tableSelectionCount(h),
-                ctx.tableSelectedRowIndex(h),
+                countSelectedDataRows(&ctx, h),
+                firstSelectedDataRowIndex(&ctx, h),
             });
         };
         if (state.asset_row_a) |h| if (ctx.wasClicked(h)) std.debug.print("Asset row clicked: SceneRoot\n", .{});
         if (state.asset_row_b) |h| if (ctx.wasClicked(h)) std.debug.print("Asset row clicked: CameraRig\n", .{});
         if (state.asset_row_c) |h| if (ctx.wasClicked(h)) std.debug.print("Asset row clicked: KeyLight\n", .{});
-        if (state.dropdown) |h| if (ctx.dropdownChanged(h)) {
-            std.debug.print("Dropdown selected: {s}\n", .{ctx.dropdownValue(h)});
+        if (state.dropdown) |h| if (ctx.widget(h).?.dropdown.changed) {
+            std.debug.print("Dropdown selected: {s}\n", .{ctx.widget(h).?.dropdown.selected_text});
         };
         if (state.menu_file) |h| if (ctx.wasClicked(h)) std.debug.print("Menu toggled: File\n", .{});
         if (state.menu_edit) |h| if (ctx.wasClicked(h)) std.debug.print("Menu toggled: Edit\n", .{});
@@ -1606,11 +1651,11 @@ pub fn main(init: std.process.Init) !void {
         if (state.menu_quit) |h| if (ctx.wasClicked(h)) std.debug.print("Menu action: Quit\n", .{});
         if (state.menu_copy) |h| if (ctx.wasClicked(h)) std.debug.print("Menu action: Copy\n", .{});
         if (state.menu_paste) |h| if (ctx.wasClicked(h)) std.debug.print("Menu action: Paste\n", .{});
-        if (state.drag_value) |h| if (ctx.dragValueChanged(h)) {
-            std.debug.print("Exposure changed: {d:.2}\n", .{ctx.dragValue(h)});
+        if (state.drag_value) |h| if (ctx.widget(h).?.drag_value.changed) {
+            std.debug.print("Exposure changed: {d:.2}\n", .{ctx.widget(h).?.drag_value.value});
         };
-        if (state.spinbox) |h| if (ctx.spinboxChanged(h)) {
-            std.debug.print("Samples changed: {d:.0}\n", .{ctx.spinboxValue(h)});
+        if (state.spinbox) |h| if (ctx.widget(h).?.spinbox.changed) {
+            std.debug.print("Samples changed: {d:.0}\n", .{ctx.widget(h).?.spinbox.value});
         };
         if (state.tab_scene) |h| if (ctx.wasClicked(h)) {
             std.debug.print("Tab selected: Scene\n", .{});
@@ -1618,22 +1663,20 @@ pub fn main(init: std.process.Init) !void {
         if (state.tab_render) |h| if (ctx.wasClicked(h)) {
             std.debug.print("Tab selected: Render\n", .{});
         };
-        if (state.splitter) |h| if (ctx.splitterChanged(h)) {
-            std.debug.print("Splitter ratio: {d:.2}\n", .{ctx.splitterRatio(h)});
+        if (state.splitter) |h| if (ctx.widget(h).?.splitter.changed) {
+            std.debug.print("Splitter ratio: {d:.2}\n", .{ctx.widget(h).?.splitter.ratio});
         };
         if (state.context_action_a) |h| if (ctx.wasClicked(h)) std.debug.print("Context action: Rename\n", .{});
         if (state.context_action_b) |h| if (ctx.wasClicked(h)) std.debug.print("Context action: Delete\n", .{});
 
         // Render
         var paint_list = try ctx.generatePaintList();
-        defer ctx.freePaintList(&paint_list);
         if (try ensureAtlasForPaintList(&ensured_text, &text_atlas, &renderer, paint_list)) {
             const updated_metrics = fontLineMetrics(&text_atlas);
             text_measure.ascent_units = updated_metrics.ascent;
             text_measure.descent_units = updated_metrics.descent;
             ctx.setDimensions(state.logical_width, state.logical_height);
             ctx.doLayout(&text_measure_ctx);
-            ctx.freePaintList(&paint_list);
             paint_list = try ctx.generatePaintList();
         }
 

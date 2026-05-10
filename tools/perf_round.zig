@@ -678,12 +678,12 @@ fn buildExplorerWorkload(ctx: *goop.Context, alloc: std.mem.Allocator, table_row
     _ = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "Help" } });
 
     const toolbar = try ctx.tree.addChild(root, .{ .toolbar = .{} });
-    ctx.tree.get(toolbar).style_override = .{
+    _ = ctx.setStyle(toolbar, .{
         .bg = .rgb(232, 236, 243),
         .border = .rgb(203, 210, 223),
         .padding = goop.style.Edges.symmetric(10, 8),
         .border_radius = 0,
-    };
+    });
     _ = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Back" } });
     _ = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Forward" } });
     _ = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Up" } });
@@ -691,7 +691,7 @@ fn buildExplorerWorkload(ctx: *goop.Context, alloc: std.mem.Allocator, table_row
     _ = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Sort" } });
     _ = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "View" } });
     const address_input = try ctx.tree.addChild(toolbar, .{ .text_input = .{} });
-    ctx.tree.get(address_input).kind.text_input.insertSlice("C:\\Workspace\\goop\\assets\\mock-project");
+    ctx.mutateKind(address_input).?.text_input.insertSlice("C:\\Workspace\\goop\\assets\\mock-project");
     _ = try ctx.tree.addChild(toolbar, .{ .text_input = .{ .placeholder = "Search mock-project" } });
 
     const content_split = try ctx.tree.addChild(root, .{ .splitter = .{
@@ -703,30 +703,30 @@ fn buildExplorerWorkload(ctx: *goop.Context, alloc: std.mem.Allocator, table_row
     } });
 
     const nav_panel = try ctx.tree.addChild(content_split, .{ .container = .{ .direction = .column } });
-    ctx.tree.get(nav_panel).style_override = .{
+    _ = ctx.setStyle(nav_panel, .{
         .bg = .rgb(247, 249, 252),
         .border = .rgb(214, 220, 230),
         .padding = goop.style.Edges.symmetric(10, 10),
         .border_radius = 0,
-    };
+    });
     _ = try ctx.tree.addChild(nav_panel, .{ .text = .{ .content = "Folders" } });
     try addNavTree(ctx, alloc, nav_panel);
 
     const main_panel = try ctx.tree.addChild(content_split, .{ .container = .{ .direction = .column } });
-    ctx.tree.get(main_panel).style_override = .{
+    _ = ctx.setStyle(main_panel, .{
         .bg = .rgb(250, 252, 255),
         .border = .rgb(214, 220, 230),
         .padding = goop.style.Edges.symmetric(10, 10),
         .border_radius = 0,
-    };
+    });
 
     const crumb_bar = try ctx.tree.addChild(main_panel, .{ .toolbar = .{} });
-    ctx.tree.get(crumb_bar).style_override = .{
+    _ = ctx.setStyle(crumb_bar, .{
         .bg = .rgb(255, 255, 255),
         .border = .rgb(214, 220, 230),
         .padding = goop.style.Edges.symmetric(10, 7),
         .border_radius = 4,
-    };
+    });
     _ = try ctx.tree.addChild(crumb_bar, .{ .text = .{ .content = "This PC" } });
     _ = try ctx.tree.addChild(crumb_bar, .{ .text = .{ .content = ">" } });
     _ = try ctx.tree.addChild(crumb_bar, .{ .text = .{ .content = "Workspace" } });
@@ -754,7 +754,7 @@ fn buildExplorerWorkload(ctx: *goop.Context, alloc: std.mem.Allocator, table_row
         .min_column_width = 92,
     } });
     {
-        const table = &ctx.tree.get(file_table).kind.table;
+        const table = &ctx.mutateKind(file_table).?.table;
         table.column_weights[0] = 0.50;
         table.column_weights[1] = 0.20;
         table.column_weights[2] = 0.18;
@@ -763,11 +763,11 @@ fn buildExplorerWorkload(ctx: *goop.Context, alloc: std.mem.Allocator, table_row
     try addFileTable(ctx, alloc, file_table, table_rows);
 
     const preview = try ctx.tree.addChild(detail_split, .{ .container = .{ .direction = .column } });
-    ctx.tree.get(preview).style_override = .{
+    _ = ctx.setStyle(preview, .{
         .bg = .rgb(246, 248, 252),
         .border = .rgb(214, 220, 230),
         .padding = goop.style.Edges.symmetric(10, 10),
-    };
+    });
     _ = try ctx.tree.addChild(preview, .{ .text = .{ .content = "Details Pane" } });
     _ = try ctx.tree.addChild(preview, .{ .text = .{ .content = "Selected: render-cache-017.bin" } });
     _ = try ctx.tree.addChild(preview, .{ .text = .{ .content = "Type: Binary Cache" } });
@@ -775,12 +775,12 @@ fn buildExplorerWorkload(ctx: *goop.Context, alloc: std.mem.Allocator, table_row
     _ = try ctx.tree.addChild(preview, .{ .text = .{ .content = "Tags: Generated, Preview, Shared" } });
 
     const status_bar = try ctx.tree.addChild(root, .{ .status_bar = .{} });
-    ctx.tree.get(status_bar).style_override = .{
+    _ = ctx.setStyle(status_bar, .{
         .bg = .rgb(232, 236, 243),
         .border = .rgb(203, 210, 223),
         .padding = goop.style.Edges.symmetric(10, 7),
         .border_radius = 0,
-    };
+    });
     _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "1,284 items" } });
     _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "146 selected" } });
     _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "Status: Indexed" } });

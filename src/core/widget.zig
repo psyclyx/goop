@@ -396,7 +396,7 @@ pub const WidgetKind = union(enum) {
         label: []const u8,
         shortcut: []const u8 = "",
         checked: bool = false,
-        enabled: bool = true,
+        disabled: bool = false,
         clicked: bool = false,
     };
 
@@ -522,15 +522,15 @@ pub const WidgetKind = union(enum) {
     pub const ScrollArea = struct {
         scroll_x: f32 = 0,
         scroll_y: f32 = 0,
-        allow_horizontal_scroll: bool = true,
-        allow_vertical_scroll: bool = true,
+        disable_horizontal_scroll: bool = false,
+        disable_vertical_scroll: bool = false,
 
         pub fn effectiveScrollX(self: ScrollArea) f32 {
-            return if (self.allow_horizontal_scroll) self.scroll_x else 0;
+            return if (self.disable_horizontal_scroll) 0 else self.scroll_x;
         }
 
         pub fn effectiveScrollY(self: ScrollArea) f32 {
-            return if (self.allow_vertical_scroll) self.scroll_y else 0;
+            return if (self.disable_vertical_scroll) 0 else self.scroll_y;
         }
     };
 
@@ -780,6 +780,331 @@ pub const WidgetKind = union(enum) {
             return prefix_len;
         }
     };
+};
+
+/// Read-only projection of a widget node's per-kind state.
+///
+/// `WidgetView` is the supported way to query widget state from the
+/// outside. It carries identifying fields, mutable interaction state
+/// (value, selected, expanded, …), and one-frame flags (clicked,
+/// changed, toggled, …). Pure configuration the embedder set at
+/// construction (min/max/precision/min_first/etc) is intentionally
+/// omitted — the embedder is the source of truth for that.
+///
+/// The view is built by `WidgetView.fromKind` and is a snapshot of the
+/// kind data at one moment. Slices it carries (labels, content) point
+/// into the tree's storage and stay valid until the next mutation that
+/// touches the same widget.
+pub const WidgetView = union(enum) {
+    container: Container,
+    text: Text,
+    button: Button,
+    checkbox: Checkbox,
+    radio_button: RadioButton,
+    tree_item: TreeItem,
+    dropdown: Dropdown,
+    list_box: ListBox,
+    selectable: Selectable,
+    grid_selector: GridSelector,
+    grid_item: GridItem,
+    table: Table,
+    table_row: TableRow,
+    table_cell: void,
+    toolbar: void,
+    status_bar: void,
+    menu_bar: void,
+    menu: Menu,
+    popup: Popup,
+    tooltip: Tooltip,
+    menu_item: MenuItem,
+    drag_value: DragValue,
+    spinbox: SpinBox,
+    tab_bar: void,
+    tab_item: TabItem,
+    splitter: Splitter,
+    slider: Slider,
+    spacer: void,
+    scroll_area: ScrollArea,
+    text_input: TextInput,
+
+    pub const Container = struct { direction: WidgetKind.Container.Direction };
+
+    pub const Text = struct { content: []const u8 };
+
+    pub const Button = struct {
+        label: []const u8,
+        clicked: bool,
+    };
+
+    pub const Checkbox = struct {
+        label: []const u8,
+        checked: bool,
+        clicked: bool,
+    };
+
+    pub const RadioButton = struct {
+        label: []const u8,
+        group: u32,
+        selected: bool,
+        clicked: bool,
+    };
+
+    pub const TreeItem = struct {
+        label: []const u8,
+        group: u32,
+        has_children: bool,
+        expanded: bool,
+        selected: bool,
+        editing: bool,
+        clicked: bool,
+        toggled: bool,
+        dragging: bool,
+        drop_received: bool,
+        rename_committed: bool,
+    };
+
+    pub const Dropdown = struct {
+        placeholder: []const u8,
+        selected_text: []const u8,
+        selected_index: ?u16,
+        open: bool,
+        clicked: bool,
+        changed: bool,
+    };
+
+    pub const ListBox = struct { changed: bool };
+
+    pub const Selectable = struct {
+        label: []const u8,
+        group: u32,
+        selected: bool,
+        clicked: bool,
+        dragging: bool,
+    };
+
+    pub const GridSelector = struct {
+        changed: bool,
+        computed_columns: u16,
+    };
+
+    pub const GridItem = struct {
+        label: []const u8,
+        selected: bool,
+        clicked: bool,
+        dragging: bool,
+    };
+
+    pub const Table = struct {
+        active_columns: u8,
+        changed: bool,
+        resized_column: ?u8,
+        sorted_column: ?u8,
+        sort_direction: WidgetKind.Table.SortDirection,
+        sort_changed: bool,
+        selection_changed: bool,
+    };
+
+    pub const TableRow = struct {
+        header: bool,
+        selected: bool,
+        dragging: bool,
+    };
+
+    pub const Menu = struct {
+        label: []const u8,
+        clicked: bool,
+    };
+
+    pub const Popup = struct {
+        placement: WidgetKind.Popup.Placement,
+        x: f32,
+        y: f32,
+        visible: bool,
+        z_index: i16,
+    };
+
+    pub const Tooltip = struct {
+        placement: WidgetKind.Popup.Placement,
+        x: f32,
+        y: f32,
+        z_index: i16,
+    };
+
+    pub const MenuItem = struct {
+        label: []const u8,
+        shortcut: []const u8,
+        checked: bool,
+        disabled: bool,
+        clicked: bool,
+    };
+
+    pub const DragValue = struct {
+        value: f32,
+        changed: bool,
+        editing: bool,
+        display_text: []const u8,
+    };
+
+    pub const SpinBox = struct {
+        value: f32,
+        changed: bool,
+        editing: bool,
+        display_text: []const u8,
+    };
+
+    pub const TabItem = struct {
+        label: []const u8,
+        selected: bool,
+        clicked: bool,
+    };
+
+    pub const Splitter = struct {
+        ratio: f32,
+        changed: bool,
+    };
+
+    pub const Slider = struct { value: f32 };
+
+    pub const ScrollArea = struct {
+        scroll_x: f32,
+        scroll_y: f32,
+    };
+
+    pub const TextInput = struct {
+        content: []const u8,
+        cursor: u8,
+        selection_anchor: ?u8,
+    };
+
+    pub fn fromKind(kind: *const WidgetKind) WidgetView {
+        // We read fields through the `kind` pointer rather than via value
+        // captures so that slices the view exposes (label, content, …)
+        // borrow from the tree's storage and not a temporary copy.
+        return switch (kind.*) {
+            .container => .{ .container = .{ .direction = kind.container.direction } },
+            .text => .{ .text = .{ .content = kind.text.content } },
+            .button => .{ .button = .{ .label = kind.button.label, .clicked = kind.button.clicked } },
+            .checkbox => .{ .checkbox = .{
+                .label = kind.checkbox.label,
+                .checked = kind.checkbox.checked,
+                .clicked = kind.checkbox.clicked,
+            } },
+            .radio_button => .{ .radio_button = .{
+                .label = kind.radio_button.label,
+                .group = kind.radio_button.group,
+                .selected = kind.radio_button.selected,
+                .clicked = kind.radio_button.clicked,
+            } },
+            .tree_item => .{ .tree_item = .{
+                .label = kind.tree_item.displayLabel(),
+                .group = kind.tree_item.group,
+                .has_children = kind.tree_item.has_children,
+                .expanded = kind.tree_item.expanded,
+                .selected = kind.tree_item.selected,
+                .editing = kind.tree_item.editing,
+                .clicked = kind.tree_item.clicked,
+                .toggled = kind.tree_item.toggled,
+                .dragging = kind.tree_item.dragging,
+                .drop_received = kind.tree_item.drop_received,
+                .rename_committed = kind.tree_item.rename_committed,
+            } },
+            .dropdown => .{ .dropdown = .{
+                .placeholder = kind.dropdown.placeholder,
+                .selected_text = kind.dropdown.selected_text,
+                .selected_index = kind.dropdown.selected_index,
+                .open = kind.dropdown.open,
+                .clicked = kind.dropdown.clicked,
+                .changed = kind.dropdown.changed,
+            } },
+            .list_box => .{ .list_box = .{ .changed = kind.list_box.changed } },
+            .selectable => .{ .selectable = .{
+                .label = kind.selectable.label,
+                .group = kind.selectable.group,
+                .selected = kind.selectable.selected,
+                .clicked = kind.selectable.clicked,
+                .dragging = kind.selectable.dragging,
+            } },
+            .grid_selector => .{ .grid_selector = .{
+                .changed = kind.grid_selector.changed,
+                .computed_columns = kind.grid_selector.computed_columns,
+            } },
+            .grid_item => .{ .grid_item = .{
+                .label = kind.grid_item.label,
+                .selected = kind.grid_item.selected,
+                .clicked = kind.grid_item.clicked,
+                .dragging = kind.grid_item.dragging,
+            } },
+            .table => .{ .table = .{
+                .active_columns = kind.table.active_columns,
+                .changed = kind.table.changed,
+                .resized_column = kind.table.resized_column,
+                .sorted_column = kind.table.sorted_column,
+                .sort_direction = kind.table.sort_direction,
+                .sort_changed = kind.table.sort_changed,
+                .selection_changed = kind.table.selection_changed,
+            } },
+            .table_row => .{ .table_row = .{
+                .header = kind.table_row.header,
+                .selected = kind.table_row.selected,
+                .dragging = kind.table_row.dragging,
+            } },
+            .table_cell => .{ .table_cell = {} },
+            .toolbar => .{ .toolbar = {} },
+            .status_bar => .{ .status_bar = {} },
+            .menu_bar => .{ .menu_bar = {} },
+            .menu => .{ .menu = .{ .label = kind.menu.label, .clicked = kind.menu.clicked } },
+            .popup => .{ .popup = .{
+                .placement = kind.popup.placement,
+                .x = kind.popup.x,
+                .y = kind.popup.y,
+                .visible = kind.popup.visible,
+                .z_index = kind.popup.z_index,
+            } },
+            .tooltip => .{ .tooltip = .{
+                .placement = kind.tooltip.placement,
+                .x = kind.tooltip.x,
+                .y = kind.tooltip.y,
+                .z_index = kind.tooltip.z_index,
+            } },
+            .menu_item => .{ .menu_item = .{
+                .label = kind.menu_item.label,
+                .shortcut = kind.menu_item.shortcut,
+                .checked = kind.menu_item.checked,
+                .disabled = kind.menu_item.disabled,
+                .clicked = kind.menu_item.clicked,
+            } },
+            .drag_value => .{ .drag_value = .{
+                .value = kind.drag_value.value,
+                .changed = kind.drag_value.changed,
+                .editing = kind.drag_value.editing,
+                .display_text = kind.drag_value.displayValue(),
+            } },
+            .spinbox => .{ .spinbox = .{
+                .value = kind.spinbox.value,
+                .changed = kind.spinbox.changed,
+                .editing = kind.spinbox.editing,
+                .display_text = kind.spinbox.displayValue(),
+            } },
+            .tab_bar => .{ .tab_bar = {} },
+            .tab_item => .{ .tab_item = .{
+                .label = kind.tab_item.label,
+                .selected = kind.tab_item.selected,
+                .clicked = kind.tab_item.clicked,
+            } },
+            .splitter => .{ .splitter = .{ .ratio = kind.splitter.ratio, .changed = kind.splitter.changed } },
+            .slider => .{ .slider = .{ .value = kind.slider.value } },
+            .spacer => .{ .spacer = {} },
+            .scroll_area => .{ .scroll_area = .{
+                .scroll_x = kind.scroll_area.scroll_x,
+                .scroll_y = kind.scroll_area.scroll_y,
+            } },
+            .text_input => .{ .text_input = .{
+                .content = kind.text_input.content(),
+                .cursor = kind.text_input.cursor,
+                .selection_anchor = kind.text_input.selection_anchor,
+            } },
+        };
+    }
 };
 
 /// A single node in the widget tree.
@@ -1168,7 +1493,7 @@ pub fn tableDataRowIndex(tree: *const Tree, row: NodeHandle) ?u16 {
     return null;
 }
 
-fn syncDerivedState(kind: *WidgetKind) void {
+pub fn syncDerivedState(kind: *WidgetKind) void {
     switch (kind.*) {
         .table => |*table| table.syncColumns(table.columns),
         .drag_value => |*drag_value| drag_value.syncLabel(),

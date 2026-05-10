@@ -1436,10 +1436,10 @@ fn emitMenuItem(
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const has_popup = directPopupChild(tree, handle) != null;
-    const text_color = if (item.enabled)
-        resolved.fg
+    const text_color = if (item.disabled)
+        style.Color.rgba(resolved.fg.r, resolved.fg.g, resolved.fg.b, 120)
     else
-        style.Color.rgba(resolved.fg.r, resolved.fg.g, resolved.fg.b, 120);
+        resolved.fg;
     const reserve_width = @max(resolved.font_size, 12);
     const gap = @max(resolved.padding.left * 0.75, 6);
     const rect = paintRect(node.layout_rect);
@@ -1893,8 +1893,8 @@ fn emitScrollArea(
 
     const extent = scrollContentExtent(tree, handle);
     const scroll = node.kind.scroll_area;
-    const has_vertical_scrollbar = scroll.allow_vertical_scroll and extent.h > rect.h + 0.01;
-    const has_horizontal_scrollbar = scroll.allow_horizontal_scroll and extent.w > rect.w + 0.01;
+    const has_vertical_scrollbar = !scroll.disable_vertical_scroll and extent.h > rect.h + 0.01;
+    const has_horizontal_scrollbar = !scroll.disable_horizontal_scroll and extent.w > rect.w + 0.01;
 
     if (has_vertical_scrollbar) {
         const scrollbar_inset: f32 = 2;
@@ -3878,7 +3878,7 @@ test "scroll area omits disabled horizontal scrollbar when content overflows wid
     var tree = widget.Tree.init(allocator);
     defer tree.deinit();
 
-    const scroll = try tree.addRoot(.{ .scroll_area = .{ .allow_horizontal_scroll = false } });
+    const scroll = try tree.addRoot(.{ .scroll_area = .{ .disable_horizontal_scroll = true } });
     const child = try tree.addChild(scroll, .{ .spacer = .{ .width = 300, .height = 40 } });
     tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 120, .h = 80 };
     tree.get(child).layout_rect = .{ .x = 6, .y = 6, .w = 300, .h = 40 };

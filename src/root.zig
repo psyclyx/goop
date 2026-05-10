@@ -1,3 +1,7 @@
+//! Public root module for `goop`. Re-exports the everyday primitives and
+//! the sub-namespaces embedders reach into. See `goop.zig` for the
+//! authoritative docstring on each.
+
 const goop = @import("goop.zig");
 const c_api = @import("c_api.zig");
 
@@ -10,7 +14,6 @@ pub const event = goop.event;
 pub const style = goop.style;
 pub const draw = goop.draw;
 pub const layout = goop.layout;
-pub const dispatch = goop.dispatch;
 pub const hittest = goop.hittest;
 
 pub const Tree = goop.Tree;
@@ -39,7 +42,6 @@ pub const TableDrop = goop.TableDrop;
 pub const WidgetDrop = goop.WidgetDrop;
 pub const Drop = goop.Drop;
 pub const PointerPosition = goop.PointerPosition;
-pub const SelectedChild = goop.SelectedChild;
 pub const Runtime = goop.Runtime;
 pub const Context = goop.Context;
 

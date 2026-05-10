@@ -1,3 +1,30 @@
+//! `goop` is a retained-mode GUI library. The embedder owns the native
+//! window, input pump, text shaper, and renderer; `goop` owns widget
+//! state, layout, hit testing, event dispatch, and draw-list generation.
+//!
+//! Public surface, in rough import order:
+//!
+//! - `Runtime` is the primitive: it owns clay state, the event queue,
+//!   draw caches, and hit/dispatch state for one or more caller-owned
+//!   `Tree`s. Embedders that drive multiple trees (e.g. main window plus
+//!   detached popup surfaces) wire up `Runtime` directly.
+//! - `Context` is the single-tree convenience layer over `Runtime`. It
+//!   bundles a `Tree`, `Theme`, optional `Clipboard`, and a `Runtime` so
+//!   the common case is one type. Anything `Context` exposes is a thin
+//!   forward over `Runtime` plus its bundled tree.
+//! - `Tree` holds widget nodes. Mutating fields directly on a node
+//!   bypasses the runtime's invalidation, so changes that affect layout
+//!   or rendering should go through `Runtime.setStyle`/`updateWidget` or
+//!   the equivalent on `Context`. The runtime watches the tree's slot
+//!   count to catch raw `addChild`/`remove` calls.
+//! - The everyday primitives (`NodeHandle`, `WidgetKind`, `WidgetView`,
+//!   `Style`, `Theme`, `Event`, `DrawCommand`, …) are re-exported at
+//!   this level so most code only imports `goop`.
+//! - Sub-namespaces (`widget`, `style`, `draw`, `layout`, `hittest`,
+//!   `event`) hold the helpers and types embedders reach for less often
+//!   (rect math, text measurement, hit testing, paint command shape).
+//!   `dispatch` is intentionally private — it runs through `Runtime`.
+
 const std = @import("std");
 const c = @cImport({
     @cInclude("clay.h");
@@ -8,12 +35,15 @@ pub const event = @import("core/event.zig");
 pub const style = @import("core/style.zig");
 pub const draw = @import("core/draw.zig");
 pub const layout = @import("core/layout.zig");
-pub const dispatch = @import("core/dispatch.zig");
 pub const hittest = @import("core/hittest.zig");
+
+const dispatch = @import("core/dispatch.zig");
 
 pub const Tree = widget.Tree;
 pub const NodeHandle = widget.NodeHandle;
 pub const WidgetKind = widget.WidgetKind;
+pub const WidgetView = widget.WidgetView;
+pub const Rect = draw.Rect;
 pub const Event = event.Event;
 pub const Theme = style.Theme;
 pub const Style = style.Style;
@@ -41,12 +71,6 @@ pub const Drop = dispatch.Drop;
 pub const PointerPosition = struct {
     x: f32,
     y: f32,
-};
-
-pub const SelectedChild = struct {
-    handle: NodeHandle,
-    index: u16,
-    user_id: u64,
 };
 
 pub const Runtime = struct {
@@ -91,6 +115,13 @@ pub const Runtime = struct {
     }
 
     /// Queue an input event for processing.
+    ///
+    /// Consecutive `.mouse_move` events collapse into the latest position.
+    /// Consecutive `.mouse_scroll` events collapse into a summed delta.
+    /// All other events are appended verbatim. If your embedder needs a
+    /// per-event trail (e.g. handwriting, freehand drawing), push a
+    /// terminator event between samples or process events synchronously
+    /// rather than queuing.
     pub fn pushEvent(self: *Runtime, ev: Event) !void {
         switch (ev) {
             .mouse_move => |move| {
@@ -234,13 +265,86 @@ pub const Runtime = struct {
         }
     }
 
+    /// Snapshot a widget's read-only state. Returns null if the handle
+    /// is dead. The slices in the returned view borrow from the tree
+    /// and stay valid until the next mutation that touches this widget.
+    pub fn widget(_: *const Runtime, tree: *const Tree, handle: NodeHandle) ?WidgetView {
+        if (!tree.isAlive(handle)) return null;
+        return WidgetView.fromKind(&tree.getConst(handle).kind);
+    }
+
+    /// Get the laid-out rectangle for a widget. Returns null if the
+    /// handle is dead. The rectangle is from the most recent layout
+    /// pass; call `doLayout` first if state has changed since.
+    pub fn layoutRect(_: *const Runtime, tree: *const Tree, handle: NodeHandle) ?Rect {
+        if (!tree.isAlive(handle)) return null;
+        return tree.getConst(handle).layout_rect;
+    }
+
+    /// Get a single column's normalized width for a table, in [0, 1].
+    /// Returns null if the handle is not a table or the column index
+    /// exceeds the table's active column count.
+    pub fn tableColumnFraction(_: *const Runtime, tree: *const Tree, handle: NodeHandle, index: u8) ?f32 {
+        if (!tree.isAlive(handle)) return null;
+        const node = tree.getConst(handle);
+        if (node.kind != .table) return null;
+        return node.kind.table.columnWeight(index);
+    }
+
+    /// Replace a widget's payload with the provided descriptor. The
+    /// kind tag must match the widget's current kind. Returns true on
+    /// success, false if the handle is dead or the kind tag does not
+    /// match. Marks the runtime dirty.
+    pub fn updateWidget(self: *Runtime, tree: *Tree, handle: NodeHandle, kind: WidgetKind) bool {
+        if (!tree.isAlive(handle)) return false;
+        const node = tree.get(handle);
+        if (@as(std.meta.Tag(WidgetKind), node.kind) != @as(std.meta.Tag(WidgetKind), kind)) return false;
+        node.kind = kind;
+        @import("core/widget.zig").syncDerivedState(&node.kind);
+        self.invalidate();
+        return true;
+    }
+
+    /// Replace a widget's per-node style overrides. Returns false if
+    /// the handle is dead. Marks the runtime dirty so the change
+    /// re-lays-out and re-renders on the next frame.
+    pub fn setStyle(self: *Runtime, tree: *Tree, handle: NodeHandle, override: Style) bool {
+        if (!tree.isAlive(handle)) return false;
+        tree.get(handle).style_override = override;
+        self.invalidate();
+        return true;
+    }
+
+    /// Borrow a mutable pointer to a widget's payload for in-place
+    /// edits (e.g. scroll position, popup visibility). Returns null if
+    /// the handle is dead. Always pessimistically marks the runtime
+    /// dirty — the runtime cannot tell which fields the caller will
+    /// touch, so it assumes layout and draw both need to rerun.
+    pub fn mutateKind(self: *Runtime, tree: *Tree, handle: NodeHandle) ?*WidgetKind {
+        if (!tree.isAlive(handle)) return null;
+        self.invalidate();
+        return &tree.get(handle).kind;
+    }
+
+    /// Mark a widget as embedder-rendered. The library still emits a
+    /// `.custom` draw command for it, but skips its built-in painting.
+    /// Returns false if the handle is dead.
+    pub fn setCustomDraw(self: *Runtime, tree: *Tree, handle: NodeHandle, custom: bool) bool {
+        if (!tree.isAlive(handle)) return false;
+        tree.get(handle).custom_draw = custom;
+        self.invalidate();
+        return true;
+    }
+
     /// Check if a widget was activated with the primary button this frame.
     pub fn wasClicked(_: *const Runtime, tree: *const Tree, handle: NodeHandle) bool {
+        if (!tree.isAlive(handle)) return false;
         return tree.getConst(handle).interaction.primary_clicked;
     }
 
     /// Check if a widget was activated with the secondary button this frame.
     pub fn wasSecondaryClicked(_: *const Runtime, tree: *const Tree, handle: NodeHandle) bool {
+        if (!tree.isAlive(handle)) return false;
         return tree.getConst(handle).interaction.secondary_clicked;
     }
 
@@ -365,6 +469,18 @@ pub const Runtime = struct {
         return tree.getConst(handle).user_id;
     }
 
+    /// Mark a widget as a generic drop target for active item drags.
+    pub fn setDropTarget(_: *Runtime, tree: *Tree, handle: NodeHandle, accepts_drop: bool) void {
+        if (!tree.isAlive(handle)) return;
+        tree.get(handle).interaction.accepts_drop = accepts_drop;
+    }
+
+    /// Check whether a generic drop is currently hovering this widget.
+    pub fn isDropHovered(_: *const Runtime, tree: *const Tree, handle: NodeHandle) bool {
+        if (!tree.isAlive(handle)) return false;
+        return tree.getConst(handle).interaction.drop_hovered;
+    }
+
     /// Run layout: walk the widget tree through clay and write back rects.
     /// Skips the full clay pass if nothing layout-affecting has changed.
     /// Pass a TextMeasureCtx for accurate snail-based text measurement,
@@ -382,9 +498,11 @@ pub const Runtime = struct {
     }
 
     /// Generate draw commands from the laid-out widget tree.
-    /// Returns a cached list when nothing has changed. Caller must
-    /// call freeDrawList when done — cached lists are ref-shared and
-    /// only freed when the cache is invalidated or the context is deinited.
+    ///
+    /// The returned list is owned by the Runtime. It stays valid until the
+    /// next call that invalidates the draw cache (event processing, tree
+    /// mutation, theme/dimension change, or `deinit`). Copy if you need it
+    /// to outlive that.
     pub fn generateDrawList(self: *Runtime, tree: *const Tree, theme: Theme) !DrawList {
         if (!self.draw_dirty) {
             if (self.cached_draw_list) |cached| return cached;
@@ -407,13 +525,6 @@ pub const Runtime = struct {
         self.draw_dirty = false;
         return paint_list;
     }
-
-    /// Free a DrawList returned by generateDrawList.
-    /// This is a no-op — the Context owns the draw list memory and
-    /// manages its lifetime internally. Retained for API compatibility.
-    pub fn freeDrawList(_: *Runtime, _: *DrawList) void {}
-
-    pub fn freePaintList(_: *Runtime, _: *PaintList) void {}
 
     /// Invalidate and free the cached draw list.
     fn invalidateDrawCache(self: *Runtime) void {
@@ -451,6 +562,12 @@ pub const Runtime = struct {
     };
 };
 
+/// `Context` is the single-tree convenience layer over `Runtime`. It
+/// owns one `Tree`, one `Theme`, an optional `Clipboard`, and a
+/// `Runtime`. Every method is a thin forward to the matching `Runtime`
+/// method with `&self.tree`, `self.theme`, and `self.clipboard` filled
+/// in. Embedders that drive several trees from one runtime use
+/// `Runtime` directly.
 pub const Context = struct {
     tree: Tree,
     theme: Theme,
@@ -477,7 +594,9 @@ pub const Context = struct {
         self.runtime.invalidate();
     }
 
-    /// Queue an input event for processing.
+    /// Queue an input event for processing. See `Runtime.pushEvent` for
+    /// the coalescing contract on consecutive mouse_move and mouse_scroll
+    /// events.
     pub fn pushEvent(self: *Context, ev: Event) !void {
         try self.runtime.pushEvent(ev);
     }
@@ -507,14 +626,12 @@ pub const Context = struct {
 
     /// Mark a widget as a generic drop target for active item drags.
     pub fn setDropTarget(self: *Context, handle: NodeHandle, accepts_drop: bool) void {
-        if (!self.tree.isAlive(handle)) return;
-        self.tree.get(handle).interaction.accepts_drop = accepts_drop;
+        self.runtime.setDropTarget(&self.tree, handle, accepts_drop);
     }
 
     /// Check whether a generic drop is currently hovering this widget.
     pub fn isDropHovered(self: *const Context, handle: NodeHandle) bool {
-        if (!self.tree.isAlive(handle)) return false;
-        return self.tree.getConst(handle).interaction.drop_hovered;
+        return self.runtime.isDropHovered(&self.tree, handle);
     }
 
     /// Get the current pointer position in context coordinates.
@@ -552,6 +669,26 @@ pub const Context = struct {
         self.runtime.cancelPointerGesture(&self.tree);
     }
 
+    /// Snapshot a widget's read-only state. Returns null if the handle
+    /// is dead. Slices in the view borrow from the tree and stay valid
+    /// until the next mutation that touches this widget.
+    pub fn widget(self: *const Context, handle: NodeHandle) ?WidgetView {
+        return self.runtime.widget(&self.tree, handle);
+    }
+
+    /// Get the laid-out rectangle for a widget. Returns null if the
+    /// handle is dead.
+    pub fn layoutRect(self: *const Context, handle: NodeHandle) ?Rect {
+        return self.runtime.layoutRect(&self.tree, handle);
+    }
+
+    /// Get a single column's normalized width for a table, in [0, 1].
+    /// Returns null if the handle is not a table or the index exceeds
+    /// the table's active column count.
+    pub fn tableColumnFraction(self: *const Context, handle: NodeHandle, index: u8) ?f32 {
+        return self.runtime.tableColumnFraction(&self.tree, handle, index);
+    }
+
     /// Check if a widget was activated with the primary button this frame.
     pub fn wasClicked(self: *const Context, handle: NodeHandle) bool {
         return self.runtime.wasClicked(&self.tree, handle);
@@ -562,274 +699,43 @@ pub const Context = struct {
         return self.runtime.wasSecondaryClicked(&self.tree, handle);
     }
 
-    /// Check if a checkbox is currently checked.
-    pub fn isChecked(self: *const Context, handle: NodeHandle) bool {
-        const node = self.tree.getConst(handle);
-        return switch (node.kind) {
-            .checkbox => node.kind.checkbox.checked,
-            .menu_item => node.kind.menu_item.checked,
-            else => false,
-        };
+    /// Replace a widget's payload. The kind tag must match the current
+    /// kind. Returns false if the handle is dead or the kind tag does
+    /// not match. Marks the runtime dirty.
+    pub fn updateWidget(self: *Context, handle: NodeHandle, kind: WidgetKind) bool {
+        return self.runtime.updateWidget(&self.tree, handle, kind);
     }
 
-    /// Check if a radio button is currently selected.
-    pub fn isSelected(self: *const Context, handle: NodeHandle) bool {
-        const node = self.tree.getConst(handle);
-        return switch (node.kind) {
-            .radio_button => node.kind.radio_button.selected,
-            .tree_item => node.kind.tree_item.selected,
-            .selectable => node.kind.selectable.selected,
-            .grid_item => node.kind.grid_item.selected,
-            .table_row => node.kind.table_row.selected,
-            .tab_item => node.kind.tab_item.selected,
-            else => false,
-        };
+    /// Replace a widget's per-node style overrides. Returns false if
+    /// the handle is dead. Marks the runtime dirty.
+    pub fn setStyle(self: *Context, handle: NodeHandle, override: Style) bool {
+        return self.runtime.setStyle(&self.tree, handle, override);
     }
 
-    /// Check whether a tree item is currently expanded.
-    pub fn isExpanded(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.tree_item.expanded;
+    /// Borrow a mutable pointer to a widget's payload for in-place edits.
+    /// Returns null if the handle is dead. Marks the runtime dirty.
+    pub fn mutateKind(self: *Context, handle: NodeHandle) ?*WidgetKind {
+        return self.runtime.mutateKind(&self.tree, handle);
     }
 
-    /// Check whether a tree item toggled this frame.
-    pub fn treeItemToggled(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.tree_item.toggled;
+    /// Mark a widget as embedder-rendered. Returns false if the handle
+    /// is dead.
+    pub fn setCustomDraw(self: *Context, handle: NodeHandle, custom: bool) bool {
+        return self.runtime.setCustomDraw(&self.tree, handle, custom);
     }
 
-    /// Get the current label content of a tree item.
-    pub fn treeItemLabel(self: *const Context, handle: NodeHandle) []const u8 {
-        return self.tree.getConst(handle).kind.tree_item.label;
+    /// Add a top-level widget. Returns its handle. Marks the runtime
+    /// dirty.
+    pub fn addRoot(self: *Context, kind: WidgetKind) !NodeHandle {
+        self.runtime.invalidate();
+        return self.tree.addRoot(kind);
     }
 
-    /// Check whether a tree item is currently in inline rename mode.
-    pub fn treeItemEditing(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.tree_item.editing;
-    }
-
-    /// Check whether a tree item committed a rename this frame.
-    pub fn treeItemRenameCommitted(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.tree_item.rename_committed;
-    }
-
-    /// Get the current value of a slider.
-    pub fn sliderValue(self: *const Context, handle: NodeHandle) f32 {
-        return self.tree.getConst(handle).kind.slider.value;
-    }
-
-    /// Get the current value of a drag value widget.
-    pub fn dragValue(self: *const Context, handle: NodeHandle) f32 {
-        return self.tree.getConst(handle).kind.drag_value.value;
-    }
-
-    /// Check whether a drag value changed this frame.
-    pub fn dragValueChanged(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.drag_value.changed;
-    }
-
-    /// Get the current value of a spinbox.
-    pub fn spinboxValue(self: *const Context, handle: NodeHandle) f32 {
-        return self.tree.getConst(handle).kind.spinbox.value;
-    }
-
-    /// Check whether a spinbox changed this frame.
-    pub fn spinboxChanged(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.spinbox.changed;
-    }
-
-    /// Get the current ratio of a splitter.
-    pub fn splitterRatio(self: *const Context, handle: NodeHandle) f32 {
-        return self.tree.getConst(handle).kind.splitter.ratio;
-    }
-
-    /// Check whether a splitter changed this frame.
-    pub fn splitterChanged(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.splitter.changed;
-    }
-
-    /// Get the current text content of a text input.
-    pub fn textInputValue(self: *const Context, handle: NodeHandle) []const u8 {
-        return self.tree.getConst(handle).kind.text_input.content();
-    }
-
-    /// Get the current selected text of a dropdown.
-    pub fn dropdownValue(self: *const Context, handle: NodeHandle) []const u8 {
-        return self.tree.getConst(handle).kind.dropdown.selected_text;
-    }
-
-    /// Get the selected item index of a dropdown, if any.
-    pub fn dropdownSelectedIndex(self: *const Context, handle: NodeHandle) ?u16 {
-        return self.tree.getConst(handle).kind.dropdown.selected_index;
-    }
-
-    /// Check whether a dropdown selection changed this frame.
-    pub fn dropdownChanged(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.dropdown.changed;
-    }
-
-    /// Get the selected direct child index of a list box, if any.
-    pub fn listBoxSelectedIndex(self: *const Context, handle: NodeHandle) ?u16 {
-        var index: u16 = 0;
-        var iter = self.tree.children(handle);
-        while (iter.next()) |child| {
-            if (self.tree.getConst(child).kind != .selectable) continue;
-            if (self.tree.getConst(child).kind.selectable.selected) return index;
-            index += 1;
-        }
-        return null;
-    }
-
-    /// Check whether a list box selection changed this frame.
-    pub fn listBoxChanged(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.list_box.changed;
-    }
-
-    /// Count selected direct child rows in a list box.
-    pub fn listBoxSelectionCount(self: *const Context, handle: NodeHandle) u16 {
-        var count: u16 = 0;
-        var iter = self.tree.children(handle);
-        while (iter.next()) |child| {
-            if (self.tree.getConst(child).kind != .selectable) continue;
-            if (self.tree.getConst(child).kind.selectable.selected) count += 1;
-        }
-        return count;
-    }
-
-    /// Get the selected direct child at the given selected ordinal.
-    ///
-    /// For list boxes and grid selectors, index counts selectable/grid-item
-    /// children. For tables, index counts non-header rows.
-    pub fn selectedChild(self: *const Context, handle: NodeHandle, selected_ordinal: u16) ?SelectedChild {
-        if (!self.tree.isAlive(handle)) return null;
-        const parent_kind = self.tree.getConst(handle).kind;
-        var child_index: u16 = 0;
-        var selected_index: u16 = 0;
-        var iter = self.tree.children(handle);
-        while (iter.next()) |child| {
-            const node = self.tree.getConst(child);
-            const selected = switch (parent_kind) {
-                .list_box => blk: {
-                    if (node.kind != .selectable) continue;
-                    break :blk node.kind.selectable.selected;
-                },
-                .grid_selector => blk: {
-                    if (node.kind != .grid_item) continue;
-                    break :blk node.kind.grid_item.selected;
-                },
-                .table => blk: {
-                    if (node.kind != .table_row or node.kind.table_row.header) continue;
-                    break :blk node.kind.table_row.selected;
-                },
-                else => return null,
-            };
-            if (selected) {
-                if (selected_index == selected_ordinal) {
-                    return .{
-                        .handle = child,
-                        .index = child_index,
-                        .user_id = node.user_id,
-                    };
-                }
-                selected_index += 1;
-            }
-            child_index += 1;
-        }
-        return null;
-    }
-
-    /// Get the direct child index at the given selected ordinal.
-    pub fn selectedChildIndex(self: *const Context, handle: NodeHandle, selected_ordinal: u16) ?u16 {
-        const child = self.selectedChild(handle, selected_ordinal) orelse return null;
-        return child.index;
-    }
-
-    /// Get the selected direct child index of a grid selector, if any.
-    pub fn gridSelectorSelectedIndex(self: *const Context, handle: NodeHandle) ?u16 {
-        var index: u16 = 0;
-        var iter = self.tree.children(handle);
-        while (iter.next()) |child| {
-            if (self.tree.getConst(child).kind != .grid_item) continue;
-            if (self.tree.getConst(child).kind.grid_item.selected) return index;
-            index += 1;
-        }
-        return null;
-    }
-
-    /// Check whether a grid selector selection changed this frame.
-    pub fn gridSelectorChanged(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.grid_selector.changed;
-    }
-
-    /// Count selected direct child tiles in a grid selector.
-    pub fn gridSelectorSelectionCount(self: *const Context, handle: NodeHandle) u16 {
-        var count: u16 = 0;
-        var iter = self.tree.children(handle);
-        while (iter.next()) |child| {
-            if (self.tree.getConst(child).kind != .grid_item) continue;
-            if (self.tree.getConst(child).kind.grid_item.selected) count += 1;
-        }
-        return count;
-    }
-
-    /// Get the retained width fraction for a table column, if present.
-    pub fn tableColumnFraction(self: *const Context, handle: NodeHandle, index: u8) ?f32 {
-        return self.tree.getConst(handle).kind.table.columnWeight(index);
-    }
-
-    /// Check whether a table resized this frame.
-    pub fn tableChanged(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.table.changed;
-    }
-
-    /// Get the divider index that was resized this frame, if any.
-    pub fn tableResizedColumn(self: *const Context, handle: NodeHandle) ?u8 {
-        return self.tree.getConst(handle).kind.table.resized_column;
-    }
-
-    /// Get the currently sorted table column, if any.
-    pub fn tableSortedColumn(self: *const Context, handle: NodeHandle) ?u8 {
-        return self.tree.getConst(handle).kind.table.sorted_column;
-    }
-
-    /// Get the current table sort direction, if sorting is active.
-    pub fn tableSortDirection(self: *const Context, handle: NodeHandle) ?widget.WidgetKind.Table.SortDirection {
-        const table = self.tree.getConst(handle).kind.table;
-        if (table.sorted_column == null) return null;
-        return table.sort_direction;
-    }
-
-    /// Check whether table sorting changed this frame.
-    pub fn tableSortChanged(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.table.sort_changed;
-    }
-
-    /// Check whether table row selection changed this frame.
-    pub fn tableSelectionChanged(self: *const Context, handle: NodeHandle) bool {
-        return self.tree.getConst(handle).kind.table.selection_changed;
-    }
-
-    /// Count selected non-header rows in a table.
-    pub fn tableSelectionCount(self: *const Context, handle: NodeHandle) u16 {
-        var count: u16 = 0;
-        var iter = self.tree.children(handle);
-        while (iter.next()) |child| {
-            const node = self.tree.getConst(child);
-            if (node.kind != .table_row or node.kind.table_row.header) continue;
-            if (node.kind.table_row.selected) count += 1;
-        }
-        return count;
-    }
-
-    /// Get the first selected non-header row index in a table, if any.
-    pub fn tableSelectedRowIndex(self: *const Context, handle: NodeHandle) ?u16 {
-        var index: u16 = 0;
-        var iter = self.tree.children(handle);
-        while (iter.next()) |child| {
-            const node = self.tree.getConst(child);
-            if (node.kind != .table_row or node.kind.table_row.header) continue;
-            if (node.kind.table_row.selected) return index;
-            index += 1;
-        }
-        return null;
+    /// Add a child widget under the given parent. Returns its handle.
+    /// Marks the runtime dirty.
+    pub fn addChild(self: *Context, parent: NodeHandle, kind: WidgetKind) !NodeHandle {
+        self.runtime.invalidate();
+        return self.tree.addChild(parent, kind);
     }
 
     /// Get the most recent secondary click that occurred this frame, if any.
@@ -897,15 +803,6 @@ pub const Context = struct {
         return self.runtime.generatePaintList(&self.tree, self.theme);
     }
 
-    /// Free a DrawList returned by generateDrawList.
-    pub fn freeDrawList(self: *Context, draw_list: *DrawList) void {
-        self.runtime.freeDrawList(draw_list);
-    }
-
-    pub fn freePaintList(self: *Context, paint_list: *PaintList) void {
-        self.runtime.freePaintList(paint_list);
-    }
-
     /// Update layout dimensions (e.g. on window resize).
     pub fn setDimensions(self: *Context, width: u32, height: u32) void {
         self.runtime.setDimensions(width, height);
@@ -917,6 +814,110 @@ pub const Context = struct {
         theme: Theme = .{},
     };
 };
+
+// Small view-based helpers used by tests below. Embedders that want
+// the same conveniences are expected to write their own — these are
+// intentionally not part of the public API.
+
+fn testIsChecked(ctx: *const Context, h: NodeHandle) bool {
+    const v = ctx.widget(h) orelse return false;
+    return switch (v) {
+        .checkbox => |w| w.checked,
+        .menu_item => |w| w.checked,
+        else => false,
+    };
+}
+
+fn testIsSelected(ctx: *const Context, h: NodeHandle) bool {
+    const v = ctx.widget(h) orelse return false;
+    return switch (v) {
+        .radio_button => |w| w.selected,
+        .tree_item => |w| w.selected,
+        .selectable => |w| w.selected,
+        .grid_item => |w| w.selected,
+        .table_row => |w| w.selected,
+        .tab_item => |w| w.selected,
+        else => false,
+    };
+}
+
+fn testCountSelectedChildren(ctx: *const Context, parent: NodeHandle) u16 {
+    var count: u16 = 0;
+    var iter = ctx.tree.children(parent);
+    while (iter.next()) |child| {
+        if (testIsSelected(ctx, child)) count += 1;
+    }
+    return count;
+}
+
+fn testFirstSelectedChildIndex(ctx: *const Context, parent: NodeHandle) ?u16 {
+    var index: u16 = 0;
+    var iter = ctx.tree.children(parent);
+    while (iter.next()) |child| {
+        if (testIsSelected(ctx, child)) return index;
+        index += 1;
+    }
+    return null;
+}
+
+fn testFirstSelectedSelectableIndex(ctx: *const Context, parent: NodeHandle) ?u16 {
+    var index: u16 = 0;
+    var iter = ctx.tree.children(parent);
+    while (iter.next()) |child| {
+        const v = ctx.widget(child) orelse continue;
+        if (v != .selectable) continue;
+        if (v.selectable.selected) return index;
+        index += 1;
+    }
+    return null;
+}
+
+fn testFirstSelectedGridItemIndex(ctx: *const Context, parent: NodeHandle) ?u16 {
+    var index: u16 = 0;
+    var iter = ctx.tree.children(parent);
+    while (iter.next()) |child| {
+        const v = ctx.widget(child) orelse continue;
+        if (v != .grid_item) continue;
+        if (v.grid_item.selected) return index;
+        index += 1;
+    }
+    return null;
+}
+
+fn testCountSelectedGridItems(ctx: *const Context, parent: NodeHandle) u16 {
+    var count: u16 = 0;
+    var iter = ctx.tree.children(parent);
+    while (iter.next()) |child| {
+        const v = ctx.widget(child) orelse continue;
+        if (v == .grid_item and v.grid_item.selected) count += 1;
+    }
+    return count;
+}
+
+fn testCountSelectedDataRows(ctx: *const Context, parent: NodeHandle) u16 {
+    var count: u16 = 0;
+    var iter = ctx.tree.children(parent);
+    while (iter.next()) |child| {
+        const v = ctx.widget(child) orelse continue;
+        if (v != .table_row) continue;
+        if (v.table_row.header) continue;
+        if (v.table_row.selected) count += 1;
+    }
+    return count;
+}
+
+fn testFirstSelectedDataRowIndex(ctx: *const Context, parent: NodeHandle) ?u16 {
+    var index: u16 = 0;
+    var iter = ctx.tree.children(parent);
+    while (iter.next()) |child| {
+        const v = ctx.widget(child) orelse continue;
+        if (v != .table_row) continue;
+        if (v.table_row.header) continue;
+        if (v.table_row.selected) return index;
+        index += 1;
+    }
+    return null;
+}
 
 test "context initializes" {
     var ctx = try Context.init(std.testing.allocator, .{});
@@ -936,8 +937,7 @@ test "runtime operates on caller-owned tree" {
     _ = try tree.addChild(root, .{ .button = .{ .label = "OK" } });
 
     runtime.doLayout(&tree, .{}, null);
-    var draw_list = try runtime.generateDrawList(&tree, .{});
-    defer runtime.freeDrawList(&draw_list);
+    const draw_list = try runtime.generateDrawList(&tree, .{});
 
     try std.testing.expect(draw_list.commands.len > 0);
 }
@@ -984,8 +984,7 @@ test "layout then draw produces commands" {
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "hello" } });
 
     ctx.doLayout(null);
-    var dl = try ctx.generateDrawList();
-    defer ctx.freeDrawList(&dl);
+    const dl = try ctx.generateDrawList();
 
     // Should have at least: container bg, button bg, button text, text label
     try std.testing.expect(dl.commands.len >= 4);
@@ -1029,13 +1028,13 @@ test "checkbox toggle via events" {
     const click_x = cb_rect.x + cb_rect.w / 2;
     const click_y = cb_rect.y + cb_rect.h / 2;
 
-    try std.testing.expect(!ctx.isChecked(cb));
+    try std.testing.expect(!testIsChecked(&ctx, cb));
 
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = click_y } });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = click_x, .y = click_y } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.isChecked(cb));
+    try std.testing.expect(testIsChecked(&ctx, cb));
 }
 
 test "radio button group selection via events" {
@@ -1053,8 +1052,8 @@ test "radio button group selection via events" {
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = rb1_rect.x + 5, .y = rb1_rect.y + 5 } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.isSelected(rb1));
-    try std.testing.expect(!ctx.isSelected(rb2));
+    try std.testing.expect(testIsSelected(&ctx, rb1));
+    try std.testing.expect(!testIsSelected(&ctx, rb2));
     try std.testing.expect(ctx.wasClicked(rb1));
 
     ctx.clearClickedFlags();
@@ -1066,8 +1065,8 @@ test "radio button group selection via events" {
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = rb2_rect.x + 5, .y = rb2_rect.y + 5 } });
     ctx.processEvents();
 
-    try std.testing.expect(!ctx.isSelected(rb1));
-    try std.testing.expect(ctx.isSelected(rb2));
+    try std.testing.expect(!testIsSelected(&ctx, rb1));
+    try std.testing.expect(testIsSelected(&ctx, rb2));
 }
 
 test "layout skips when not dirty" {
@@ -1191,16 +1190,12 @@ test "draw list caching returns same list when clean" {
 
     ctx.doLayout(null);
 
-    var dl1 = try ctx.generateDrawList();
+    const dl1 = try ctx.generateDrawList();
     try std.testing.expect(!ctx.runtime.draw_dirty);
 
     // Second call without changes returns the cached pointer
-    var dl2 = try ctx.generateDrawList();
+    const dl2 = try ctx.generateDrawList();
     try std.testing.expectEqual(dl1.commands.ptr, dl2.commands.ptr);
-
-    // freeDrawList is a no-op for the cached list
-    ctx.freeDrawList(&dl1);
-    ctx.freeDrawList(&dl2);
 }
 
 test "draw list regenerated after events" {
@@ -1211,7 +1206,7 @@ test "draw list regenerated after events" {
     _ = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
 
     ctx.doLayout(null);
-    var dl1 = try ctx.generateDrawList();
+    const dl1 = try ctx.generateDrawList();
     const ptr1 = dl1.commands.ptr;
 
     // Pushing an event and processing marks draw dirty
@@ -1220,12 +1215,9 @@ test "draw list regenerated after events" {
     try std.testing.expect(ctx.runtime.draw_dirty);
 
     // Regeneration produces a new list (old cache freed internally)
-    var dl2 = try ctx.generateDrawList();
+    _ = try ctx.generateDrawList();
     try std.testing.expect(!ctx.runtime.draw_dirty);
     _ = ptr1;
-
-    ctx.freeDrawList(&dl1);
-    ctx.freeDrawList(&dl2);
 }
 
 test "collapsed tree item can be reopened across context frames" {
@@ -1252,7 +1244,7 @@ test "collapsed tree item can be reopened across context frames" {
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = disclosure_x, .y = disclosure_y } });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = disclosure_x, .y = disclosure_y } });
     ctx.processEvents();
-    try std.testing.expect(!ctx.isExpanded(parent));
+    try std.testing.expect(!ctx.widget(parent).?.tree_item.expanded);
 
     ctx.clearClickedFlags();
     ctx.doLayout(null);
@@ -1261,7 +1253,7 @@ test "collapsed tree item can be reopened across context frames" {
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = disclosure_x, .y = disclosure_y } });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = disclosure_x, .y = disclosure_y } });
     ctx.processEvents();
-    try std.testing.expect(ctx.isExpanded(parent));
+    try std.testing.expect(ctx.widget(parent).?.tree_item.expanded);
 }
 
 test "tree item drop is reported across context frames" {
@@ -1325,8 +1317,8 @@ test "tab panels switch visibility across context frames" {
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = render_rect.x + 5, .y = render_rect.y + 5 } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.isSelected(render));
-    try std.testing.expect(!ctx.isSelected(scene));
+    try std.testing.expect(testIsSelected(&ctx, render));
+    try std.testing.expect(!testIsSelected(&ctx, scene));
 
     ctx.clearClickedFlags();
     ctx.doLayout(null);
@@ -1351,7 +1343,7 @@ test "list box reports selected index and change across context frames" {
 
     ctx.clearClickedFlags();
     ctx.doLayout(null);
-    try std.testing.expectEqual(@as(?u16, 0), ctx.listBoxSelectedIndex(list_box));
+    try std.testing.expectEqual(@as(?u16, 0), testFirstSelectedSelectableIndex(&ctx, list_box));
 
     const camera_rect = ctx.tree.getConst(camera).layout_rect;
     try ctx.pushEvent(.{ .mouse_button = .{
@@ -1368,9 +1360,9 @@ test "list box reports selected index and change across context frames" {
     } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.listBoxChanged(list_box));
-    try std.testing.expectEqual(@as(?u16, 1), ctx.listBoxSelectedIndex(list_box));
-    try std.testing.expect(ctx.isSelected(camera));
+    try std.testing.expect(ctx.widget(list_box).?.list_box.changed);
+    try std.testing.expectEqual(@as(?u16, 1), testFirstSelectedSelectableIndex(&ctx, list_box));
+    try std.testing.expect(testIsSelected(&ctx, camera));
 }
 
 test "grid selector reports selection count and change across context frames" {
@@ -1393,7 +1385,7 @@ test "grid selector reports selection count and change across context frames" {
 
     ctx.clearClickedFlags();
     ctx.doLayout(null);
-    try std.testing.expectEqual(@as(?u16, 0), ctx.gridSelectorSelectedIndex(grid));
+    try std.testing.expectEqual(@as(?u16, 0), testFirstSelectedGridItemIndex(&ctx, grid));
 
     const metal_rect = ctx.tree.getConst(metal).layout_rect;
     try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } });
@@ -1412,9 +1404,9 @@ test "grid selector reports selection count and change across context frames" {
     try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.gridSelectorChanged(grid));
-    try std.testing.expectEqual(@as(u16, 2), ctx.gridSelectorSelectionCount(grid));
-    try std.testing.expect(ctx.isSelected(metal));
+    try std.testing.expect(ctx.widget(grid).?.grid_selector.changed);
+    try std.testing.expectEqual(@as(u16, 2), testCountSelectedGridItems(&ctx, grid));
+    try std.testing.expect(testIsSelected(&ctx, metal));
 }
 
 test "grid item drop is reported across context frames" {
@@ -1513,14 +1505,35 @@ test "multi-select list box supports ctrl-toggle and shift-range selection" {
     try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.listBoxChanged(list_box));
-    try std.testing.expect(ctx.isSelected(scene));
-    try std.testing.expect(ctx.isSelected(camera));
-    try std.testing.expectEqual(@as(u16, 2), ctx.listBoxSelectionCount(list_box));
-    const selected = ctx.selectedChild(list_box, 1).?;
-    try std.testing.expect(selected.handle.eql(camera));
-    try std.testing.expectEqual(@as(u16, 1), selected.index);
-    try std.testing.expectEqual(@as(u64, 202), selected.user_id);
+    try std.testing.expect(ctx.widget(list_box).?.list_box.changed);
+    try std.testing.expect(testIsSelected(&ctx, scene));
+    try std.testing.expect(testIsSelected(&ctx, camera));
+    try std.testing.expectEqual(@as(u16, 2), testCountSelectedChildren(&ctx, list_box));
+    {
+        // The second selected selectable child of list_box: walk children
+        // (selectable-only) and pick ordinal index 1.
+        var ordinal: u16 = 0;
+        var found: ?NodeHandle = null;
+        var found_index: u16 = 0;
+        var idx: u16 = 0;
+        var iter = ctx.tree.children(list_box);
+        while (iter.next()) |child| {
+            const v = ctx.widget(child) orelse continue;
+            if (v != .selectable) continue;
+            if (v.selectable.selected) {
+                if (ordinal == 1) {
+                    found = child;
+                    found_index = idx;
+                    break;
+                }
+                ordinal += 1;
+            }
+            idx += 1;
+        }
+        try std.testing.expect(found.?.eql(camera));
+        try std.testing.expectEqual(@as(u16, 1), found_index);
+        try std.testing.expectEqual(@as(u64, 202), ctx.runtime.userId(&ctx.tree, found.?));
+    }
 
     ctx.clearClickedFlags();
     const light_rect = ctx.tree.getConst(light).layout_rect;
@@ -1542,11 +1555,11 @@ test "multi-select list box supports ctrl-toggle and shift-range selection" {
     try ctx.pushEvent(.{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.listBoxChanged(list_box));
-    try std.testing.expect(ctx.isSelected(scene));
-    try std.testing.expect(ctx.isSelected(camera));
-    try std.testing.expect(ctx.isSelected(light));
-    try std.testing.expectEqual(@as(u16, 3), ctx.listBoxSelectionCount(list_box));
+    try std.testing.expect(ctx.widget(list_box).?.list_box.changed);
+    try std.testing.expect(testIsSelected(&ctx, scene));
+    try std.testing.expect(testIsSelected(&ctx, camera));
+    try std.testing.expect(testIsSelected(&ctx, light));
+    try std.testing.expectEqual(@as(u16, 3), testCountSelectedChildren(&ctx, list_box));
 }
 
 test "table row selection reports count and first selected row" {
@@ -1602,11 +1615,11 @@ test "table row selection reports count and first selected row" {
     try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.tableSelectionChanged(table));
-    try std.testing.expectEqual(@as(u16, 2), ctx.tableSelectionCount(table));
-    try std.testing.expectEqual(@as(?u16, 0), ctx.tableSelectedRowIndex(table));
-    try std.testing.expect(ctx.isSelected(first));
-    try std.testing.expect(ctx.isSelected(second));
+    try std.testing.expect(ctx.widget(table).?.table.selection_changed);
+    try std.testing.expectEqual(@as(u16, 2), testCountSelectedDataRows(&ctx, table));
+    try std.testing.expectEqual(@as(?u16, 0), testFirstSelectedDataRowIndex(&ctx, table));
+    try std.testing.expect(testIsSelected(&ctx, first));
+    try std.testing.expect(testIsSelected(&ctx, second));
 
     ctx.clearClickedFlags();
     const third_rect = ctx.tree.getConst(third).layout_rect;
@@ -1628,10 +1641,10 @@ test "table row selection reports count and first selected row" {
     try ctx.pushEvent(.{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.tableSelectionChanged(table));
-    try std.testing.expectEqual(@as(u16, 3), ctx.tableSelectionCount(table));
-    try std.testing.expectEqual(@as(?u16, 0), ctx.tableSelectedRowIndex(table));
-    try std.testing.expect(ctx.isSelected(third));
+    try std.testing.expect(ctx.widget(table).?.table.selection_changed);
+    try std.testing.expectEqual(@as(u16, 3), testCountSelectedDataRows(&ctx, table));
+    try std.testing.expectEqual(@as(?u16, 0), testFirstSelectedDataRowIndex(&ctx, table));
+    try std.testing.expect(testIsSelected(&ctx, third));
 }
 
 test "table layout keeps columns aligned across rows" {
@@ -1730,8 +1743,8 @@ test "resizable table columns update widths in the same frame as drag" {
     const resized_row_name = ctx.tree.getConst(row_name).layout_rect;
     const resized_row_type = ctx.tree.getConst(row_type).layout_rect;
 
-    try std.testing.expect(ctx.tableChanged(table));
-    try std.testing.expectEqual(@as(?u8, 0), ctx.tableResizedColumn(table));
+    try std.testing.expect(ctx.widget(table).?.table.changed);
+    try std.testing.expectEqual(@as(?u8, 0), ctx.widget(table).?.table.resized_column);
     try std.testing.expect(ctx.tableColumnFraction(table, 0).? > (1.0 / 3.0));
     try std.testing.expect(resized_name.w > initial_name.w);
     try std.testing.expect(resized_type.w < initial_type.w);
@@ -1788,9 +1801,9 @@ test "sortable table headers update retained sort state" {
     ctx.processEvents();
 
     try std.testing.expect(ctx.wasClicked(table));
-    try std.testing.expect(ctx.tableSortChanged(table));
-    try std.testing.expectEqual(@as(?u8, 1), ctx.tableSortedColumn(table));
-    try std.testing.expectEqual(widget.WidgetKind.Table.SortDirection.ascending, ctx.tableSortDirection(table).?);
+    try std.testing.expect(ctx.widget(table).?.table.sort_changed);
+    try std.testing.expectEqual(@as(?u8, 1), ctx.widget(table).?.table.sorted_column);
+    try std.testing.expectEqual(widget.WidgetKind.Table.SortDirection.ascending, ctx.widget(table).?.table.sort_direction);
 
     ctx.clearClickedFlags();
     try ctx.pushEvent(.{ .mouse_button = .{
@@ -1809,9 +1822,9 @@ test "sortable table headers update retained sort state" {
     } });
     ctx.processEvents();
 
-    try std.testing.expect(ctx.tableSortChanged(table));
-    try std.testing.expectEqual(@as(?u8, 1), ctx.tableSortedColumn(table));
-    try std.testing.expectEqual(widget.WidgetKind.Table.SortDirection.descending, ctx.tableSortDirection(table).?);
+    try std.testing.expect(ctx.widget(table).?.table.sort_changed);
+    try std.testing.expectEqual(@as(?u8, 1), ctx.widget(table).?.table.sorted_column);
+    try std.testing.expectEqual(widget.WidgetKind.Table.SortDirection.descending, ctx.widget(table).?.table.sort_direction);
 }
 
 test "tooltip layout updates in the same frame as hover" {
