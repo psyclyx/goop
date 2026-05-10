@@ -11,12 +11,24 @@ pub const Rect = struct {
     h: f32,
 };
 
-var active_paint_cull_rect: ?Rect = null;
 const PaintOffset = struct {
     x: f32 = 0,
     y: f32 = 0,
 };
-var active_paint_offset = PaintOffset{};
+
+const PaintCtx = struct {
+    cull_rect: ?Rect = null,
+    offset: PaintOffset = .{},
+
+    fn paintRect(self: *const PaintCtx, rect: Rect) Rect {
+        return .{
+            .x = rect.x + self.offset.x,
+            .y = rect.y + self.offset.y,
+            .w = rect.w,
+            .h = rect.h,
+        };
+    }
+};
 
 pub const TextAlign = enum {
     start,
@@ -141,16 +153,14 @@ pub fn generatePaintWithoutFloating(tree: *const widget.Tree, theme: style.Theme
 pub fn generatePaintForPopup(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !PaintList {
     var commands: std.ArrayListUnmanaged(PaintCommand) = .empty;
     errdefer commands.deinit(allocator);
-    const previous_cull_rect = active_paint_cull_rect;
-    const previous_offset = active_paint_offset;
-    defer active_paint_cull_rect = previous_cull_rect;
-    defer active_paint_offset = previous_offset;
 
     const rect = tree.getConst(handle).layout_rect;
-    active_paint_cull_rect = null;
-    active_paint_offset = .{ .x = -rect.x, .y = -rect.y };
+    var paint_ctx = PaintCtx{
+        .cull_rect = null,
+        .offset = .{ .x = -rect.x, .y = -rect.y },
+    };
 
-    try emitNode(tree, handle, theme, &commands, allocator, text_ctx, true);
+    try emitNode(&paint_ctx, tree, handle, theme, &commands, allocator, text_ctx, true);
 
     return .{ .commands = try commands.toOwnedSlice(allocator) };
 }
@@ -158,19 +168,14 @@ pub fn generatePaintForPopup(tree: *const widget.Tree, handle: widget.NodeHandle
 fn generatePaintWithFloating(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, include_floating: bool) !PaintList {
     var commands: std.ArrayListUnmanaged(PaintCommand) = .empty;
     errdefer commands.deinit(allocator);
-    const previous_cull_rect = active_paint_cull_rect;
-    const previous_offset = active_paint_offset;
-    defer active_paint_cull_rect = previous_cull_rect;
-    defer active_paint_offset = previous_offset;
-    active_paint_cull_rect = null;
-    active_paint_offset = .{};
+    var paint_ctx = PaintCtx{};
 
     for (tree.nodes.items, 0..) |node, i| {
         if (!node.alive) continue;
         if (node.parent == null) {
             const handle = tree.handleFromIndex(@intCast(i));
             if (node.kind != .popup and node.kind != .tooltip) {
-                try emitRootNode(tree, handle, theme, &commands, allocator, text_ctx);
+                try emitRootNode(&paint_ctx, tree, handle, theme, &commands, allocator, text_ctx);
             }
         }
     }
@@ -179,17 +184,18 @@ fn generatePaintWithFloating(tree: *const widget.Tree, theme: style.Theme, alloc
         for (tree.nodes.items, 0..) |node, i| {
             if (!node.alive) continue;
             if (node.parent == null) {
-                try emitFloatingSubtrees(tree, tree.handleFromIndex(@intCast(i)), theme, &commands, allocator, text_ctx);
+                try emitFloatingSubtrees(&paint_ctx, tree, tree.handleFromIndex(@intCast(i)), theme, &commands, allocator, text_ctx);
             }
         }
     }
 
-    try emitDragGhosts(tree, theme, &commands, allocator, text_ctx);
+    try emitDragGhosts(&paint_ctx, tree, theme, &commands, allocator, text_ctx);
 
     return .{ .commands = try commands.toOwnedSlice(allocator) };
 }
 
 fn emitRootNode(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     theme: style.Theme,
@@ -197,14 +203,14 @@ fn emitRootNode(
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) std.mem.Allocator.Error!void {
-    const previous_cull_rect = active_paint_cull_rect;
-    active_paint_cull_rect = if (previous_cull_rect) |cull_rect|
-        intersectRects(cull_rect, paintRect(tree.getConst(handle).layout_rect))
+    const previous_cull_rect = paint_ctx.cull_rect;
+    paint_ctx.cull_rect = if (previous_cull_rect) |cull_rect|
+        intersectRects(cull_rect, paint_ctx.paintRect(tree.getConst(handle).layout_rect))
     else
-        paintRect(tree.getConst(handle).layout_rect);
-    defer active_paint_cull_rect = previous_cull_rect;
+        paint_ctx.paintRect(tree.getConst(handle).layout_rect);
+    defer paint_ctx.cull_rect = previous_cull_rect;
 
-    try emitNode(tree, handle, theme, commands, allocator, text_ctx, false);
+    try emitNode(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, false);
 }
 
 pub fn freePaintList(paint_list: *PaintList, allocator: std.mem.Allocator) void {
@@ -259,6 +265,7 @@ pub fn freeDrawList(draw_list: *DrawList, allocator: std.mem.Allocator) void {
 }
 
 fn emitNode(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     theme: style.Theme,
@@ -268,50 +275,50 @@ fn emitNode(
     in_floating_subtree: bool,
 ) std.mem.Allocator.Error!void {
     const node = tree.getConst(handle);
-    const node_rect = paintRect(node.layout_rect);
+    const node_rect = paint_ctx.paintRect(node.layout_rect);
     if (!shouldDrawNode(tree, handle)) return;
     if (!in_floating_subtree and (node.kind == .popup or node.kind == .tooltip)) return;
     if (!in_floating_subtree) {
-        if (active_paint_cull_rect) |cull_rect| {
+        if (paint_ctx.cull_rect) |cull_rect| {
             if (node_rect.w > 0 and node_rect.h > 0 and !rectsIntersect(node_rect, cull_rect) and !shouldTraverseCulledNode(tree, handle)) return;
         }
     }
     const resolved = node.style_override.resolve(theme);
 
     switch (node.kind) {
-        .container => try emitContainer(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .text => |txt| try emitText(node, txt, resolved, commands, allocator, text_ctx),
-        .button => |btn| try emitButton(tree, handle, node, btn, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .checkbox => |cb| try emitCheckbox(node, cb, resolved, theme, commands, allocator, text_ctx),
-        .radio_button => |rb| try emitRadioButton(node, rb, resolved, theme, commands, allocator, text_ctx),
-        .tree_item => |tree_item| try emitTreeItem(tree, handle, node, tree_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .dropdown => |dropdown| try emitDropdown(tree, handle, node, dropdown, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .list_box => |list_box| try emitListBox(tree, handle, node, list_box, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .selectable => |selectable| try emitSelectable(node, selectable, resolved, theme, commands, allocator, text_ctx),
-        .grid_selector => |grid_selector| try emitGridSelector(tree, handle, node, grid_selector, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .grid_item => |grid_item| try emitGridItem(node, grid_item, resolved, theme, commands, allocator, text_ctx),
-        .table => |table| try emitTable(tree, handle, node, table, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .table_row => |row| try emitTableRow(tree, handle, node, row, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .table_cell => try emitTableCell(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .toolbar => try emitToolbar(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .status_bar => try emitStatusBar(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .menu_bar => try emitMenuBar(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .menu => |menu| try emitMenu(tree, handle, node, menu, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .popup => try emitPopup(tree, handle, node, resolved, theme, commands, allocator, text_ctx),
-        .tooltip => try emitTooltip(tree, handle, node, resolved, theme, commands, allocator, text_ctx),
-        .menu_item => |item| try emitMenuItem(tree, handle, node, item, resolved, theme, commands, allocator, text_ctx),
-        .drag_value => try emitDragValue(node, &node.kind.drag_value, resolved, theme, commands, allocator, text_ctx),
-        .spinbox => try emitSpinBox(node, &node.kind.spinbox, resolved, theme, commands, allocator, text_ctx),
-        .tab_bar => |tab_bar| try emitTabBar(tree, handle, node, tab_bar, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .tab_item => |tab_item| try emitTabItem(tree, handle, node, tab_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .splitter => |splitter| try emitSplitter(tree, handle, node, splitter, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .slider => |sl| try emitSlider(node, sl, resolved, theme, commands, allocator),
+        .container => try emitContainer(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .text => |txt| try emitText(paint_ctx, node, txt, resolved, commands, allocator, text_ctx),
+        .button => |btn| try emitButton(paint_ctx, tree, handle, node, btn, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .checkbox => |cb| try emitCheckbox(paint_ctx, node, cb, resolved, theme, commands, allocator, text_ctx),
+        .radio_button => |rb| try emitRadioButton(paint_ctx, node, rb, resolved, theme, commands, allocator, text_ctx),
+        .tree_item => |tree_item| try emitTreeItem(paint_ctx, tree, handle, node, tree_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .dropdown => |dropdown| try emitDropdown(paint_ctx, tree, handle, node, dropdown, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .list_box => |list_box| try emitListBox(paint_ctx, tree, handle, node, list_box, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .selectable => |selectable| try emitSelectable(paint_ctx, node, selectable, resolved, theme, commands, allocator, text_ctx),
+        .grid_selector => |grid_selector| try emitGridSelector(paint_ctx, tree, handle, node, grid_selector, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .grid_item => |grid_item| try emitGridItem(paint_ctx, node, grid_item, resolved, theme, commands, allocator, text_ctx),
+        .table => |table| try emitTable(paint_ctx, tree, handle, node, table, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .table_row => |row| try emitTableRow(paint_ctx, tree, handle, node, row, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .table_cell => try emitTableCell(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .toolbar => try emitToolbar(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .status_bar => try emitStatusBar(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .menu_bar => try emitMenuBar(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .menu => |menu| try emitMenu(paint_ctx, tree, handle, node, menu, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .popup => try emitPopup(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx),
+        .tooltip => try emitTooltip(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx),
+        .menu_item => |item| try emitMenuItem(paint_ctx, tree, handle, node, item, resolved, theme, commands, allocator, text_ctx),
+        .drag_value => try emitDragValue(paint_ctx, node, &node.kind.drag_value, resolved, theme, commands, allocator, text_ctx),
+        .spinbox => try emitSpinBox(paint_ctx, node, &node.kind.spinbox, resolved, theme, commands, allocator, text_ctx),
+        .tab_bar => |tab_bar| try emitTabBar(paint_ctx, tree, handle, node, tab_bar, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .tab_item => |tab_item| try emitTabItem(paint_ctx, tree, handle, node, tab_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .splitter => |splitter| try emitSplitter(paint_ctx, tree, handle, node, splitter, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .slider => |sl| try emitSlider(paint_ctx, node, sl, resolved, theme, commands, allocator),
         .spacer => {},
-        .text_input => try emitTextInput(node, resolved, theme, commands, allocator, text_ctx),
-        .scroll_area => try emitScrollArea(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .text_input => try emitTextInput(paint_ctx, node, resolved, theme, commands, allocator, text_ctx),
+        .scroll_area => try emitScrollArea(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
     }
 
-    try emitDropTargetOverlay(node, resolved, theme, commands, allocator);
+    try emitDropTargetOverlay(paint_ctx, node, resolved, theme, commands, allocator);
 
     if (node.custom_draw and node.kind != .table_cell and node_rect.w > 0 and node_rect.h > 0) {
         try commands.append(allocator, .{ .custom = .{
@@ -321,16 +328,8 @@ fn emitNode(
     }
 }
 
-fn paintRect(rect: Rect) Rect {
-    return .{
-        .x = rect.x + active_paint_offset.x,
-        .y = rect.y + active_paint_offset.y,
-        .w = rect.w,
-        .h = rect.h,
-    };
-}
-
 fn emitContainer(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -341,7 +340,7 @@ fn emitContainer(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     // Background rect
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
@@ -351,7 +350,7 @@ fn emitContainer(
         .corner_radius = resolved.border_radius,
     } });
 
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
 fn defaultTextBounds(rect: Rect, resolved: style.ResolvedStyle) Rect {
@@ -448,6 +447,7 @@ fn textBaselineY(bounds: Rect, metrics: layout.TextDimensions) f32 {
 }
 
 fn emitText(
+    paint_ctx: *const PaintCtx,
     node: *const widget.Node,
     txt: widget.WidgetKind.Text,
     resolved: style.ResolvedStyle,
@@ -455,15 +455,16 @@ fn emitText(
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    const bounds = paintRect(node.layout_rect);
+    const bounds = paint_ctx.paintRect(node.layout_rect);
     if (txt.overflow == .wrap) {
-        try appendWrappedTextCommands(commands, allocator, bounds, txt.content, resolved.fg, resolved.font_size, text_ctx);
+        try appendWrappedTextCommands(paint_ctx, commands, allocator, bounds, txt.content, resolved.fg, resolved.font_size, text_ctx);
     } else {
         try appendTextCommand(commands, allocator, bounds, txt.content, resolved.fg, resolved.font_size, .start, txt.overflow);
     }
 }
 
 fn appendWrappedTextCommands(
+    paint_ctx: *const PaintCtx,
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
     bounds: Rect,
@@ -483,9 +484,9 @@ fn appendWrappedTextCommands(
     var y = bounds.y;
     var start: usize = 0;
     while (start <= text.len) {
-        if (wrappedTextPastCull(y)) return;
+        if (wrappedTextPastCull(paint_ctx, y)) return;
         const end = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
-        y = try appendWrappedParagraph(commands, allocator, bounds, y, line_h, text[start..end], color, font_size, text_ctx);
+        y = try appendWrappedParagraph(paint_ctx, commands, allocator, bounds, y, line_h, text[start..end], color, font_size, text_ctx);
         if (end == text.len) break;
         if (end == start) y += line_h;
         start = end + 1;
@@ -493,6 +494,7 @@ fn appendWrappedTextCommands(
 }
 
 fn appendWrappedParagraph(
+    paint_ctx: *const PaintCtx,
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
     bounds: Rect,
@@ -513,13 +515,13 @@ fn appendWrappedParagraph(
     if (full_width <= wrap_width) {
         const trimmed_end = trimTrailingWhitespace(text);
         if (trimmed_end > 0) {
-            try appendWrappedLineCommand(commands, allocator, bounds, y, line_h, text[0..trimmed_end], color, font_size);
+            try appendWrappedLineCommand(paint_ctx, commands, allocator, bounds, y, line_h, text[0..trimmed_end], color, font_size);
         }
         return y + line_h;
     }
 
     var view = std.unicode.Utf8View.init(text) catch {
-        try appendWrappedLineCommand(commands, allocator, bounds, y, line_h, text, color, font_size);
+        try appendWrappedLineCommand(paint_ctx, commands, allocator, bounds, y, line_h, text, color, font_size);
         return y + line_h;
     };
     var it = view.iterator();
@@ -542,9 +544,9 @@ fn appendWrappedParagraph(
         const trimmed_end = trimTrailingWhitespace(text[line_start..chosen_end]) + line_start;
         const emitted_visible_line = trimmed_end > line_start;
         if (trimmed_end > line_start) {
-            try appendWrappedLineCommand(commands, allocator, bounds, y, line_h, text[line_start..trimmed_end], color, font_size);
+            try appendWrappedLineCommand(paint_ctx, commands, allocator, bounds, y, line_h, text[line_start..trimmed_end], color, font_size);
             y += line_h;
-            if (wrappedTextPastCull(y)) return y;
+            if (wrappedTextPastCull(paint_ctx, y)) return y;
         }
 
         line_start = if (emitted_visible_line) skipSoftWrapWhitespace(text, chosen_end) else chosen_end;
@@ -560,13 +562,14 @@ fn appendWrappedParagraph(
 
     const trimmed_end = trimTrailingWhitespace(text[line_start..line_end]) + line_start;
     if (trimmed_end > line_start) {
-        try appendWrappedLineCommand(commands, allocator, bounds, y, line_h, text[line_start..trimmed_end], color, font_size);
+        try appendWrappedLineCommand(paint_ctx, commands, allocator, bounds, y, line_h, text[line_start..trimmed_end], color, font_size);
         y += line_h;
     }
     return y;
 }
 
 fn appendWrappedLineCommand(
+    paint_ctx: *const PaintCtx,
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
     bounds: Rect,
@@ -577,14 +580,14 @@ fn appendWrappedLineCommand(
     font_size: f32,
 ) !void {
     const line_bounds = Rect{ .x = bounds.x, .y = y, .w = bounds.w, .h = line_h };
-    if (active_paint_cull_rect) |cull_rect| {
+    if (paint_ctx.cull_rect) |cull_rect| {
         if (!rectsIntersect(line_bounds, cull_rect)) return;
     }
     try appendTextCommand(commands, allocator, line_bounds, text, color, font_size, .start, .clip);
 }
 
-fn wrappedTextPastCull(y: f32) bool {
-    const cull_rect = active_paint_cull_rect orelse return false;
+fn wrappedTextPastCull(paint_ctx: *const PaintCtx, y: f32) bool {
+    const cull_rect = paint_ctx.cull_rect orelse return false;
     return y >= cull_rect.y + cull_rect.h;
 }
 
@@ -608,6 +611,7 @@ fn skipSoftWrapWhitespace(text: []const u8, start: usize) usize {
 }
 
 fn emitButton(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -619,7 +623,7 @@ fn emitButton(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     // Background rect
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
@@ -632,11 +636,12 @@ fn emitButton(
     const label_bounds = defaultTextBounds(rect, resolved);
     try appendTextCommand(commands, allocator, label_bounds, btn.label, resolved.fg, resolved.font_size, .start, .visible);
 
-    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
+    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
 fn emitCheckbox(
+    paint_ctx: *const PaintCtx,
     node: *const widget.Node,
     cb: widget.WidgetKind.Checkbox,
     resolved: style.ResolvedStyle,
@@ -645,7 +650,7 @@ fn emitCheckbox(
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     const box_size = resolved.font_size;
 
     // Checkbox box
@@ -683,10 +688,11 @@ fn emitCheckbox(
     const label_bounds = customTextBounds(rect, resolved, label_x, rect.x + rect.w - resolved.padding.right - label_x);
     try appendTextCommand(commands, allocator, label_bounds, cb.label, resolved.fg, resolved.font_size, .start, .visible);
 
-    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitRadioButton(
+    paint_ctx: *const PaintCtx,
     node: *const widget.Node,
     rb: widget.WidgetKind.RadioButton,
     resolved: style.ResolvedStyle,
@@ -695,7 +701,7 @@ fn emitRadioButton(
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     const box_size = resolved.font_size;
     const circle_radius = box_size / 2;
 
@@ -734,10 +740,11 @@ fn emitRadioButton(
     const label_bounds = customTextBounds(rect, resolved, label_x, rect.x + rect.w - resolved.padding.right - label_x);
     try appendTextCommand(commands, allocator, label_bounds, rb.label, resolved.fg, resolved.font_size, .start, .visible);
 
-    try emitFocusRing(node, theme, circle_radius, commands, allocator);
+    try emitFocusRing(paint_ctx, node, theme, circle_radius, commands, allocator);
 }
 
 fn emitTreeItem(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -749,7 +756,7 @@ fn emitTreeItem(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     const depth = treeDepth(tree, handle);
     const indent = @as(f32, @floatFromInt(depth)) * treeIndent(theme, resolved);
     const slot_width = disclosureSlotWidth(resolved);
@@ -764,7 +771,7 @@ fn emitTreeItem(
     const has_parent = findTreeParent(tree, handle) != null;
     const has_children = treeItemHasChildren(tree, handle);
 
-    try emitTreeGuides(tree, handle, rect, resolved, theme, disclosure_center_x, commands, allocator);
+    try emitTreeGuides(paint_ctx, tree, handle, rect, resolved, theme, disclosure_center_x, commands, allocator);
 
     const chrome = treeItemChrome(node, item, resolved, theme);
     if (chrome.color.a > 0 or chrome.border_width > 0) {
@@ -844,15 +851,16 @@ fn emitTreeItem(
         try appendTextCommand(commands, allocator, label_bounds, label, resolved.fg, resolved.font_size, .start, .visible);
     }
 
-    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
     if (item.expanded) {
-        try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+        try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
     } else {
-        try emitPopupChildren(tree, handle, theme, commands, allocator, text_ctx);
+        try emitPopupChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx);
     }
 }
 
 fn emitDropdown(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -869,7 +877,7 @@ fn emitDropdown(
         dropdown.selected_text
     else
         dropdown.placeholder;
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     const chevron = if (dropdown.open) dropdownChevronUp() else dropdownChevronDown();
     const chevron_x = rect.x + rect.w - resolved.padding.right - resolved.font_size * 0.6;
     const label_bounds = customTextBounds(rect, resolved, rect.x + resolved.padding.left, chevron_x - theme.spacing - (rect.x + resolved.padding.left));
@@ -885,13 +893,14 @@ fn emitDropdown(
     try appendTextCommand(commands, allocator, label_bounds, label, if (dropdown.selected_text.len > 0) resolved.fg else theme.placeholder_fg, resolved.font_size, .start, .clip);
     try appendTextCommand(commands, allocator, chevron_bounds, chevron, resolved.fg, resolved.font_size, .center, .visible);
 
-    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
     if (dropdown.open) {
-        try emitPopupChildren(tree, handle, theme, commands, allocator, text_ctx);
+        try emitPopupChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx);
     }
 }
 
 fn emitListBox(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -903,7 +912,7 @@ fn emitListBox(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = if (list_box.drop_preview_background)
@@ -914,7 +923,7 @@ fn emitListBox(
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     if (list_box.marquee_active and list_box.marquee_rect.w > 0 and list_box.marquee_rect.h > 0) {
         const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
@@ -929,6 +938,7 @@ fn emitListBox(
 }
 
 fn emitSelectable(
+    paint_ctx: *const PaintCtx,
     node: *const widget.Node,
     selectable: widget.WidgetKind.Selectable,
     resolved: style.ResolvedStyle,
@@ -938,7 +948,7 @@ fn emitSelectable(
     _: ?*const layout.TextMeasureCtx,
 ) !void {
     const fill = selectableBg(node, selectable.selected, theme);
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = if (selectable.dragging)
@@ -951,10 +961,11 @@ fn emitSelectable(
     } });
     const selectable_bounds = defaultTextBounds(rect, resolved);
     try appendTextCommand(commands, allocator, selectable_bounds, selectable.label, resolved.fg, resolved.font_size, .start, .clip);
-    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitGridSelector(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -966,7 +977,7 @@ fn emitGridSelector(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = if (grid_selector.drop_preview_background)
@@ -977,7 +988,7 @@ fn emitGridSelector(
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     if (grid_selector.marquee_active and grid_selector.marquee_rect.w > 0 and grid_selector.marquee_rect.h > 0) {
         const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
@@ -992,6 +1003,7 @@ fn emitGridSelector(
 }
 
 fn emitGridItem(
+    paint_ctx: *const PaintCtx,
     node: *const widget.Node,
     grid_item: widget.WidgetKind.GridItem,
     resolved: style.ResolvedStyle,
@@ -1000,7 +1012,7 @@ fn emitGridItem(
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     const fill = if (grid_item.dragging)
         style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
     else
@@ -1047,10 +1059,11 @@ fn emitGridItem(
         .h = resolved.font_size * 1.4,
     };
     try appendTextCommand(commands, allocator, label_bounds, grid_item.label, resolved.fg, resolved.font_size, .center, .ellipsis);
-    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitTable(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1062,7 +1075,7 @@ fn emitTable(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = snappedRect(paintRect(node.layout_rect));
+    const rect = snappedRect(paint_ctx.paintRect(node.layout_rect));
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = if (table.drop_preview_background)
@@ -1074,7 +1087,7 @@ fn emitTable(
         .corner_radius = resolved.border_radius,
     } });
 
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     if (table.marquee_active and table.marquee_rect.w > 0 and table.marquee_rect.h > 0) {
         const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
@@ -1110,6 +1123,7 @@ fn emitTable(
 }
 
 fn emitTableRow(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1121,7 +1135,7 @@ fn emitTableRow(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     const row_fill_rect = tableRowFillRect(tree, handle, rect);
     const fill = tableRowFill(tree, handle, node, row, theme);
     if (fill.a > 0 and row_fill_rect.w > 0 and row_fill_rect.h > 0) {
@@ -1168,9 +1182,9 @@ fn emitTableRow(
         const child_node = tree.getConst(child);
         if (child_node.kind == .table_cell) {
             const child_resolved = child_node.style_override.resolve(theme);
-            try emitTableCellContents(tree, child, child_node, child_resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+            try emitTableCellContents(paint_ctx, tree, child, child_node, child_resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
         } else {
-            try emitNode(tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
+            try emitNode(paint_ctx, tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
         }
     }
 
@@ -1179,11 +1193,12 @@ fn emitTableRow(
         const child_node = tree.getConst(child);
         if (child_node.kind != .table_cell) continue;
         const child_resolved = child_node.style_override.resolve(theme);
-        try emitTableCellDivider(tree, child, child_node, child_resolved, commands, allocator);
+        try emitTableCellDivider(paint_ctx, tree, child, child_node, child_resolved, commands, allocator);
     }
 }
 
 fn emitTableCell(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1194,11 +1209,12 @@ fn emitTableCell(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    try emitTableCellContents(tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
-    try emitTableCellDivider(tree, handle, node, resolved, commands, allocator);
+    try emitTableCellContents(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitTableCellDivider(paint_ctx, tree, handle, node, resolved, commands, allocator);
 }
 
 fn emitTableCellContents(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1209,7 +1225,7 @@ fn emitTableCellContents(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     const sort_direction = tableSortIndicator(tree, handle);
     const chevron_x = if (sort_direction != null)
         rect.x + rect.w - resolved.padding.right - resolved.font_size * 0.8
@@ -1240,7 +1256,7 @@ fn emitTableCellContents(
             continue;
         }
 
-        try emitNode(tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
+        try emitNode(paint_ctx, tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
     }
 
     if (sort_direction) |direction| {
@@ -1257,6 +1273,7 @@ fn emitTableCellContents(
 }
 
 fn emitTableCellDivider(
+    paint_ctx: *const PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1266,8 +1283,8 @@ fn emitTableCellDivider(
 ) !void {
     if (tableCellIndex(tree, handle) > 0) {
         const row_handle = tree.getConst(handle).parent orelse handle;
-        const row_rect = paintRect(tree.getConst(row_handle).layout_rect);
-        const rect = paintRect(node.layout_rect);
+        const row_rect = paint_ctx.paintRect(tree.getConst(row_handle).layout_rect);
+        const rect = paint_ctx.paintRect(node.layout_rect);
         const divider_thickness = tableDividerThickness(resolved.border_width);
         if (divider_thickness > 0) {
             const divider = snappedRect(.{
@@ -1288,6 +1305,7 @@ fn emitTableCellDivider(
 }
 
 fn emitMenuBar(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1298,7 +1316,7 @@ fn emitMenuBar(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = resolved.bg,
@@ -1306,10 +1324,11 @@ fn emitMenuBar(
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
 fn emitToolbar(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1320,7 +1339,7 @@ fn emitToolbar(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = resolved.bg,
@@ -1328,10 +1347,11 @@ fn emitToolbar(
         .border_width = resolved.border_width,
         .corner_radius = 0,
     } });
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
 fn emitStatusBar(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1342,7 +1362,7 @@ fn emitStatusBar(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = resolved.bg,
@@ -1350,10 +1370,11 @@ fn emitStatusBar(
         .border_width = resolved.border_width,
         .corner_radius = 0,
     } });
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
 fn emitMenu(
+    paint_ctx: *const PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1366,7 +1387,7 @@ fn emitMenu(
     in_floating_subtree: bool,
 ) !void {
     _ = in_floating_subtree;
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = if (menuHasActiveFill(tree, handle, node))
@@ -1379,10 +1400,11 @@ fn emitMenu(
     } });
     const menu_bounds = defaultTextBounds(rect, resolved);
     try appendTextCommand(commands, allocator, menu_bounds, menu.label, resolved.fg, resolved.font_size, .start, .visible);
-    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitPopup(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1392,7 +1414,7 @@ fn emitPopup(
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = resolved.bg,
@@ -1400,10 +1422,11 @@ fn emitPopup(
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, true);
+    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, true);
 }
 
 fn emitTooltip(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1413,7 +1436,7 @@ fn emitTooltip(
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = resolved.bg,
@@ -1421,10 +1444,11 @@ fn emitTooltip(
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, true);
+    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, true);
 }
 
 fn emitMenuItem(
+    paint_ctx: *const PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1442,7 +1466,7 @@ fn emitMenuItem(
         resolved.fg;
     const reserve_width = @max(resolved.font_size, 12);
     const gap = @max(resolved.padding.left * 0.75, 6);
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = if (menuPopupVisible(tree, handle))
@@ -1505,10 +1529,11 @@ fn emitMenuItem(
         try appendTextCommand(commands, allocator, arrow_bounds, "›", text_color, resolved.font_size, .end, .visible);
     }
 
-    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitDragValue(
+    paint_ctx: *const PaintCtx,
     node: *const widget.Node,
     drag_value: *const widget.WidgetKind.DragValue,
     resolved: style.ResolvedStyle,
@@ -1517,7 +1542,7 @@ fn emitDragValue(
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
 
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
@@ -1533,10 +1558,11 @@ fn emitDragValue(
         try appendTextCommand(commands, allocator, value_bounds, drag_value.displayValue(), resolved.fg, resolved.font_size, .start, .clip);
     }
 
-    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitSpinBox(
+    paint_ctx: *const PaintCtx,
     node: *const widget.Node,
     spinbox: *const widget.WidgetKind.SpinBox,
     resolved: style.ResolvedStyle,
@@ -1545,7 +1571,7 @@ fn emitSpinBox(
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     const buttons = spinBoxButtons(rect);
     const field_rect = Rect{
         .x = buttons.dec.x + buttons.dec.w,
@@ -1585,10 +1611,11 @@ fn emitSpinBox(
         try appendTextCommand(commands, allocator, field_text_bounds, spinbox.displayValue(), resolved.fg, resolved.font_size, .start, .clip);
     }
 
-    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitTabBar(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1600,7 +1627,7 @@ fn emitTabBar(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = resolved.bg,
@@ -1613,15 +1640,16 @@ fn emitTabBar(
     while (iter.next()) |child| {
         const child_node = tree.getConst(child);
         if (child_node.kind != .tab_item) continue;
-        try emitTabItemHeader(child_node, child_node.kind.tab_item, child_node.style_override.resolve(theme), theme, commands, allocator, text_ctx);
+        try emitTabItemHeader(paint_ctx, child_node, child_node.kind.tab_item, child_node.style_override.resolve(theme), theme, commands, allocator, text_ctx);
     }
 
     if (selectedTabItem(tree, handle)) |selected| {
-        try emitChildren(tree, selected, theme, commands, allocator, text_ctx, in_floating_subtree);
+        try emitChildren(paint_ctx, tree, selected, theme, commands, allocator, text_ctx, in_floating_subtree);
     }
 }
 
 fn emitTabItem(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1633,15 +1661,16 @@ fn emitTabItem(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    try emitTabItemHeader(node, item, resolved, theme, commands, allocator, text_ctx);
+    try emitTabItemHeader(paint_ctx, node, item, resolved, theme, commands, allocator, text_ctx);
     if (item.selected) {
-        try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+        try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
     } else {
-        try emitPopupChildren(tree, handle, theme, commands, allocator, text_ctx);
+        try emitPopupChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx);
     }
 }
 
 fn emitTabItemHeader(
+    paint_ctx: *const PaintCtx,
     node: *const widget.Node,
     item: widget.WidgetKind.TabItem,
     resolved: style.ResolvedStyle,
@@ -1651,7 +1680,7 @@ fn emitTabItemHeader(
     _: ?*const layout.TextMeasureCtx,
 ) !void {
     const chrome = tabItemChrome(node, item, resolved, theme);
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = chrome.color,
@@ -1676,10 +1705,11 @@ fn emitTabItemHeader(
     const tab_bounds = defaultTextBounds(rect, resolved);
     try appendTextCommand(commands, allocator, tab_bounds, item.label, resolved.fg, resolved.font_size, .start, .clip);
 
-    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitSplitter(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1691,7 +1721,7 @@ fn emitSplitter(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
         .color = resolved.bg,
@@ -1700,7 +1730,7 @@ fn emitSplitter(
         .corner_radius = resolved.border_radius,
     } });
 
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     const divider = splitterDividerRect(rect, splitter, resolved);
     const handle_rect = splitterHandleRect(divider, splitter);
@@ -1747,6 +1777,7 @@ fn emitSplitter(
 }
 
 fn emitSlider(
+    paint_ctx: *const PaintCtx,
     node: *const widget.Node,
     sl: widget.WidgetKind.Slider,
     resolved: style.ResolvedStyle,
@@ -1754,7 +1785,7 @@ fn emitSlider(
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
 ) !void {
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
 
     // Track
     try commands.append(allocator, .{ .box = .{
@@ -1780,10 +1811,11 @@ fn emitSlider(
         .corner_radius = resolved.border_radius,
     } });
 
-    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitTextInput(
+    paint_ctx: *const PaintCtx,
     node: *const widget.Node,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
@@ -1792,7 +1824,7 @@ fn emitTextInput(
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const ti = &node.kind.text_input;
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
 
     // Background
     try commands.append(allocator, .{ .box = .{
@@ -1812,7 +1844,7 @@ fn emitTextInput(
         try appendTextCommand(commands, allocator, text_bounds, ti.placeholder, theme.placeholder_fg, resolved.font_size, .start, .clip);
     }
 
-    try emitFocusRing(node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitInlineEditorContents(
@@ -1856,6 +1888,7 @@ fn emitInlineEditorContents(
 }
 
 fn emitScrollArea(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
@@ -1866,13 +1899,13 @@ fn emitScrollArea(
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paintRect(node.layout_rect);
-    const previous_cull_rect = active_paint_cull_rect;
-    active_paint_cull_rect = if (previous_cull_rect) |cull_rect|
+    const rect = paint_ctx.paintRect(node.layout_rect);
+    const previous_cull_rect = paint_ctx.cull_rect;
+    paint_ctx.cull_rect = if (previous_cull_rect) |cull_rect|
         intersectRects(cull_rect, rect)
     else
         rect;
-    defer active_paint_cull_rect = previous_cull_rect;
+    defer paint_ctx.cull_rect = previous_cull_rect;
 
     // Background
     try commands.append(allocator, .{ .box = .{
@@ -1884,9 +1917,9 @@ fn emitScrollArea(
     } });
 
     // Push clip
-    try commands.append(allocator, .{ .clip = .{ .bounds = active_paint_cull_rect orelse rect } });
+    try commands.append(allocator, .{ .clip = .{ .bounds = paint_ctx.cull_rect orelse rect } });
 
-    try emitChildren(tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     // Pop clip
     try commands.append(allocator, .{ .clip = .{ .bounds = null } });
@@ -1982,13 +2015,14 @@ fn scrollContentExtent(tree: *const widget.Tree, handle: widget.NodeHandle) stru
 
 /// Emit a focus ring around a widget's layout rect if it has focus.
 fn emitFocusRing(
+    paint_ctx: *const PaintCtx,
     node: *const widget.Node,
     theme: style.Theme,
     corner_radius: f32,
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
 ) !void {
-    try emitFocusRingRect(paintRect(node.layout_rect), theme, corner_radius, commands, allocator, node.interaction.focused);
+    try emitFocusRingRect(paint_ctx.paintRect(node.layout_rect), theme, corner_radius, commands, allocator, node.interaction.focused);
 }
 
 fn emitFocusRingRect(
@@ -2043,6 +2077,7 @@ fn selectableBg(node: *const widget.Node, selected: bool, theme: style.Theme) st
 }
 
 fn emitDropTargetOverlay(
+    paint_ctx: *const PaintCtx,
     node: *const widget.Node,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
@@ -2050,7 +2085,7 @@ fn emitDropTargetOverlay(
     allocator: std.mem.Allocator,
 ) !void {
     if (!node.interaction.drop_hovered) return;
-    const rect = paintRect(node.layout_rect);
+    const rect = paint_ctx.paintRect(node.layout_rect);
     if (rect.w <= 0 or rect.h <= 0) return;
     try commands.append(allocator, .{ .box = .{
         .bounds = rect,
@@ -2435,6 +2470,7 @@ fn emitTreeItemDropIndicator(
 }
 
 fn emitTreeGuides(
+    paint_ctx: *const PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     row_rect: Rect,
@@ -2466,7 +2502,7 @@ fn emitTreeGuides(
     }
 
     if (findTreeParent(tree, handle)) |parent_handle| {
-        const parent_rect = paintRect(tree.getConst(parent_handle).layout_rect);
+        const parent_rect = paint_ctx.paintRect(tree.getConst(parent_handle).layout_rect);
         const parent_bottom_y = parent_rect.y + parent_rect.h;
         const row_center_y = row_rect.y + row_rect.h * 0.5;
         const parent_guide_x = treeParentGuideCenterX(row_rect, resolved, theme, treeDepth(tree, handle));
@@ -2484,7 +2520,7 @@ fn emitTreeGuides(
         );
 
         if (nextTreeSibling(tree, handle)) |next_handle| {
-            const next_rect = paintRect(tree.getConst(next_handle).layout_rect);
+            const next_rect = paint_ctx.paintRect(tree.getConst(next_handle).layout_rect);
             try appendTreeGuideVertical(
                 commands,
                 allocator,
@@ -2662,6 +2698,7 @@ fn formatScalar(buf: *[64]u8, value: f32, precision: u8) []const u8 {
 }
 
 fn emitChildren(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     parent: widget.NodeHandle,
     theme: style.Theme,
@@ -2673,11 +2710,12 @@ fn emitChildren(
     var iter = tree.children(parent);
     while (iter.next()) |child| {
         if (!in_floating_subtree and (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip)) continue;
-        try emitNode(tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
+        try emitNode(paint_ctx, tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
     }
 }
 
 fn emitPopupChildren(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     parent: widget.NodeHandle,
     theme: style.Theme,
@@ -2688,11 +2726,12 @@ fn emitPopupChildren(
     var iter = tree.children(parent);
     while (iter.next()) |child| {
         if (tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) continue;
-        try emitNode(tree, child, theme, commands, allocator, text_ctx, true);
+        try emitNode(paint_ctx, tree, child, theme, commands, allocator, text_ctx, true);
     }
 }
 
 fn emitFloatingSubtrees(
+    paint_ctx: *PaintCtx,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     theme: style.Theme,
@@ -2703,7 +2742,7 @@ fn emitFloatingSubtrees(
     if (!shouldDrawNode(tree, handle)) return;
     const node = tree.getConst(handle);
     if (node.kind == .popup or node.kind == .tooltip) {
-        try emitNode(tree, handle, theme, commands, allocator, text_ctx, true);
+        try emitNode(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, true);
         return;
     }
 
@@ -2711,7 +2750,7 @@ fn emitFloatingSubtrees(
     while (iter.next()) |child| {
         if (node.kind == .tree_item and !node.kind.tree_item.expanded and tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) continue;
         if (node.kind == .tab_item and !node.kind.tab_item.selected) continue;
-        try emitFloatingSubtrees(tree, child, theme, commands, allocator, text_ctx);
+        try emitFloatingSubtrees(paint_ctx, tree, child, theme, commands, allocator, text_ctx);
     }
 }
 
@@ -2734,12 +2773,14 @@ fn hasNonFloatingChild(tree: *const widget.Tree, handle: widget.NodeHandle) bool
 }
 
 fn emitDragGhosts(
+    paint_ctx: *const PaintCtx,
     tree: *const widget.Tree,
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
 ) !void {
+    _ = paint_ctx;
     for (tree.nodes.items) |node| {
         if (!node.alive) continue;
         switch (node.kind) {
