@@ -1000,128 +1000,48 @@ pub const WidgetDesc = union(enum) {
     };
 };
 
-/// Build a `WidgetKind` from a user-authored `WidgetDesc`. Copies the
-/// embedder-supplied fields and leaves all per-frame state at its
-/// default (zero/none/false). `Tree.addNode` calls `syncDerivedState`
-/// after construction, so any state that is *derived* from desc input
-/// (table column weights, drag-value labels) is filled in there.
+/// Read a struct field's compile-time default value. Errors at
+/// comptime if the field has no default. Used by the `WidgetKind` /
+/// `WidgetView` projections to fill in fields that don't appear on
+/// the source struct.
+fn fieldDefault(comptime T: type, comptime name: []const u8) @FieldType(T, name) {
+    inline for (std.meta.fields(T)) |f| {
+        if (comptime std.mem.eql(u8, f.name, name)) {
+            const ptr = f.default_value_ptr orelse @compileError(
+                @typeName(T) ++ "." ++ name ++ " has no compile-time default",
+            );
+            const typed: *const f.type = @ptrCast(@alignCast(ptr));
+            return typed.*;
+        }
+    }
+    @compileError(@typeName(T) ++ " has no field named " ++ name);
+}
+
+/// Build a `WidgetKind` from a user-authored `WidgetDesc`. For each
+/// kind, fields named in the desc are copied verbatim; fields that
+/// only exist on the kind (per-frame state, derived caches) take
+/// their compile-time default. `Tree.addNode` then calls
+/// `syncDerivedState` to fill computed-from-desc fields like table
+/// column weights and drag-value labels.
 pub fn kindFromDesc(desc: WidgetDesc) WidgetKind {
     return switch (desc) {
-        .container => |d| .{ .container = .{ .direction = d.direction } },
-        .text => |d| .{ .text = .{ .content = d.content, .overflow = d.overflow } },
-        .button => |d| .{ .button = .{ .label = d.label } },
-        .checkbox => |d| .{ .checkbox = .{ .label = d.label, .checked = d.checked } },
-        .radio_button => |d| .{ .radio_button = .{
-            .label = d.label,
-            .group = d.group,
-            .selected = d.selected,
-        } },
-        .tree_item => |d| .{ .tree_item = .{
-            .label = d.label,
-            .group = d.group,
-            .icon = d.icon,
-            .icon_color = d.icon_color,
-            .editable = d.editable,
-            .rename_trigger = d.rename_trigger,
-            .has_children = d.has_children,
-            .expanded = d.expanded,
-            .selected = d.selected,
-        } },
-        .dropdown => |d| .{ .dropdown = .{
-            .placeholder = d.placeholder,
-            .selected_text = d.selected_text,
-            .selected_index = d.selected_index,
-            .open = d.open,
-        } },
-        .list_box => |d| .{ .list_box = .{ .selection_mode = d.selection_mode } },
-        .selectable => |d| .{ .selectable = .{
-            .label = d.label,
-            .group = d.group,
-            .selected = d.selected,
-        } },
-        .grid_selector => |d| .{ .grid_selector = .{
-            .selection_mode = d.selection_mode,
-            .item_width = d.item_width,
-            .item_height = d.item_height,
-            .column_gap = d.column_gap,
-            .row_gap = d.row_gap,
-        } },
-        .grid_item => |d| .{ .grid_item = .{
-            .label = d.label,
-            .icon = d.icon,
-            .selected = d.selected,
-        } },
-        .table => |d| .{ .table = .{
-            .columns = d.columns,
-            .striped = d.striped,
-            .resizable = d.resizable,
-            .sortable = d.sortable,
-            .selection_mode = d.selection_mode,
-            .min_column_width = d.min_column_width,
-            .sorted_column = d.sorted_column,
-            .sort_direction = d.sort_direction,
-        } },
-        .table_row => |d| .{ .table_row = .{ .header = d.header, .selected = d.selected } },
-        .table_cell => .{ .table_cell = .{} },
-        .toolbar => .{ .toolbar = .{} },
-        .status_bar => .{ .status_bar = .{} },
-        .menu_bar => .{ .menu_bar = .{} },
-        .menu => |d| .{ .menu = .{ .label = d.label } },
-        .popup => |d| .{ .popup = .{
-            .placement = d.placement,
-            .x = d.x,
-            .y = d.y,
-            .visible = d.visible,
-            .close_on_outside_click = d.close_on_outside_click,
-            .z_index = d.z_index,
-            .pointer_passthrough = d.pointer_passthrough,
-        } },
-        .tooltip => |d| .{ .tooltip = .{
-            .placement = d.placement,
-            .x = d.x,
-            .y = d.y,
-            .z_index = d.z_index,
-        } },
-        .menu_item => |d| .{ .menu_item = .{
-            .label = d.label,
-            .shortcut = d.shortcut,
-            .checked = d.checked,
-            .disabled = d.disabled,
-        } },
-        .drag_value => |d| .{ .drag_value = .{
-            .value = d.value,
-            .min = d.min,
-            .max = d.max,
-            .speed = d.speed,
-            .precision = d.precision,
-        } },
-        .spinbox => |d| .{ .spinbox = .{
-            .value = d.value,
-            .min = d.min,
-            .max = d.max,
-            .step = d.step,
-            .precision = d.precision,
-        } },
-        .tab_bar => .{ .tab_bar = .{} },
-        .tab_item => |d| .{ .tab_item = .{ .label = d.label, .selected = d.selected } },
-        .splitter => |d| .{ .splitter = .{
-            .direction = d.direction,
-            .ratio = d.ratio,
-            .min_first = d.min_first,
-            .min_second = d.min_second,
-            .thickness = d.thickness,
-            .gap_thickness = d.gap_thickness,
-            .keyboard_step = d.keyboard_step,
-        } },
-        .slider => |d| .{ .slider = .{ .value = d.value, .min = d.min, .max = d.max } },
-        .spacer => |d| .{ .spacer = .{ .width = d.width, .height = d.height } },
-        .scroll_area => |d| .{ .scroll_area = .{
-            .scroll_x = d.scroll_x,
-            .scroll_y = d.scroll_y,
-            .disable_horizontal_scroll = d.disable_horizontal_scroll,
-            .disable_vertical_scroll = d.disable_vertical_scroll,
-        } },
-        .text_input => |d| .{ .text_input = .{ .placeholder = d.placeholder } },
+        inline else => |desc_payload, tag| build: {
+            const KindPayload = @FieldType(WidgetKind, @tagName(tag));
+            const fields = std.meta.fields(KindPayload);
+            if (fields.len == 0) {
+                break :build @unionInit(WidgetKind, @tagName(tag), .{});
+            }
+            const DescPayload = @TypeOf(desc_payload);
+            var k: KindPayload = undefined;
+            inline for (fields) |kf| {
+                if (@hasField(DescPayload, kf.name)) {
+                    @field(k, kf.name) = @field(desc_payload, kf.name);
+                } else {
+                    @field(k, kf.name) = fieldDefault(KindPayload, kf.name);
+                }
+            }
+            break :build @unionInit(WidgetKind, @tagName(tag), k);
+        },
     };
 }
 
@@ -1300,25 +1220,15 @@ pub const WidgetView = union(enum) {
     };
 
     pub fn fromNode(node: *const Node) WidgetView {
-        // Read fields through pointers so slices borrow from the tree's
-        // storage rather than a temporary copy. Cross-kind per-frame
-        // flags (clicked, changed, toggled, drop_received) live on
-        // `NodeView`; this view carries only kind-specific persistent
-        // state and typed events (table.sort_changed, etc.).
+        // Slice fields borrow from tree storage rather than a copy.
+        // Cross-kind per-frame flags (clicked, changed, toggled,
+        // drop_received) live on `NodeView`; this view carries only
+        // kind-specific persistent state and typed events.
         const kind = &node.kind;
         return switch (kind.*) {
-            .container => .{ .container = .{ .direction = kind.container.direction } },
-            .text => .{ .text = .{ .content = kind.text.content } },
-            .button => .{ .button = .{ .label = kind.button.label } },
-            .checkbox => .{ .checkbox = .{
-                .label = kind.checkbox.label,
-                .checked = kind.checkbox.checked,
-            } },
-            .radio_button => .{ .radio_button = .{
-                .label = kind.radio_button.label,
-                .group = kind.radio_button.group,
-                .selected = kind.radio_button.selected,
-            } },
+            // Bespoke arms: rename `drag.active` to `dragging`, route
+            // dynamic labels through helper methods, expose text
+            // input content through the buffer accessor.
             .tree_item => .{ .tree_item = .{
                 .label = kind.tree_item.displayLabel(),
                 .group = kind.tree_item.group,
@@ -1329,63 +1239,21 @@ pub const WidgetView = union(enum) {
                 .dragging = kind.tree_item.drag.active,
                 .rename_committed = kind.tree_item.rename_committed,
             } },
-            .dropdown => .{ .dropdown = .{
-                .placeholder = kind.dropdown.placeholder,
-                .selected_text = kind.dropdown.selected_text,
-                .selected_index = kind.dropdown.selected_index,
-                .open = kind.dropdown.open,
-            } },
-            .list_box => .{ .list_box = {} },
             .selectable => .{ .selectable = .{
                 .label = kind.selectable.label,
                 .group = kind.selectable.group,
                 .selected = kind.selectable.selected,
                 .dragging = kind.selectable.drag.active,
             } },
-            .grid_selector => .{ .grid_selector = .{
-                .computed_columns = kind.grid_selector.computed_columns,
-            } },
             .grid_item => .{ .grid_item = .{
                 .label = kind.grid_item.label,
                 .selected = kind.grid_item.selected,
                 .dragging = kind.grid_item.drag.active,
             } },
-            .table => .{ .table = .{
-                .active_columns = kind.table.active_columns,
-                .resized_column = kind.table.resized_column,
-                .sorted_column = kind.table.sorted_column,
-                .sort_direction = kind.table.sort_direction,
-                .sort_changed = kind.table.sort_changed,
-                .selection_changed = kind.table.selection_changed,
-            } },
             .table_row => .{ .table_row = .{
                 .header = kind.table_row.header,
                 .selected = kind.table_row.selected,
                 .dragging = kind.table_row.drag.active,
-            } },
-            .table_cell => .{ .table_cell = {} },
-            .toolbar => .{ .toolbar = {} },
-            .status_bar => .{ .status_bar = {} },
-            .menu_bar => .{ .menu_bar = {} },
-            .menu => .{ .menu = .{ .label = kind.menu.label } },
-            .popup => .{ .popup = .{
-                .placement = kind.popup.placement,
-                .x = kind.popup.x,
-                .y = kind.popup.y,
-                .visible = kind.popup.visible,
-                .z_index = kind.popup.z_index,
-            } },
-            .tooltip => .{ .tooltip = .{
-                .placement = kind.tooltip.placement,
-                .x = kind.tooltip.x,
-                .y = kind.tooltip.y,
-                .z_index = kind.tooltip.z_index,
-            } },
-            .menu_item => .{ .menu_item = .{
-                .label = kind.menu_item.label,
-                .shortcut = kind.menu_item.shortcut,
-                .checked = kind.menu_item.checked,
-                .disabled = kind.menu_item.disabled,
             } },
             .drag_value => .{ .drag_value = .{
                 .value = kind.drag_value.value,
@@ -1397,23 +1265,25 @@ pub const WidgetView = union(enum) {
                 .editing = kind.spinbox.editing,
                 .display_text = kind.spinbox.displayValue(),
             } },
-            .tab_bar => .{ .tab_bar = {} },
-            .tab_item => .{ .tab_item = .{
-                .label = kind.tab_item.label,
-                .selected = kind.tab_item.selected,
-            } },
-            .splitter => .{ .splitter = .{ .ratio = kind.splitter.ratio } },
-            .slider => .{ .slider = .{ .value = kind.slider.value } },
-            .spacer => .{ .spacer = {} },
-            .scroll_area => .{ .scroll_area = .{
-                .scroll_x = kind.scroll_area.scroll_x,
-                .scroll_y = kind.scroll_area.scroll_y,
-            } },
             .text_input => .{ .text_input = .{
                 .content = kind.text_input.content(),
                 .cursor = kind.text_input.cursor,
                 .selection_anchor = kind.text_input.selection_anchor,
             } },
+            // All other arms are pure field copies — derive them by
+            // walking the View arm's fields and pulling the same name
+            // from the kind payload.
+            inline else => |kind_payload, tag| build: {
+                const ViewPayload = @FieldType(WidgetView, @tagName(tag));
+                if (ViewPayload == void) {
+                    break :build @unionInit(WidgetView, @tagName(tag), {});
+                }
+                var v: ViewPayload = undefined;
+                inline for (std.meta.fields(ViewPayload)) |vf| {
+                    @field(v, vf.name) = @field(kind_payload, vf.name);
+                }
+                break :build @unionInit(WidgetView, @tagName(tag), v);
+            },
         };
     }
 };
