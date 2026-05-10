@@ -132,13 +132,15 @@ pub fn main(init: std.process.Init) !void {
     var stabilize_attempts: usize = 0;
     while (stabilize_attempts < 8) : (stabilize_attempts += 1) {
         ctx.doLayout(&text_measure_ctx);
-        const paint_list = try ctx.generatePaintList();
-        const grew = try ensureAtlasForPaintList(&text_atlas, &renderer, &ensured, paint_list);
+        const base_paint = try ctx.generatePaintList();
+        const composed = try fm.composeFileBrowserPaintList(&state, base_paint);
+        const grew = try ensureAtlasForPaintList(&text_atlas, &renderer, &ensured, composed);
         if (!grew) break;
     }
 
     ctx.doLayout(&text_measure_ctx);
-    const paint_list = try ctx.generatePaintList();
+    const base_paint = try ctx.generatePaintList();
+    const paint_list = try fm.composeFileBrowserPaintList(&state, base_paint);
 
     renderer.beginFrame(args.width, args.height, 1);
     renderer.renderPaintList(paint_list);

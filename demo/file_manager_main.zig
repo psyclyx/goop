@@ -4997,7 +4997,7 @@ fn appendEntryIconCommands(
     }
 }
 
-fn composeFileBrowserPaintList(state: *State, base: goop.PaintList) !goop.PaintList {
+pub fn composeFileBrowserPaintList(state: *State, base: goop.PaintList) !goop.PaintList {
     const ctx = state.ctx orelse return base;
 
     state.composed_paint_commands.clearRetainingCapacity();
