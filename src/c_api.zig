@@ -1928,6 +1928,102 @@ export fn goop_context_last_drop(ctx: ?*const CContext, out_drop: ?*CDrop) bool 
     return true;
 }
 
+// Mark layout and draw caches stale after caller-owned state changes.
+export fn goop_context_invalidate(ctx: ?*CContext) bool {
+    const context = ctx orelse return false;
+    context.ctx.runtime.invalidate();
+    return true;
+}
+
+export fn goop_context_set_user_id(ctx: ?*CContext, handle: CHandle, user_id: u64) bool {
+    const context = ctx orelse return false;
+    if (!validHandle(context, handle)) return false;
+    context.ctx.runtime.setUserId(&context.ctx.tree, handleFromC(handle), user_id);
+    return true;
+}
+
+export fn goop_context_user_id(ctx: ?*const CContext, handle: CHandle) u64 {
+    const context = ctx orelse return 0;
+    if (!validHandle(context, handle)) return 0;
+    return context.ctx.runtime.userId(&context.ctx.tree, handleFromC(handle));
+}
+
+export fn goop_context_set_custom_draw(ctx: ?*CContext, handle: CHandle, custom: bool) bool {
+    const context = ctx orelse return false;
+    if (!validHandle(context, handle)) return false;
+    return context.ctx.runtime.setCustomDraw(&context.ctx.tree, handleFromC(handle), custom);
+}
+
+export fn goop_context_set_drop_target(ctx: ?*CContext, handle: CHandle, accepts_drop: bool) bool {
+    const context = ctx orelse return false;
+    if (!validHandle(context, handle)) return false;
+    context.ctx.runtime.setDropTarget(&context.ctx.tree, handleFromC(handle), accepts_drop);
+    return true;
+}
+
+export fn goop_context_is_drop_hovered(ctx: ?*const CContext, handle: CHandle) bool {
+    const context = ctx orelse return false;
+    if (!validHandle(context, handle)) return false;
+    return context.ctx.runtime.isDropHovered(&context.ctx.tree, handleFromC(handle));
+}
+
+export fn goop_context_focused_widget(ctx: ?*const CContext, out_handle: ?*CHandle) bool {
+    const context = ctx orelse return false;
+    const handle_ptr = out_handle orelse return false;
+    const focused = context.ctx.runtime.focusedWidget(&context.ctx.tree) orelse return false;
+    handle_ptr.* = handleToC(focused);
+    return true;
+}
+
+export fn goop_context_focus_widget(ctx: ?*CContext, handle: CHandle) bool {
+    const context = ctx orelse return false;
+    return context.ctx.runtime.focusWidget(&context.ctx.tree, handleFromC(handle));
+}
+
+export fn goop_context_clear_focus(ctx: ?*CContext) bool {
+    const context = ctx orelse return false;
+    context.ctx.runtime.clearFocus(&context.ctx.tree);
+    return true;
+}
+
+export fn goop_context_cancel_pointer_gesture(ctx: ?*CContext) bool {
+    const context = ctx orelse return false;
+    context.ctx.runtime.cancelPointerGesture(&context.ctx.tree);
+    return true;
+}
+
+export fn goop_context_pointer_position(ctx: ?*const CContext, out_x: ?*f32, out_y: ?*f32) bool {
+    const context = ctx orelse return false;
+    const x_ptr = out_x orelse return false;
+    const y_ptr = out_y orelse return false;
+    const pos = context.ctx.runtime.pointerPosition();
+    x_ptr.* = pos.x;
+    y_ptr.* = pos.y;
+    return true;
+}
+
+export fn goop_context_is_pointer_button_down(ctx: ?*const CContext, button: CMouseButton) bool {
+    const context = ctx orelse return false;
+    return context.ctx.runtime.isPointerButtonDown(switch (button) {
+        .left => .left,
+        .right => .right,
+        .middle => .middle,
+    });
+}
+
+export fn goop_context_active_drag_source(ctx: ?*const CContext, out_handle: ?*CHandle) bool {
+    const context = ctx orelse return false;
+    const handle_ptr = out_handle orelse return false;
+    const source = context.ctx.runtime.activeDragSource() orelse return false;
+    handle_ptr.* = handleToC(source);
+    return true;
+}
+
+export fn goop_context_last_primary_press_timestamp_ms(ctx: ?*const CContext) u64 {
+    const context = ctx orelse return 0;
+    return context.ctx.runtime.lastPrimaryPressTimestampMs();
+}
+
 test "c api smoke" {
     const opts = CContextOptions{ .width = 320, .height = 200 };
     const ctx = goop_context_create(&opts) orelse return error.OutOfMemory;

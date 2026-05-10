@@ -876,12 +876,31 @@ bool goop_context_remove_widget(goop_context_t *ctx, goop_node_handle_t handle);
 bool goop_context_is_alive(const goop_context_t *ctx, goop_node_handle_t handle);
 bool goop_context_layout_rect(const goop_context_t *ctx, goop_node_handle_t handle, goop_rect_t *out_rect);
 
+bool goop_context_invalidate(goop_context_t *ctx);
+
 bool goop_context_was_clicked(const goop_context_t *ctx, goop_node_handle_t handle);
 bool goop_context_was_secondary_clicked(const goop_context_t *ctx, goop_node_handle_t handle);
 bool goop_context_widget(const goop_context_t *ctx, goop_node_handle_t handle, goop_widget_view_t *out_view);
 bool goop_context_table_column_fraction(const goop_context_t *ctx, goop_node_handle_t handle, uint8_t index, float *out_fraction);
 bool goop_context_last_secondary_click(const goop_context_t *ctx, goop_secondary_click_t *out_click);
 bool goop_context_last_drop(const goop_context_t *ctx, goop_drop_t *out_drop);
+uint64_t goop_context_last_primary_press_timestamp_ms(const goop_context_t *ctx);
+
+/* Per-widget metadata. */
+bool goop_context_set_user_id(goop_context_t *ctx, goop_node_handle_t handle, uint64_t user_id);
+uint64_t goop_context_user_id(const goop_context_t *ctx, goop_node_handle_t handle);
+bool goop_context_set_custom_draw(goop_context_t *ctx, goop_node_handle_t handle, bool custom);
+bool goop_context_set_drop_target(goop_context_t *ctx, goop_node_handle_t handle, bool accepts_drop);
+bool goop_context_is_drop_hovered(const goop_context_t *ctx, goop_node_handle_t handle);
+
+/* Focus and pointer state. */
+bool goop_context_focused_widget(const goop_context_t *ctx, goop_node_handle_t *out_handle);
+bool goop_context_focus_widget(goop_context_t *ctx, goop_node_handle_t handle);
+bool goop_context_clear_focus(goop_context_t *ctx);
+bool goop_context_cancel_pointer_gesture(goop_context_t *ctx);
+bool goop_context_pointer_position(const goop_context_t *ctx, float *out_x, float *out_y);
+bool goop_context_is_pointer_button_down(const goop_context_t *ctx, goop_mouse_button_t button);
+bool goop_context_active_drag_source(const goop_context_t *ctx, goop_node_handle_t *out_handle);
 
 #ifdef __cplusplus
 }
