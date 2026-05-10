@@ -1,7 +1,7 @@
 const std = @import("std");
 const goop = @import("goop");
 const snail = @import("snail");
-const render = @import("render.zig");
+const render = @import("goop_demo_render");
 const posix = std.posix;
 
 const wl = @cImport({
@@ -19,7 +19,7 @@ const egl = @cImport({
     @cInclude("EGL/egl.h");
 });
 
-const allocator = std.heap.smp_allocator;
+pub const allocator = std.heap.smp_allocator;
 const clipboard_mime_utf8 = "text/plain;charset=utf-8";
 const clipboard_mime_utf8_string = "UTF8_STRING";
 const clipboard_mime_text = "text/plain";
@@ -27,7 +27,7 @@ const dnd_mime_uri_list = "text/uri-list";
 const dnd_mime_gnome_copied_files = "x-special/gnome-copied-files";
 
 /// Snail-based text measurement adapter for goop.
-const SnailTextCtx = struct {
+pub const SnailTextCtx = struct {
     allocator: std.mem.Allocator,
     text_atlas: *const snail.TextAtlas,
     scratch_buf: []u8,
@@ -96,7 +96,7 @@ const CursorKind = enum {
     ns_resize,
 };
 
-fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) goop.TextDimensions {
+pub fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) goop.TextDimensions {
     const ctx: *SnailTextCtx = @ptrCast(@alignCast(user_data));
     const sanitized = ctx.sanitizeUtf8Lossy(text);
     const units_per_em = ctx.text_atlas.unitsPerEm() catch 1000;
@@ -111,7 +111,7 @@ fn snailMeasureText(text: []const u8, font_size: f32, user_data: ?*anyopaque) go
     };
 }
 
-fn fontLineMetrics(text_atlas: *const snail.TextAtlas) struct { ascent: f32, descent: f32 } {
+pub fn fontLineMetrics(text_atlas: *const snail.TextAtlas) struct { ascent: f32, descent: f32 } {
     const metrics = text_atlas.lineMetrics() catch {
         const units_per_em = text_atlas.unitsPerEm() catch 1000;
         return .{ .ascent = @floatFromInt(units_per_em), .descent = 0 };
@@ -360,7 +360,7 @@ fn envScale(env: *const std.process.Environ.Map, name: []const u8, fallback: f32
     return parsed;
 }
 
-const State = struct {
+pub const State = struct {
     running: bool = true,
     configured: bool = false,
     logical_width: u32 = 800,
@@ -1051,7 +1051,7 @@ fn fileManagerThemeForScale(ui_scale: f32) goop.Theme {
     };
 }
 
-fn fileManagerTheme(state: *const State) goop.Theme {
+pub fn fileManagerTheme(state: *const State) goop.Theme {
     return fileManagerThemeForScale(state.ui_scale);
 }
 
@@ -3003,7 +3003,7 @@ fn appendPlaceIfDirectory(state: *State, label: []const u8, path: []const u8) !v
     try state.places.append(allocator, .{ .label = label, .path = normalized });
 }
 
-fn refreshPlaces(state: *State) !void {
+pub fn refreshPlaces(state: *State) !void {
     clearPlaces(state);
 
     if (homePath(state)) |home| {
@@ -3700,7 +3700,7 @@ fn selectedEntry(state: *const State) ?*const BrowserEntry {
     return &state.entries.items[index];
 }
 
-fn setCurrentDirectory(state: *State, path: []const u8, push_history: bool) !bool {
+pub fn setCurrentDirectory(state: *State, path: []const u8, push_history: bool) !bool {
     const normalized = try normalizeDirectoryPath(allocator, path);
     errdefer allocator.free(normalized);
     try ensureDirectoryOpenable(try stateIo(state), normalized);
@@ -4195,7 +4195,7 @@ fn toggleTopMenuPopup(state: *const State, ctx: *goop.Context, popup: ?goop.Node
     setTopMenuPopupVisible(state, ctx, if (should_open) target else null);
 }
 
-fn initializeBrowserState(state: *State) !void {
+pub fn initializeBrowserState(state: *State) !void {
     const cwd = try currentWorkingDirectoryAlloc(allocator, try stateIo(state));
     defer allocator.free(cwd);
     _ = try setCurrentDirectory(state, cwd, true);
@@ -6663,7 +6663,7 @@ fn buildFolderTree(state: *State, ctx: *goop.Context, parent: goop.NodeHandle) !
     if (root_expansion != .collapsed) try buildFolderTreeBranch(state, ctx, root, "/", root_expansion);
 }
 
-fn buildWidgetTree(state: *State) !void {
+pub fn buildWidgetTree(state: *State) !void {
     const ctx = state.ctx orelse return error.NoContext;
     const transparent = goop.Color.rgba(0, 0, 0, 0);
 
@@ -7153,7 +7153,7 @@ fn buildWidgetTree(state: *State) !void {
 
 // ── Font loading ──
 
-fn loadFont(alloc: std.mem.Allocator, env: *const std.process.Environ.Map, io: std.Io) ![]u8 {
+pub fn loadFont(alloc: std.mem.Allocator, env: *const std.process.Environ.Map, io: std.Io) ![]u8 {
     if (fontPathFromEnv(env)) |path| {
         return readFile(alloc, io, path);
     }

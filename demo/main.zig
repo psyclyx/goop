@@ -1,7 +1,7 @@
 const std = @import("std");
 const goop = @import("goop");
 const snail = @import("snail");
-const render = @import("render.zig");
+const render = @import("goop_demo_render");
 const posix = std.posix;
 
 const wl = @cImport({

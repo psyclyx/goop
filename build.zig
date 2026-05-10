@@ -72,6 +72,17 @@ pub fn build(b: *std.Build) void {
     const c_example_step = b.step("c-example", "Build and run the headless C API example");
     c_example_step.dependOn(&run_c_example.step);
 
+    // ── Demo renderer module (shared by demo, file-manager demo, perf, screenshot) ──
+    const render_mod = b.createModule(.{
+        .root_source_file = b.path("demo/render.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    render_mod.addImport("goop", goop_mod);
+    render_mod.addImport("snail", snail_mod);
+    render_mod.linkSystemLibrary("gl", .{});
+
     // ── Demo executable ──
     const demo_mod = b.createModule(.{
         .root_source_file = b.path("demo/main.zig"),
@@ -81,6 +92,7 @@ pub fn build(b: *std.Build) void {
     });
     demo_mod.addImport("goop", goop_mod);
     demo_mod.addImport("snail", snail_mod);
+    demo_mod.addImport("goop_demo_render", render_mod);
     demo_mod.addIncludePath(b.path("demo/protocol"));
     demo_mod.addCSourceFile(.{ .file = b.path("demo/protocol/xdg-shell-protocol.c") });
     demo_mod.linkSystemLibrary("wayland-client", .{});
@@ -113,6 +125,7 @@ pub fn build(b: *std.Build) void {
     });
     file_manager_demo_mod.addImport("goop", goop_mod);
     file_manager_demo_mod.addImport("snail", snail_mod);
+    file_manager_demo_mod.addImport("goop_demo_render", render_mod);
     file_manager_demo_mod.addIncludePath(b.path("demo/protocol"));
     file_manager_demo_mod.addCSourceFile(.{ .file = b.path("demo/protocol/xdg-shell-protocol.c") });
     file_manager_demo_mod.linkSystemLibrary("wayland-client", .{});
@@ -137,16 +150,6 @@ pub fn build(b: *std.Build) void {
 
     const file_manager_demo_step = b.step("file-manager-demo", "Build and run the file manager demo");
     file_manager_demo_step.dependOn(&run_file_manager_demo.step);
-
-    const render_mod = b.createModule(.{
-        .root_source_file = b.path("demo/render.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    render_mod.addImport("goop", goop_mod);
-    render_mod.addImport("snail", snail_mod);
-    render_mod.linkSystemLibrary("gl", .{});
 
     // ── Headless perf round ──
     const perf_mod = b.createModule(.{
@@ -173,6 +176,72 @@ pub fn build(b: *std.Build) void {
     const perf_step = b.step("perf-round", "Build and run the headless perf benchmark");
     perf_step.dependOn(&run_perf.step);
 
+    // ── Headless screenshot ──
+    const fm_lib_mod = b.createModule(.{
+        .root_source_file = b.path("demo/file_manager_main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    fm_lib_mod.addImport("goop", goop_mod);
+    fm_lib_mod.addImport("snail", snail_mod);
+    fm_lib_mod.addImport("goop_demo_render", render_mod);
+    fm_lib_mod.addIncludePath(b.path("demo/protocol"));
+    fm_lib_mod.addCSourceFile(.{ .file = b.path("demo/protocol/xdg-shell-protocol.c") });
+    fm_lib_mod.linkSystemLibrary("wayland-client", .{});
+    fm_lib_mod.linkSystemLibrary("wayland-cursor", .{});
+    fm_lib_mod.linkSystemLibrary("wayland-egl", .{});
+    fm_lib_mod.linkSystemLibrary("egl", .{});
+    fm_lib_mod.linkSystemLibrary("xkbcommon", .{});
+    fm_lib_mod.linkSystemLibrary("gl", .{});
+
+    const screenshot_mod = b.createModule(.{
+        .root_source_file = b.path("tools/screenshot.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    screenshot_mod.addImport("goop", goop_mod);
+    screenshot_mod.addImport("goop_demo_render", render_mod);
+    screenshot_mod.addImport("snail", snail_mod);
+    screenshot_mod.addImport("file_manager", fm_lib_mod);
+    screenshot_mod.linkSystemLibrary("egl", .{});
+    screenshot_mod.linkSystemLibrary("gl", .{});
+    screenshot_mod.linkSystemLibrary("wayland-client", .{});
+    screenshot_mod.linkSystemLibrary("wayland-cursor", .{});
+    screenshot_mod.linkSystemLibrary("wayland-egl", .{});
+    screenshot_mod.linkSystemLibrary("xkbcommon", .{});
+
+    const screenshot_exe = b.addExecutable(.{
+        .name = "goop-screenshot",
+        .root_module = screenshot_mod,
+    });
+
+    const build_screenshot = b.step("build-screenshot", "Build the headless screenshot tool");
+    build_screenshot.dependOn(&screenshot_exe.step);
+
+    const ppm_path = b.pathFromRoot("docs/assets/goop-file-manager-demo.ppm");
+    const png_path = b.pathFromRoot("docs/assets/goop-file-manager-demo.png");
+
+    const run_screenshot = b.addRunArtifact(screenshot_exe);
+    run_screenshot.addArg("--output");
+    run_screenshot.addArg(ppm_path);
+    run_screenshot.addArg("--dir");
+    run_screenshot.addArg(b.pathFromRoot("."));
+    run_screenshot.addArg("--width");
+    run_screenshot.addArg("1280");
+    run_screenshot.addArg("--height");
+    run_screenshot.addArg("720");
+
+    const convert_step = b.addSystemCommand(&.{ "magick", ppm_path, png_path });
+    convert_step.step.dependOn(&run_screenshot.step);
+
+    const cleanup_step = b.addSystemCommand(&.{ "rm", "-f", ppm_path });
+    cleanup_step.step.dependOn(&convert_step.step);
+
+    const screenshot_step = b.step("screenshot", "Render the file manager demo to docs/assets/");
+    screenshot_step.dependOn(&cleanup_step.step);
+
     // ── Tests ──
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
@@ -197,6 +266,7 @@ pub fn build(b: *std.Build) void {
     });
     file_manager_test_mod.addImport("goop", goop_mod);
     file_manager_test_mod.addImport("snail", snail_mod);
+    file_manager_test_mod.addImport("goop_demo_render", render_mod);
     file_manager_test_mod.addIncludePath(b.path("demo/protocol"));
     file_manager_test_mod.addCSourceFile(.{ .file = b.path("demo/protocol/xdg-shell-protocol.c") });
     file_manager_test_mod.linkSystemLibrary("wayland-client", .{});

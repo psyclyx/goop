@@ -16,6 +16,7 @@ in
       harfbuzz
       noto-fonts
       dejavu_fonts
+      imagemagick
     ];
 
     FONTCONFIG_FILE = pkgs.makeFontsConf {
