@@ -82,6 +82,27 @@ pub const PointerPosition = struct {
     y: f32,
 };
 
+/// Snapshot of cross-handle frame state. Returned by `Runtime.frame`.
+/// Folds together pointer position, button state, focus, drag source,
+/// and one-frame events (last drop, last secondary click, last primary
+/// press timestamp) so embedders can take one snapshot per frame
+/// instead of calling seven separate accessors.
+pub const FrameSnapshot = struct {
+    pointer: PointerPosition,
+    buttons: Buttons,
+    focused: ?NodeHandle,
+    drag_source: ?NodeHandle,
+    last_drop: ?Drop,
+    last_secondary_click: ?SecondaryClick,
+    last_primary_press_ms: u64,
+
+    pub const Buttons = struct {
+        left: bool,
+        right: bool,
+        middle: bool,
+    };
+};
+
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
     clay_arena: []u8,
@@ -272,48 +293,32 @@ pub const Runtime = struct {
         return true;
     }
 
-    /// Get the most recent secondary click that occurred this frame, if any.
-    pub fn lastSecondaryClick(self: *const Runtime) ?SecondaryClick {
-        return self.mouse.last_secondary_click;
-    }
-
-    /// Get the most recent completed drop that occurred this frame, if
-    /// any. The returned `Drop` is a tagged union — switch on it to get
-    /// the specific drop kind (tree, grid, list, table, widget).
-    pub fn lastDrop(self: *const Runtime) ?Drop {
-        return self.mouse.last_drop;
-    }
-
-    /// Get the timestamp from the most recent primary-button press event.
-    pub fn lastPrimaryPressTimestampMs(self: *const Runtime) u64 {
-        return self.mouse.last_click_time_ms;
-    }
-
-    /// Get the current pointer position in context coordinates.
-    pub fn pointerPosition(self: *const Runtime) PointerPosition {
-        return .{ .x = self.mouse.x, .y = self.mouse.y };
-    }
-
-    /// Check whether a pointer button is currently held.
-    pub fn isPointerButtonDown(self: *const Runtime, button: Event.MouseButton.Button) bool {
-        return switch (button) {
-            .left => self.mouse.left_down,
-            .right => self.mouse.right_down,
-            .middle => self.mouse.middle_down,
+    /// Snapshot the per-frame interaction state: pointer position,
+    /// button state, focus, active drag source, and the one-frame
+    /// events (last drop, last secondary click, last primary press
+    /// timestamp). The `focused` field is alive-checked against
+    /// `tree`; the others are recorded as the dispatch layer set
+    /// them and are valid until the next `processEvents` call.
+    pub fn frame(self: *const Runtime, tree: *const Tree) FrameSnapshot {
+        const focused: ?NodeHandle = blk: {
+            if (self.mouse.focused) |h| {
+                if (tree.isAlive(h)) break :blk h;
+            }
+            break :blk null;
         };
-    }
-
-    /// Get the widget currently being dragged, if any.
-    pub fn activeDragSource(self: *const Runtime) ?NodeHandle {
-        return self.mouse.drag_target;
-    }
-
-    /// Get the currently focused widget, if it is still alive.
-    pub fn focusedWidget(self: *const Runtime, tree: *const Tree) ?NodeHandle {
-        if (self.mouse.focused) |handle| {
-            if (tree.isAlive(handle)) return handle;
-        }
-        return null;
+        return .{
+            .pointer = .{ .x = self.mouse.x, .y = self.mouse.y },
+            .buttons = .{
+                .left = self.mouse.left_down,
+                .right = self.mouse.right_down,
+                .middle = self.mouse.middle_down,
+            },
+            .focused = focused,
+            .drag_source = self.mouse.drag_target,
+            .last_drop = self.mouse.last_drop,
+            .last_secondary_click = self.mouse.last_secondary_click,
+            .last_primary_press_ms = self.mouse.last_click_time_ms,
+        };
     }
 
     /// Set keyboard focus to a live widget.
@@ -979,13 +984,13 @@ test "tree item drop is reported across context frames" {
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = second_rect.x + 12, .y = second_rect.y + second_rect.h * 0.5 } });
     ctx.processEvents();
 
-    const drop = ctx.runtime.lastDrop().?.tree;
+    const drop = ctx.runtime.frame(&ctx.tree).last_drop.?.tree;
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
     try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, drop.position);
 
     ctx.clearClickedFlags();
-    try std.testing.expect(ctx.runtime.lastDrop() == null);
+    try std.testing.expect(ctx.runtime.frame(&ctx.tree).last_drop == null);
 }
 
 test "tab panels switch visibility across context frames" {
@@ -1141,10 +1146,10 @@ test "grid item drop is reported across context frames" {
     } });
     ctx.processEvents();
 
-    const pointer = ctx.runtime.pointerPosition();
-    try std.testing.expect(ctx.runtime.isPointerButtonDown(.left));
-    try std.testing.expect(ctx.runtime.activeDragSource().?.eql(first));
-    try std.testing.expectApproxEqAbs(second_rect.x + second_rect.w * 0.5, pointer.x, 0.01);
+    const f1 = ctx.runtime.frame(&ctx.tree);
+    try std.testing.expect(f1.buttons.left);
+    try std.testing.expect(f1.drag_source.?.eql(first));
+    try std.testing.expectApproxEqAbs(second_rect.x + second_rect.w * 0.5, f1.pointer.x, 0.01);
     try std.testing.expectEqual(@as(u64, 101), ctx.tree.userId(first));
 
     try ctx.pushEvent(.{ .mouse_button = .{
@@ -1155,14 +1160,15 @@ test "grid item drop is reported across context frames" {
     } });
     ctx.processEvents();
 
-    const drop = ctx.runtime.lastDrop().?.grid;
+    const f2 = ctx.runtime.frame(&ctx.tree);
+    const drop = f2.last_drop.?.grid;
     try std.testing.expect(drop.source.eql(first));
     try std.testing.expect(drop.target.eql(second));
     try std.testing.expectEqual(dispatch.GridDrop.Position.item, drop.position);
-    try std.testing.expect(!ctx.runtime.isPointerButtonDown(.left));
+    try std.testing.expect(!f2.buttons.left);
 
     ctx.clearClickedFlags();
-    try std.testing.expect(ctx.runtime.lastDrop() == null);
+    try std.testing.expect(ctx.runtime.frame(&ctx.tree).last_drop == null);
 }
 
 test "multi-select list box supports ctrl-toggle and shift-range selection" {

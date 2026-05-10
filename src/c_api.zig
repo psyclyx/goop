@@ -1888,7 +1888,7 @@ export fn goop_context_table_column_fraction(ctx: ?*const CContext, handle: CHan
 export fn goop_context_last_secondary_click(ctx: ?*const CContext, out_click: ?*CSecondaryClick) bool {
     const context = ctx orelse return false;
     const click_ptr = out_click orelse return false;
-    const click = context.ctx.runtime.lastSecondaryClick() orelse return false;
+    const click = context.ctx.runtime.frame(&context.ctx.tree).last_secondary_click orelse return false;
     click_ptr.* = .{
         .target = handleToC(click.target),
         .x = click.x,
@@ -1900,7 +1900,7 @@ export fn goop_context_last_secondary_click(ctx: ?*const CContext, out_click: ?*
 export fn goop_context_last_drop(ctx: ?*const CContext, out_drop: ?*CDrop) bool {
     const context = ctx orelse return false;
     const drop_ptr = out_drop orelse return false;
-    const drop = context.ctx.runtime.lastDrop() orelse return false;
+    const drop = context.ctx.runtime.frame(&context.ctx.tree).last_drop orelse return false;
     drop_ptr.* = switch (drop) {
         .tree => |d| .{ .kind = .tree, .data = .{ .tree = .{
             .source = handleToC(d.source),
@@ -1969,7 +1969,7 @@ export fn goop_context_is_drop_hovered(ctx: ?*const CContext, handle: CHandle) b
 export fn goop_context_focused_widget(ctx: ?*const CContext, out_handle: ?*CHandle) bool {
     const context = ctx orelse return false;
     const handle_ptr = out_handle orelse return false;
-    const focused = context.ctx.runtime.focusedWidget(&context.ctx.tree) orelse return false;
+    const focused = context.ctx.runtime.frame(&context.ctx.tree).focused orelse return false;
     handle_ptr.* = handleToC(focused);
     return true;
 }
@@ -1995,7 +1995,7 @@ export fn goop_context_pointer_position(ctx: ?*const CContext, out_x: ?*f32, out
     const context = ctx orelse return false;
     const x_ptr = out_x orelse return false;
     const y_ptr = out_y orelse return false;
-    const pos = context.ctx.runtime.pointerPosition();
+    const pos = context.ctx.runtime.frame(&context.ctx.tree).pointer;
     x_ptr.* = pos.x;
     y_ptr.* = pos.y;
     return true;
@@ -2003,24 +2003,25 @@ export fn goop_context_pointer_position(ctx: ?*const CContext, out_x: ?*f32, out
 
 export fn goop_context_is_pointer_button_down(ctx: ?*const CContext, button: CMouseButton) bool {
     const context = ctx orelse return false;
-    return context.ctx.runtime.isPointerButtonDown(switch (button) {
-        .left => .left,
-        .right => .right,
-        .middle => .middle,
-    });
+    const buttons = context.ctx.runtime.frame(&context.ctx.tree).buttons;
+    return switch (button) {
+        .left => buttons.left,
+        .right => buttons.right,
+        .middle => buttons.middle,
+    };
 }
 
 export fn goop_context_active_drag_source(ctx: ?*const CContext, out_handle: ?*CHandle) bool {
     const context = ctx orelse return false;
     const handle_ptr = out_handle orelse return false;
-    const source = context.ctx.runtime.activeDragSource() orelse return false;
+    const source = context.ctx.runtime.frame(&context.ctx.tree).drag_source orelse return false;
     handle_ptr.* = handleToC(source);
     return true;
 }
 
 export fn goop_context_last_primary_press_timestamp_ms(ctx: ?*const CContext) u64 {
     const context = ctx orelse return 0;
-    return context.ctx.runtime.lastPrimaryPressTimestampMs();
+    return context.ctx.runtime.frame(&context.ctx.tree).last_primary_press_ms;
 }
 
 test "c api smoke" {

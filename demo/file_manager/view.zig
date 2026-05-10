@@ -1191,7 +1191,7 @@ pub fn debugLogFilePanelLayout(state: *State) void {
         const body_row = if (state.row_handles.items.len > 0) state.row_handles.items[0] else null;
         const header_widths = collectRowCellWidths(ctx, header_row);
         const body_widths = collectRowCellWidths(ctx, body_row);
-        const focused_handle = ctx.runtime.focusedWidget(&ctx.tree);
+        const focused_handle = ctx.runtime.frame(&ctx.tree).focused;
         const focused_index = if (focused_handle) |handle| handle.index else std.math.maxInt(u32);
 
         const layout_state_unchanged = focused_index == state.layout_debug_last_focus_index and

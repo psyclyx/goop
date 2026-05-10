@@ -1647,7 +1647,7 @@ fn commitActiveRename(state: *State) !RenameFinish {
 }
 
 fn currentPrimaryClickTimestampMs(ctx: *const goop.Context, io: std.Io) u64 {
-    const event_ms = ctx.runtime.lastPrimaryPressTimestampMs();
+    const event_ms = ctx.runtime.frame(&ctx.tree).last_primary_press_ms;
     if (event_ms != 0) return event_ms;
     return getMonotonicNs(io) / std.time.ns_per_ms;
 }
@@ -1833,9 +1833,10 @@ fn handleAssetWidgetDrop(state: *State, ctx: *const goop.Context, drop: goop.Wid
 
 fn maybeStartWaylandAssetDrag(state: *State, ctx: *goop.Context) !bool {
     if (state.drag_source != null) return false;
-    if (!ctx.runtime.isPointerButtonDown(.left)) return false;
-    const drag_target = ctx.runtime.activeDragSource() orelse return false;
-    const pointer = ctx.runtime.pointerPosition();
+    const f = ctx.runtime.frame(&ctx.tree);
+    if (!f.buttons.left) return false;
+    const drag_target = f.drag_source orelse return false;
+    const pointer = f.pointer;
     const pointer_outside_window = !state.pointer_inside or
         pointer.x < 0 or
         pointer.y < 0 or
@@ -1920,7 +1921,7 @@ pub fn contextOpenLinkTargetEnabled(state: *const State) bool {
 }
 
 fn contextClickPosition(state: *const State, ctx: *const goop.Context) struct { x: f32, y: f32 } {
-    if (ctx.runtime.lastSecondaryClick()) |click| {
+    if (ctx.runtime.frame(&ctx.tree).last_secondary_click) |click| {
         return .{ .x = click.x, .y = click.y };
     }
     return .{ .x = state.mouse_x, .y = state.mouse_y };
@@ -2839,7 +2840,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         var asset_primary_handled = false;
-        if (ctx.runtime.lastDrop()) |drop| {
+        if (ctx.runtime.frame(&ctx.tree).last_drop) |drop| {
             const asset_drop = switch (drop) {
                 .widget => |widget_drop| assetEntryIndexFromUserId(&state, ctx.tree.userId(widget_drop.source)) != null,
                 .table => |table_drop| assetEntryIndexFromUserId(&state, ctx.tree.userId(table_drop.source)) != null,
@@ -2987,7 +2988,7 @@ pub fn main(init: std.process.Init) !void {
 
         if (!asset_primary_handled) {
             var selection_widget_changed = false;
-            const selection_drag_active = ctx.runtime.isPointerButtonDown(.left);
+            const selection_drag_active = ctx.runtime.frame(&ctx.tree).buttons.left;
             if (state.view_mode == .list) {
                 if (state.asset_table_body) |table| {
                     if (ctx.tree.isAlive(table) and ctx.tree.node(table).?.kind.table.selection_changed) {
@@ -3040,7 +3041,7 @@ pub fn main(init: std.process.Init) !void {
             if (selection_widget_changed) asset_primary_handled = true;
         }
 
-        if (!ctx.runtime.isPointerButtonDown(.left) and state.asset_selection_rebuild_pending) {
+        if (!ctx.runtime.frame(&ctx.tree).buttons.left and state.asset_selection_rebuild_pending) {
             state.asset_selection_rebuild_pending = false;
             rebuild_ui = true;
         }

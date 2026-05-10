@@ -1118,7 +1118,7 @@ pub fn keyboardKey(data: ?*anyopaque, _: ?*wl.wl_keyboard, serial: u32, _: u32, 
     } }) catch {};
 
     if (key_state == 1) {
-        const focused_handle = ctx.runtime.focusedWidget(&ctx.tree);
+        const focused_handle = ctx.runtime.frame(&ctx.tree).focused;
         const focused_is_text_input = if (focused_handle) |handle|
             ctx.tree.getConst(handle).kind == .text_input
         else

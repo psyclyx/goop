@@ -1308,7 +1308,8 @@ fn buildWidgetTree(state: *State) !void {
     _ = try ctx.tree.addChild(status_bar, .{ .text = .{ .content = "Status: Ready" } });
 
     // Context menu popup. The demo opens it on secondary click, but callers
-    // can instead use ctx.runtime.lastSecondaryClick() to trigger a native popup.
+    // can instead inspect ctx.runtime.frame(...).last_secondary_click to
+    // trigger a native popup.
     state.context_popup = try ctx.tree.addRoot(.{ .popup = .{ .placement = .absolute, .visible = false } });
     state.context_action_a = try ctx.tree.addChild(state.context_popup.?, .{ .menu_item = .{ .label = "Rename" } });
     state.context_action_b = try ctx.tree.addChild(state.context_popup.?, .{ .menu_item = .{ .label = "Delete" } });
@@ -1525,7 +1526,7 @@ pub fn main(init: std.process.Init) !void {
 
         ctx.processEvents();
 
-        if (ctx.runtime.lastSecondaryClick()) |click| {
+        if (ctx.runtime.frame(&ctx.tree).last_secondary_click) |click| {
             if (state.context_popup) |popup| {
                 const popup_node = ctx.tree.get(popup);
                 popup_node.kind.popup.x = click.x;
@@ -1575,7 +1576,7 @@ pub fn main(init: std.process.Init) !void {
             if (ctx.tree.node(h).?.clicked) std.debug.print("Outline selected: Directional Light\n", .{});
             if (ctx.tree.node(h).?.kind.tree_item.rename_committed) std.debug.print("Outline renamed: {s}\n", .{ctx.tree.node(h).?.kind.tree_item.label});
         }
-        if (ctx.runtime.lastDrop()) |last| switch (last) {
+        if (ctx.runtime.frame(&ctx.tree).last_drop) |last| switch (last) {
             .tree => |drop| {
                 const position_name = switch (drop.position) {
                     .before => "before",
