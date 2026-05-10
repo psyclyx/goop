@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v30
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Cache zig artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            zig-pkg
+          key: zig-${{ runner.os }}-${{ hashFiles('build.zig.zon', 'build.zig') }}
+          restore-keys: |
+            zig-${{ runner.os }}-
+
+      - name: Run unit tests
+        run: nix-shell --run 'zig build test'
+
+      - name: Build release artifacts
+        run: nix-shell --run 'zig build install --release=fast'
+
+      - name: Package artifacts
+        run: |
+          mkdir -p goop-${GITHUB_REF_NAME}
+          cp zig-out/lib/libgoop.a goop-${GITHUB_REF_NAME}/
+          cp zig-out/lib/libgoop.so goop-${GITHUB_REF_NAME}/
+          cp zig-out/include/goop.h goop-${GITHUB_REF_NAME}/
+          cp LICENSE CHANGELOG.md README.md goop-${GITHUB_REF_NAME}/
+          tar czf goop-${GITHUB_REF_NAME}-linux-x86_64.tar.gz goop-${GITHUB_REF_NAME}/
+          sha256sum goop-${GITHUB_REF_NAME}-linux-x86_64.tar.gz > goop-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256
+
+      - name: Extract release notes for this tag
+        id: release_notes
+        run: |
+          # Pull the section for this version out of CHANGELOG.md.
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 ~ "^## " v "( |$)" { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "No CHANGELOG entry for $version; falling back to auto-generated notes." >&2
+            echo "fallback=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release
+        run: |
+          if [ -s release_notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file release_notes.md \
+              goop-${GITHUB_REF_NAME}-linux-x86_64.tar.gz \
+              goop-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              goop-${GITHUB_REF_NAME}-linux-x86_64.tar.gz \
+              goop-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
