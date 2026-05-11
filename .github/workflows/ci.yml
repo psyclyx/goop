@@ -33,6 +33,8 @@ jobs:
         run: nix-shell --run 'zig build build-demo build-file-manager-demo build-perf-round build-screenshot build-c-example build-lib build-shared-lib'
 
       - name: Render screenshot
+        env:
+          GOOP_FORCE_SOFTWARE_GL: "1"
         run: nix-shell --run 'zig build screenshot'
 
       - name: Verify screenshot was produced

@@ -4,6 +4,18 @@ All notable changes to `goop` will be documented here. The project follows
 [Semantic Versioning](https://semver.org). Pre-1.0 releases may include
 breaking changes between minor versions.
 
+## 0.1.1 — 2026-05-10
+
+### Fixed
+
+- CI screenshot regression couldn't initialize EGL on headless GitHub
+  runners. `shell.nix` now provides `mesa` and exports
+  `__EGL_VENDOR_LIBRARY_FILENAMES`, `LIBGL_ALWAYS_SOFTWARE=1`, and
+  `GALLIUM_DRIVER=llvmpipe` when `GOOP_FORCE_SOFTWARE_GL` is set in the
+  calling environment. Local developers with hardware GL are unaffected.
+
+No library changes.
+
 ## 0.1.0 — 2026-05-10
 
 First preview release.
