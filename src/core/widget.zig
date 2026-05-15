@@ -82,6 +82,7 @@ pub const WidgetKind = union(enum) {
     spacer: Spacer,
     scroll_area: ScrollArea,
     text_input: TextInput,
+    custom: Custom,
 
     pub const Container = struct {
         direction: Direction = .column,
@@ -824,6 +825,17 @@ pub const WidgetKind = union(enum) {
             return prefix_len;
         }
     };
+
+    pub const Custom = struct {
+        type_id: u64 = 0,
+        width: f32 = 0,
+        height: f32 = 0,
+        min_width: f32 = 0,
+        min_height: f32 = 0,
+        grow_width: bool = true,
+        grow_height: bool = false,
+        focusable: bool = false,
+    };
 };
 
 /// User-authored construction inputs for a widget node.
@@ -871,6 +883,7 @@ pub const WidgetDesc = union(enum) {
     spacer: Spacer,
     scroll_area: ScrollArea,
     text_input: TextInput,
+    custom: Custom,
 
     pub const Container = struct {
         direction: WidgetKind.Container.Direction = .column,
@@ -1045,6 +1058,17 @@ pub const WidgetDesc = union(enum) {
     pub const TextInput = struct {
         placeholder: []const u8 = "",
     };
+
+    pub const Custom = struct {
+        type_id: u64 = 0,
+        width: f32 = 0,
+        height: f32 = 0,
+        min_width: f32 = 0,
+        min_height: f32 = 0,
+        grow_width: bool = true,
+        grow_height: bool = false,
+        focusable: bool = false,
+    };
 };
 
 /// Read a struct field's compile-time default value. Errors at
@@ -1136,6 +1160,7 @@ pub const WidgetView = union(enum) {
     spacer: void,
     scroll_area: ScrollArea,
     text_input: TextInput,
+    custom: Custom,
 
     pub const Container = struct { direction: WidgetKind.Container.Direction };
 
@@ -1264,6 +1289,17 @@ pub const WidgetView = union(enum) {
         content: []const u8,
         cursor: u8,
         selection_anchor: ?u8,
+    };
+
+    pub const Custom = struct {
+        type_id: u64,
+        width: f32,
+        height: f32,
+        min_width: f32,
+        min_height: f32,
+        grow_width: bool,
+        grow_height: bool,
+        focusable: bool,
     };
 
     pub fn fromNode(node: *const Node) WidgetView {

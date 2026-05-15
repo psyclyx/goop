@@ -171,6 +171,7 @@ const CWidgetKind = enum(c_int) {
     scroll_area = 27,
     text_input = 28,
     spacer = 29,
+    custom = 30,
 };
 
 const COptionalU16 = extern struct {
@@ -342,6 +343,17 @@ const CSpacerWidget = extern struct {
     height: f32 = 0,
 };
 
+const CCustomWidget = extern struct {
+    type_id: u64 = 0,
+    width: f32 = 0,
+    height: f32 = 0,
+    min_width: f32 = 0,
+    min_height: f32 = 0,
+    grow_width: bool = true,
+    grow_height: bool = false,
+    focusable: bool = false,
+};
+
 const CUnitWidget = extern struct {
     _reserved: u8 = 0,
 };
@@ -379,6 +391,7 @@ const CWidget = extern struct {
         scroll_area: CScrollAreaWidget,
         text_input: CTextInputWidget,
         spacer: CSpacerWidget,
+        custom: CCustomWidget,
     } = .{ .container = .{} },
 };
 
@@ -533,6 +546,17 @@ const CTextInputView = extern struct {
     selection_anchor: COptionalU8 = .{},
 };
 
+const CCustomView = extern struct {
+    type_id: u64 = 0,
+    width: f32 = 0,
+    height: f32 = 0,
+    min_width: f32 = 0,
+    min_height: f32 = 0,
+    grow_width: bool = false,
+    grow_height: bool = false,
+    focusable: bool = false,
+};
+
 const CWidgetView = extern struct {
     kind: CWidgetKind = .container,
     data: extern union {
@@ -566,6 +590,7 @@ const CWidgetView = extern struct {
         scroll_area: CScrollAreaView,
         text_input: CTextInputView,
         spacer: CUnitWidget,
+        custom: CCustomView,
     } = .{ .container = .{} },
 };
 
@@ -1610,6 +1635,7 @@ test "c header parses" {
         .{ .Z = CScrollAreaWidget, .C = c.goop_scroll_area_widget_t },
         .{ .Z = CTextInputWidget, .C = c.goop_text_input_widget_t },
         .{ .Z = CSpacerWidget, .C = c.goop_spacer_widget_t },
+        .{ .Z = CCustomWidget, .C = c.goop_custom_widget_t },
         .{ .Z = CUnitWidget, .C = c.goop_unit_widget_t },
         .{ .Z = CWidget, .C = c.goop_widget_t },
 
@@ -1637,6 +1663,7 @@ test "c header parses" {
         .{ .Z = CSliderView, .C = c.goop_slider_view_t },
         .{ .Z = CScrollAreaView, .C = c.goop_scroll_area_view_t },
         .{ .Z = CTextInputView, .C = c.goop_text_input_view_t },
+        .{ .Z = CCustomView, .C = c.goop_custom_view_t },
         .{ .Z = CWidgetView, .C = c.goop_widget_view_t },
 
         .{ .Z = CMouseMoveEvent, .C = c.goop_mouse_move_event_t },
@@ -1718,4 +1745,5 @@ test "c header widget kinds match" {
     try std.testing.expectEqual(@as(c_int, @intFromEnum(CWidgetKind.scroll_area)), c.GOOP_WIDGET_SCROLL_AREA);
     try std.testing.expectEqual(@as(c_int, @intFromEnum(CWidgetKind.text_input)), c.GOOP_WIDGET_TEXT_INPUT);
     try std.testing.expectEqual(@as(c_int, @intFromEnum(CWidgetKind.spacer)), c.GOOP_WIDGET_SPACER);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CWidgetKind.custom)), c.GOOP_WIDGET_CUSTOM);
 }

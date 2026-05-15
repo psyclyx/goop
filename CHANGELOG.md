@@ -23,11 +23,11 @@ First preview release.
 ### Public API
 
 - Retained widget tree with generational handles and subtree removal.
-- 30 widget kinds: container, spacer, text, button, checkbox, radio
+- 31 widget kinds: container, spacer, text, button, checkbox, radio
   button, tree item, dropdown, popup, tooltip, menu bar / menu / menu
   item, list box, selectable, grid selector, grid item, table / row /
   cell, toolbar, status bar, drag value, spinbox, slider, text input,
-  tab bar / tab item, splitter, scroll area.
+  tab bar / tab item, splitter, scroll area, custom.
 - `Context` (single-tree convenience) and `Runtime` (multi-tree
   primitive) with thin-forward symmetry. `WidgetDesc` for construction,
   `NodeView` / `WidgetView` for reads, `mutateKind` / `setStyle` /

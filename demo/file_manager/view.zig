@@ -1041,6 +1041,7 @@ pub fn debugWidgetKindName(kind: goop.widget.WidgetKind) []const u8 {
         .spacer => "spacer",
         .scroll_area => "scroll_area",
         .text_input => "text_input",
+        .custom => "custom",
     };
 }
 

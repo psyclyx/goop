@@ -118,6 +118,9 @@ Runtime contract:
   `ctx.updateWidget(handle, desc)`, `ctx.mutateKind(handle)`, or
   `ctx.setCustomPaint(handle, ...)`. These invalidate the layout/paint
   caches; reaching into `ctx.tree.get(handle)` directly does not.
+- Add embedder-defined controls with `WidgetDesc.custom`. Custom widgets
+  participate in layout, hit testing, focus/click state, `NodeView`, and
+  paint as a `.custom` command at the widget's resolved bounds.
 - Read state through `ctx.tree.node(handle)`, which returns a `NodeView`
   snapshot bundling the layout rect, cross-kind per-frame flags
   (`clicked`, `changed`, `toggled`, `drop_received`, `secondary_clicked`),

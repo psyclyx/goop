@@ -161,16 +161,27 @@ fn emitNode(
         .spacer => {},
         .text_input => try emitTextInput(paint_ctx, node, resolved, theme, commands, allocator, text_ctx),
         .scroll_area => try emitScrollArea(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
+        .custom => try appendCustomPaint(commands, allocator, handle, node_rect),
     }
 
     try emitDropTargetOverlay(paint_ctx, node, resolved, theme, commands, allocator);
 
-    if (node.custom_paint and node.kind != .table_cell and node_rect.w > 0 and node_rect.h > 0) {
-        try commands.append(allocator, .{ .custom = .{
-            .handle = handle,
-            .bounds = node_rect,
-        } });
+    if (node.custom_paint and node.kind != .table_cell and node.kind != .custom) {
+        try appendCustomPaint(commands, allocator, handle, node_rect);
     }
+}
+
+fn appendCustomPaint(
+    commands: *std.ArrayListUnmanaged(PaintCommand),
+    allocator: std.mem.Allocator,
+    handle: widget.NodeHandle,
+    bounds: Rect,
+) std.mem.Allocator.Error!void {
+    if (bounds.w <= 0 or bounds.h <= 0) return;
+    try commands.append(allocator, .{ .custom = .{
+        .handle = handle,
+        .bounds = bounds,
+    } });
 }
 
 fn emitContainer(
@@ -1058,12 +1069,7 @@ fn emitTableCellContents(
         try appendTextCommand(commands, allocator, chevron_bounds, tableSortChevron(direction), theme.accent, resolved.font_size, .center, .visible);
     }
 
-    if (node.custom_paint and rect.w > 0 and rect.h > 0) {
-        try commands.append(allocator, .{ .custom = .{
-            .handle = handle,
-            .bounds = rect,
-        } });
-    }
+    if (node.custom_paint) try appendCustomPaint(commands, allocator, handle, rect);
 }
 
 fn emitTableCellDivider(

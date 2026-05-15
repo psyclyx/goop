@@ -2274,6 +2274,9 @@ fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
             node.interaction.primary_clicked = true;
             selectTabItem(tree, handle);
         },
+        .custom => {
+            node.interaction.primary_clicked = true;
+        },
         else => {},
     }
 }

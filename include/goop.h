@@ -180,6 +180,7 @@ typedef enum {
     GOOP_WIDGET_SCROLL_AREA = 27,
     GOOP_WIDGET_TEXT_INPUT = 28,
     GOOP_WIDGET_SPACER = 29,
+    GOOP_WIDGET_CUSTOM = 30,
 } goop_widget_kind_t;
 
 typedef struct {
@@ -352,6 +353,17 @@ typedef struct {
 } goop_spacer_widget_t;
 
 typedef struct {
+    uint64_t type_id;
+    float width;
+    float height;
+    float min_width;
+    float min_height;
+    bool grow_width;
+    bool grow_height;
+    bool focusable;
+} goop_custom_widget_t;
+
+typedef struct {
     uint8_t _reserved;
 } goop_unit_widget_t;
 
@@ -388,6 +400,7 @@ typedef struct {
         goop_scroll_area_widget_t scroll_area;
         goop_text_input_widget_t text_input;
         goop_spacer_widget_t spacer;
+        goop_custom_widget_t custom;
     } data;
 } goop_widget_t;
 
@@ -535,6 +548,17 @@ typedef struct {
 } goop_text_input_view_t;
 
 typedef struct {
+    uint64_t type_id;
+    float width;
+    float height;
+    float min_width;
+    float min_height;
+    bool grow_width;
+    bool grow_height;
+    bool focusable;
+} goop_custom_view_t;
+
+typedef struct {
     goop_widget_kind_t kind;
     union {
         goop_container_view_t container;
@@ -567,6 +591,7 @@ typedef struct {
         goop_scroll_area_view_t scroll_area;
         goop_text_input_view_t text_input;
         goop_unit_widget_t spacer;
+        goop_custom_view_t custom;
     } data;
 } goop_widget_view_t;
 

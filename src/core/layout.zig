@@ -173,6 +173,7 @@ fn emitNode(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style_mo
         .spacer => |spacer| emitSpacer(handle, spacer),
         .text_input => |ti| emitTextInput(handle, ti, resolved),
         .scroll_area => emitScrollArea(tree, handle, resolved, theme),
+        .custom => |custom| emitCustom(handle, custom),
     }
 }
 
@@ -1461,6 +1462,33 @@ fn emitSpacer(handle: widget.NodeHandle, spacer: widget.WidgetKind.Spacer) void 
     c.Clay__CloseElement();
 }
 
+fn emitCustom(handle: widget.NodeHandle, custom: widget.WidgetKind.Custom) void {
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = nodeId(handle),
+        .layout = .{
+            .sizing = .{
+                .width = customSizingAxis(custom.width, custom.min_width, custom.grow_width),
+                .height = customSizingAxis(custom.height, custom.min_height, custom.grow_height),
+            },
+            .padding = .{},
+            .childGap = 0,
+            .childAlignment = .{},
+            .layoutDirection = c.CLAY_TOP_TO_BOTTOM,
+        },
+        .backgroundColor = .{},
+        .cornerRadius = .{},
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
+    c.Clay__CloseElement();
+}
+
 fn emitTextInput(handle: widget.NodeHandle, ti: widget.WidgetKind.TextInput, resolved: style_mod.ResolvedStyle) void {
     c.Clay__OpenElement();
     c.Clay__ConfigureOpenElement(.{
@@ -1637,6 +1665,11 @@ fn fixedSizing(px: f32) c.Clay_SizingAxis {
         .size = .{ .minMax = .{ .min = px, .max = px } },
         .type = c.CLAY__SIZING_TYPE_FIXED,
     };
+}
+
+fn customSizingAxis(size: f32, min_size: f32, grow: bool) c.Clay_SizingAxis {
+    if (size > 0) return fixedSizing(size);
+    return if (grow) growSizingMin(min_size) else fitSizingMin(min_size);
 }
 
 fn percentSizing(percent: f32) c.Clay_SizingAxis {

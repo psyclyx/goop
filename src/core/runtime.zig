@@ -294,8 +294,8 @@ pub const Runtime = struct {
         return &tree.get(handle).kind;
     }
 
-    /// Mark a widget as embedder-rendered. The library still emits a
-    /// `.custom` paint command for it, but skips its built-in painting.
+    /// Mark a widget as needing an embedder paint hook. The library emits
+    /// a `.custom` paint command for it in addition to its built-in paint.
     /// Returns false if the handle is dead.
     pub fn setCustomPaint(self: *Runtime, tree: *Tree, handle: NodeHandle, custom: bool) bool {
         if (!tree.isAlive(handle)) return false;
@@ -753,6 +753,46 @@ test "layout then paint produces commands" {
 
     // Should have at least: container surface, button surface, button text, text label
     try std.testing.expect(paint_list.commands.len >= 4);
+}
+
+test "custom widgets expose semantic paint and state" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 320, .height = 200 });
+    defer ctx.deinit();
+
+    const custom = try ctx.tree.addRoot(.{ .custom = .{
+        .type_id = 42,
+        .width = 96,
+        .height = 32,
+        .focusable = true,
+    } });
+
+    ctx.doLayout(null);
+    const rect = ctx.tree.getConst(custom).layout_rect;
+    try std.testing.expectApproxEqAbs(@as(f32, 96), rect.w, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 32), rect.h, 0.01);
+
+    const paint_list = try ctx.generatePaintList();
+    try std.testing.expectEqual(@as(usize, 1), paint_list.commands.len);
+    try std.testing.expect(paint_list.commands[0] == .custom);
+    try std.testing.expect(paint_list.commands[0].custom.handle.eql(custom));
+
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = rect.x + 4, .y = rect.y + 4 } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = rect.x + 4, .y = rect.y + 4 } });
+    ctx.processEvents();
+
+    const view = ctx.tree.node(custom).?;
+    try std.testing.expect(view.clicked);
+    try std.testing.expect(view.focused);
+    try std.testing.expectEqual(WidgetView{ .custom = .{
+        .type_id = 42,
+        .width = 96,
+        .height = 32,
+        .min_width = 0,
+        .min_height = 0,
+        .grow_width = true,
+        .grow_height = false,
+        .focusable = true,
+    } }, view.kind);
 }
 
 test "event dispatch detects button click" {

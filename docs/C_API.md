@@ -51,6 +51,9 @@ state.
 `GOOP_DRAW_CUSTOM` marks a widget that the embedder should render itself. It
 carries the widget handle plus the resolved `bounds`, so custom rendering can
 be inserted at the exact point `goop` emitted it in draw order.
+Use `GOOP_WIDGET_CUSTOM` for a first-class embedder-defined widget that should
+always emit this command; use `goop_context_set_custom_paint` when another
+widget kind needs an additional embedder paint hook.
 
 `GOOP_DRAW_TEXT` carries:
 

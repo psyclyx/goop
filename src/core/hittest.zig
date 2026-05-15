@@ -76,6 +76,7 @@ pub fn isInteractive(kind: widget.WidgetKind) bool {
         .scroll_area,
         .container,
         .text_input,
+        .custom,
         => true,
         .text, .table_cell, .toolbar, .status_bar, .menu_bar, .tooltip, .tab_bar, .spacer => false,
     };

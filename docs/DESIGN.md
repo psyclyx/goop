@@ -94,6 +94,7 @@ Current widget kinds:
 - slider
 - scroll area
 - text input
+- custom
 
 ### Event Model
 
