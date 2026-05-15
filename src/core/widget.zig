@@ -1,18 +1,9 @@
 const std = @import("std");
 const style = @import("style.zig");
 const draw = @import("draw.zig");
+const handle_mod = @import("handle.zig");
 
-/// Handle to a widget node. Carries an index into the tree's node array
-/// and a generation counter for stale-handle detection.
-pub const NodeHandle = struct {
-    index: u32,
-    generation: u32,
-
-    /// Two handles are equal iff both index and generation match.
-    pub fn eql(a: NodeHandle, b: NodeHandle) bool {
-        return a.index == b.index and a.generation == b.generation;
-    }
-};
+pub const NodeHandle = handle_mod.NodeHandle;
 
 /// Outcome of committing an inline numeric editor (`DragValue`,
 /// `SpinBox`). Lets dispatch distinguish parse failure from a clean
