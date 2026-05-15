@@ -9,6 +9,20 @@ const gl = @cImport({
     @cInclude("GL/glcorearb.h");
 });
 
+fn uploadAllocators() snail.UploadAllocators {
+    return .{
+        .persistent = render_allocator,
+        .scratch = render_allocator,
+    };
+}
+
+fn pathFreezeOptions(persistent_allocator: std.mem.Allocator, scratch_allocator: std.mem.Allocator) snail.PathPictureBuilder.FreezeOptions {
+    return .{
+        .persistent_allocator = persistent_allocator,
+        .scratch_allocator = scratch_allocator,
+    };
+}
+
 const DrawCommand = goop.DrawCommand;
 const DrawList = goop.DrawList;
 const PaintCommand = goop.PaintCommand;
@@ -247,7 +261,7 @@ pub const Renderer = struct {
         var resources = snail.ResourceSet.init(&resource_entries);
         try resources.putTextAtlas(.goop_text_atlas, text_atlas);
 
-        const next = try self.text_renderer.uploadResourcesBlocking(render_allocator, &resources);
+        const next = try self.text_renderer.uploadResourcesBlocking(uploadAllocators(), &resources);
         self.text_resources = next;
     }
 
@@ -258,6 +272,7 @@ pub const Renderer = struct {
                 .pixel_width = self.viewport_w,
                 .pixel_height = self.viewport_h,
                 .subpixel_order = .none,
+                .encoding = .srgb_pixels_on_linear_framebuffer,
             },
         };
     }
@@ -378,7 +393,16 @@ pub const Renderer = struct {
             self.textBaselineY(t.bounds, t.font_size);
         const scaled_baseline = snapToDevicePixels(baseline, self.scale);
         const before = self.text_builder.glyphCount();
-        _ = self.text_builder.addText(.{}, resolved.text, scaled_x, scaled_baseline, scaled_font_size, color) catch return;
+        var shaped = self.text_atlas.shapeText(self.frameAllocator(), .{}, resolved.text) catch return;
+        defer shaped.deinit();
+        _ = self.text_builder.append(.{
+            .shaped = &shaped,
+            .placement = .{
+                .baseline = snail.Vec2.new(scaled_x, scaled_baseline),
+                .em = scaled_font_size,
+            },
+            .fill = .{ .solid = color },
+        }) catch return;
         self.appendTextRange(before) catch return;
     }
 
@@ -411,9 +435,9 @@ pub const Renderer = struct {
         const border_width = r.border_width * self.scale;
         const fill_color = colorToVec4(r.color);
         const border_color = colorToVec4(r.border_color);
-        const fill: ?snail.FillStyle = if (r.color.a == 0) null else .{ .color = fill_color };
+        const fill: ?snail.FillStyle = if (r.color.a == 0) null else .{ .paint = .{ .solid = fill_color } };
         const stroke: ?snail.StrokeStyle = if (border_width <= 0 or r.border_color.a == 0) null else .{
-            .color = border_color,
+            .paint = .{ .solid = border_color },
             .width = border_width,
             .join = .round,
             .placement = .inside,
@@ -426,9 +450,10 @@ pub const Renderer = struct {
 
     fn addIcon(self: *Renderer, icon: anytype) void {
         if (icon.color.a == 0) return;
-        const fill = snail.FillStyle{ .color = colorToVec4(icon.color) };
+        const paint: snail.Paint = .{ .solid = colorToVec4(icon.color) };
+        const fill = snail.FillStyle{ .paint = paint };
         const stroke = snail.StrokeStyle{
-            .color = colorToVec4(icon.color),
+            .paint = paint,
             .width = @max(1.5 * self.scale, 1),
             .join = .round,
             .placement = .inside,
@@ -614,13 +639,13 @@ pub const Renderer = struct {
     fn prepareFramePathResources(self: *Renderer) !?snail.PreparedResources {
         if (self.path_builder.shapeCount() == 0) return null;
         const picture = self.frame_path_picture orelse return null;
-        picture.* = try self.path_builder.freeze(self.frameAllocator());
+        picture.* = try self.path_builder.freeze(pathFreezeOptions(self.frameAllocator(), self.frameAllocator()));
         self.frame_path_picture_initialized = true;
 
         var resource_entries: [1]snail.ResourceSet.Entry = undefined;
         var resources = snail.ResourceSet.init(&resource_entries);
         try resources.putPathPicture(.goop_frame_paths, picture);
-        return try self.text_renderer.uploadResourcesBlocking(render_allocator, &resources);
+        return try self.text_renderer.uploadResourcesBlocking(uploadAllocators(), &resources);
     }
 
     fn prepareFrameTextBlob(self: *Renderer) !void {
@@ -670,7 +695,7 @@ pub const Renderer = struct {
         if (self.path_builder.shapeCount() > 0) {
             const picture = try render_allocator.create(snail.PathPicture);
             errdefer render_allocator.destroy(picture);
-            picture.* = try self.path_builder.freeze(render_allocator);
+            picture.* = try self.path_builder.freeze(pathFreezeOptions(render_allocator, render_allocator));
             errdefer picture.deinit();
             cache_picture = picture;
         }
@@ -684,7 +709,7 @@ pub const Renderer = struct {
             var resource_entries: [1]snail.ResourceSet.Entry = undefined;
             var resources = snail.ResourceSet.init(&resource_entries);
             try resources.putPathPicture(.goop_frame_paths, picture);
-            path_resources = try self.text_renderer.uploadResourcesBlocking(render_allocator, &resources);
+            path_resources = try self.text_renderer.uploadResourcesBlocking(uploadAllocators(), &resources);
         }
         errdefer if (path_resources) |*prepared| prepared.deinit();
 

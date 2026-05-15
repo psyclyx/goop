@@ -7,17 +7,20 @@
       "hash": "sha256-bA5oJv7j54PubdUbBlLCwdoK29G2+9sLnc8dDqLQ9YE="
     },
     "snail": {
-      "type": "Git",
+      "type": "GitRelease",
       "repository": {
         "type": "GitHub",
         "owner": "psyclyx",
         "repo": "snail"
       },
-      "branch": "main",
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
       "submodules": false,
-      "revision": "9825c5bd654e5b9202b017fdf5946bf566cdb840",
-      "url": "https://github.com/psyclyx/snail/archive/9825c5bd654e5b9202b017fdf5946bf566cdb840.tar.gz",
-      "hash": "sha256-udO5V1qEEmNubFKgUT8lYvAkw8Nm+Jpv/ielhIgQovo="
+      "version": "v0.7.0",
+      "revision": "4aba591c675a0a3e22cf129c9b8298363c307e4b",
+      "url": "https://api.github.com/repos/psyclyx/snail/tarball/refs/tags/v0.7.0",
+      "hash": "sha256-yn7KL5FTVv2HKFQY8yLKGIUvroq+sYRZ/PMyPaZGTPs="
     }
   },
   "version": 7
