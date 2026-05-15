@@ -2,10 +2,11 @@ const std = @import("std");
 const goop = @import("goop");
 
 const fm = @import("../file_manager_main.zig");
+const types = @import("types.zig");
 const State = fm.State;
 const allocator = fm.allocator;
 
-const BrowserEntry = fm.BrowserEntry;
+const BrowserEntry = types.BrowserEntry;
 const allocUtf8LossyOwned = fm.allocUtf8LossyOwned;
 const browserEntryKind = fm.browserEntryKind;
 const resolveSymlinkTargetAlloc = fm.resolveSymlinkTargetAlloc;

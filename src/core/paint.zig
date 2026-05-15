@@ -4,6 +4,7 @@ const widget = @import("widget.zig");
 const layout = @import("layout.zig");
 const paint_types = @import("paint_types.zig");
 const primitive_draw = @import("primitive_draw.zig");
+const geometry = @import("geometry.zig");
 
 pub const Rect = paint_types.Rect;
 pub const TextAlign = paint_types.TextAlign;
@@ -1532,8 +1533,8 @@ fn emitSplitter(
 
     try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
-    const divider = splitterDividerRect(rect, splitter, resolved);
-    const handle_rect = splitterHandleRect(divider, splitter);
+    const divider = geometry.splitterDividerRect(rect, splitter, resolved);
+    const handle_rect = snappedRect(geometry.splitterHandleRect(divider, splitter));
     const visible_divider = splitterVisibleRect(divider, splitter.direction);
     const grip = splitterGripRect(handle_rect, splitter.direction);
     const divider_color = if (node.interaction.pressed)
@@ -2027,44 +2028,6 @@ fn emitMenuArrow(
     } });
 }
 
-fn splitterDividerRect(rect: Rect, splitter: widget.WidgetKind.Splitter, resolved: style.ResolvedStyle) Rect {
-    const inner = splitterInnerRect(rect, resolved);
-    const ratio = clampedSplitterRatio(splitter, rect, resolved);
-    const gap_thickness = splitterGapThickness(splitter);
-    return switch (splitter.direction) {
-        .row => .{
-            .x = inner.x + (inner.w - gap_thickness) * ratio,
-            .y = inner.y,
-            .w = gap_thickness,
-            .h = inner.h,
-        },
-        .column => .{
-            .x = inner.x,
-            .y = inner.y + (inner.h - gap_thickness) * ratio,
-            .w = inner.w,
-            .h = gap_thickness,
-        },
-    };
-}
-
-fn splitterHandleRect(divider: Rect, splitter: widget.WidgetKind.Splitter) Rect {
-    const handle_thickness = @max(splitter.thickness, splitterGapThickness(splitter));
-    return switch (splitter.direction) {
-        .row => snappedRect(.{
-            .x = divider.x + (divider.w - handle_thickness) * 0.5,
-            .y = divider.y,
-            .w = handle_thickness,
-            .h = divider.h,
-        }),
-        .column => snappedRect(.{
-            .x = divider.x,
-            .y = divider.y + (divider.h - handle_thickness) * 0.5,
-            .w = divider.w,
-            .h = handle_thickness,
-        }),
-    };
-}
-
 fn splitterGripRect(divider: Rect, direction: widget.WidgetKind.Container.Direction) Rect {
     return switch (direction) {
         .row => .{
@@ -2095,23 +2058,6 @@ fn snappedRect(bounds: Rect) Rect {
     };
 }
 
-fn snappedHairlineRect(bounds: Rect, axis: widget.WidgetKind.Container.Direction) Rect {
-    return switch (axis) {
-        .row => .{
-            .x = @round(bounds.x),
-            .y = @round(bounds.y),
-            .w = 1,
-            .h = @max(@round(bounds.h), 0),
-        },
-        .column => .{
-            .x = @round(bounds.x),
-            .y = @round(bounds.y),
-            .w = @max(@round(bounds.w), 0),
-            .h = 1,
-        },
-    };
-}
-
 fn tableRowFillRect(tree: *const widget.Tree, handle: widget.NodeHandle, rect: Rect) Rect {
     _ = tree;
     _ = handle;
@@ -2125,46 +2071,6 @@ fn tableDividerThickness(border_width: f32) f32 {
 fn splitterVisibleRect(divider: Rect, direction: widget.WidgetKind.Container.Direction) Rect {
     _ = direction;
     return snappedRect(divider);
-}
-
-fn splitterInnerRect(rect: Rect, resolved: style.ResolvedStyle) Rect {
-    return .{
-        .x = rect.x + resolved.padding.left,
-        .y = rect.y + resolved.padding.top,
-        .w = @max(rect.w - resolved.padding.left - resolved.padding.right, 0),
-        .h = @max(rect.h - resolved.padding.top - resolved.padding.bottom, 0),
-    };
-}
-
-fn clampedSplitterRatio(
-    splitter: widget.WidgetKind.Splitter,
-    rect: Rect,
-    resolved: style.ResolvedStyle,
-) f32 {
-    const raw = std.math.clamp(splitter.ratio, 0, 1);
-    const available = splitterAvailableExtent(splitter, rect, resolved);
-    if (available <= 0) return raw;
-
-    const min_ratio = std.math.clamp(splitter.min_first / available, 0, 1);
-    const max_ratio = std.math.clamp(1 - splitter.min_second / available, 0, 1);
-    if (min_ratio > max_ratio) return raw;
-    return std.math.clamp(raw, min_ratio, max_ratio);
-}
-
-fn splitterAvailableExtent(
-    splitter: widget.WidgetKind.Splitter,
-    rect: Rect,
-    resolved: style.ResolvedStyle,
-) f32 {
-    const inner = splitterInnerRect(rect, resolved);
-    return switch (splitter.direction) {
-        .row => inner.w - splitterGapThickness(splitter),
-        .column => inner.h - splitterGapThickness(splitter),
-    };
-}
-
-fn splitterGapThickness(splitter: widget.WidgetKind.Splitter) f32 {
-    return @max(@min(splitter.gap_thickness, splitter.thickness), 1);
 }
 
 fn spinBoxButtons(rect: Rect) struct { dec: Rect, inc: Rect } {

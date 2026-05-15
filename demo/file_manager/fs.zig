@@ -2,14 +2,15 @@ const std = @import("std");
 const goop = @import("goop");
 
 const fm = @import("../file_manager_main.zig");
+const types = @import("types.zig");
 const State = fm.State;
 const allocator = fm.allocator;
-const BrowserEntry = fm.BrowserEntry;
-const BrowserEntryKind = fm.BrowserEntryKind;
-const BrowserPlace = fm.BrowserPlace;
-const FolderTreeChild = fm.FolderTreeChild;
-const BrowserSortColumn = fm.BrowserSortColumn;
-const BrowserSortDirection = fm.BrowserSortDirection;
+const BrowserEntry = types.BrowserEntry;
+const BrowserEntryKind = types.BrowserEntryKind;
+const BrowserPlace = types.BrowserPlace;
+const FolderTreeChild = types.FolderTreeChild;
+const BrowserSortColumn = types.BrowserSortColumn;
+const BrowserSortDirection = types.BrowserSortDirection;
 
 // Callbacks back into the main module:
 const stateIo = fm.stateIo;
@@ -154,25 +155,7 @@ pub fn resolveSymlinkTargetAlloc(io: std.Io, alloc: std.mem.Allocator, link_path
     return std.fs.path.resolve(alloc, &.{ parent, target });
 }
 
-pub fn fileTypeLabel(name: []const u8) []const u8 {
-    const ext = std.fs.path.extension(name);
-    if (std.ascii.eqlIgnoreCase(ext, ".zig")) return "Zig source";
-    if (std.ascii.eqlIgnoreCase(ext, ".md")) return "Markdown";
-    if (std.ascii.eqlIgnoreCase(ext, ".txt")) return "Text file";
-    if (std.ascii.eqlIgnoreCase(ext, ".json")) return "JSON";
-    if (std.ascii.eqlIgnoreCase(ext, ".zon")) return "ZON";
-    if (std.ascii.eqlIgnoreCase(ext, ".nix")) return "Nix expression";
-    if (std.ascii.eqlIgnoreCase(ext, ".toml")) return "TOML";
-    if (std.ascii.eqlIgnoreCase(ext, ".yaml") or std.ascii.eqlIgnoreCase(ext, ".yml")) return "YAML";
-    if (std.ascii.eqlIgnoreCase(ext, ".png")) return "PNG image";
-    if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg")) return "JPEG image";
-    if (std.ascii.eqlIgnoreCase(ext, ".svg")) return "SVG";
-    if (std.ascii.eqlIgnoreCase(ext, ".pdf")) return "PDF";
-    if (std.ascii.eqlIgnoreCase(ext, ".so")) return "Shared library";
-    if (std.ascii.eqlIgnoreCase(ext, ".a")) return "Static library";
-    if (std.ascii.eqlIgnoreCase(ext, ".o")) return "Object file";
-    return "File";
-}
+pub const fileTypeLabel = types.fileTypeLabel;
 
 pub fn browserEntryKind(kind: std.Io.File.Kind) BrowserEntryKind {
     return switch (kind) {

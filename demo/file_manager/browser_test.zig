@@ -2,10 +2,11 @@ const std = @import("std");
 const goop = @import("goop");
 
 const fm = @import("../file_manager_main.zig");
+const types = @import("types.zig");
 const State = fm.State;
 const allocator = fm.allocator;
 
-const BrowserEntry = fm.BrowserEntry;
+const BrowserEntry = types.BrowserEntry;
 const fileManagerThemeForScale = fm.fileManagerThemeForScale;
 const refreshAssetViewportIfNeeded = fm.refreshAssetViewportIfNeeded;
 const buildWidgetTree = fm.buildWidgetTree;
@@ -24,7 +25,7 @@ const wrapTextOwnedForWidth = fm.wrapTextOwnedForWidth;
 const appendSelectedPathIfMissing = fm.appendSelectedPathIfMissing;
 const pointInRect = fm.pointInRect;
 const syncSelectedPathsFromTable = fm.syncSelectedPathsFromTable;
-const FolderTreeExpansion = fm.FolderTreeExpansion;
+const FolderTreeExpansion = types.FolderTreeExpansion;
 const preserveFolderTreeContextForNavigation = fm.preserveFolderTreeContextForNavigation;
 const browserListRowHeight = fm.browserListRowHeight;
 const browserVirtualGap = fm.browserVirtualGap;
@@ -35,18 +36,18 @@ const folderTreeExpansion = fm.folderTreeExpansion;
 const isFolderTreePathExpanded = fm.isFolderTreePathExpanded;
 const browserVisibleCount = fm.browserVisibleCount;
 const detailTitleFontSizePx = fm.detailTitleFontSizePx;
-const browser_grid_item_height = fm.browser_grid_item_height;
+const browser_grid_item_height = types.browser_grid_item_height;
 const entryNameTextRect = fm.entryNameTextRect;
 const clearSelectionState = fm.clearSelectionState;
 const syncSelectedPathsFromGrid = fm.syncSelectedPathsFromGrid;
 const shouldRenderFolderTreeChildForExpansion = fm.shouldRenderFolderTreeChildForExpansion;
 const browserVirtualRange = fm.browserVirtualRange;
-const browser_grid_row_gap = fm.browser_grid_row_gap;
+const browser_grid_row_gap = types.browser_grid_row_gap;
 const browserVirtualChunkRows = fm.browserVirtualChunkRows;
 const pointHitsEntryNameText = fm.pointHitsEntryNameText;
 const setFolderTreePathExpanded = fm.setFolderTreePathExpanded;
-const browser_grid_padding_v = fm.browser_grid_padding_v;
-const browser_overscan_rows = fm.browser_overscan_rows;
+const browser_grid_padding_v = types.browser_grid_padding_v;
+const browser_overscan_rows = types.browser_overscan_rows;
 const beginRenameEntry = fm.beginRenameEntry;
 
 fn browserTestMeasureText(text: []const u8, font_size: f32, _: ?*anyopaque) goop.TextDimensions {
@@ -595,7 +596,9 @@ test "sidebar scroll survives widget tree rebuild" {
     try buildWidgetTree(&state);
     ctx.doLayout(&text_measure_ctx);
     const first_scroll = state.sidebar_scroll.?;
-    if (ctx.mutateKind(first_scroll)) |__k| { __k.scroll_area.scroll_y = 73; }
+    if (ctx.mutateKind(first_scroll)) |__k| {
+        __k.scroll_area.scroll_y = 73;
+    }
 
     try buildWidgetTree(&state);
     ctx.doLayout(&text_measure_ctx);
@@ -702,7 +705,9 @@ test "file browser list scroll keeps existing window until the render range chan
     const start_before = state.asset_visible_start;
     const end_before = state.asset_visible_end;
 
-    if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = target_scroll; }
+    if (ctx.mutateKind(scroll_handle)) |__k| {
+        __k.scroll_area.scroll_y = target_scroll;
+    }
     const rebuilt = try syncBrowserTestScrollFrame(&state, &ctx, &text_measure_ctx);
 
     try std.testing.expect(!rebuilt);
@@ -735,12 +740,16 @@ test "file browser list preserves row continuity across virtualization boundarie
     const boundary_scroll = row_height * @as(f32, @floatFromInt(chunk_rows));
     const logical_entry_index = chunk_rows + browser_overscan_rows;
 
-    if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = boundary_scroll - 1; }
+    if (ctx.mutateKind(scroll_handle)) |__k| {
+        __k.scroll_area.scroll_y = boundary_scroll - 1;
+    }
     _ = try syncBrowserTestScrollFrame(&state, &ctx, &text_measure_ctx);
     const first_row = state.row_handles.items[logical_entry_index - state.asset_visible_start];
     const first_y = ctx.tree.getConst(first_row).layout_rect.y;
 
-    if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = boundary_scroll; }
+    if (ctx.mutateKind(scroll_handle)) |__k| {
+        __k.scroll_area.scroll_y = boundary_scroll;
+    }
     const rebuilt = try syncBrowserTestScrollFrame(&state, &ctx, &text_measure_ctx);
     const second_row = state.row_handles.items[logical_entry_index - state.asset_visible_start];
     const second_y = ctx.tree.getConst(second_row).layout_rect.y;
@@ -773,11 +782,12 @@ test "file browser list covers the viewport after a large scroll jump" {
     const target_scroll = row_height * @as(f32, @floatFromInt(target_row)) + row_height * 0.25;
     const visible_count = browserVisibleCount(state.file_panel_viewport_height, row_height);
 
-    if (ctx.mutateKind(scroll_handle)) |__k| { __k.scroll_area.scroll_y = target_scroll; }
+    if (ctx.mutateKind(scroll_handle)) |__k| {
+        __k.scroll_area.scroll_y = target_scroll;
+    }
     const rebuilt = try syncBrowserTestScrollFrame(&state, &ctx, &text_measure_ctx);
 
     try std.testing.expect(rebuilt);
     try std.testing.expect(state.asset_visible_start <= target_row);
     try std.testing.expect(state.asset_visible_end >= target_row + visible_count);
 }
-

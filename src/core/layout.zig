@@ -5,6 +5,7 @@ const c = @cImport({
 const paint = @import("paint.zig");
 const widget = @import("widget.zig");
 const style_mod = @import("style.zig");
+const geometry = @import("geometry.zig");
 
 /// Generic text measurement function.
 /// Given a UTF-8 string and font size, return its pixel dimensions.
@@ -1345,7 +1346,7 @@ fn emitSplitter(
 ) void {
     const panes = splitterPaneChildren(tree, handle);
     const ratio = splitterLayoutRatio(tree, handle, splitter, resolved);
-    const gap_thickness = splitterGapThickness(splitter);
+    const gap_thickness = geometry.splitterGapThickness(splitter);
 
     c.Clay__OpenElement();
     c.Clay__ConfigureOpenElement(.{
@@ -1752,7 +1753,7 @@ fn splitterClampWouldChange(tree: *const widget.Tree, theme: style_mod.Theme) bo
         if (node.layout_rect.w <= 0 or node.layout_rect.h <= 0) continue;
 
         const resolved = node.style_override.resolve(theme);
-        const clamped = clampedSplitterRatio(node.kind.splitter, node.layout_rect, resolved);
+        const clamped = geometry.clampedSplitterRatio(node.kind.splitter, node.layout_rect, resolved);
         if (@abs(clamped - node.kind.splitter.ratio) > 0.0001) return true;
     }
     return false;
@@ -1923,37 +1924,7 @@ fn splitterLayoutRatio(
     splitter: widget.WidgetKind.Splitter,
     resolved: style_mod.ResolvedStyle,
 ) f32 {
-    return clampedSplitterRatio(splitter, tree.getConst(handle).layout_rect, resolved);
-}
-
-fn clampedSplitterRatio(
-    splitter: widget.WidgetKind.Splitter,
-    rect: paint.Rect,
-    resolved: style_mod.ResolvedStyle,
-) f32 {
-    const raw = std.math.clamp(splitter.ratio, 0, 1);
-    const available = splitterAvailableExtent(splitter, rect, resolved);
-    if (available <= 0) return raw;
-
-    const min_ratio = std.math.clamp(splitter.min_first / available, 0, 1);
-    const max_ratio = std.math.clamp(1 - splitter.min_second / available, 0, 1);
-    if (min_ratio > max_ratio) return raw;
-    return std.math.clamp(raw, min_ratio, max_ratio);
-}
-
-fn splitterAvailableExtent(
-    splitter: widget.WidgetKind.Splitter,
-    rect: paint.Rect,
-    resolved: style_mod.ResolvedStyle,
-) f32 {
-    return switch (splitter.direction) {
-        .row => rect.w - resolved.padding.left - resolved.padding.right - splitterGapThickness(splitter),
-        .column => rect.h - resolved.padding.top - resolved.padding.bottom - splitterGapThickness(splitter),
-    };
-}
-
-fn splitterGapThickness(splitter: widget.WidgetKind.Splitter) f32 {
-    return @max(@min(splitter.gap_thickness, splitter.thickness), 1);
+    return geometry.clampedSplitterRatio(splitter, tree.getConst(handle).layout_rect, resolved);
 }
 
 fn popupSizing(

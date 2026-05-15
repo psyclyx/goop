@@ -4,6 +4,7 @@ const snail = @import("snail");
 const render = @import("goop_demo_render");
 const posix = std.posix;
 
+const types = @import("file_manager/types.zig");
 const style = @import("file_manager/style.zig");
 
 pub const uiScaleValue = style.uiScaleValue;
@@ -283,177 +284,23 @@ pub const buildFolderTree = view.buildFolderTree;
 
 pub const buildWidgetTree = view.buildWidgetTree;
 
-pub const BrowserSortColumn = enum(u8) {
-    name = 0,
-    modified = 1,
-    kind = 2,
-    size = 3,
-};
-
-pub const BrowserSortDirection = enum {
-    ascending,
-    descending,
-};
-
-pub const BrowserViewMode = enum {
-    list,
-    grid,
-};
-
-pub const BrowserCommand = enum {
-    back,
-    forward,
-    up,
-    home,
-    refresh,
-    copy,
-    cut,
-    paste,
-    delete,
-    rename,
-    move_parent,
-    copy_path,
-    open_link_target,
-    quit,
-    select_all,
-    clear_selection,
-    toggle_sidebar,
-    toggle_preview,
-    toggle_info,
-    toggle_status_bar,
-    view_list,
-    view_grid,
-    toggle_sort_directories,
-    about,
-};
+const BrowserSortColumn = types.BrowserSortColumn;
+const BrowserSortDirection = types.BrowserSortDirection;
+const BrowserViewMode = types.BrowserViewMode;
+const BrowserCommand = types.BrowserCommand;
 
 const FileClipboardAction = enum {
     copy,
     cut,
 };
 
-pub const WidgetUserKind = enum(u8) {
-    none = 0,
-    asset_entry = 1,
-    place = 2,
-    folder_tree = 3,
-    breadcrumb = 4,
-    toolbar_up = 5,
-};
+const widgetUserKind = types.widgetUserKind;
+const widgetUserIndex = types.widgetUserIndex;
 
-pub fn widgetUserId(kind: WidgetUserKind, index: usize) u64 {
-    return (@as(u64, @intFromEnum(kind)) << 56) | @as(u64, @intCast(index));
-}
-
-fn widgetUserKind(user_id: u64) WidgetUserKind {
-    const raw: u8 = @intCast(user_id >> 56);
-    return switch (raw) {
-        1 => .asset_entry,
-        2 => .place,
-        3 => .folder_tree,
-        4 => .breadcrumb,
-        5 => .toolbar_up,
-        else => .none,
-    };
-}
-
-fn widgetUserIndex(user_id: u64) usize {
-    return @intCast(user_id & 0x00ff_ffff_ffff_ffff);
-}
-
-pub const BrowserEntryKind = enum {
-    directory,
-    file,
-    symlink,
-    other,
-};
-
-pub const BrowserPlace = struct {
-    label: []const u8,
-    path: []u8,
-};
-
-pub const FolderTreeChild = struct {
-    name: []u8,
-    path: []u8,
-};
-
-pub const BrowserEntry = struct {
-    name: []u8,
-    path: []u8,
-    kind: BrowserEntryKind,
-    size_bytes: u64,
-    modified_unix: i64,
-    target_path: ?[]u8 = null,
-    target_kind: ?BrowserEntryKind = null,
-
-    pub fn typeLabel(self: *const BrowserEntry) []const u8 {
-        return switch (self.kind) {
-            .directory => "Directory",
-            .symlink => switch (self.target_kind orelse .other) {
-                .directory => "Symbolic link to Directory",
-                .file => "Symbolic link to File",
-                .symlink => "Symbolic link",
-                .other => if (self.target_path != null) "Broken symbolic link" else "Symbolic link",
-            },
-            .other => "Special",
-            .file => fileTypeLabel(self.name),
-        };
-    }
-
-    pub fn isDirectory(self: *const BrowserEntry) bool {
-        return self.kind == .directory or (self.kind == .symlink and self.target_kind == .directory);
-    }
-
-    pub fn isSymlinkToDirectory(self: *const BrowserEntry) bool {
-        return self.kind == .symlink and self.target_kind == .directory;
-    }
-
-    pub fn canEnter(self: *const BrowserEntry) bool {
-        return self.isDirectory();
-    }
-
-    pub fn navigationPath(self: *const BrowserEntry) []const u8 {
-        if (self.isSymlinkToDirectory()) return self.target_path.?;
-        return self.path;
-    }
-
-    pub fn previewPath(self: *const BrowserEntry) []const u8 {
-        if (self.kind == .symlink and self.target_path != null) return self.target_path.?;
-        return self.path;
-    }
-};
-
-pub const ListVirtualWindow = struct {
-    start: usize = 0,
-    end: usize = 0,
-    top_spacer: f32 = 0,
-    bottom_spacer: f32 = 0,
-    scroll_y: f32 = 0,
-};
-
-pub const GridVirtualWindow = struct {
-    start: usize = 0,
-    end: usize = 0,
-    columns: usize = 1,
-    top_spacer: f32 = 0,
-    bottom_spacer: f32 = 0,
-    scroll_y: f32 = 0,
-};
-
-pub const browser_grid_item_width: f32 = 132;
-pub const browser_grid_item_height: f32 = 108;
-pub const browser_grid_column_gap: f32 = 12;
-pub const browser_grid_row_gap: f32 = 12;
-pub const browser_grid_padding_h: f32 = 10;
-pub const browser_grid_padding_v: f32 = 10;
-pub const browser_overscan_rows: usize = 3;
-pub const browser_virtual_chunk_rows_min: usize = 24;
-const browser_double_click_time_ms: u64 = 400;
-pub const browser_table_divider_width: f32 = 1;
-pub const browser_name_icon_inset_left: f32 = 4;
-pub const browser_name_text_inset_left: f32 = 28;
-pub const folder_tree_max_visible_children: usize = 128;
+const BrowserPlace = types.BrowserPlace;
+const BrowserEntry = types.BrowserEntry;
+const browser_double_click_time_ms = types.browser_double_click_time_ms;
+const folder_tree_max_visible_children = types.folder_tree_max_visible_children;
 
 fn envFlag(env: *const std.process.Environ.Map, name: []const u8) bool {
     const raw = env.get(name) orelse return false;
@@ -1130,7 +977,6 @@ pub fn layoutDebug(state: *const State, comptime fmt: []const u8, args: anytype)
     std.debug.print("layout-debug: " ++ fmt ++ "\n", args);
 }
 
-
 pub fn freeOptionalOwnedSlice(buf: *?[]u8) void {
     if (buf.*) |slice| allocator.free(slice);
     buf.* = null;
@@ -1162,11 +1008,7 @@ pub fn isFolderTreePathExpanded(state: *const State, path: []const u8) bool {
     return trackedPathIndex(state.folder_tree_expanded_paths.items, path) != null;
 }
 
-pub const FolderTreeExpansion = enum {
-    collapsed,
-    partial,
-    expanded,
-};
+const FolderTreeExpansion = types.FolderTreeExpansion;
 
 pub fn folderTreeExpansion(state: *const State, path: []const u8) FolderTreeExpansion {
     if (isFolderTreePathExpanded(state, path)) return .expanded;
@@ -1941,7 +1783,9 @@ fn hideContextMenu(state: *State, ctx: *goop.Context) void {
     state.context_visible = false;
     if (state.context_popup) |popup| {
         if (ctx.tree.isAlive(popup) and ctx.tree.getConst(popup).kind == .popup) {
-            if (ctx.mutateKind(popup)) |__k| { __k.popup.visible = false; }
+            if (ctx.mutateKind(popup)) |__k| {
+                __k.popup.visible = false;
+            }
         }
     }
     ctx.invalidate();
@@ -2275,7 +2119,9 @@ fn setTopMenuPopupVisible(state: *const State, ctx: *goop.Context, target: ?goop
         if (!ctx.tree.isAlive(popup) or ctx.tree.getConst(popup).kind != .popup) continue;
         const visible = if (target) |selected| selected.eql(popup) else false;
         if (ctx.tree.getConst(popup).kind.popup.visible == visible) continue;
-        if (ctx.mutateKind(popup)) |__k| { __k.popup.visible = visible; }
+        if (ctx.mutateKind(popup)) |__k| {
+            __k.popup.visible = visible;
+        }
         changed = true;
     }
     if (changed) ctx.invalidate();
@@ -2377,15 +2223,7 @@ fn getMonotonicNs(io: std.Io) u64 {
     return if (ns <= 0) 0 else @intCast(ns);
 }
 
-pub fn main(init: std.process.Init) !void {
-    // Connect to Wayland
-    const display = wl.wl_display_connect(null) orelse {
-        std.debug.print("failed to connect to wayland display\n", .{});
-        return error.NoDisplay;
-    };
-    defer wl.wl_display_disconnect(display);
-
-    var state = State{};
+fn initStateFromEnvironment(state: *State, display: *wl.wl_display, init: std.process.Init) void {
     state.display = display;
     state.io = init.io;
     state.env = init.environ_map;
@@ -2393,6 +2231,10 @@ pub fn main(init: std.process.Init) !void {
     state.ui_scale = envScale(init.environ_map, "GOOP_FILE_MANAGER_UI_SCALE", 1);
     state.scroll_debug_enabled = envFlag(init.environ_map, "GOOP_FILE_BROWSER_SCROLL_DEBUG");
     state.layout_debug_enabled = envFlag(init.environ_map, "GOOP_FILE_BROWSER_LAYOUT_DEBUG");
+    if (state.timeout_ns != null) state.start_time_ns = getMonotonicNs(init.io);
+}
+
+fn logStartupOptions(state: *const State) void {
     if (state.timeout_ns) |t| {
         std.debug.print("demo will exit after {d:.1}s\n", .{@as(f64, @floatFromInt(t)) / std.time.ns_per_s});
     }
@@ -2405,29 +2247,616 @@ pub fn main(init: std.process.Init) !void {
     if (@abs(state.ui_scale - 1) > 0.001) {
         std.debug.print("ui-scale enabled via GOOP_FILE_MANAGER_UI_SCALE={d:.2}\n", .{state.ui_scale});
     }
-    if (state.timeout_ns != null) {
-        state.start_time_ns = getMonotonicNs(init.io);
-    }
+}
 
-    // Bind globals
+fn createWaylandWindow(state: *State, display: *wl.wl_display) !void {
     const registry = wl.wl_display_get_registry(display) orelse return error.NoRegistry;
-    _ = wl.wl_registry_add_listener(registry, &registry_listener, &state);
+    _ = wl.wl_registry_add_listener(registry, &registry_listener, state);
     _ = wl.wl_display_roundtrip(display);
 
     if (state.compositor == null) return error.NoCompositor;
     if (state.wm_base == null) return error.NoXdgWmBase;
 
-    // Create surface
     state.surface = wl.wl_compositor_create_surface(state.compositor) orelse return error.NoSurface;
-    _ = wl.wl_surface_add_listener(state.surface, &surface_listener, &state);
+    _ = wl.wl_surface_add_listener(state.surface, &surface_listener, state);
     state.xdg_surface = wl.xdg_wm_base_get_xdg_surface(state.wm_base, state.surface) orelse return error.NoXdgSurface;
-    _ = wl.xdg_surface_add_listener(state.xdg_surface, &xdg_surface_listener, &state);
+    _ = wl.xdg_surface_add_listener(state.xdg_surface, &xdg_surface_listener, state);
     state.xdg_toplevel = wl.xdg_surface_get_toplevel(state.xdg_surface) orelse return error.NoToplevel;
-    _ = wl.xdg_toplevel_add_listener(state.xdg_toplevel, &xdg_toplevel_listener, &state);
+    _ = wl.xdg_toplevel_add_listener(state.xdg_toplevel, &xdg_toplevel_listener, state);
     wl.xdg_toplevel_set_title(state.xdg_toplevel, "goop files");
     wl.xdg_toplevel_set_app_id(state.xdg_toplevel, "goop-files");
     wl.wl_surface_commit(state.surface.?);
     _ = wl.wl_display_roundtrip(display);
+}
+
+fn timeoutReached(state: *const State, io: std.Io) bool {
+    const timeout = state.timeout_ns orelse return false;
+    const now = getMonotonicNs(io);
+    return now - state.start_time_ns >= timeout;
+}
+
+fn dispatchWaylandEvents(state: *State, display: *wl.wl_display) bool {
+    // Pending redraws must not block here; the first frame callback is
+    // only requested after the first render.
+    if (state.needs_redraw and !state.frame_pending) {
+        _ = wl.wl_display_dispatch_pending(display);
+        _ = wl.wl_display_flush(display);
+        return true;
+    }
+
+    if (state.timeout_ns != null) {
+        while (wl.wl_display_prepare_read(display) != 0)
+            _ = wl.wl_display_dispatch_pending(display);
+        _ = wl.wl_display_flush(display);
+
+        var pfd = [_]posix.pollfd{.{
+            .fd = wl.wl_display_get_fd(display),
+            .events = posix.POLL.IN,
+            .revents = 0,
+        }};
+        const poll_ret = posix.poll(&pfd, 100) catch return false;
+        if (poll_ret > 0) {
+            _ = wl.wl_display_read_events(display);
+            _ = wl.wl_display_dispatch_pending(display);
+        } else {
+            wl.wl_display_cancel_read(display);
+        }
+        return true;
+    }
+
+    return wl.wl_display_dispatch(display) != -1;
+}
+
+fn cleanupPlatformState(state: *State) void {
+    state.destroyAllPopupSurfaces();
+    state.destroyAllDataOffers();
+    state.destroyAllOutputs();
+    state.destroyDragSource();
+    state.destroyClipboardSource();
+    deinitBrowserState(state);
+    state.clipboard_buf.deinit(allocator);
+    state.clipboard_uri_list_buf.deinit(allocator);
+    state.clipboard_gnome_files_buf.deinit(allocator);
+    state.drag_uri_list_buf.deinit(allocator);
+    state.drag_plain_buf.deinit(allocator);
+    state.drag_gnome_files_buf.deinit(allocator);
+    if (state.data_device) |data_device| wl.wl_data_device_release(data_device);
+    if (state.data_device_manager) |manager| wl.wl_data_device_manager_destroy(manager);
+    state.resetCursorTheme();
+    if (state.cursor_surface) |cursor_surface| wl.wl_surface_destroy(cursor_surface);
+    if (state.shm) |shm| wl.wl_shm_destroy(shm);
+    if (state.xkb_state) |s| xkb.xkb_state_unref(s);
+    if (state.xkb_keymap) |k| xkb.xkb_keymap_unref(k);
+    if (state.xkb_ctx) |c| xkb.xkb_context_unref(c);
+}
+
+fn layoutAndRenderFrame(
+    state: *State,
+    ctx: *goop.Context,
+    renderer: *render.Renderer,
+    text_atlas: *snail.TextAtlas,
+    text_measure: *SnailTextCtx,
+    ensured_text: *std.BufSet,
+    text_measure_ctx: *const goop.TextMeasureCtx,
+) !void {
+    // Event handlers can rebuild the widget tree after the initial hit-test
+    // layout pass, so run layout again if the tree became dirty.
+    ctx.doLayout(text_measure_ctx);
+    if (try refreshAssetViewportIfNeeded(state)) {
+        ctx.doLayout(text_measure_ctx);
+    }
+    debugLogFilePanelLayout(state);
+    updatePointerCursor(state);
+
+    var atlas_paint_list = try goop.paint.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx, .{});
+    defer goop.paint.freePaintList(&atlas_paint_list, allocator);
+    if (try ensureAtlasForPaintList(ensured_text, text_atlas, renderer, atlas_paint_list)) {
+        const updated_metrics = fontLineMetrics(text_atlas);
+        text_measure.ascent_units = updated_metrics.ascent;
+        text_measure.descent_units = updated_metrics.descent;
+        ctx.setDimensions(state.logical_width, state.logical_height);
+        ctx.doLayout(text_measure_ctx);
+    }
+
+    try syncNativePopupSurfaces(state, ctx);
+    var base_paint_list = try goop.paint.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx, .{ .scope = .{ .full = .{ .include_floating = false } } });
+    defer goop.paint.freePaintList(&base_paint_list, allocator);
+    const paint_list = try composeFileBrowserPaintList(state, base_paint_list);
+
+    renderer.beginFrame(state.buffer_width, state.buffer_height, @floatFromInt(state.buffer_scale));
+    renderer.renderPaintList(paint_list);
+
+    // Request frame callback BEFORE swap — the callback must be
+    // registered before the surface commit that eglSwapBuffers triggers.
+    requestFrame(state);
+    _ = egl.eglSwapBuffers(state.egl_display, state.egl_surface);
+    try renderNativePopupSurfaces(state, renderer);
+}
+
+fn widgetClicked(ctx: *const goop.Context, handle: ?goop.NodeHandle) bool {
+    const h = handle orelse return false;
+    return ctx.tree.node(h).?.clicked;
+}
+
+fn widgetSecondaryClicked(ctx: *const goop.Context, handle: ?goop.NodeHandle) bool {
+    const h = handle orelse return false;
+    return ctx.tree.node(h).?.secondary_clicked;
+}
+
+fn runMenuCommands(state: *State, ctx: *goop.Context, rebuild_ui: *bool) !void {
+    const Item = struct {
+        handle: ?goop.NodeHandle,
+        command: BrowserCommand,
+    };
+    const items = [_]Item{
+        .{ .handle = state.menu_file_refresh, .command = .refresh },
+        .{ .handle = state.menu_file_copy_path, .command = .copy_path },
+        .{ .handle = state.menu_file_open_target, .command = .open_link_target },
+        .{ .handle = state.menu_file_quit, .command = .quit },
+        .{ .handle = state.menu_edit_copy, .command = .copy },
+        .{ .handle = state.menu_edit_cut, .command = .cut },
+        .{ .handle = state.menu_edit_paste, .command = .paste },
+        .{ .handle = state.menu_edit_delete, .command = .delete },
+        .{ .handle = state.menu_edit_move_parent, .command = .move_parent },
+        .{ .handle = state.menu_edit_select_all, .command = .select_all },
+        .{ .handle = state.menu_edit_clear_selection, .command = .clear_selection },
+        .{ .handle = state.menu_view_sidebar, .command = .toggle_sidebar },
+        .{ .handle = state.menu_view_preview, .command = .toggle_preview },
+        .{ .handle = state.menu_view_info, .command = .toggle_info },
+        .{ .handle = state.menu_view_status_bar, .command = .toggle_status_bar },
+        .{ .handle = state.menu_view_list, .command = .view_list },
+        .{ .handle = state.menu_view_grid, .command = .view_grid },
+        .{ .handle = state.menu_view_sort_directories, .command = .toggle_sort_directories },
+        .{ .handle = state.menu_go_back, .command = .back },
+        .{ .handle = state.menu_go_forward, .command = .forward },
+        .{ .handle = state.menu_go_up, .command = .up },
+        .{ .handle = state.menu_go_home, .command = .home },
+        .{ .handle = state.menu_help_about, .command = .about },
+    };
+
+    for (items) |item| {
+        if (!widgetClicked(ctx, item.handle)) continue;
+        setTopMenuPopupVisible(state, ctx, null);
+        rebuild_ui.* = try runBrowserCommand(state, item.command) or rebuild_ui.*;
+    }
+
+    if (widgetClicked(ctx, state.menu_edit_rename)) {
+        setTopMenuPopupVisible(state, ctx, null);
+        rebuild_ui.* = try beginRenameSelection(state, ctx) or rebuild_ui.*;
+    }
+}
+
+fn runToolbarCommands(state: *State, ctx: *goop.Context, rebuild_ui: *bool) !void {
+    const Item = struct {
+        handle: ?goop.NodeHandle,
+        command: BrowserCommand,
+    };
+    const items = [_]Item{
+        .{ .handle = state.btn_back, .command = .back },
+        .{ .handle = state.btn_forward, .command = .forward },
+        .{ .handle = state.btn_up, .command = .up },
+        .{ .handle = state.btn_home, .command = .home },
+        .{ .handle = state.btn_refresh, .command = .refresh },
+        .{ .handle = state.btn_toggle_sidebar, .command = .toggle_sidebar },
+        .{ .handle = state.btn_toggle_preview, .command = .toggle_preview },
+        .{ .handle = state.btn_toggle_info, .command = .toggle_info },
+    };
+
+    for (items) |item| {
+        if (widgetClicked(ctx, item.handle)) {
+            rebuild_ui.* = try runBrowserCommand(state, item.command) or rebuild_ui.*;
+        }
+    }
+    if (widgetClicked(ctx, state.btn_address_go)) state.address_submit_requested = true;
+    if (widgetClicked(ctx, state.btn_list_view) and state.view_mode != .list) {
+        rebuild_ui.* = try runBrowserCommand(state, .view_list) or rebuild_ui.*;
+    }
+    if (widgetClicked(ctx, state.btn_grid_view) and state.view_mode != .grid) {
+        rebuild_ui.* = try runBrowserCommand(state, .view_grid) or rebuild_ui.*;
+    }
+}
+
+fn runContextMenuCommands(state: *State, ctx: *goop.Context, rebuild_ui: *bool) !void {
+    const Item = struct {
+        handle: ?goop.NodeHandle,
+        command: BrowserCommand,
+    };
+    const command_items = [_]Item{
+        .{ .handle = state.context_copy, .command = .copy },
+        .{ .handle = state.context_cut, .command = .cut },
+        .{ .handle = state.context_delete, .command = .delete },
+        .{ .handle = state.context_move_parent, .command = .move_parent },
+    };
+
+    if (widgetClicked(ctx, state.context_open)) {
+        hideContextMenu(state, ctx);
+        rebuild_ui.* = try openContextTarget(state) or rebuild_ui.*;
+    }
+    for (command_items) |item| {
+        if (!widgetClicked(ctx, item.handle)) continue;
+        hideContextMenu(state, ctx);
+        rebuild_ui.* = try runBrowserCommand(state, item.command) or rebuild_ui.*;
+    }
+    if (widgetClicked(ctx, state.context_paste)) {
+        hideContextMenu(state, ctx);
+        rebuild_ui.* = try pasteContextTarget(state) or rebuild_ui.*;
+    }
+    if (widgetClicked(ctx, state.context_rename)) {
+        hideContextMenu(state, ctx);
+        rebuild_ui.* = try beginRenameSelection(state, ctx) or rebuild_ui.*;
+    }
+    if (widgetClicked(ctx, state.context_copy_path)) {
+        hideContextMenu(state, ctx);
+        rebuild_ui.* = try copyContextTargetPath(state) or rebuild_ui.*;
+    }
+    if (widgetClicked(ctx, state.context_open_link_target)) {
+        hideContextMenu(state, ctx);
+        rebuild_ui.* = try openContextLinkTarget(state) or rebuild_ui.*;
+    }
+}
+
+fn beginBrowserFrame(state: *State, ctx: *goop.Context, text_measure_ctx: *const goop.TextMeasureCtx) !bool {
+    ctx.clearClickedFlags();
+    ctx.doLayout(text_measure_ctx);
+    ctx.processEvents();
+    syncContextPopupVisibleFromWidget(state, ctx);
+    syncAddressInputFromWidget(state, ctx);
+    syncRenameInputFromWidget(state, ctx);
+    _ = try maybeStartWaylandAssetDrag(state, ctx);
+
+    var rebuild_ui = false;
+    if (state.rename_cancel_requested) {
+        state.rename_cancel_requested = false;
+        rebuild_ui = cancelActiveRename(state) or rebuild_ui;
+    }
+    if (state.rename_commit_requested) {
+        state.rename_commit_requested = false;
+        switch (try commitActiveRename(state)) {
+            .inactive => {},
+            .closed, .blocked => rebuild_ui = true,
+        }
+    }
+    return rebuild_ui;
+}
+
+fn syncRetainedWidgetState(state: *State, ctx: *goop.Context, rebuild_ui: *bool) void {
+    if (state.nav_splitter) |h| if (ctx.tree.node(h).?.changed) {
+        state.nav_ratio = ctx.tree.node(h).?.kind.splitter.ratio;
+    };
+    if (state.detail_splitter) |h| if (ctx.tree.node(h).?.changed) {
+        state.detail_ratio = ctx.tree.node(h).?.kind.splitter.ratio;
+    };
+    if (state.preview_splitter) |h| if (ctx.tree.node(h).?.changed) {
+        state.preview_ratio = ctx.tree.node(h).?.kind.splitter.ratio;
+    };
+
+    if (state.asset_table) |h| if (ctx.tree.node(h).?.changed) {
+        state.table_column_weights[0] = ctx.tree.tableColumnFraction(h, 0) orelse state.table_column_weights[0];
+        state.table_column_weights[1] = ctx.tree.tableColumnFraction(h, 1) orelse state.table_column_weights[1];
+        state.table_column_weights[2] = ctx.tree.tableColumnFraction(h, 2) orelse state.table_column_weights[2];
+        state.table_column_weights[3] = ctx.tree.tableColumnFraction(h, 3) orelse state.table_column_weights[3];
+        if (state.asset_table_body) |body| {
+            if (ctx.tree.isAlive(body)) {
+                applyAssetTableColumns(&ctx.mutateKind(body).?.table, state);
+                ctx.invalidate();
+            }
+        }
+    };
+
+    if (state.asset_table) |h| if (ctx.tree.node(h).?.kind.table.sort_changed) {
+        if (ctx.tree.node(h).?.kind.table.sorted_column) |sorted_column| {
+            const previous_sort_column = state.sort_column;
+            state.sort_column = @enumFromInt(sorted_column);
+            state.sort_direction = switch (ctx.tree.node(h).?.kind.table.sort_direction) {
+                .ascending => .ascending,
+                .descending => .descending,
+            };
+            if (previous_sort_column != state.sort_column and state.sort_column == .modified) {
+                state.sort_direction = .descending;
+            }
+            sortDirectoryEntries(state);
+            syncSelectionAnchor(state);
+            rebuild_ui.* = true;
+        }
+    };
+}
+
+fn runPendingCommands(state: *State, rebuild_ui: *bool) !void {
+    if (state.pending_command) |command| {
+        state.pending_command = null;
+        rebuild_ui.* = try runBrowserCommand(state, command) or rebuild_ui.*;
+    }
+    if (state.address_submit_requested) {
+        state.address_submit_requested = false;
+        const path = try addressInputPathAlloc(state);
+        defer allocator.free(path);
+        rebuild_ui.* = try setCurrentDirectory(state, path, true) or rebuild_ui.*;
+    }
+}
+
+fn openContextMenuFromSecondaryClick(state: *State, ctx: *goop.Context, rebuild_ui: *bool) !void {
+    for (state.place_handles.items, 0..) |handle, index| {
+        if (!widgetSecondaryClicked(ctx, handle)) continue;
+        if (index >= state.places.items.len) continue;
+        try showContextMenuForPath(state, ctx, state.places.items[index].path);
+        rebuild_ui.* = true;
+        return;
+    }
+
+    for (state.folder_tree_handles.items, 0..) |handle, index| {
+        if (!widgetSecondaryClicked(ctx, handle)) continue;
+        if (index >= state.folder_tree_paths.items.len) continue;
+        try showContextMenuForPath(state, ctx, state.folder_tree_paths.items[index]);
+        rebuild_ui.* = true;
+        return;
+    }
+
+    for (state.breadcrumb_handles.items, 0..) |handle, index| {
+        if (!widgetSecondaryClicked(ctx, handle)) continue;
+        if (index >= state.breadcrumb_paths.items.len) continue;
+        try showContextMenuForPath(state, ctx, state.breadcrumb_paths.items[index]);
+        rebuild_ui.* = true;
+        return;
+    }
+
+    for (state.row_handles.items, 0..) |handle, index| {
+        if (!widgetSecondaryClicked(ctx, handle)) continue;
+        const entry_index = state.asset_visible_start + index;
+        if (entry_index >= state.entries.items.len) continue;
+        try selectEntryForContextMenu(state, entry_index);
+        try showContextMenuForPath(state, ctx, state.entries.items[entry_index].path);
+        rebuild_ui.* = true;
+        return;
+    }
+
+    for (state.grid_handles.items, 0..) |handle, index| {
+        if (!widgetSecondaryClicked(ctx, handle)) continue;
+        const entry_index = state.asset_visible_start + index;
+        if (entry_index >= state.entries.items.len) continue;
+        try selectEntryForContextMenu(state, entry_index);
+        try showContextMenuForPath(state, ctx, state.entries.items[entry_index].path);
+        rebuild_ui.* = true;
+        return;
+    }
+
+    if (widgetSecondaryClicked(ctx, state.file_panel_scroll)) {
+        try showContextMenuForPath(state, ctx, state.current_dir);
+        rebuild_ui.* = true;
+    }
+}
+
+fn handleAssetDropFrame(state: *State, ctx: *const goop.Context, rebuild_ui: *bool) !bool {
+    const drop = ctx.frame().last_drop orelse return false;
+    const asset_drop = switch (drop) {
+        .widget => |widget_drop| assetEntryIndexFromUserId(state, ctx.tree.userId(widget_drop.source)) != null,
+        .table => |table_drop| assetEntryIndexFromUserId(state, ctx.tree.userId(table_drop.source)) != null,
+        .grid => |grid_drop| assetEntryIndexFromUserId(state, ctx.tree.userId(grid_drop.source)) != null,
+        else => false,
+    };
+    if (!asset_drop) return false;
+
+    if (state.rename_path != null) {
+        switch (try commitActiveRename(state)) {
+            .inactive => {},
+            .closed => rebuild_ui.* = true,
+            .blocked => rebuild_ui.* = true,
+        }
+    }
+    if (state.rename_path == null) {
+        rebuild_ui.* = switch (drop) {
+            .widget => |widget_drop| try handleAssetWidgetDrop(state, ctx, widget_drop),
+            .table => |table_drop| try handleAssetTableDrop(state, ctx, table_drop),
+            .grid => |grid_drop| try handleAssetGridDrop(state, ctx, grid_drop),
+            else => false,
+        } or rebuild_ui.*;
+    }
+    return true;
+}
+
+fn handleNavigationClicks(state: *State, ctx: *const goop.Context, rebuild_ui: *bool) !void {
+    for (state.place_handles.items, 0..) |handle, index| {
+        if (!ctx.tree.node(handle).?.clicked) continue;
+        if (index >= state.places.items.len) continue;
+        rebuild_ui.* = try setCurrentDirectory(state, state.places.items[index].path, true) or rebuild_ui.*;
+        break;
+    }
+
+    for (state.folder_tree_handles.items, 0..) |handle, index| {
+        if (!ctx.tree.node(handle).?.toggled) continue;
+        if (index >= state.folder_tree_paths.items.len) continue;
+        const path = state.folder_tree_paths.items[index];
+        const previous_expansion = folderTreeExpansion(state, path);
+        if (previous_expansion == .partial) {
+            rebuild_ui.* = try setFolderTreePathExpanded(state, path, true) or rebuild_ui.*;
+        } else {
+            const expanded = ctx.tree.node(handle).?.kind.tree_item.expanded;
+            rebuild_ui.* = try setFolderTreePathExpanded(state, path, expanded) or rebuild_ui.*;
+            if (!expanded and std.mem.eql(u8, path, state.current_dir)) rebuild_ui.* = true;
+        }
+    }
+
+    for (state.folder_tree_handles.items, 0..) |handle, index| {
+        if (!ctx.tree.node(handle).?.clicked or ctx.tree.node(handle).?.toggled) continue;
+        if (index >= state.folder_tree_paths.items.len) continue;
+        rebuild_ui.* = try setCurrentDirectory(state, state.folder_tree_paths.items[index], true) or rebuild_ui.*;
+        break;
+    }
+
+    for (state.breadcrumb_handles.items, 0..) |handle, index| {
+        if (!ctx.tree.node(handle).?.clicked) continue;
+        if (index >= state.breadcrumb_paths.items.len) continue;
+        rebuild_ui.* = try setCurrentDirectory(state, state.breadcrumb_paths.items[index], true) or rebuild_ui.*;
+        break;
+    }
+}
+
+fn handleAssetEntryPrimaryClick(
+    state: *State,
+    ctx: *goop.Context,
+    io: std.Io,
+    visible_index: usize,
+    allow_inline_rename: bool,
+    rebuild_ui: *bool,
+) !bool {
+    var entry_index = state.asset_visible_start + visible_index;
+    if (entry_index >= state.entries.items.len) return false;
+
+    const entry = state.entries.items[entry_index];
+    if (allow_inline_rename and
+        !state.ctrl_down and
+        !state.shift_down and
+        isPathSelected(state, entry.path) and
+        pointHitsEntryNameText(state, ctx, visible_index, entry, state.primary_release_x, state.primary_release_y))
+    {
+        try beginRenameEntry(state, ctx, entry);
+        rebuild_ui.* = true;
+        return true;
+    }
+
+    const clicked_path = try allocator.dupe(u8, entry.path);
+    defer allocator.free(clicked_path);
+    if (state.rename_path != null) {
+        switch (try commitActiveRename(state)) {
+            .inactive => {},
+            .closed => {
+                rebuild_ui.* = true;
+                entry_index = entryIndexForPath(state, clicked_path) orelse return true;
+            },
+            .blocked => {
+                rebuild_ui.* = true;
+                return true;
+            },
+        }
+    }
+
+    const selected_entry = state.entries.items[entry_index];
+    const click_ms = currentPrimaryClickTimestampMs(ctx, io);
+    const repeated_click = isRepeatedEntryClick(state, &selected_entry, click_ms);
+
+    try applyEntrySelectionClick(state, entry_index);
+    try setLastClickPath(state, selected_entry.path);
+    state.last_click_ms = click_ms;
+    rebuild_ui.* = true;
+
+    if (repeated_click and selected_entry.canEnter()) {
+        rebuild_ui.* = try setCurrentDirectory(state, selected_entry.navigationPath(), true) or rebuild_ui.*;
+    }
+    return true;
+}
+
+fn handleAssetPrimaryClicks(state: *State, ctx: *goop.Context, io: std.Io, rebuild_ui: *bool) !bool {
+    for (state.row_handles.items, 0..) |handle, index| {
+        if (!widgetClicked(ctx, handle)) continue;
+        return try handleAssetEntryPrimaryClick(state, ctx, io, index, true, rebuild_ui);
+    }
+
+    for (state.grid_handles.items, 0..) |handle, index| {
+        if (!widgetClicked(ctx, handle)) continue;
+        return try handleAssetEntryPrimaryClick(state, ctx, io, index, false, rebuild_ui);
+    }
+
+    return false;
+}
+
+fn syncAssetSelectionWidgets(state: *State, ctx: *goop.Context, rebuild_ui: *bool) !bool {
+    var selection_widget_changed = false;
+    const selection_drag_active = ctx.frame().buttons.left;
+    if (state.view_mode == .list) {
+        if (state.asset_table_body) |table| {
+            if (ctx.tree.isAlive(table) and ctx.tree.node(table).?.kind.table.selection_changed) {
+                selection_widget_changed = true;
+                if (state.rename_path != null) {
+                    switch (try commitActiveRename(state)) {
+                        .inactive => {},
+                        .closed => rebuild_ui.* = true,
+                        .blocked => {
+                            rebuild_ui.* = true;
+                            selection_widget_changed = false;
+                        },
+                    }
+                }
+                if (selection_widget_changed) {
+                    try syncSelectedPathsFromTable(state, ctx, table);
+                    if (selection_drag_active) {
+                        state.asset_selection_rebuild_pending = true;
+                    } else {
+                        rebuild_ui.* = true;
+                    }
+                }
+            }
+        }
+    } else if (state.view_mode == .grid) {
+        if (state.asset_grid) |grid| {
+            if (ctx.tree.isAlive(grid) and ctx.tree.node(grid).?.changed) {
+                selection_widget_changed = true;
+                if (state.rename_path != null) {
+                    switch (try commitActiveRename(state)) {
+                        .inactive => {},
+                        .closed => rebuild_ui.* = true,
+                        .blocked => {
+                            rebuild_ui.* = true;
+                            selection_widget_changed = false;
+                        },
+                    }
+                }
+                if (selection_widget_changed) {
+                    try syncSelectedPathsFromGrid(state, ctx, grid);
+                    if (selection_drag_active) {
+                        state.asset_selection_rebuild_pending = true;
+                    } else {
+                        rebuild_ui.* = true;
+                    }
+                }
+            }
+        }
+    }
+    return selection_widget_changed;
+}
+
+fn finishAssetSelectionFrame(state: *State, ctx: *goop.Context, asset_primary_handled: bool, rebuild_ui: *bool) !void {
+    var handled = asset_primary_handled;
+    if (!handled) {
+        handled = try syncAssetSelectionWidgets(state, ctx, rebuild_ui);
+    }
+
+    if (!ctx.frame().buttons.left and state.asset_selection_rebuild_pending) {
+        state.asset_selection_rebuild_pending = false;
+        rebuild_ui.* = true;
+    }
+
+    if (state.primary_release_pending) {
+        defer state.primary_release_pending = false;
+        if (!handled and pointInFilePanelBlankSpace(state, ctx, state.primary_release_x, state.primary_release_y)) {
+            var rename_blocks_deselect = false;
+            if (state.rename_path != null) {
+                switch (try commitActiveRename(state)) {
+                    .inactive => {},
+                    .closed => rebuild_ui.* = true,
+                    .blocked => {
+                        rebuild_ui.* = true;
+                        rename_blocks_deselect = true;
+                    },
+                }
+            }
+            if (!rename_blocks_deselect) {
+                rebuild_ui.* = clearSelectionState(state) or rebuild_ui.*;
+            }
+        }
+    }
+}
+
+pub fn main(init: std.process.Init) !void {
+    // Connect to Wayland
+    const display = wl.wl_display_connect(null) orelse {
+        std.debug.print("failed to connect to wayland display\n", .{});
+        return error.NoDisplay;
+    };
+    defer wl.wl_display_disconnect(display);
+
+    var state = State{};
+    initStateFromEnvironment(&state, display, init);
+    logStartupOptions(&state);
+    try createWaylandWindow(&state, display);
 
     // EGL + OpenGL
     try initEgl(&state, display);
@@ -2489,643 +2918,43 @@ pub fn main(init: std.process.Init) !void {
 
     // Wayland dispatch/render loop. Redraws are paced by frame callbacks.
     while (state.running) {
-        // Check timeout
-        if (state.timeout_ns) |t| {
-            const now = getMonotonicNs(init.io);
-            const elapsed = now - state.start_time_ns;
-            if (elapsed >= t) {
-                std.debug.print("demo timeout reached, exiting\n", .{});
-                break;
-            }
+        if (timeoutReached(&state, init.io)) {
+            std.debug.print("demo timeout reached, exiting\n", .{});
+            break;
         }
 
-        // Dispatch events. Pending redraws must not block here; the first
-        // frame callback is only requested after the first render below.
-        if (state.needs_redraw and !state.frame_pending) {
-            _ = wl.wl_display_dispatch_pending(display);
-            _ = wl.wl_display_flush(display);
-        } else if (state.timeout_ns != null) {
-            // Non-blocking: flush + prepare read, poll with 100ms timeout, then read
-            while (wl.wl_display_prepare_read(display) != 0)
-                _ = wl.wl_display_dispatch_pending(display);
-            _ = wl.wl_display_flush(display);
-
-            var pfd = [_]posix.pollfd{.{
-                .fd = wl.wl_display_get_fd(display),
-                .events = posix.POLL.IN,
-                .revents = 0,
-            }};
-            const poll_ret = posix.poll(&pfd, 100) catch break;
-            if (poll_ret > 0) {
-                _ = wl.wl_display_read_events(display);
-                _ = wl.wl_display_dispatch_pending(display);
-            } else {
-                wl.wl_display_cancel_read(display);
-            }
-        } else {
-            // No timeout — block until events arrive
-            if (wl.wl_display_dispatch(display) == -1) break;
-        }
+        if (!dispatchWaylandEvents(&state, display)) break;
 
         if (!state.configured or !state.needs_redraw or state.frame_pending) continue;
         state.needs_redraw = false;
 
-        // Process frame
-        ctx.clearClickedFlags();
-        ctx.doLayout(&text_measure_ctx);
+        var rebuild_ui = try beginBrowserFrame(&state, &ctx, &text_measure_ctx);
+        syncRetainedWidgetState(&state, &ctx, &rebuild_ui);
 
-        ctx.processEvents();
-        syncContextPopupVisibleFromWidget(&state, &ctx);
-        syncAddressInputFromWidget(&state, &ctx);
-        syncRenameInputFromWidget(&state, &ctx);
-        _ = try maybeStartWaylandAssetDrag(&state, &ctx);
+        try runMenuCommands(&state, &ctx, &rebuild_ui);
+        try runContextMenuCommands(&state, &ctx, &rebuild_ui);
+        try runToolbarCommands(&state, &ctx, &rebuild_ui);
 
-        var rebuild_ui = false;
+        try runPendingCommands(&state, &rebuild_ui);
 
-        if (state.rename_cancel_requested) {
-            state.rename_cancel_requested = false;
-            rebuild_ui = cancelActiveRename(&state) or rebuild_ui;
-        }
-        if (state.rename_commit_requested) {
-            state.rename_commit_requested = false;
-            switch (try commitActiveRename(&state)) {
-                .inactive => {},
-                .closed, .blocked => rebuild_ui = true,
-            }
-        }
+        try openContextMenuFromSecondaryClick(&state, &ctx, &rebuild_ui);
 
-        if (state.nav_splitter) |h| if (ctx.tree.node(h).?.changed) {
-            state.nav_ratio = ctx.tree.node(h).?.kind.splitter.ratio;
-        };
-        if (state.detail_splitter) |h| if (ctx.tree.node(h).?.changed) {
-            state.detail_ratio = ctx.tree.node(h).?.kind.splitter.ratio;
-        };
-        if (state.preview_splitter) |h| if (ctx.tree.node(h).?.changed) {
-            state.preview_ratio = ctx.tree.node(h).?.kind.splitter.ratio;
-        };
+        var asset_primary_handled = try handleAssetDropFrame(&state, &ctx, &rebuild_ui);
 
-        if (state.asset_table) |h| if (ctx.tree.node(h).?.changed) {
-            state.table_column_weights[0] = ctx.tree.tableColumnFraction(h, 0) orelse state.table_column_weights[0];
-            state.table_column_weights[1] = ctx.tree.tableColumnFraction(h, 1) orelse state.table_column_weights[1];
-            state.table_column_weights[2] = ctx.tree.tableColumnFraction(h, 2) orelse state.table_column_weights[2];
-            state.table_column_weights[3] = ctx.tree.tableColumnFraction(h, 3) orelse state.table_column_weights[3];
-            if (state.asset_table_body) |body| {
-                if (ctx.tree.isAlive(body)) {
-                    applyAssetTableColumns(&ctx.mutateKind(body).?.table, &state);
-                    ctx.invalidate();
-                }
-            }
-        };
+        try handleNavigationClicks(&state, &ctx, &rebuild_ui);
 
-        if (state.asset_table) |h| if (ctx.tree.node(h).?.kind.table.sort_changed) {
-            if (ctx.tree.node(h).?.kind.table.sorted_column) |sorted_column| {
-                const previous_sort_column = state.sort_column;
-                state.sort_column = @enumFromInt(sorted_column);
-                state.sort_direction = switch (ctx.tree.node(h).?.kind.table.sort_direction) {
-                    .ascending => .ascending,
-                    .descending => .descending,
-                };
-                if (previous_sort_column != state.sort_column and state.sort_column == .modified) {
-                    state.sort_direction = .descending;
-                }
-                sortDirectoryEntries(&state);
-                syncSelectionAnchor(&state);
-                rebuild_ui = true;
-            }
-        };
+        asset_primary_handled = try handleAssetPrimaryClicks(&state, &ctx, init.io, &rebuild_ui) or asset_primary_handled;
 
-        if (state.menu_file_refresh) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .refresh) or rebuild_ui;
-        };
-        if (state.menu_file_copy_path) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .copy_path) or rebuild_ui;
-        };
-        if (state.menu_file_open_target) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .open_link_target) or rebuild_ui;
-        };
-        if (state.menu_file_quit) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .quit) or rebuild_ui;
-        };
-        if (state.menu_edit_copy) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .copy) or rebuild_ui;
-        };
-        if (state.menu_edit_cut) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .cut) or rebuild_ui;
-        };
-        if (state.menu_edit_paste) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .paste) or rebuild_ui;
-        };
-        if (state.menu_edit_delete) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .delete) or rebuild_ui;
-        };
-        if (state.menu_edit_rename) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try beginRenameSelection(&state, &ctx) or rebuild_ui;
-        };
-        if (state.menu_edit_move_parent) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .move_parent) or rebuild_ui;
-        };
-        if (state.menu_edit_select_all) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .select_all) or rebuild_ui;
-        };
-        if (state.menu_edit_clear_selection) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .clear_selection) or rebuild_ui;
-        };
-        if (state.menu_view_sidebar) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .toggle_sidebar) or rebuild_ui;
-        };
-        if (state.menu_view_preview) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .toggle_preview) or rebuild_ui;
-        };
-        if (state.menu_view_info) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .toggle_info) or rebuild_ui;
-        };
-        if (state.menu_view_status_bar) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .toggle_status_bar) or rebuild_ui;
-        };
-        if (state.menu_view_list) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .view_list) or rebuild_ui;
-        };
-        if (state.menu_view_grid) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .view_grid) or rebuild_ui;
-        };
-        if (state.menu_view_sort_directories) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .toggle_sort_directories) or rebuild_ui;
-        };
-        if (state.menu_go_back) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .back) or rebuild_ui;
-        };
-        if (state.menu_go_forward) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .forward) or rebuild_ui;
-        };
-        if (state.menu_go_up) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .up) or rebuild_ui;
-        };
-        if (state.menu_go_home) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .home) or rebuild_ui;
-        };
-        if (state.menu_help_about) |h| if (ctx.tree.node(h).?.clicked) {
-            setTopMenuPopupVisible(&state, &ctx, null);
-            rebuild_ui = try runBrowserCommand(&state, .about) or rebuild_ui;
-        };
-
-        if (state.context_open) |h| if (ctx.tree.node(h).?.clicked) {
-            hideContextMenu(&state, &ctx);
-            rebuild_ui = try openContextTarget(&state) or rebuild_ui;
-        };
-        if (state.context_copy) |h| if (ctx.tree.node(h).?.clicked) {
-            hideContextMenu(&state, &ctx);
-            rebuild_ui = try runBrowserCommand(&state, .copy) or rebuild_ui;
-        };
-        if (state.context_cut) |h| if (ctx.tree.node(h).?.clicked) {
-            hideContextMenu(&state, &ctx);
-            rebuild_ui = try runBrowserCommand(&state, .cut) or rebuild_ui;
-        };
-        if (state.context_paste) |h| if (ctx.tree.node(h).?.clicked) {
-            hideContextMenu(&state, &ctx);
-            rebuild_ui = try pasteContextTarget(&state) or rebuild_ui;
-        };
-        if (state.context_delete) |h| if (ctx.tree.node(h).?.clicked) {
-            hideContextMenu(&state, &ctx);
-            rebuild_ui = try runBrowserCommand(&state, .delete) or rebuild_ui;
-        };
-        if (state.context_rename) |h| if (ctx.tree.node(h).?.clicked) {
-            hideContextMenu(&state, &ctx);
-            rebuild_ui = try beginRenameSelection(&state, &ctx) or rebuild_ui;
-        };
-        if (state.context_move_parent) |h| if (ctx.tree.node(h).?.clicked) {
-            hideContextMenu(&state, &ctx);
-            rebuild_ui = try runBrowserCommand(&state, .move_parent) or rebuild_ui;
-        };
-        if (state.context_copy_path) |h| if (ctx.tree.node(h).?.clicked) {
-            hideContextMenu(&state, &ctx);
-            rebuild_ui = try copyContextTargetPath(&state) or rebuild_ui;
-        };
-        if (state.context_open_link_target) |h| if (ctx.tree.node(h).?.clicked) {
-            hideContextMenu(&state, &ctx);
-            rebuild_ui = try openContextLinkTarget(&state) or rebuild_ui;
-        };
-
-        if (state.btn_back) |h| if (ctx.tree.node(h).?.clicked) {
-            rebuild_ui = try runBrowserCommand(&state, .back) or rebuild_ui;
-        };
-        if (state.btn_forward) |h| if (ctx.tree.node(h).?.clicked) {
-            rebuild_ui = try runBrowserCommand(&state, .forward) or rebuild_ui;
-        };
-        if (state.btn_up) |h| if (ctx.tree.node(h).?.clicked) {
-            rebuild_ui = try runBrowserCommand(&state, .up) or rebuild_ui;
-        };
-        if (state.btn_home) |h| if (ctx.tree.node(h).?.clicked) {
-            rebuild_ui = try runBrowserCommand(&state, .home) or rebuild_ui;
-        };
-        if (state.btn_refresh) |h| if (ctx.tree.node(h).?.clicked) {
-            rebuild_ui = try runBrowserCommand(&state, .refresh) or rebuild_ui;
-        };
-        if (state.btn_toggle_sidebar) |h| if (ctx.tree.node(h).?.clicked) {
-            rebuild_ui = try runBrowserCommand(&state, .toggle_sidebar) or rebuild_ui;
-        };
-        if (state.btn_toggle_preview) |h| if (ctx.tree.node(h).?.clicked) {
-            rebuild_ui = try runBrowserCommand(&state, .toggle_preview) or rebuild_ui;
-        };
-        if (state.btn_toggle_info) |h| if (ctx.tree.node(h).?.clicked) {
-            rebuild_ui = try runBrowserCommand(&state, .toggle_info) or rebuild_ui;
-        };
-        if (state.btn_address_go) |h| if (ctx.tree.node(h).?.clicked) {
-            state.address_submit_requested = true;
-        };
-        if (state.btn_list_view) |h| if (ctx.tree.node(h).?.clicked and state.view_mode != .list) {
-            rebuild_ui = try runBrowserCommand(&state, .view_list) or rebuild_ui;
-        };
-        if (state.btn_grid_view) |h| if (ctx.tree.node(h).?.clicked and state.view_mode != .grid) {
-            rebuild_ui = try runBrowserCommand(&state, .view_grid) or rebuild_ui;
-        };
-
-        if (state.pending_command) |command| {
-            state.pending_command = null;
-            rebuild_ui = try runBrowserCommand(&state, command) or rebuild_ui;
-        }
-        if (state.address_submit_requested) {
-            state.address_submit_requested = false;
-            const path = try addressInputPathAlloc(&state);
-            defer allocator.free(path);
-            rebuild_ui = try setCurrentDirectory(&state, path, true) or rebuild_ui;
-        }
-
-        var context_menu_opened = false;
-        for (state.place_handles.items, 0..) |handle, index| {
-            if (!ctx.tree.node(handle).?.secondary_clicked) continue;
-            if (index >= state.places.items.len) continue;
-            try showContextMenuForPath(&state, &ctx, state.places.items[index].path);
-            context_menu_opened = true;
-            rebuild_ui = true;
-            break;
-        }
-
-        if (!context_menu_opened) {
-            for (state.folder_tree_handles.items, 0..) |handle, index| {
-                if (!ctx.tree.node(handle).?.secondary_clicked) continue;
-                if (index >= state.folder_tree_paths.items.len) continue;
-                try showContextMenuForPath(&state, &ctx, state.folder_tree_paths.items[index]);
-                context_menu_opened = true;
-                rebuild_ui = true;
-                break;
-            }
-        }
-
-        if (!context_menu_opened) {
-            for (state.breadcrumb_handles.items, 0..) |handle, index| {
-                if (!ctx.tree.node(handle).?.secondary_clicked) continue;
-                if (index >= state.breadcrumb_paths.items.len) continue;
-                try showContextMenuForPath(&state, &ctx, state.breadcrumb_paths.items[index]);
-                context_menu_opened = true;
-                rebuild_ui = true;
-                break;
-            }
-        }
-
-        if (!context_menu_opened) {
-            for (state.row_handles.items, 0..) |handle, index| {
-                if (!ctx.tree.node(handle).?.secondary_clicked) continue;
-                const entry_index = state.asset_visible_start + index;
-                if (entry_index >= state.entries.items.len) continue;
-                try selectEntryForContextMenu(&state, entry_index);
-                try showContextMenuForPath(&state, &ctx, state.entries.items[entry_index].path);
-                context_menu_opened = true;
-                rebuild_ui = true;
-                break;
-            }
-        }
-
-        if (!context_menu_opened) {
-            for (state.grid_handles.items, 0..) |handle, index| {
-                if (!ctx.tree.node(handle).?.secondary_clicked) continue;
-                const entry_index = state.asset_visible_start + index;
-                if (entry_index >= state.entries.items.len) continue;
-                try selectEntryForContextMenu(&state, entry_index);
-                try showContextMenuForPath(&state, &ctx, state.entries.items[entry_index].path);
-                context_menu_opened = true;
-                rebuild_ui = true;
-                break;
-            }
-        }
-
-        if (!context_menu_opened) {
-            if (state.file_panel_scroll) |handle| {
-                if (ctx.tree.node(handle).?.secondary_clicked) {
-                    try showContextMenuForPath(&state, &ctx, state.current_dir);
-                    rebuild_ui = true;
-                }
-            }
-        }
-
-        var asset_primary_handled = false;
-        if (ctx.frame().last_drop) |drop| {
-            const asset_drop = switch (drop) {
-                .widget => |widget_drop| assetEntryIndexFromUserId(&state, ctx.tree.userId(widget_drop.source)) != null,
-                .table => |table_drop| assetEntryIndexFromUserId(&state, ctx.tree.userId(table_drop.source)) != null,
-                .grid => |grid_drop| assetEntryIndexFromUserId(&state, ctx.tree.userId(grid_drop.source)) != null,
-                else => false,
-            };
-            if (asset_drop) {
-                asset_primary_handled = true;
-                if (state.rename_path != null) {
-                    switch (try commitActiveRename(&state)) {
-                        .inactive => {},
-                        .closed => rebuild_ui = true,
-                        .blocked => rebuild_ui = true,
-                    }
-                }
-                if (state.rename_path == null) {
-                    rebuild_ui = switch (drop) {
-                        .widget => |widget_drop| try handleAssetWidgetDrop(&state, &ctx, widget_drop),
-                        .table => |table_drop| try handleAssetTableDrop(&state, &ctx, table_drop),
-                        .grid => |grid_drop| try handleAssetGridDrop(&state, &ctx, grid_drop),
-                        else => false,
-                    } or rebuild_ui;
-                }
-            }
-        }
-
-        for (state.place_handles.items, 0..) |handle, index| {
-            if (!ctx.tree.node(handle).?.clicked) continue;
-            if (index >= state.places.items.len) continue;
-            rebuild_ui = try setCurrentDirectory(&state, state.places.items[index].path, true) or rebuild_ui;
-            break;
-        }
-
-        for (state.folder_tree_handles.items, 0..) |handle, index| {
-            if (!ctx.tree.node(handle).?.toggled) continue;
-            if (index >= state.folder_tree_paths.items.len) continue;
-            const path = state.folder_tree_paths.items[index];
-            const previous_expansion = folderTreeExpansion(&state, path);
-            if (previous_expansion == .partial) {
-                rebuild_ui = try setFolderTreePathExpanded(&state, path, true) or rebuild_ui;
-            } else {
-                const expanded = ctx.tree.node(handle).?.kind.tree_item.expanded;
-                rebuild_ui = try setFolderTreePathExpanded(&state, path, expanded) or rebuild_ui;
-                if (!expanded and std.mem.eql(u8, path, state.current_dir)) rebuild_ui = true;
-            }
-        }
-
-        for (state.folder_tree_handles.items, 0..) |handle, index| {
-            if (!ctx.tree.node(handle).?.clicked or ctx.tree.node(handle).?.toggled) continue;
-            if (index >= state.folder_tree_paths.items.len) continue;
-            rebuild_ui = try setCurrentDirectory(&state, state.folder_tree_paths.items[index], true) or rebuild_ui;
-            break;
-        }
-
-        for (state.breadcrumb_handles.items, 0..) |handle, index| {
-            if (!ctx.tree.node(handle).?.clicked) continue;
-            if (index >= state.breadcrumb_paths.items.len) continue;
-            rebuild_ui = try setCurrentDirectory(&state, state.breadcrumb_paths.items[index], true) or rebuild_ui;
-            break;
-        }
-
-        for (state.row_handles.items, 0..) |handle, index| {
-            if (!ctx.tree.node(handle).?.clicked) continue;
-            asset_primary_handled = true;
-            var entry_index = state.asset_visible_start + index;
-            if (entry_index >= state.entries.items.len) continue;
-
-            const entry = state.entries.items[entry_index];
-            if (!state.ctrl_down and !state.shift_down and isPathSelected(&state, entry.path) and
-                pointHitsEntryNameText(&state, &ctx, index, entry, state.primary_release_x, state.primary_release_y))
-            {
-                try beginRenameEntry(&state, &ctx, entry);
-                rebuild_ui = true;
-                break;
-            }
-
-            const clicked_path = try allocator.dupe(u8, entry.path);
-            defer allocator.free(clicked_path);
-            if (state.rename_path != null) {
-                switch (try commitActiveRename(&state)) {
-                    .inactive => {},
-                    .closed => {
-                        rebuild_ui = true;
-                        entry_index = entryIndexForPath(&state, clicked_path) orelse break;
-                    },
-                    .blocked => {
-                        rebuild_ui = true;
-                        break;
-                    },
-                }
-            }
-
-            const selected_entry = state.entries.items[entry_index];
-            const click_ms = currentPrimaryClickTimestampMs(&ctx, init.io);
-            const repeated_click = isRepeatedEntryClick(&state, &selected_entry, click_ms);
-
-            try applyEntrySelectionClick(&state, entry_index);
-            try setLastClickPath(&state, selected_entry.path);
-            state.last_click_ms = click_ms;
-            rebuild_ui = true;
-
-            if (repeated_click and selected_entry.canEnter()) {
-                rebuild_ui = try setCurrentDirectory(&state, selected_entry.navigationPath(), true) or rebuild_ui;
-            }
-            break;
-        }
-
-        for (state.grid_handles.items, 0..) |handle, index| {
-            if (!ctx.tree.node(handle).?.clicked) continue;
-            asset_primary_handled = true;
-            var entry_index = state.asset_visible_start + index;
-            if (entry_index >= state.entries.items.len) continue;
-
-            const entry = state.entries.items[entry_index];
-            const clicked_path = try allocator.dupe(u8, entry.path);
-            defer allocator.free(clicked_path);
-            if (state.rename_path != null) {
-                switch (try commitActiveRename(&state)) {
-                    .inactive => {},
-                    .closed => {
-                        rebuild_ui = true;
-                        entry_index = entryIndexForPath(&state, clicked_path) orelse break;
-                    },
-                    .blocked => {
-                        rebuild_ui = true;
-                        break;
-                    },
-                }
-            }
-
-            const selected_entry = state.entries.items[entry_index];
-            const click_ms = currentPrimaryClickTimestampMs(&ctx, init.io);
-            const repeated_click = isRepeatedEntryClick(&state, &selected_entry, click_ms);
-
-            try applyEntrySelectionClick(&state, entry_index);
-            try setLastClickPath(&state, selected_entry.path);
-            state.last_click_ms = click_ms;
-            rebuild_ui = true;
-
-            if (repeated_click and selected_entry.canEnter()) {
-                rebuild_ui = try setCurrentDirectory(&state, selected_entry.navigationPath(), true) or rebuild_ui;
-            }
-            break;
-        }
-
-        if (!asset_primary_handled) {
-            var selection_widget_changed = false;
-            const selection_drag_active = ctx.frame().buttons.left;
-            if (state.view_mode == .list) {
-                if (state.asset_table_body) |table| {
-                    if (ctx.tree.isAlive(table) and ctx.tree.node(table).?.kind.table.selection_changed) {
-                        selection_widget_changed = true;
-                        if (state.rename_path != null) {
-                            switch (try commitActiveRename(&state)) {
-                                .inactive => {},
-                                .closed => rebuild_ui = true,
-                                .blocked => {
-                                    rebuild_ui = true;
-                                    selection_widget_changed = false;
-                                },
-                            }
-                        }
-                        if (selection_widget_changed) {
-                            try syncSelectedPathsFromTable(&state, &ctx, table);
-                            if (selection_drag_active) {
-                                state.asset_selection_rebuild_pending = true;
-                            } else {
-                                rebuild_ui = true;
-                            }
-                        }
-                    }
-                }
-            } else if (state.view_mode == .grid) {
-                if (state.asset_grid) |grid| {
-                    if (ctx.tree.isAlive(grid) and ctx.tree.node(grid).?.changed) {
-                        selection_widget_changed = true;
-                        if (state.rename_path != null) {
-                            switch (try commitActiveRename(&state)) {
-                                .inactive => {},
-                                .closed => rebuild_ui = true,
-                                .blocked => {
-                                    rebuild_ui = true;
-                                    selection_widget_changed = false;
-                                },
-                            }
-                        }
-                        if (selection_widget_changed) {
-                            try syncSelectedPathsFromGrid(&state, &ctx, grid);
-                            if (selection_drag_active) {
-                                state.asset_selection_rebuild_pending = true;
-                            } else {
-                                rebuild_ui = true;
-                            }
-                        }
-                    }
-                }
-            }
-            if (selection_widget_changed) asset_primary_handled = true;
-        }
-
-        if (!ctx.frame().buttons.left and state.asset_selection_rebuild_pending) {
-            state.asset_selection_rebuild_pending = false;
-            rebuild_ui = true;
-        }
-
-        if (state.primary_release_pending) {
-            defer state.primary_release_pending = false;
-            if (!asset_primary_handled and pointInFilePanelBlankSpace(&state, &ctx, state.primary_release_x, state.primary_release_y)) {
-                var rename_blocks_deselect = false;
-                if (state.rename_path != null) {
-                    switch (try commitActiveRename(&state)) {
-                        .inactive => {},
-                        .closed => rebuild_ui = true,
-                        .blocked => {
-                            rebuild_ui = true;
-                            rename_blocks_deselect = true;
-                        },
-                    }
-                }
-                if (!rename_blocks_deselect) {
-                    rebuild_ui = clearSelectionState(&state) or rebuild_ui;
-                }
-            }
-        }
+        try finishAssetSelectionFrame(&state, &ctx, asset_primary_handled, &rebuild_ui);
 
         if (rebuild_ui) {
             try buildWidgetTree(&state);
         }
 
-        // Render
-        // Event handlers can rebuild the widget tree after the initial hit-test
-        // layout pass above, so run layout again if the tree became dirty.
-        ctx.doLayout(&text_measure_ctx);
-        if (try refreshAssetViewportIfNeeded(&state)) {
-            ctx.doLayout(&text_measure_ctx);
-        }
-        debugLogFilePanelLayout(&state);
-        updatePointerCursor(&state);
-        var atlas_paint_list = try goop.paint.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx, .{});
-        defer goop.paint.freePaintList(&atlas_paint_list, allocator);
-        if (try ensureAtlasForPaintList(&ensured_text, &text_atlas, &renderer, atlas_paint_list)) {
-            const updated_metrics = fontLineMetrics(&text_atlas);
-            text_measure.ascent_units = updated_metrics.ascent;
-            text_measure.descent_units = updated_metrics.descent;
-            ctx.setDimensions(state.logical_width, state.logical_height);
-            ctx.doLayout(&text_measure_ctx);
-        }
-        try syncNativePopupSurfaces(&state, &ctx);
-        var base_paint_list = try goop.paint.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx, .{ .scope = .{ .full = .{ .include_floating = false } } });
-        defer goop.paint.freePaintList(&base_paint_list, allocator);
-        const paint_list = try composeFileBrowserPaintList(&state, base_paint_list);
-
-        renderer.beginFrame(state.buffer_width, state.buffer_height, @floatFromInt(state.buffer_scale));
-        renderer.renderPaintList(paint_list);
-
-        // Request frame callback BEFORE swap — the callback must be
-        // registered before the surface commit that eglSwapBuffers triggers.
-        requestFrame(&state);
-        _ = egl.eglSwapBuffers(state.egl_display, state.egl_surface);
-        try renderNativePopupSurfaces(&state, &renderer);
+        try layoutAndRenderFrame(&state, &ctx, &renderer, &text_atlas, &text_measure, &ensured_text, &text_measure_ctx);
     }
 
-    // Clean up xkb state
-    state.destroyAllPopupSurfaces();
-    state.destroyAllDataOffers();
-    state.destroyAllOutputs();
-    state.destroyDragSource();
-    state.destroyClipboardSource();
-    deinitBrowserState(&state);
-    state.clipboard_buf.deinit(allocator);
-    state.clipboard_uri_list_buf.deinit(allocator);
-    state.clipboard_gnome_files_buf.deinit(allocator);
-    state.drag_uri_list_buf.deinit(allocator);
-    state.drag_plain_buf.deinit(allocator);
-    state.drag_gnome_files_buf.deinit(allocator);
-    if (state.data_device) |data_device| wl.wl_data_device_release(data_device);
-    if (state.data_device_manager) |manager| wl.wl_data_device_manager_destroy(manager);
-    state.resetCursorTheme();
-    if (state.cursor_surface) |cursor_surface| wl.wl_surface_destroy(cursor_surface);
-    if (state.shm) |shm| wl.wl_shm_destroy(shm);
-    if (state.xkb_state) |s| xkb.xkb_state_unref(s);
-    if (state.xkb_keymap) |k| xkb.xkb_keymap_unref(k);
-    if (state.xkb_ctx) |c| xkb.xkb_context_unref(c);
-
+    cleanupPlatformState(&state);
     std.debug.print("goop file manager exiting\n", .{});
 }
 

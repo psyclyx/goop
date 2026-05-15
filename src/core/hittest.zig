@@ -2,6 +2,7 @@ const std = @import("std");
 const widget = @import("widget.zig");
 const paint = @import("paint.zig");
 const style = @import("style.zig");
+const geometry = @import("geometry.zig");
 
 const HitState = struct {
     offset_x: f32 = 0,
@@ -184,8 +185,8 @@ fn pointHitsWidget(tree: *const widget.Tree, handle: widget.NodeHandle, x: f32, 
         .table_row => widget.tableRowSelectable(tree, handle) and pointInRect(local_x, local_y, node.layout_rect),
         .splitter => {
             const resolved = node.style_override.resolve(style.Theme.default);
-            const divider = splitterDividerRect(node.layout_rect, node.kind.splitter, resolved);
-            return pointInRect(local_x, local_y, splitterHandleRect(divider, node.kind.splitter));
+            const divider = geometry.splitterDividerRect(node.layout_rect, node.kind.splitter, resolved);
+            return pointInRect(local_x, local_y, geometry.splitterHandleRect(divider, node.kind.splitter));
         },
         else => pointInRect(local_x, local_y, node.layout_rect),
     };
@@ -223,71 +224,6 @@ fn intersectRects(a: paint.Rect, b: paint.Rect) paint.Rect {
         .w = @max(x1 - x0, 0),
         .h = @max(y1 - y0, 0),
     };
-}
-
-fn splitterDividerRect(rect: paint.Rect, splitter: widget.WidgetKind.Splitter, resolved: style.ResolvedStyle) paint.Rect {
-    const inner = paint.Rect{
-        .x = rect.x + resolved.padding.left,
-        .y = rect.y + resolved.padding.top,
-        .w = @max(rect.w - resolved.padding.left - resolved.padding.right, 0),
-        .h = @max(rect.h - resolved.padding.top - resolved.padding.bottom, 0),
-    };
-    const ratio = clampedSplitterRatio(splitter, rect, resolved);
-    const gap_thickness = splitterGapThickness(splitter);
-    return switch (splitter.direction) {
-        .row => .{
-            .x = inner.x + (inner.w - gap_thickness) * ratio,
-            .y = inner.y,
-            .w = gap_thickness,
-            .h = inner.h,
-        },
-        .column => .{
-            .x = inner.x,
-            .y = inner.y + (inner.h - gap_thickness) * ratio,
-            .w = inner.w,
-            .h = gap_thickness,
-        },
-    };
-}
-
-fn splitterHandleRect(divider: paint.Rect, splitter: widget.WidgetKind.Splitter) paint.Rect {
-    const handle_thickness = @max(splitter.thickness, splitterGapThickness(splitter));
-    return switch (splitter.direction) {
-        .row => .{
-            .x = divider.x + (divider.w - handle_thickness) * 0.5,
-            .y = divider.y,
-            .w = handle_thickness,
-            .h = divider.h,
-        },
-        .column => .{
-            .x = divider.x,
-            .y = divider.y + (divider.h - handle_thickness) * 0.5,
-            .w = divider.w,
-            .h = handle_thickness,
-        },
-    };
-}
-
-fn clampedSplitterRatio(
-    splitter: widget.WidgetKind.Splitter,
-    rect: paint.Rect,
-    resolved: style.ResolvedStyle,
-) f32 {
-    const raw = std.math.clamp(splitter.ratio, 0, 1);
-    const available = switch (splitter.direction) {
-        .row => rect.w - resolved.padding.left - resolved.padding.right - splitterGapThickness(splitter),
-        .column => rect.h - resolved.padding.top - resolved.padding.bottom - splitterGapThickness(splitter),
-    };
-    if (available <= 0) return raw;
-
-    const min_ratio = std.math.clamp(splitter.min_first / available, 0, 1);
-    const max_ratio = std.math.clamp(1 - splitter.min_second / available, 0, 1);
-    if (min_ratio > max_ratio) return raw;
-    return std.math.clamp(raw, min_ratio, max_ratio);
-}
-
-fn splitterGapThickness(splitter: widget.WidgetKind.Splitter) f32 {
-    return @max(@min(splitter.gap_thickness, splitter.thickness), 1);
 }
 
 test "floating popup subtree wins hit testing over regular content" {

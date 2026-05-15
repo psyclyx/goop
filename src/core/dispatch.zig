@@ -5,6 +5,7 @@ const focus = @import("focus.zig");
 const hittest = @import("hittest.zig");
 const layout = @import("layout.zig");
 const paint = @import("paint.zig");
+const geometry = @import("geometry.zig");
 
 /// Transient input state tracked across events.
 pub const SecondaryClick = struct {
@@ -237,488 +238,468 @@ fn setFocusedWidget(tree: *widget.Tree, mouse: *MouseState, target: ?widget.Node
 
 fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard, text_ctx: ?*const layout.TextMeasureCtx) void {
     switch (ev) {
-        .mouse_move => |mm| {
-            mouse.x = mm.x;
-            mouse.y = mm.y;
-            maybeBeginDeferredDrag(tree, mouse);
-            if (mouse.drag_target) |dt| {
-                switch (tree.getConst(dt).kind) {
-                    .slider => updateSliderValue(tree, dt, mouse.x, theme),
-                    .drag_value => updateDragValue(tree, dt, mouse.x, mouse),
-                    .splitter => updateSplitterRatio(tree, dt, mouse.x, mouse.y, mouse, theme),
-                    .scroll_area => {
-                        if (updateScrollAreaDrag(tree, dt, mouse, theme)) mouse.layout_changed = true;
-                    },
-                    .table => {
-                        if (updateTableColumns(tree, dt, mouse)) mouse.layout_changed = true;
-                        updateTableMarquee(tree, dt, mouse);
-                    },
-                    .tree_item => updateTreeDragPreview(tree, dt, mouse),
-                    .selectable => updateSelectableDragPreview(tree, dt, mouse),
-                    .list_box => updateListBoxMarquee(tree, dt, mouse),
-                    .grid_item => updateGridItemDragPreview(tree, dt, mouse),
-                    .grid_selector => updateGridSelectorMarquee(tree, dt, mouse),
-                    .table_row => updateTableRowDragPreview(tree, dt, mouse),
-                    else => {},
-                }
-                updateWidgetDropPreview(tree, dt, mouse);
-            }
-            // Text editor drag selection
-            if (mouse.left_down) {
-                if (mouse.press_target) |pt| {
-                    dragTextEditorSelection(tree, pt, mm.x, theme, text_ctx);
-                }
-            }
-            const hovered = updateHover(tree, mouse);
-            if (hoverChanged(mouse, hovered) and treeHasTooltip(tree)) {
-                mouse.layout_changed = true;
-            }
-            mouse.hovered = hovered;
-            if (!mouse.left_down) syncMenuHover(tree, hovered, mouse);
-        },
-        .mouse_button => |mb| {
-            mouse.x = mb.x;
-            mouse.y = mb.y;
-            if (mb.button == .left) {
-                if (mb.state == .pressed) {
-                    handlePrimaryPress(tree, mouse, theme, text_ctx, mb);
-                    mouse.last_click_time_ms = mb.timestamp_ms;
-                    mouse.last_click_x = mb.x;
-                    mouse.last_click_y = mb.y;
-                } else {
-                    handlePrimaryRelease(tree, mouse);
-                }
-            } else if (mb.button == .right) {
-                if (mb.state == .pressed) {
-                    handleSecondaryPress(tree, mouse);
-                } else {
-                    handleSecondaryRelease(tree, mouse);
-                }
-            } else if (mb.button == .middle) {
-                mouse.middle_down = mb.state == .pressed;
-            }
-        },
-        .mouse_scroll => |ms| {
-            // Find the scroll area under the cursor and adjust scroll offset
-            const target = hittest.hitTestKind(tree, mouse.x, mouse.y, .scroll_area);
-            if (target) |t| {
-                const node = tree.get(t);
-                const scroll = node.kind.scroll_area;
-                const old_scroll_x = scroll.scroll_x;
-                const old_scroll_y = scroll.scroll_y;
-                const viewport = node.layout_rect;
-                const extent = contentExtentForAppliedScroll(tree, t, scroll.effectiveScrollX(), scroll.effectiveScrollY());
-                const scroll_dx = if (scroll.disable_horizontal_scroll)
-                    0
-                else if (mouse.shift_down and ms.dx == 0) ms.dy else ms.dx;
-                const scroll_dy = if (scroll.disable_vertical_scroll)
-                    0
-                else if (mouse.shift_down and ms.dx == 0) 0 else ms.dy;
-
-                const max_x = if (scroll.disable_horizontal_scroll) 0 else @max(extent.w - viewport.w, 0);
-                const max_y = if (scroll.disable_vertical_scroll) 0 else @max(extent.h - viewport.h, 0);
-                node.kind.scroll_area.scroll_x = std.math.clamp(old_scroll_x + scroll_dx, 0, max_x);
-                node.kind.scroll_area.scroll_y = std.math.clamp(old_scroll_y + scroll_dy, 0, max_y);
-            }
-        },
-        .focus => |f| {
-            if (!f.focused) {
-                setFocusedWidget(tree, mouse, null);
-            }
-        },
-        .key => |k| {
-            // Modifier state is read from two sources:
-            //   1. `Key.mods` set by embedders that translate native modifier
-            //      state directly (preferred).
-            //   2. Discrete `left_shift`/`left_ctrl` press/release events
-            //      from embedders that don't fill `mods`.
-            // We update from `mods` here when any bit is set; the switch
-            // arms below cover the legacy press/release path.
-            if (k.mods.shift or k.mods.ctrl) {
-                mouse.shift_down = k.mods.shift;
-                mouse.ctrl_down = k.mods.ctrl;
-            }
-            switch (k.keycode) {
-                .left_shift, .right_shift => {
-                    mouse.shift_down = k.state == .pressed or k.state == .repeat;
-                },
-                .left_ctrl, .right_ctrl => {
-                    mouse.ctrl_down = k.state == .pressed or k.state == .repeat;
-                },
-                .a => {
-                    if (k.state == .pressed or k.state == .repeat) {
-                        if (mouse.ctrl_down) {
-                            if (mouse.focused) |f| {
-                                if (focusedTextEditor(tree, f)) |editor| {
-                                    if (editor.len > 0) {
-                                        editor.selection_anchor = 0;
-                                        editor.cursor = editor.len;
-                                    }
-                                } else if (tree.getConst(f).kind == .grid_item) {
-                                    if (widget.gridItemParentSelector(tree, f)) |selector| {
-                                        if (tree.getConst(selector).kind.grid_selector.selection_mode == .multiple) {
-                                            _ = selectAllGridSelector(tree, selector);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                .c => {
-                    if (k.state == .pressed and mouse.ctrl_down) {
-                        if (clipboard) |cb| {
-                            if (mouse.focused) |f| {
-                                if (focusedTextEditor(tree, f)) |editor| {
-                                    if (editor.hasSelection()) {
-                                        cb.setText(editor.selectedContent());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                .x => {
-                    if (k.state == .pressed and mouse.ctrl_down) {
-                        if (clipboard) |cb| {
-                            if (mouse.focused) |f| {
-                                if (focusedTextEditor(tree, f)) |editor| {
-                                    if (editor.hasSelection()) {
-                                        cb.setText(editor.selectedContent());
-                                        editor.deleteSelection();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                .v => {
-                    if (k.state == .pressed and mouse.ctrl_down) {
-                        if (clipboard) |cb| {
-                            if (mouse.focused) |f| {
-                                if (focusedTextEditor(tree, f)) |editor| {
-                                    if (cb.getText()) |text| {
-                                        editor.insertSlice(text);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                .tab => {
-                    if (k.state == .pressed or k.state == .repeat) {
-                        if (mouse.focused) |f| commitOrCancelNumericEditorOnBlur(tree, f);
-                        if (mouse.shift_down) {
-                            mouse.focused = focus.focusPrev(tree, mouse.focused);
-                        } else {
-                            mouse.focused = focus.focusNext(tree, mouse.focused);
-                        }
-                        focus.syncFocusFlags(tree, mouse.focused);
-                    }
-                },
-                .backspace => {
-                    if (k.state == .pressed or k.state == .repeat) {
-                        if (mouse.focused) |f| {
-                            if (focusedTextEditor(tree, f)) |editor| {
-                                if (mouse.ctrl_down) {
-                                    editor.deleteBackWord();
-                                } else {
-                                    editor.deleteBack();
-                                }
-                            }
-                        }
-                    }
-                },
-                .delete => {
-                    if (k.state == .pressed or k.state == .repeat) {
-                        if (mouse.focused) |f| {
-                            if (focusedTextEditor(tree, f)) |editor| {
-                                if (mouse.ctrl_down) {
-                                    editor.deleteForwardWord();
-                                } else {
-                                    editor.deleteForward();
-                                }
-                            }
-                        }
-                    }
-                },
-                .left => {
-                    if (k.state == .pressed or k.state == .repeat) {
-                        if (mouse.focused) |f| {
-                            if (focusedTextEditor(tree, f)) |editor| {
-                                if (mouse.shift_down) {
-                                    if (editor.selection_anchor == null) editor.selection_anchor = editor.cursor;
-                                    if (mouse.ctrl_down) {
-                                        editor.cursor = editor.prevWordBoundary(editor.cursor);
-                                    } else if (editor.cursor > 0) {
-                                        editor.cursor = editor.prevCodepointBoundary(editor.cursor);
-                                    }
-                                } else if (editor.hasSelection()) {
-                                    editor.cursor = editor.selectionRange().start;
-                                    editor.clearSelection();
-                                } else if (mouse.ctrl_down) {
-                                    editor.cursor = editor.prevWordBoundary(editor.cursor);
-                                } else if (editor.cursor > 0) {
-                                    editor.cursor = editor.prevCodepointBoundary(editor.cursor);
-                                }
-                            } else if (tree.getConst(f).kind == .drag_value) {
-                                stepDragValue(tree, f, -1);
-                            } else if (tree.getConst(f).kind == .spinbox) {
-                                stepSpinBox(tree, f, -1, false);
-                            } else if (tree.getConst(f).kind == .splitter and tree.getConst(f).kind.splitter.direction == .row) {
-                                stepSplitter(tree, f, -1, theme);
-                            } else if (tree.getConst(f).kind == .tab_item) {
-                                if (prevTabItem(tree, f)) |prev| {
-                                    selectTabItem(tree, prev);
-                                    mouse.focused = prev;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            } else if (tree.getConst(f).kind == .grid_item) {
-                                if (prevGridItem(tree, f)) |prev| {
-                                    applyGridItemKeyboardNavigation(tree, prev, mouse);
-                                    mouse.focused = prev;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            } else if (tree.getConst(f).kind == .tree_item) {
-                                const node = tree.get(f);
-                                if (node.kind.tree_item.expanded and hasTreeItemChildren(tree, f)) {
-                                    toggleTreeItem(tree, f);
-                                } else if (findTreeParent(tree, f)) |parent| {
-                                    mouse.focused = parent;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            }
-                        }
-                    }
-                },
-                .right => {
-                    if (k.state == .pressed or k.state == .repeat) {
-                        if (mouse.focused) |f| {
-                            if (focusedTextEditor(tree, f)) |editor| {
-                                if (mouse.shift_down) {
-                                    if (editor.selection_anchor == null) editor.selection_anchor = editor.cursor;
-                                    if (mouse.ctrl_down) {
-                                        editor.cursor = editor.nextWordBoundary(editor.cursor);
-                                    } else if (editor.cursor < editor.len) {
-                                        editor.cursor = editor.nextCodepointBoundary(editor.cursor);
-                                    }
-                                } else if (editor.hasSelection()) {
-                                    editor.cursor = editor.selectionRange().end;
-                                    editor.clearSelection();
-                                } else if (mouse.ctrl_down) {
-                                    editor.cursor = editor.nextWordBoundary(editor.cursor);
-                                } else if (editor.cursor < editor.len) {
-                                    editor.cursor = editor.nextCodepointBoundary(editor.cursor);
-                                }
-                            } else if (tree.getConst(f).kind == .drag_value) {
-                                stepDragValue(tree, f, 1);
-                            } else if (tree.getConst(f).kind == .spinbox) {
-                                stepSpinBox(tree, f, 1, false);
-                            } else if (tree.getConst(f).kind == .splitter and tree.getConst(f).kind.splitter.direction == .row) {
-                                stepSplitter(tree, f, 1, theme);
-                            } else if (tree.getConst(f).kind == .tab_item) {
-                                if (nextTabItem(tree, f)) |next| {
-                                    selectTabItem(tree, next);
-                                    mouse.focused = next;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            } else if (tree.getConst(f).kind == .grid_item) {
-                                if (nextGridItem(tree, f)) |next| {
-                                    applyGridItemKeyboardNavigation(tree, next, mouse);
-                                    mouse.focused = next;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            } else if (tree.getConst(f).kind == .tree_item) {
-                                const node = tree.get(f);
-                                if (!node.kind.tree_item.expanded and hasTreeItemChildren(tree, f)) {
-                                    toggleTreeItem(tree, f);
-                                } else if (node.kind.tree_item.expanded) {
-                                    mouse.focused = firstChildTreeItem(tree, f) orelse mouse.focused;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            }
-                        }
-                    }
-                },
-                .up => {
-                    if (k.state == .pressed or k.state == .repeat) {
-                        if (mouse.focused) |f| {
-                            if (tree.getConst(f).kind == .spinbox) {
-                                stepSpinBox(tree, f, 1, false);
-                            } else if (tree.getConst(f).kind == .drag_value) {
-                                stepDragValue(tree, f, 1);
-                            } else if (tree.getConst(f).kind == .splitter and tree.getConst(f).kind.splitter.direction == .column) {
-                                stepSplitter(tree, f, -1, theme);
-                            } else if (tree.getConst(f).kind == .selectable) {
-                                if (prevSelectableSibling(tree, f)) |prev| {
-                                    applySelectableKeyboardNavigation(tree, prev, mouse);
-                                    mouse.focused = prev;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            } else if (tree.getConst(f).kind == .grid_item) {
-                                if (gridItemAbove(tree, f)) |prev| {
-                                    applyGridItemKeyboardNavigation(tree, prev, mouse);
-                                    mouse.focused = prev;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            } else if (tree.getConst(f).kind == .table_row) {
-                                if (prevTableRowSibling(tree, f)) |prev| {
-                                    applyTableRowKeyboardNavigation(tree, prev, mouse);
-                                    mouse.focused = prev;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            } else if (tree.getConst(f).kind == .tree_item and !treeItemEditing(tree, f)) {
-                                mouse.focused = prevVisibleTreeItem(tree, f) orelse mouse.focused;
-                                focus.syncFocusFlags(tree, mouse.focused);
-                            }
-                        }
-                    }
-                },
-                .down => {
-                    if (k.state == .pressed or k.state == .repeat) {
-                        if (mouse.focused) |f| {
-                            if (tree.getConst(f).kind == .spinbox) {
-                                stepSpinBox(tree, f, -1, false);
-                            } else if (tree.getConst(f).kind == .drag_value) {
-                                stepDragValue(tree, f, -1);
-                            } else if (tree.getConst(f).kind == .splitter and tree.getConst(f).kind.splitter.direction == .column) {
-                                stepSplitter(tree, f, 1, theme);
-                            } else if (tree.getConst(f).kind == .selectable) {
-                                if (nextSelectableSibling(tree, f)) |next| {
-                                    applySelectableKeyboardNavigation(tree, next, mouse);
-                                    mouse.focused = next;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            } else if (tree.getConst(f).kind == .grid_item) {
-                                if (gridItemBelow(tree, f)) |next| {
-                                    applyGridItemKeyboardNavigation(tree, next, mouse);
-                                    mouse.focused = next;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            } else if (tree.getConst(f).kind == .table_row) {
-                                if (nextTableRowSibling(tree, f)) |next| {
-                                    applyTableRowKeyboardNavigation(tree, next, mouse);
-                                    mouse.focused = next;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            } else if (tree.getConst(f).kind == .tree_item and !treeItemEditing(tree, f)) {
-                                mouse.focused = nextVisibleTreeItem(tree, f) orelse mouse.focused;
-                                focus.syncFocusFlags(tree, mouse.focused);
-                            }
-                        }
-                    }
-                },
-                .home => {
-                    if (k.state == .pressed or k.state == .repeat) {
-                        if (mouse.focused) |f| {
-                            if (focusedTextEditor(tree, f)) |editor| {
-                                if (mouse.shift_down) {
-                                    if (editor.selection_anchor == null) editor.selection_anchor = editor.cursor;
-                                } else {
-                                    editor.clearSelection();
-                                }
-                                editor.cursor = 0;
-                            } else if (tree.getConst(f).kind == .selectable) {
-                                if (firstSelectableSibling(tree, f)) |first| {
-                                    applySelectableKeyboardNavigation(tree, first, mouse);
-                                    mouse.focused = first;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            } else if (tree.getConst(f).kind == .grid_item) {
-                                if (firstGridItemSibling(tree, f)) |first| {
-                                    applyGridItemKeyboardNavigation(tree, first, mouse);
-                                    mouse.focused = first;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            } else if (tree.getConst(f).kind == .table_row) {
-                                if (firstTableDataRow(tree, f)) |first| {
-                                    applyTableRowKeyboardNavigation(tree, first, mouse);
-                                    mouse.focused = first;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            }
-                        }
-                    }
-                },
-                .end => {
-                    if (k.state == .pressed or k.state == .repeat) {
-                        if (mouse.focused) |f| {
-                            if (focusedTextEditor(tree, f)) |editor| {
-                                if (mouse.shift_down) {
-                                    if (editor.selection_anchor == null) editor.selection_anchor = editor.cursor;
-                                } else {
-                                    editor.clearSelection();
-                                }
-                                editor.cursor = editor.len;
-                            } else if (tree.getConst(f).kind == .selectable) {
-                                if (lastSelectableSibling(tree, f)) |last| {
-                                    applySelectableKeyboardNavigation(tree, last, mouse);
-                                    mouse.focused = last;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            } else if (tree.getConst(f).kind == .grid_item) {
-                                if (lastGridItemSibling(tree, f)) |last| {
-                                    applyGridItemKeyboardNavigation(tree, last, mouse);
-                                    mouse.focused = last;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            } else if (tree.getConst(f).kind == .table_row) {
-                                if (lastTableDataRow(tree, f)) |last| {
-                                    applyTableRowKeyboardNavigation(tree, last, mouse);
-                                    mouse.focused = last;
-                                    focus.syncFocusFlags(tree, mouse.focused);
-                                }
-                            }
-                        }
-                    }
-                },
-                .space, .enter => {
-                    if (k.state == .pressed) {
-                        if (mouse.focused) |f| {
-                            if (treeItemEditing(tree, f)) {
-                                if (k.keycode == .enter) commitTreeItemRename(tree, f);
-                            } else if (numericEditorEditing(tree, f)) {
-                                if (k.keycode == .enter) {
-                                    _ = commitNumericEditor(tree, f);
-                                }
-                            } else if (focusedTextEditor(tree, f) == null) {
-                                fireClick(tree, f);
-                            }
-                        }
-                    }
-                },
-                .escape => {
-                    if (k.state == .pressed) {
-                        if (mouse.focused) |f| {
-                            if (treeItemEditing(tree, f)) {
-                                cancelTreeItemRename(tree, f);
-                            } else if (numericEditorEditing(tree, f)) {
-                                cancelNumericEditor(tree, f);
-                            } else {
-                                closeAllPopups(tree);
-                            }
-                        } else {
-                            closeAllPopups(tree);
-                        }
-                    }
-                },
-                else => {},
-            }
-        },
-        .text => |t| {
-            if (mouse.focused) |f| {
-                if (focusedTextEditor(tree, f)) |editor| {
-                    if (isPrintableTextCodepoint(t.codepoint) and
-                        (!numericEditorEditing(tree, f) or isNumericEditorCodepoint(t.codepoint)))
-                    {
-                        editor.insertCodepoint(t.codepoint);
-                    }
-                } else if (isPrintableTextCodepoint(t.codepoint)) {
-                    beginNumericEditorTextInput(tree, f, t.codepoint);
-                }
-            }
-        },
+        .mouse_move => |mm| handleMouseMove(tree, mouse, theme, text_ctx, mm),
+        .mouse_button => |mb| handleMouseButton(tree, mouse, theme, text_ctx, mb),
+        .mouse_scroll => |ms| handleMouseScroll(tree, mouse, ms),
+        .focus => |f| handleFocus(tree, mouse, f),
+        .key => |k| handleKey(tree, mouse, theme, clipboard, k),
+        .text => |t| handleText(tree, mouse, t),
         else => {},
+    }
+}
+
+fn handleMouseMove(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mm: event.Event.MouseMove) void {
+    mouse.x = mm.x;
+    mouse.y = mm.y;
+    maybeBeginDeferredDrag(tree, mouse);
+    if (mouse.drag_target) |dt| {
+        switch (tree.getConst(dt).kind) {
+            .slider => updateSliderValue(tree, dt, mouse.x, theme),
+            .drag_value => updateDragValue(tree, dt, mouse.x, mouse),
+            .splitter => updateSplitterRatio(tree, dt, mouse.x, mouse.y, mouse, theme),
+            .scroll_area => {
+                if (updateScrollAreaDrag(tree, dt, mouse, theme)) mouse.layout_changed = true;
+            },
+            .table => {
+                if (updateTableColumns(tree, dt, mouse)) mouse.layout_changed = true;
+                updateTableMarquee(tree, dt, mouse);
+            },
+            .tree_item => updateTreeDragPreview(tree, dt, mouse),
+            .selectable => updateSelectableDragPreview(tree, dt, mouse),
+            .list_box => updateListBoxMarquee(tree, dt, mouse),
+            .grid_item => updateGridItemDragPreview(tree, dt, mouse),
+            .grid_selector => updateGridSelectorMarquee(tree, dt, mouse),
+            .table_row => updateTableRowDragPreview(tree, dt, mouse),
+            else => {},
+        }
+        updateWidgetDropPreview(tree, dt, mouse);
+    }
+    // Text editor drag selection
+    if (mouse.left_down) {
+        if (mouse.press_target) |pt| {
+            dragTextEditorSelection(tree, pt, mm.x, theme, text_ctx);
+        }
+    }
+    const hovered = updateHover(tree, mouse);
+    if (hoverChanged(mouse, hovered) and treeHasTooltip(tree)) {
+        mouse.layout_changed = true;
+    }
+    mouse.hovered = hovered;
+    if (!mouse.left_down) syncMenuHover(tree, hovered, mouse);
+}
+
+fn handleMouseButton(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+    mouse.x = mb.x;
+    mouse.y = mb.y;
+    if (mb.button == .left) {
+        if (mb.state == .pressed) {
+            handlePrimaryPress(tree, mouse, theme, text_ctx, mb);
+            mouse.last_click_time_ms = mb.timestamp_ms;
+            mouse.last_click_x = mb.x;
+            mouse.last_click_y = mb.y;
+        } else {
+            handlePrimaryRelease(tree, mouse);
+        }
+    } else if (mb.button == .right) {
+        if (mb.state == .pressed) {
+            handleSecondaryPress(tree, mouse);
+        } else {
+            handleSecondaryRelease(tree, mouse);
+        }
+    } else if (mb.button == .middle) {
+        mouse.middle_down = mb.state == .pressed;
+    }
+}
+
+fn handleMouseScroll(tree: *widget.Tree, mouse: *MouseState, ms: event.Event.MouseScroll) void {
+    // Find the scroll area under the cursor and adjust scroll offset
+    const target = hittest.hitTestKind(tree, mouse.x, mouse.y, .scroll_area);
+    if (target) |t| {
+        const node = tree.get(t);
+        const scroll = node.kind.scroll_area;
+        const old_scroll_x = scroll.scroll_x;
+        const old_scroll_y = scroll.scroll_y;
+        const viewport = node.layout_rect;
+        const extent = contentExtentForAppliedScroll(tree, t, scroll.effectiveScrollX(), scroll.effectiveScrollY());
+        const scroll_dx = if (scroll.disable_horizontal_scroll)
+            0
+        else if (mouse.shift_down and ms.dx == 0) ms.dy else ms.dx;
+        const scroll_dy = if (scroll.disable_vertical_scroll)
+            0
+        else if (mouse.shift_down and ms.dx == 0) 0 else ms.dy;
+
+        const max_x = if (scroll.disable_horizontal_scroll) 0 else @max(extent.w - viewport.w, 0);
+        const max_y = if (scroll.disable_vertical_scroll) 0 else @max(extent.h - viewport.h, 0);
+        node.kind.scroll_area.scroll_x = std.math.clamp(old_scroll_x + scroll_dx, 0, max_x);
+        node.kind.scroll_area.scroll_y = std.math.clamp(old_scroll_y + scroll_dy, 0, max_y);
+    }
+}
+
+fn handleFocus(tree: *widget.Tree, mouse: *MouseState, f: event.Event.Focus) void {
+    if (!f.focused) {
+        setFocusedWidget(tree, mouse, null);
+    }
+}
+
+fn handleKey(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard, k: event.Event.Key) void {
+    updateModifierState(mouse, k);
+    if (handleClipboardShortcut(tree, mouse, clipboard, k)) return;
+    if (handleFocusTraversalKey(tree, mouse, k)) return;
+    if (handleTextEditorKey(tree, mouse, k)) return;
+    if (handleFocusedNavigationKey(tree, mouse, theme, k)) return;
+    if (handleActivationKey(tree, mouse, k)) return;
+    if (handleEscapeKey(tree, mouse, k)) return;
+}
+
+fn keyPressed(k: event.Event.Key) bool {
+    return k.state == .pressed;
+}
+
+fn keyPressedOrRepeat(k: event.Event.Key) bool {
+    return k.state == .pressed or k.state == .repeat;
+}
+
+fn updateModifierState(mouse: *MouseState, k: event.Event.Key) void {
+    // Modifier state is read from two sources:
+    //   1. `Key.mods` set by embedders that translate native modifier state directly.
+    //   2. Discrete modifier press/release events from embedders that do not fill `mods`.
+    if (k.mods.shift or k.mods.ctrl) {
+        mouse.shift_down = k.mods.shift;
+        mouse.ctrl_down = k.mods.ctrl;
+    }
+    switch (k.keycode) {
+        .left_shift, .right_shift => mouse.shift_down = keyPressedOrRepeat(k),
+        .left_ctrl, .right_ctrl => mouse.ctrl_down = keyPressedOrRepeat(k),
+        else => {},
+    }
+}
+
+fn handleClipboardShortcut(tree: *widget.Tree, mouse: *MouseState, clipboard: ?Clipboard, k: event.Event.Key) bool {
+    if (!mouse.ctrl_down) return false;
+    switch (k.keycode) {
+        .a => {
+            if (!keyPressedOrRepeat(k)) return true;
+            const focused = mouse.focused orelse return true;
+            if (focusedTextEditor(tree, focused)) |editor| {
+                if (editor.len > 0) {
+                    editor.selection_anchor = 0;
+                    editor.cursor = editor.len;
+                }
+            } else if (tree.getConst(focused).kind == .grid_item) {
+                if (widget.gridItemParentSelector(tree, focused)) |selector| {
+                    if (tree.getConst(selector).kind.grid_selector.selection_mode == .multiple) {
+                        _ = selectAllGridSelector(tree, selector);
+                    }
+                }
+            }
+            return true;
+        },
+        .c => {
+            if (!keyPressed(k)) return true;
+            const cb = clipboard orelse return true;
+            const focused = mouse.focused orelse return true;
+            const editor = focusedTextEditor(tree, focused) orelse return true;
+            if (editor.hasSelection()) cb.setText(editor.selectedContent());
+            return true;
+        },
+        .x => {
+            if (!keyPressed(k)) return true;
+            const cb = clipboard orelse return true;
+            const focused = mouse.focused orelse return true;
+            const editor = focusedTextEditor(tree, focused) orelse return true;
+            if (editor.hasSelection()) {
+                cb.setText(editor.selectedContent());
+                editor.deleteSelection();
+            }
+            return true;
+        },
+        .v => {
+            if (!keyPressed(k)) return true;
+            const cb = clipboard orelse return true;
+            const focused = mouse.focused orelse return true;
+            const editor = focusedTextEditor(tree, focused) orelse return true;
+            if (cb.getText()) |text| editor.insertSlice(text);
+            return true;
+        },
+        else => return false,
+    }
+}
+
+fn handleFocusTraversalKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Key) bool {
+    if (k.keycode != .tab) return false;
+    if (!keyPressedOrRepeat(k)) return true;
+    if (mouse.focused) |f| commitOrCancelNumericEditorOnBlur(tree, f);
+    mouse.focused = if (mouse.shift_down)
+        focus.focusPrev(tree, mouse.focused)
+    else
+        focus.focusNext(tree, mouse.focused);
+    focus.syncFocusFlags(tree, mouse.focused);
+    return true;
+}
+
+fn handleTextEditorKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Key) bool {
+    if (!keyPressedOrRepeat(k)) return false;
+    const focused = mouse.focused orelse return switch (k.keycode) {
+        .backspace, .delete, .left, .right, .home, .end => true,
+        else => false,
+    };
+    const editor = focusedTextEditor(tree, focused) orelse return switch (k.keycode) {
+        .backspace, .delete => true,
+        else => false,
+    };
+
+    switch (k.keycode) {
+        .backspace => {
+            if (mouse.ctrl_down) editor.deleteBackWord() else editor.deleteBack();
+            return true;
+        },
+        .delete => {
+            if (mouse.ctrl_down) editor.deleteForwardWord() else editor.deleteForward();
+            return true;
+        },
+        .left => {
+            moveTextCursorLeft(editor, mouse);
+            return true;
+        },
+        .right => {
+            moveTextCursorRight(editor, mouse);
+            return true;
+        },
+        .home => {
+            if (mouse.shift_down) {
+                if (editor.selection_anchor == null) editor.selection_anchor = editor.cursor;
+            } else {
+                editor.clearSelection();
+            }
+            editor.cursor = 0;
+            return true;
+        },
+        .end => {
+            if (mouse.shift_down) {
+                if (editor.selection_anchor == null) editor.selection_anchor = editor.cursor;
+            } else {
+                editor.clearSelection();
+            }
+            editor.cursor = editor.len;
+            return true;
+        },
+        else => return false,
+    }
+}
+
+fn moveTextCursorLeft(editor: *widget.WidgetKind.TextInput, mouse: *const MouseState) void {
+    if (mouse.shift_down) {
+        if (editor.selection_anchor == null) editor.selection_anchor = editor.cursor;
+        if (mouse.ctrl_down) {
+            editor.cursor = editor.prevWordBoundary(editor.cursor);
+        } else if (editor.cursor > 0) {
+            editor.cursor = editor.prevCodepointBoundary(editor.cursor);
+        }
+    } else if (editor.hasSelection()) {
+        editor.cursor = editor.selectionRange().start;
+        editor.clearSelection();
+    } else if (mouse.ctrl_down) {
+        editor.cursor = editor.prevWordBoundary(editor.cursor);
+    } else if (editor.cursor > 0) {
+        editor.cursor = editor.prevCodepointBoundary(editor.cursor);
+    }
+}
+
+fn moveTextCursorRight(editor: *widget.WidgetKind.TextInput, mouse: *const MouseState) void {
+    if (mouse.shift_down) {
+        if (editor.selection_anchor == null) editor.selection_anchor = editor.cursor;
+        if (mouse.ctrl_down) {
+            editor.cursor = editor.nextWordBoundary(editor.cursor);
+        } else if (editor.cursor < editor.len) {
+            editor.cursor = editor.nextCodepointBoundary(editor.cursor);
+        }
+    } else if (editor.hasSelection()) {
+        editor.cursor = editor.selectionRange().end;
+        editor.clearSelection();
+    } else if (mouse.ctrl_down) {
+        editor.cursor = editor.nextWordBoundary(editor.cursor);
+    } else if (editor.cursor < editor.len) {
+        editor.cursor = editor.nextCodepointBoundary(editor.cursor);
+    }
+}
+
+fn handleFocusedNavigationKey(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, k: event.Event.Key) bool {
+    if (!keyPressedOrRepeat(k)) return false;
+    const focused = mouse.focused orelse return false;
+    switch (k.keycode) {
+        .left => return navigateLeft(tree, mouse, theme, focused),
+        .right => return navigateRight(tree, mouse, theme, focused),
+        .up => return navigateUp(tree, mouse, theme, focused),
+        .down => return navigateDown(tree, mouse, theme, focused),
+        .home => return navigateHome(tree, mouse, focused),
+        .end => return navigateEnd(tree, mouse, focused),
+        else => return false,
+    }
+}
+
+fn navigateLeft(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, focused: widget.NodeHandle) bool {
+    if (tree.getConst(focused).kind == .drag_value) {
+        stepDragValue(tree, focused, -1);
+    } else if (tree.getConst(focused).kind == .spinbox) {
+        stepSpinBox(tree, focused, -1, false);
+    } else if (tree.getConst(focused).kind == .splitter and tree.getConst(focused).kind.splitter.direction == .row) {
+        stepSplitter(tree, focused, -1, theme);
+    } else if (tree.getConst(focused).kind == .tab_item) {
+        if (prevTabItem(tree, focused)) |prev| setKeyboardFocusAfterNavigation(tree, mouse, prev, .tab);
+    } else if (tree.getConst(focused).kind == .grid_item) {
+        if (prevGridItem(tree, focused)) |prev| setKeyboardFocusAfterNavigation(tree, mouse, prev, .grid);
+    } else if (tree.getConst(focused).kind == .tree_item) {
+        const node = tree.get(focused);
+        if (node.kind.tree_item.expanded and hasTreeItemChildren(tree, focused)) {
+            toggleTreeItem(tree, focused);
+        } else if (findTreeParent(tree, focused)) |parent| {
+            mouse.focused = parent;
+            focus.syncFocusFlags(tree, mouse.focused);
+        }
+    }
+    return true;
+}
+
+fn navigateRight(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, focused: widget.NodeHandle) bool {
+    if (tree.getConst(focused).kind == .drag_value) {
+        stepDragValue(tree, focused, 1);
+    } else if (tree.getConst(focused).kind == .spinbox) {
+        stepSpinBox(tree, focused, 1, false);
+    } else if (tree.getConst(focused).kind == .splitter and tree.getConst(focused).kind.splitter.direction == .row) {
+        stepSplitter(tree, focused, 1, theme);
+    } else if (tree.getConst(focused).kind == .tab_item) {
+        if (nextTabItem(tree, focused)) |next| setKeyboardFocusAfterNavigation(tree, mouse, next, .tab);
+    } else if (tree.getConst(focused).kind == .grid_item) {
+        if (nextGridItem(tree, focused)) |next| setKeyboardFocusAfterNavigation(tree, mouse, next, .grid);
+    } else if (tree.getConst(focused).kind == .tree_item) {
+        const node = tree.get(focused);
+        if (!node.kind.tree_item.expanded and hasTreeItemChildren(tree, focused)) {
+            toggleTreeItem(tree, focused);
+        } else if (node.kind.tree_item.expanded) {
+            mouse.focused = firstChildTreeItem(tree, focused) orelse mouse.focused;
+            focus.syncFocusFlags(tree, mouse.focused);
+        }
+    }
+    return true;
+}
+
+fn navigateUp(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, focused: widget.NodeHandle) bool {
+    if (tree.getConst(focused).kind == .spinbox) {
+        stepSpinBox(tree, focused, 1, false);
+    } else if (tree.getConst(focused).kind == .drag_value) {
+        stepDragValue(tree, focused, 1);
+    } else if (tree.getConst(focused).kind == .splitter and tree.getConst(focused).kind.splitter.direction == .column) {
+        stepSplitter(tree, focused, -1, theme);
+    } else if (tree.getConst(focused).kind == .selectable) {
+        if (prevSelectableSibling(tree, focused)) |prev| setKeyboardFocusAfterNavigation(tree, mouse, prev, .selectable);
+    } else if (tree.getConst(focused).kind == .grid_item) {
+        if (gridItemAbove(tree, focused)) |prev| setKeyboardFocusAfterNavigation(tree, mouse, prev, .grid);
+    } else if (tree.getConst(focused).kind == .table_row) {
+        if (prevTableRowSibling(tree, focused)) |prev| setKeyboardFocusAfterNavigation(tree, mouse, prev, .table);
+    } else if (tree.getConst(focused).kind == .tree_item and !treeItemEditing(tree, focused)) {
+        mouse.focused = prevVisibleTreeItem(tree, focused) orelse mouse.focused;
+        focus.syncFocusFlags(tree, mouse.focused);
+    }
+    return true;
+}
+
+fn navigateDown(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, focused: widget.NodeHandle) bool {
+    if (tree.getConst(focused).kind == .spinbox) {
+        stepSpinBox(tree, focused, -1, false);
+    } else if (tree.getConst(focused).kind == .drag_value) {
+        stepDragValue(tree, focused, -1);
+    } else if (tree.getConst(focused).kind == .splitter and tree.getConst(focused).kind.splitter.direction == .column) {
+        stepSplitter(tree, focused, 1, theme);
+    } else if (tree.getConst(focused).kind == .selectable) {
+        if (nextSelectableSibling(tree, focused)) |next| setKeyboardFocusAfterNavigation(tree, mouse, next, .selectable);
+    } else if (tree.getConst(focused).kind == .grid_item) {
+        if (gridItemBelow(tree, focused)) |next| setKeyboardFocusAfterNavigation(tree, mouse, next, .grid);
+    } else if (tree.getConst(focused).kind == .table_row) {
+        if (nextTableRowSibling(tree, focused)) |next| setKeyboardFocusAfterNavigation(tree, mouse, next, .table);
+    } else if (tree.getConst(focused).kind == .tree_item and !treeItemEditing(tree, focused)) {
+        mouse.focused = nextVisibleTreeItem(tree, focused) orelse mouse.focused;
+        focus.syncFocusFlags(tree, mouse.focused);
+    }
+    return true;
+}
+
+fn navigateHome(tree: *widget.Tree, mouse: *MouseState, focused: widget.NodeHandle) bool {
+    if (tree.getConst(focused).kind == .selectable) {
+        if (firstSelectableSibling(tree, focused)) |first| setKeyboardFocusAfterNavigation(tree, mouse, first, .selectable);
+    } else if (tree.getConst(focused).kind == .grid_item) {
+        if (firstGridItemSibling(tree, focused)) |first| setKeyboardFocusAfterNavigation(tree, mouse, first, .grid);
+    } else if (tree.getConst(focused).kind == .table_row) {
+        if (firstTableDataRow(tree, focused)) |first| setKeyboardFocusAfterNavigation(tree, mouse, first, .table);
+    }
+    return true;
+}
+
+fn navigateEnd(tree: *widget.Tree, mouse: *MouseState, focused: widget.NodeHandle) bool {
+    if (tree.getConst(focused).kind == .selectable) {
+        if (lastSelectableSibling(tree, focused)) |last| setKeyboardFocusAfterNavigation(tree, mouse, last, .selectable);
+    } else if (tree.getConst(focused).kind == .grid_item) {
+        if (lastGridItemSibling(tree, focused)) |last| setKeyboardFocusAfterNavigation(tree, mouse, last, .grid);
+    } else if (tree.getConst(focused).kind == .table_row) {
+        if (lastTableDataRow(tree, focused)) |last| setKeyboardFocusAfterNavigation(tree, mouse, last, .table);
+    }
+    return true;
+}
+
+const KeyboardNavigationKind = enum { tab, selectable, grid, table };
+
+fn setKeyboardFocusAfterNavigation(tree: *widget.Tree, mouse: *MouseState, target: widget.NodeHandle, kind: KeyboardNavigationKind) void {
+    switch (kind) {
+        .tab => selectTabItem(tree, target),
+        .selectable => applySelectableKeyboardNavigation(tree, target, mouse),
+        .grid => applyGridItemKeyboardNavigation(tree, target, mouse),
+        .table => applyTableRowKeyboardNavigation(tree, target, mouse),
+    }
+    mouse.focused = target;
+    focus.syncFocusFlags(tree, mouse.focused);
+}
+
+fn handleActivationKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Key) bool {
+    if (k.keycode != .space and k.keycode != .enter) return false;
+    if (!keyPressed(k)) return true;
+    const focused = mouse.focused orelse return true;
+    if (treeItemEditing(tree, focused)) {
+        if (k.keycode == .enter) commitTreeItemRename(tree, focused);
+    } else if (numericEditorEditing(tree, focused)) {
+        if (k.keycode == .enter) _ = commitNumericEditor(tree, focused);
+    } else if (focusedTextEditor(tree, focused) == null) {
+        fireClick(tree, focused);
+    }
+    return true;
+}
+
+fn handleEscapeKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Key) bool {
+    if (k.keycode != .escape) return false;
+    if (!keyPressed(k)) return true;
+    if (mouse.focused) |focused| {
+        if (treeItemEditing(tree, focused)) {
+            cancelTreeItemRename(tree, focused);
+        } else if (numericEditorEditing(tree, focused)) {
+            cancelNumericEditor(tree, focused);
+        } else {
+            closeAllPopups(tree);
+        }
+    } else {
+        closeAllPopups(tree);
+    }
+    return true;
+}
+
+fn handleText(tree: *widget.Tree, mouse: *MouseState, t: event.Event.Text) void {
+    if (mouse.focused) |f| {
+        if (focusedTextEditor(tree, f)) |editor| {
+            if (isPrintableTextCodepoint(t.codepoint) and
+                (!numericEditorEditing(tree, f) or isNumericEditorCodepoint(t.codepoint)))
+            {
+                editor.insertCodepoint(t.codepoint);
+            }
+        } else if (isPrintableTextCodepoint(t.codepoint)) {
+            beginNumericEditorTextInput(tree, f, t.codepoint);
+        }
     }
 }
 
@@ -921,7 +902,6 @@ fn finalizeTreeDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *Mouse
         item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.tree_drop_preview) |preview| {
-
         mouse.last_drop = .{ .tree = preview };
         if (tree.isAlive(preview.target) and tree.getConst(preview.target).kind == .tree_item) {
             tree.get(preview.target).interaction.drop_received = true;
@@ -1004,7 +984,6 @@ fn finalizeSelectableDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: 
         item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.list_drop_preview) |preview| {
-
         mouse.last_drop = .{ .list = preview };
     }
     clearListDragPreview(tree);
@@ -1087,7 +1066,6 @@ fn finalizeGridItemDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *M
         item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.grid_drop_preview) |preview| {
-
         mouse.last_drop = .{ .grid = preview };
     }
     clearGridDragPreview(tree);
@@ -1291,7 +1269,6 @@ fn finalizeTableRowDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *M
         row.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     }
     if (mouse.table_drop_preview) |preview| {
-
         mouse.last_drop = .{ .table = preview };
     }
     clearTableDragPreview(tree);
@@ -1347,7 +1324,6 @@ fn updateWidgetDropPreview(tree: *widget.Tree, source: widget.NodeHandle, mouse:
 fn finalizeWidgetDrop(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
     if (mouse.widget_drop_preview) |preview| {
         if (preview.source.eql(source)) {
-
             mouse.last_drop = .{ .widget = preview };
             if (tree.isAlive(preview.target)) tree.get(preview.target).interaction.drop_received = true;
         }
@@ -1625,6 +1601,164 @@ fn scrollPositionForTrackPoint(metrics: ScrollbarMetrics, x: f32, y: f32) f32 {
     return metrics.max_scroll * t;
 }
 
+fn setFocusFromPressTarget(tree: *widget.Tree, mouse: *MouseState, target: ?widget.NodeHandle) void {
+    if (target) |handle| {
+        if (focus.isFocusable(tree.getConst(handle).kind)) {
+            setFocusedWidget(tree, mouse, handle);
+            return;
+        }
+    }
+    setFocusedWidget(tree, mouse, null);
+}
+
+fn clearPressedTarget(tree: *widget.Tree, mouse: *MouseState, handle: widget.NodeHandle) void {
+    tree.get(handle).interaction.pressed = false;
+    mouse.press_target = null;
+}
+
+fn beginImmediateDrag(mouse: *MouseState, handle: widget.NodeHandle) void {
+    mouse.drag_target = handle;
+    mouse.drag_origin_x = mouse.x;
+    mouse.drag_origin_y = mouse.y;
+}
+
+fn pressTextInput(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+    const node = tree.get(handle);
+    const rect = node.layout_rect;
+    const resolved = node.style_override.resolve(theme);
+    const text_input = &node.kind.text_input;
+    handleInlineTextEditorPress(text_input, text_input.content(), mouse.x, rect.x + resolved.padding.left, resolved.font_size, mouse, mb, text_ctx);
+}
+
+fn pressDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+    if (tree.getConst(handle).kind.drag_value.editing) {
+        if (textEditorTextX(tree, handle, theme)) |text_x| {
+            const resolved = tree.getConst(handle).style_override.resolve(theme);
+            const editor = &tree.get(handle).kind.drag_value.internal.editor;
+            handleInlineTextEditorPress(editor, editor.content(), mouse.x, text_x, resolved.font_size, mouse, mb, text_ctx);
+        }
+    } else {
+        mouse.drag_origin_value = tree.getConst(handle).kind.drag_value.value;
+        mouse.press_can_defer_drag = true;
+    }
+}
+
+fn pressScrollArea(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme) void {
+    const hit = scrollbarHitAtPoint(tree, mouse.x, mouse.y, theme) orelse return;
+    if (!hit.handle.eql(handle)) return;
+
+    if (!hittest.pointInRect(mouse.x, mouse.y, hit.metrics.thumb)) {
+        const next = scrollPositionForTrackPoint(hit.metrics, mouse.x, mouse.y);
+        const scroll_area = &tree.get(handle).kind.scroll_area;
+        const current = switch (hit.metrics.axis) {
+            .vertical => scroll_area.scroll_y,
+            .horizontal => scroll_area.scroll_x,
+        };
+        if (@abs(next - current) > 0.01) {
+            switch (hit.metrics.axis) {
+                .vertical => scroll_area.scroll_y = next,
+                .horizontal => scroll_area.scroll_x = next,
+            }
+            mouse.layout_changed = true;
+        }
+    }
+
+    beginImmediateDrag(mouse, handle);
+    mouse.scroll_drag_axis = hit.metrics.axis;
+    mouse.drag_origin_value = switch (hit.metrics.axis) {
+        .vertical => tree.getConst(handle).kind.scroll_area.scroll_y,
+        .horizontal => tree.getConst(handle).kind.scroll_area.scroll_x,
+    };
+}
+
+fn pressTable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    if (widget.tableResizeHandleIndexAtPoint(tree, handle, mouse.x, mouse.y)) |divider_index| {
+        const reference_row = widget.tableReferenceRow(tree, handle) orelse return;
+        const left_cell = widget.tableCellAt(tree, reference_row, divider_index) orelse return;
+        const right_cell = widget.tableCellAt(tree, reference_row, divider_index + 1) orelse return;
+        beginImmediateDrag(mouse, handle);
+        mouse.drag_origin_value = tree.getConst(left_cell).layout_rect.w;
+        mouse.drag_origin_secondary_value = tree.getConst(right_cell).layout_rect.w;
+        mouse.drag_origin_extent = tree.getConst(reference_row).layout_rect.w;
+        mouse.drag_column_index = divider_index;
+    } else if (widget.tableHeaderCellIndexAtPoint(tree, handle, mouse.x, mouse.y) == null and
+        tree.getConst(handle).kind.table.selection_mode == .multiple)
+    {
+        mouse.press_can_defer_drag = true;
+    }
+}
+
+fn pressSpinBox(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+    if (clickInSpinBoxDecrement(tree, handle, mouse.x)) {
+        stepSpinBox(tree, handle, -1, true);
+        clearPressedTarget(tree, mouse, handle);
+    } else if (clickInSpinBoxIncrement(tree, handle, mouse.x)) {
+        stepSpinBox(tree, handle, 1, true);
+        clearPressedTarget(tree, mouse, handle);
+    } else if (tree.getConst(handle).kind.spinbox.editing) {
+        if (textEditorTextX(tree, handle, theme)) |text_x| {
+            const resolved = tree.getConst(handle).style_override.resolve(theme);
+            const editor = &tree.get(handle).kind.spinbox.internal.editor;
+            handleInlineTextEditorPress(editor, editor.content(), mouse.x, text_x, resolved.font_size, mouse, mb, text_ctx);
+        }
+    }
+}
+
+fn pressTreeItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+    if (clickInTreeDisclosure(tree, handle, mouse.x, theme)) {
+        toggleTreeItem(tree, handle);
+        clearPressedTarget(tree, mouse, handle);
+        mouse.press_can_defer_drag = false;
+    } else if (tree.getConst(handle).kind.tree_item.editing) {
+        dragTextEditorSelection(tree, handle, mouse.x, theme, text_ctx);
+    } else {
+        const item = &tree.get(handle).kind.tree_item;
+        if (item.editable and shouldBeginTreeRename(item.*, clickInTreeLabel(tree, handle, mouse.x, theme), isDoubleClick(mouse, mb))) {
+            item.beginRename();
+            clearPressedTarget(tree, mouse, handle);
+        } else {
+            mouse.press_can_defer_drag = true;
+        }
+    }
+}
+
+fn handlePrimaryPressTarget(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton, handle: widget.NodeHandle) void {
+    tree.get(handle).interaction.pressed = true;
+    switch (tree.getConst(handle).kind) {
+        .text_input => pressTextInput(tree, handle, mouse, theme, text_ctx, mb),
+        .slider => {
+            beginImmediateDrag(mouse, handle);
+            mouse.drag_origin_value = tree.getConst(handle).kind.slider.value;
+            updateSliderValue(tree, handle, mouse.x, theme);
+        },
+        .drag_value => pressDragValue(tree, handle, mouse, theme, text_ctx, mb),
+        .splitter => {
+            beginImmediateDrag(mouse, handle);
+            mouse.drag_origin_value = tree.getConst(handle).kind.splitter.ratio;
+        },
+        .scroll_area => pressScrollArea(tree, handle, mouse, theme),
+        .table => pressTable(tree, handle, mouse),
+        .spinbox => pressSpinBox(tree, handle, mouse, theme, text_ctx, mb),
+        .tree_item => pressTreeItem(tree, handle, mouse, theme, text_ctx, mb),
+        .selectable => {
+            if (selectableParentListBox(tree, handle) != null) mouse.press_can_defer_drag = true;
+        },
+        .list_box => {
+            mouse.press_can_defer_drag = tree.getConst(handle).kind.list_box.selection_mode == .multiple;
+        },
+        .grid_item => {
+            mouse.press_can_defer_drag = true;
+        },
+        .grid_selector => {
+            mouse.press_can_defer_drag = tree.getConst(handle).kind.grid_selector.selection_mode == .multiple;
+        },
+        .table_row => {
+            if (widget.tableRowSelectable(tree, handle)) mouse.press_can_defer_drag = true;
+        },
+        else => {},
+    }
+}
+
 fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
     mouse.left_down = true;
     mouse.press_origin_x = mouse.x;
@@ -1634,153 +1768,9 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
 
     const target = scrollbarTargetAtPoint(tree, mouse.x, mouse.y, theme) orelse hittest.hitTest(tree, mouse.x, mouse.y);
     closePopupsForPress(tree, target);
-    if (target) |t| {
-        if (focus.isFocusable(tree.getConst(t).kind)) {
-            setFocusedWidget(tree, mouse, t);
-        } else {
-            setFocusedWidget(tree, mouse, null);
-        }
-    } else {
-        setFocusedWidget(tree, mouse, null);
-    }
+    setFocusFromPressTarget(tree, mouse, target);
     mouse.press_target = target;
-    if (target) |t| {
-        tree.get(t).interaction.pressed = true;
-
-        switch (tree.getConst(t).kind) {
-            .text_input => {
-                const node = tree.get(t);
-                const rect = node.layout_rect;
-                const resolved = node.style_override.resolve(theme);
-                const ti = &node.kind.text_input;
-                handleInlineTextEditorPress(ti, ti.content(), mouse.x, rect.x + resolved.padding.left, resolved.font_size, mouse, mb, text_ctx);
-            },
-            .slider => {
-                mouse.drag_target = t;
-                mouse.drag_origin_x = mouse.x;
-                mouse.drag_origin_y = mouse.y;
-                mouse.drag_origin_value = tree.getConst(t).kind.slider.value;
-                updateSliderValue(tree, t, mouse.x, theme);
-            },
-            .drag_value => {
-                if (tree.getConst(t).kind.drag_value.editing) {
-                    if (textEditorTextX(tree, t, theme)) |text_x| {
-                        const resolved = tree.getConst(t).style_override.resolve(theme);
-                        const editor = &tree.get(t).kind.drag_value.internal.editor;
-                        handleInlineTextEditorPress(editor, editor.content(), mouse.x, text_x, resolved.font_size, mouse, mb, text_ctx);
-                    }
-                } else {
-                    mouse.drag_origin_value = tree.getConst(t).kind.drag_value.value;
-                    mouse.press_can_defer_drag = true;
-                }
-            },
-            .splitter => {
-                mouse.drag_target = t;
-                mouse.drag_origin_x = mouse.x;
-                mouse.drag_origin_y = mouse.y;
-                mouse.drag_origin_value = tree.getConst(t).kind.splitter.ratio;
-            },
-            .scroll_area => {
-                if (scrollbarHitAtPoint(tree, mouse.x, mouse.y, theme)) |hit| {
-                    if (hit.handle.eql(t)) {
-                        if (!hittest.pointInRect(mouse.x, mouse.y, hit.metrics.thumb)) {
-                            const next = scrollPositionForTrackPoint(hit.metrics, mouse.x, mouse.y);
-                            const scroll_area = &tree.get(t).kind.scroll_area;
-                            const current = switch (hit.metrics.axis) {
-                                .vertical => scroll_area.scroll_y,
-                                .horizontal => scroll_area.scroll_x,
-                            };
-                            if (@abs(next - current) > 0.01) {
-                                switch (hit.metrics.axis) {
-                                    .vertical => scroll_area.scroll_y = next,
-                                    .horizontal => scroll_area.scroll_x = next,
-                                }
-                                mouse.layout_changed = true;
-                            }
-                        }
-                        mouse.drag_target = t;
-                        mouse.drag_origin_x = mouse.x;
-                        mouse.drag_origin_y = mouse.y;
-                        mouse.scroll_drag_axis = hit.metrics.axis;
-                        mouse.drag_origin_value = switch (hit.metrics.axis) {
-                            .vertical => tree.getConst(t).kind.scroll_area.scroll_y,
-                            .horizontal => tree.getConst(t).kind.scroll_area.scroll_x,
-                        };
-                    }
-                }
-            },
-            .table => {
-                if (widget.tableResizeHandleIndexAtPoint(tree, t, mouse.x, mouse.y)) |divider_index| {
-                    const reference_row = widget.tableReferenceRow(tree, t) orelse return;
-                    const left_cell = widget.tableCellAt(tree, reference_row, divider_index) orelse return;
-                    const right_cell = widget.tableCellAt(tree, reference_row, divider_index + 1) orelse return;
-                    mouse.drag_target = t;
-                    mouse.drag_origin_x = mouse.x;
-                    mouse.drag_origin_y = mouse.y;
-                    mouse.drag_origin_value = tree.getConst(left_cell).layout_rect.w;
-                    mouse.drag_origin_secondary_value = tree.getConst(right_cell).layout_rect.w;
-                    mouse.drag_origin_extent = tree.getConst(reference_row).layout_rect.w;
-                    mouse.drag_column_index = divider_index;
-                } else if (widget.tableHeaderCellIndexAtPoint(tree, t, mouse.x, mouse.y) == null and
-                    tree.getConst(t).kind.table.selection_mode == .multiple)
-                {
-                    mouse.press_can_defer_drag = true;
-                }
-            },
-            .spinbox => {
-                if (clickInSpinBoxDecrement(tree, t, mouse.x)) {
-                    stepSpinBox(tree, t, -1, true);
-                    tree.get(t).interaction.pressed = false;
-                    mouse.press_target = null;
-                } else if (clickInSpinBoxIncrement(tree, t, mouse.x)) {
-                    stepSpinBox(tree, t, 1, true);
-                    tree.get(t).interaction.pressed = false;
-                    mouse.press_target = null;
-                } else if (tree.getConst(t).kind.spinbox.editing) {
-                    if (textEditorTextX(tree, t, theme)) |text_x| {
-                        const resolved = tree.getConst(t).style_override.resolve(theme);
-                        const editor = &tree.get(t).kind.spinbox.internal.editor;
-                        handleInlineTextEditorPress(editor, editor.content(), mouse.x, text_x, resolved.font_size, mouse, mb, text_ctx);
-                    }
-                }
-            },
-            .tree_item => {
-                if (clickInTreeDisclosure(tree, t, mouse.x, theme)) {
-                    toggleTreeItem(tree, t);
-                    tree.get(t).interaction.pressed = false;
-                    mouse.press_target = null;
-                    mouse.press_can_defer_drag = false;
-                } else if (tree.getConst(t).kind.tree_item.editing) {
-                    dragTextEditorSelection(tree, t, mouse.x, theme, text_ctx);
-                } else {
-                    const item = &tree.get(t).kind.tree_item;
-                    if (item.editable and shouldBeginTreeRename(item.*, clickInTreeLabel(tree, t, mouse.x, theme), isDoubleClick(mouse, mb))) {
-                        item.beginRename();
-                        tree.get(t).interaction.pressed = false;
-                        mouse.press_target = null;
-                    } else {
-                        mouse.press_can_defer_drag = true;
-                    }
-                }
-            },
-            .selectable => {
-                if (selectableParentListBox(tree, t) != null) mouse.press_can_defer_drag = true;
-            },
-            .list_box => {
-                mouse.press_can_defer_drag = tree.getConst(t).kind.list_box.selection_mode == .multiple;
-            },
-            .grid_item => {
-                mouse.press_can_defer_drag = true;
-            },
-            .grid_selector => {
-                mouse.press_can_defer_drag = tree.getConst(t).kind.grid_selector.selection_mode == .multiple;
-            },
-            .table_row => {
-                if (widget.tableRowSelectable(tree, t)) mouse.press_can_defer_drag = true;
-            },
-            else => {},
-        }
-    }
+    if (target) |handle| handlePrimaryPressTarget(tree, mouse, theme, text_ctx, mb, handle);
 }
 
 fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
@@ -2079,7 +2069,7 @@ fn updateSplitterRatio(
     const node = tree.get(handle);
     const splitter = &node.kind.splitter;
     const resolved = node.style_override.resolve(theme);
-    const available = splitterAvailableExtent(splitter.*, node.layout_rect, resolved);
+    const available = geometry.splitterAvailableExtent(splitter.*, node.layout_rect, resolved);
     if (available <= 0) return;
 
     const delta_px = switch (splitter.direction) {
@@ -2920,28 +2910,13 @@ fn clampSplitterRatio(
     ratio: f32,
 ) f32 {
     const raw = std.math.clamp(ratio, 0, 1);
-    const available = splitterAvailableExtent(splitter, rect, resolved);
+    const available = geometry.splitterAvailableExtent(splitter, rect, resolved);
     if (available <= 0) return raw;
 
     const min_ratio = std.math.clamp(splitter.min_first / available, 0, 1);
     const max_ratio = std.math.clamp(1 - splitter.min_second / available, 0, 1);
     if (min_ratio > max_ratio) return raw;
     return std.math.clamp(raw, min_ratio, max_ratio);
-}
-
-fn splitterAvailableExtent(
-    splitter: widget.WidgetKind.Splitter,
-    rect: paint.Rect,
-    resolved: style.ResolvedStyle,
-) f32 {
-    return switch (splitter.direction) {
-        .row => rect.w - resolved.padding.left - resolved.padding.right - splitterGapThickness(splitter),
-        .column => rect.h - resolved.padding.top - resolved.padding.bottom - splitterGapThickness(splitter),
-    };
-}
-
-fn splitterGapThickness(splitter: widget.WidgetKind.Splitter) f32 {
-    return @max(@min(splitter.gap_thickness, splitter.thickness), 1);
 }
 
 fn treeDisclosureX(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style.Theme) f32 {
