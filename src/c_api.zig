@@ -4,6 +4,7 @@ const widget = @import("core/widget.zig");
 const event = @import("core/event.zig");
 const style = @import("core/style.zig");
 const draw = @import("core/draw.zig");
+const primitive_draw = @import("core/primitive_draw.zig");
 const layout = @import("core/layout.zig");
 const dispatch = @import("core/dispatch.zig");
 
@@ -1172,7 +1173,7 @@ fn validHandle(ctx: *const CContext, handle: CHandle) bool {
     return ctx.ctx.tree.isAlive(handleFromC(handle));
 }
 
-fn convertDrawCommand(cmd: draw.DrawCommand) CDrawCommand {
+fn convertDrawCommand(cmd: primitive_draw.DrawCommand) CDrawCommand {
     const Data = @FieldType(CDrawCommand, "data");
     return switch (cmd) {
         // Clip uses the flat `has_bounds + bounds` C optional pattern,
@@ -1323,11 +1324,11 @@ export fn goop_context_generate_draw_list(ctx: ?*CContext, out_draw_list: ?*CDra
         out.* = .{};
         return false;
     };
-    var draw_list = draw.lowerPaintList(paint_list, allocator, context.ctx.runtime.text_measure_ctx) catch {
+    var draw_list = primitive_draw.lowerPaintList(paint_list, allocator, context.ctx.runtime.text_measure_ctx) catch {
         out.* = .{};
         return false;
     };
-    defer draw.freeDrawList(&draw_list, allocator);
+    defer primitive_draw.freeDrawList(&draw_list, allocator);
 
     context.draw_commands.clearRetainingCapacity();
     context.draw_commands.ensureTotalCapacity(allocator, draw_list.commands.len) catch {

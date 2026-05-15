@@ -2639,11 +2639,11 @@ test "wrapped text layout height matches paint line count for path boundaries" {
 
     run(&tree, theme, null);
 
-    var dl = try draw.generate(&tree, theme, allocator, null);
-    defer draw.freeDrawList(&dl, allocator);
+    var paint_list = try draw.generatePaint(&tree, theme, allocator, null, .{});
+    defer draw.freePaintList(&paint_list, allocator);
 
     var text_command_count: usize = 0;
-    for (dl.commands) |command| {
+    for (paint_list.commands) |command| {
         if (command == .text) text_command_count += 1;
     }
 

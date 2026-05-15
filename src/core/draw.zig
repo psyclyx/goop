@@ -3,6 +3,7 @@ const style = @import("style.zig");
 const widget = @import("widget.zig");
 const layout = @import("layout.zig");
 const paint_types = @import("paint_types.zig");
+const primitive_draw = @import("primitive_draw.zig");
 
 pub const Rect = paint_types.Rect;
 pub const TextAlign = paint_types.TextAlign;
@@ -30,52 +31,6 @@ const PaintCtx = struct {
             .h = rect.h,
         };
     }
-};
-
-/// Renderer-facing primitive draw commands.
-pub const DrawCommand = union(enum) {
-    rect: DrawRect,
-    text: DrawText,
-    clip: ClipRect,
-    icon: DrawIcon,
-    custom: DrawCustom,
-
-    pub const DrawRect = struct {
-        bounds: Rect,
-        color: style.Color,
-        border_color: style.Color,
-        border_width: f32,
-        corner_radius: f32,
-    };
-
-    pub const DrawText = struct {
-        bounds: Rect,
-        baseline_y: f32,
-        text: []const u8,
-        color: style.Color,
-        font_size: f32,
-        text_align: TextAlign = .start,
-        overflow: TextOverflow = .visible,
-    };
-
-    pub const ClipRect = struct {
-        bounds: ?Rect,
-    };
-
-    pub const DrawIcon = struct {
-        bounds: Rect,
-        kind: IconId,
-        color: style.Color,
-    };
-
-    pub const DrawCustom = struct {
-        handle: widget.NodeHandle,
-        bounds: Rect,
-    };
-};
-
-pub const DrawList = struct {
-    commands: []const DrawCommand,
 };
 
 /// Generate semantic paint commands from a laid-out widget tree.
@@ -152,52 +107,6 @@ fn emitRootNode(
 pub fn freePaintList(paint_list: *PaintList, allocator: std.mem.Allocator) void {
     allocator.free(paint_list.commands);
     paint_list.commands = &.{};
-}
-
-pub fn lowerPaintList(paint_list: PaintList, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !DrawList {
-    var commands: std.ArrayListUnmanaged(DrawCommand) = .empty;
-    errdefer commands.deinit(allocator);
-    var metrics_cache = TextMetricsCache{};
-
-    for (paint_list.commands) |command| {
-        switch (command) {
-            .surface => |box| try commands.append(allocator, .{ .rect = .{
-                .bounds = box.bounds,
-                .color = box.color,
-                .border_color = box.border_color,
-                .border_width = box.border_width,
-                .corner_radius = box.corner_radius,
-            } }),
-            .text => |text| {
-                const metrics = metrics_cache.metricsFor(text.font_size, text_ctx);
-                try commands.append(allocator, .{ .text = lowerTextCommand(text, metrics) });
-            },
-            .clip => |clip| try commands.append(allocator, .{ .clip = .{ .bounds = clip.bounds } }),
-            .icon => |icon| try commands.append(allocator, .{ .icon = .{
-                .bounds = icon.bounds,
-                .kind = icon.kind,
-                .color = icon.color,
-            } }),
-            .custom => |custom| try commands.append(allocator, .{ .custom = .{
-                .handle = custom.handle,
-                .bounds = custom.bounds,
-            } }),
-        }
-    }
-
-    return .{ .commands = try commands.toOwnedSlice(allocator) };
-}
-
-/// Generate renderer-facing draw commands from a laid-out widget tree.
-pub fn generate(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !DrawList {
-    var paint_list = try generatePaint(tree, theme, allocator, text_ctx, .{});
-    defer freePaintList(&paint_list, allocator);
-    return lowerPaintList(paint_list, allocator, text_ctx);
-}
-
-pub fn freeDrawList(draw_list: *DrawList, allocator: std.mem.Allocator) void {
-    allocator.free(draw_list.commands);
-    draw_list.commands = &.{};
 }
 
 fn emitNode(
@@ -329,57 +238,6 @@ fn appendTextCommand(
         .text_align = text_align,
         .overflow = overflow,
     } });
-}
-
-const TextMetricsCache = struct {
-    const Entry = struct {
-        font_size: f32,
-        metrics: layout.TextDimensions,
-    };
-
-    entries: [8]?Entry = [_]?Entry{null} ** 8,
-    len: usize = 0,
-    next_slot: usize = 0,
-
-    fn metricsFor(self: *TextMetricsCache, font_size: f32, text_ctx: ?*const layout.TextMeasureCtx) layout.TextDimensions {
-        for (self.entries[0..self.len]) |entry_opt| {
-            const entry = entry_opt orelse continue;
-            if (entry.font_size == font_size) return entry.metrics;
-        }
-
-        const metrics = layout.textMetrics(font_size, text_ctx);
-        if (self.len < self.entries.len) {
-            self.entries[self.len] = .{
-                .font_size = font_size,
-                .metrics = metrics,
-            };
-            self.len += 1;
-        } else {
-            self.entries[self.next_slot] = .{
-                .font_size = font_size,
-                .metrics = metrics,
-            };
-            self.next_slot = (self.next_slot + 1) % self.entries.len;
-        }
-        return metrics;
-    }
-};
-
-fn lowerTextCommand(text: PaintCommand.Text, metrics: layout.TextDimensions) DrawCommand.DrawText {
-    return .{
-        .bounds = text.bounds,
-        .baseline_y = textBaselineY(text.bounds, metrics),
-        .text = text.text,
-        .color = text.color,
-        .font_size = text.font_size,
-        .text_align = text.text_align,
-        .overflow = text.overflow,
-    };
-}
-
-fn textBaselineY(bounds: Rect, metrics: layout.TextDimensions) f32 {
-    const extra_vertical = @max(bounds.h - metrics.height, 0);
-    return bounds.y + extra_vertical * 0.5 + metrics.ascent;
 }
 
 fn emitText(
@@ -2919,7 +2777,7 @@ fn testMeasureTextWithStringBounds(text: []const u8, font_size: f32, _: ?*anyopa
     };
 }
 
-test "generate draw commands from tree" {
+test "generate paint commands from tree" {
     const allocator = std.testing.allocator;
 
     var tree = widget.Tree.init(allocator);
@@ -2933,18 +2791,18 @@ test "generate draw commands from tree" {
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     // Container bg + button bg + button text + text label = 4 commands
     try std.testing.expectEqual(@as(usize, 4), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect); // container bg
-    try std.testing.expect(dl.commands[1] == .rect); // button bg
+    try std.testing.expect(dl.commands[0] == .surface); // container bg
+    try std.testing.expect(dl.commands[1] == .surface); // button bg
     try std.testing.expect(dl.commands[2] == .text); // button label
     try std.testing.expect(dl.commands[3] == .text); // text widget
 }
 
-test "text draw commands carry bounds and baseline" {
+test "primitive text lowering carries bounds and baseline" {
     const allocator = std.testing.allocator;
 
     var tree = widget.Tree.init(allocator);
@@ -2957,12 +2815,14 @@ test "text draw commands carry bounds and baseline" {
         .measureFn = &testMeasureText,
     };
 
-    var dl = try generate(&tree, style.Theme.default, allocator, &text_ctx);
-    defer freeDrawList(&dl, allocator);
+    var paint = try generatePaint(&tree, style.Theme.default, allocator, &text_ctx, .{});
+    defer freePaintList(&paint, allocator);
+
+    var dl = try primitive_draw.lowerPaintList(paint, allocator, &text_ctx);
+    defer primitive_draw.freeDrawList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
     try std.testing.expect(dl.commands[1] == .text);
-
     const text = dl.commands[1].text;
     try std.testing.expectApproxEqAbs(@as(f32, 16), text.bounds.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 26), text.bounds.y, 0.01);
@@ -2971,7 +2831,7 @@ test "text draw commands carry bounds and baseline" {
     try std.testing.expectApproxEqAbs(@as(f32, 44), text.baseline_y, 0.01);
 }
 
-test "custom draw commands are emitted before floating popups" {
+test "custom paint commands are emitted before floating popups" {
     const allocator = std.testing.allocator;
 
     var tree = widget.Tree.init(allocator);
@@ -2994,14 +2854,14 @@ test "custom draw commands are emitted before floating popups" {
     const item = tree.getConst(popup).first_child.?;
     tree.get(item).layout_rect = .{ .x = 118, .y = 42, .w = 140, .h = 28 };
 
-    var dl = try generate(&tree, style.Theme.default, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, style.Theme.default, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 9), dl.commands.len);
     try std.testing.expect(dl.commands[3] == .custom);
-    try std.testing.expect(dl.commands[6] == .rect);
-    try std.testing.expect(dl.commands[6].rect.bounds.x == tree.getConst(popup).layout_rect.x);
-    try std.testing.expect(dl.commands[6].rect.bounds.y == tree.getConst(popup).layout_rect.y);
+    try std.testing.expect(dl.commands[6] == .surface);
+    try std.testing.expect(dl.commands[6].surface.bounds.x == tree.getConst(popup).layout_rect.x);
+    try std.testing.expect(dl.commands[6].surface.bounds.y == tree.getConst(popup).layout_rect.y);
 }
 
 test "popup paint can be split from main paint" {
@@ -3117,7 +2977,7 @@ test "hovered top-level menu uses active fill while menu bar is open" {
     try std.testing.expect(found_edit_box);
 }
 
-test "table cells emit custom draw commands after text contents" {
+test "table cells emit custom paint commands after text contents" {
     const allocator = std.testing.allocator;
 
     var tree = widget.Tree.init(allocator);
@@ -3128,8 +2988,8 @@ test "table cells emit custom draw commands after text contents" {
     tree.get(cell).layout_rect = .{ .x = 10, .y = 20, .w = 160, .h = 28 };
     tree.get(cell).custom_draw = true;
 
-    var dl = try generate(&tree, style.Theme.default, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, style.Theme.default, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .text);
@@ -3154,14 +3014,14 @@ test "toolbar and status bar emit chrome and children" {
     tree.get(status_text).layout_rect = .{ .x = 8, .y = 45, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 5), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect); // toolbar chrome
-    try std.testing.expect(dl.commands[1] == .rect); // toolbar button
+    try std.testing.expect(dl.commands[0] == .surface); // toolbar chrome
+    try std.testing.expect(dl.commands[1] == .surface); // toolbar button
     try std.testing.expect(dl.commands[2] == .text); // toolbar button label
-    try std.testing.expect(dl.commands[3] == .rect); // status bar chrome
+    try std.testing.expect(dl.commands[3] == .surface); // status bar chrome
     try std.testing.expect(dl.commands[4] == .text); // status text
 }
 
@@ -3175,12 +3035,12 @@ test "checkbox emits box and label" {
     tree.get(cb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     // Unchecked: box rect + label text = 2 commands
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect); // box
+    try std.testing.expect(dl.commands[0] == .surface); // box
     try std.testing.expect(dl.commands[1] == .text); // label
 }
 
@@ -3194,13 +3054,13 @@ test "checked checkbox emits indicator" {
     tree.get(cb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     // Checked: box rect + indicator rect + label text = 3 commands
     try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect); // box
-    try std.testing.expect(dl.commands[1] == .rect); // check indicator
+    try std.testing.expect(dl.commands[0] == .surface); // box
+    try std.testing.expect(dl.commands[1] == .surface); // check indicator
     try std.testing.expect(dl.commands[2] == .text); // label
 }
 
@@ -3214,16 +3074,16 @@ test "radio button emits circle and label" {
     tree.get(rb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     // Unselected: circle rect + label text = 2 commands
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[0] == .surface);
     try std.testing.expect(dl.commands[1] == .text);
 
     // Corner radius should be half the box size (circular)
-    const circle = dl.commands[0].rect;
+    const circle = dl.commands[0].surface;
     try std.testing.expectApproxEqAbs(circle.bounds.w / 2, circle.corner_radius, 0.01);
 }
 
@@ -3237,13 +3097,13 @@ test "selected radio button emits indicator dot" {
     tree.get(rb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     // Selected: circle rect + indicator dot + label text = 3 commands
     try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect);
-    try std.testing.expect(dl.commands[1] == .rect);
+    try std.testing.expect(dl.commands[0] == .surface);
+    try std.testing.expect(dl.commands[1] == .surface);
     try std.testing.expect(dl.commands[2] == .text);
 }
 
@@ -3261,14 +3121,14 @@ test "selected tree item uses fill without button border" {
     tree.get(item).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[0] == .surface);
     try std.testing.expect(dl.commands[1] == .text);
-    try std.testing.expectEqual(theme.selection_bg, dl.commands[0].rect.color);
-    try std.testing.expectEqual(@as(f32, 0), dl.commands[0].rect.border_width);
+    try std.testing.expectEqual(theme.selection_bg, dl.commands[0].surface.color);
+    try std.testing.expectEqual(@as(f32, 0), dl.commands[0].surface.border_width);
 }
 
 test "expanded tree item emits disclosure and child guides" {
@@ -3298,35 +3158,35 @@ test "expanded tree item emits disclosure and child guides" {
     tree.get(sibling).layout_rect = .{ .x = 10, .y = 90, .w = 220, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 13), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect); // root bg
-    try std.testing.expect(dl.commands[1] == .rect); // parent downward guide
-    try std.testing.expect(dl.commands[2] == .rect); // disclosure box
-    try std.testing.expect(dl.commands[3] == .rect); // disclosure minus
-    try std.testing.expect(dl.commands[4] == .rect); // parent connector
+    try std.testing.expect(dl.commands[0] == .surface); // root bg
+    try std.testing.expect(dl.commands[1] == .surface); // parent downward guide
+    try std.testing.expect(dl.commands[2] == .surface); // disclosure box
+    try std.testing.expect(dl.commands[3] == .surface); // disclosure minus
+    try std.testing.expect(dl.commands[4] == .surface); // parent connector
     try std.testing.expect(dl.commands[5] == .text); // parent label
-    try std.testing.expect(dl.commands[6] == .rect); // child vertical guide
-    try std.testing.expect(dl.commands[7] == .rect); // child sibling guide
-    try std.testing.expect(dl.commands[8] == .rect); // child connector
+    try std.testing.expect(dl.commands[6] == .surface); // child vertical guide
+    try std.testing.expect(dl.commands[7] == .surface); // child sibling guide
+    try std.testing.expect(dl.commands[8] == .surface); // child connector
     try std.testing.expect(dl.commands[9] == .text); // child label
-    try std.testing.expect(dl.commands[10] == .rect); // sibling vertical guide
-    try std.testing.expect(dl.commands[11] == .rect); // sibling connector
+    try std.testing.expect(dl.commands[10] == .surface); // sibling vertical guide
+    try std.testing.expect(dl.commands[11] == .surface); // sibling connector
     try std.testing.expect(dl.commands[12] == .text); // sibling label
 
-    const child_guide = dl.commands[6].rect.bounds;
+    const child_guide = dl.commands[6].surface.bounds;
     try std.testing.expectApproxEqAbs(@as(f32, 25), child_guide.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 36), child_guide.y, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 27), child_guide.h, 0.01);
 
-    const sibling_guide = dl.commands[7].rect.bounds;
+    const sibling_guide = dl.commands[7].surface.bounds;
     try std.testing.expectApproxEqAbs(child_guide.x, sibling_guide.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 63), sibling_guide.y, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 40), sibling_guide.h, 0.01);
 
-    const child_connector = dl.commands[8].rect.bounds;
+    const child_connector = dl.commands[8].surface.bounds;
     try std.testing.expectApproxEqAbs(child_guide.x, child_connector.x, 0.01);
 }
 
@@ -3343,11 +3203,11 @@ test "drag value emits bg and formatted text" {
     tree.get(drag_value).layout_rect = .{ .x = 10, .y = 20, .w = 120, .h = 28 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[0] == .surface);
     try std.testing.expect(dl.commands[1] == .text);
     try std.testing.expectEqualStrings("12.5", dl.commands[1].text.text);
 }
@@ -3365,13 +3225,13 @@ test "spinbox emits buttons and value" {
     tree.get(spinbox).layout_rect = .{ .x = 10, .y = 20, .w = 120, .h = 28 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 6), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect);
-    try std.testing.expect(dl.commands[1] == .rect);
-    try std.testing.expect(dl.commands[2] == .rect);
+    try std.testing.expect(dl.commands[0] == .surface);
+    try std.testing.expect(dl.commands[1] == .surface);
+    try std.testing.expect(dl.commands[2] == .surface);
     try std.testing.expect(dl.commands[3] == .text);
     try std.testing.expect(dl.commands[4] == .text);
     try std.testing.expect(dl.commands[5] == .text);
@@ -3399,8 +3259,11 @@ test "numeric controls baseline uses stable line metrics" {
         .measureFn = &testMeasureTextWithStringBounds,
     };
 
-    var dl = try generate(&tree, style.Theme.default, allocator, &text_ctx);
-    defer freeDrawList(&dl, allocator);
+    var paint = try generatePaint(&tree, style.Theme.default, allocator, &text_ctx, .{});
+    defer freePaintList(&paint, allocator);
+
+    var dl = try primitive_draw.lowerPaintList(paint, allocator, &text_ctx);
+    defer primitive_draw.freeDrawList(&dl, allocator);
 
     try std.testing.expectApproxEqAbs(@as(f32, 40), dl.commands[1].text.baseline_y, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 80), dl.commands[7].text.baseline_y, 0.01);
@@ -3430,15 +3293,15 @@ test "tab bar emits selected tab header and active panel only" {
     tree.get(hidden_text).layout_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 7), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect); // tab bar bg
-    try std.testing.expect(dl.commands[1] == .rect); // selected tab rect
-    try std.testing.expect(dl.commands[2] == .rect); // selected tab underline
+    try std.testing.expect(dl.commands[0] == .surface); // tab bar bg
+    try std.testing.expect(dl.commands[1] == .surface); // selected tab rect
+    try std.testing.expect(dl.commands[2] == .surface); // selected tab underline
     try std.testing.expect(dl.commands[3] == .text); // selected tab label
-    try std.testing.expect(dl.commands[4] == .rect); // inactive tab rect
+    try std.testing.expect(dl.commands[4] == .surface); // inactive tab rect
     try std.testing.expect(dl.commands[5] == .text); // inactive tab label
     try std.testing.expect(dl.commands[6] == .text); // selected panel content
     try std.testing.expectEqualStrings("Active panel", dl.commands[6].text.text);
@@ -3475,20 +3338,20 @@ test "table emits header fill, row separators, and column dividers" {
     tree.get(row_type_text).layout_rect = .{ .x = 148, .y = 34, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 10), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect); // table bg
-    try std.testing.expect(dl.commands[1] == .rect); // header fill
+    try std.testing.expect(dl.commands[0] == .surface); // table bg
+    try std.testing.expect(dl.commands[1] == .surface); // header fill
     try std.testing.expect(dl.commands[2] == .text); // header name
     try std.testing.expect(dl.commands[3] == .text); // header type
-    try std.testing.expect(dl.commands[4] == .rect); // header divider
-    try std.testing.expect(dl.commands[5] == .rect); // striped row fill
-    try std.testing.expect(dl.commands[6] == .rect); // row top separator
+    try std.testing.expect(dl.commands[4] == .surface); // header divider
+    try std.testing.expect(dl.commands[5] == .surface); // striped row fill
+    try std.testing.expect(dl.commands[6] == .surface); // row top separator
     try std.testing.expect(dl.commands[7] == .text); // row name
     try std.testing.expect(dl.commands[8] == .text); // row type
-    try std.testing.expect(dl.commands[9] == .rect); // row divider
+    try std.testing.expect(dl.commands[9] == .surface); // row divider
     try std.testing.expectEqualStrings("Cube", dl.commands[7].text.text);
     try std.testing.expectEqualStrings("Mesh", dl.commands[8].text.text);
 }
@@ -3528,19 +3391,19 @@ test "table separators snap to whole pixels for fractional row positions" {
     tree.get(row_b_type).layout_rect = .{ .x = 140.625, .y = 57.0, .w = 140.125, .h = 28.25 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 14), dl.commands.len);
-    try std.testing.expect(dl.commands[6] == .rect);
-    try std.testing.expect(dl.commands[10] == .rect);
-    try std.testing.expect(dl.commands[4] == .rect);
-    try std.testing.expect(dl.commands[13] == .rect);
+    try std.testing.expect(dl.commands[6] == .surface);
+    try std.testing.expect(dl.commands[10] == .surface);
+    try std.testing.expect(dl.commands[4] == .surface);
+    try std.testing.expect(dl.commands[13] == .surface);
 
-    try std.testing.expectApproxEqAbs(@as(f32, 29), dl.commands[6].rect.bounds.y, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 57), dl.commands[10].rect.bounds.y, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 141), dl.commands[4].rect.bounds.x, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 141), dl.commands[13].rect.bounds.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 29), dl.commands[6].surface.bounds.y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 57), dl.commands[10].surface.bounds.y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 141), dl.commands[4].surface.bounds.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 141), dl.commands[13].surface.bounds.x, 0.01);
 }
 
 test "resizable table emits header grips" {
@@ -3567,14 +3430,14 @@ test "resizable table emits header grips" {
     tree.get(header_type_text).layout_rect = .{ .x = 148, .y = 6, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 6), dl.commands.len);
-    try std.testing.expect(dl.commands[5] == .rect);
-    try std.testing.expectApproxEqAbs(@as(f32, 139), dl.commands[5].rect.bounds.x, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 8), dl.commands[5].rect.bounds.y, 0.01);
-    try std.testing.expectApproxEqAbs(widget.WidgetKind.Table.resize_grip_height, dl.commands[5].rect.bounds.h, 0.01);
+    try std.testing.expect(dl.commands[5] == .surface);
+    try std.testing.expectApproxEqAbs(@as(f32, 139), dl.commands[5].surface.bounds.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 8), dl.commands[5].surface.bounds.y, 0.01);
+    try std.testing.expectApproxEqAbs(widget.WidgetKind.Table.resize_grip_height, dl.commands[5].surface.bounds.h, 0.01);
 }
 
 test "splitter paints thin divider and hover overlay" {
@@ -3594,17 +3457,17 @@ test "splitter paints thin divider and hover overlay" {
     tree.get(splitter).interaction.hovered = true;
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 4), dl.commands.len);
-    try std.testing.expect(dl.commands[1] == .rect);
-    try std.testing.expect(dl.commands[2] == .rect);
-    try std.testing.expect(dl.commands[3] == .rect);
-    try std.testing.expectApproxEqAbs(@as(f32, 60), dl.commands[1].rect.bounds.x, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 1), dl.commands[1].rect.bounds.w, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 56), dl.commands[2].rect.bounds.x, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 8), dl.commands[2].rect.bounds.w, 0.01);
+    try std.testing.expect(dl.commands[1] == .surface);
+    try std.testing.expect(dl.commands[2] == .surface);
+    try std.testing.expect(dl.commands[3] == .surface);
+    try std.testing.expectApproxEqAbs(@as(f32, 60), dl.commands[1].surface.bounds.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), dl.commands[1].surface.bounds.w, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 56), dl.commands[2].surface.bounds.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 8), dl.commands[2].surface.bounds.w, 0.01);
 }
 
 test "sortable table emits active sort indicator" {
@@ -3635,8 +3498,8 @@ test "sortable table emits active sort indicator" {
     tree.get(header_type_text).layout_rect = .{ .x = 148, .y = 6, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     var found_indicator = false;
     for (dl.commands) |command| {
@@ -3659,16 +3522,16 @@ test "slider emits track and thumb" {
     tree.get(sl).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 24 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     // Track + thumb = 2 rects
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect); // track
-    try std.testing.expect(dl.commands[1] == .rect); // thumb
+    try std.testing.expect(dl.commands[0] == .surface); // track
+    try std.testing.expect(dl.commands[1] == .surface); // thumb
 
     // Thumb should be roughly centered for value=0.5
-    const thumb = dl.commands[1].rect;
+    const thumb = dl.commands[1].surface;
     const expected_x = 10.0 + (200.0 - 16.0) * 0.5;
     try std.testing.expectApproxEqAbs(expected_x, thumb.bounds.x, 0.01);
 }
@@ -3685,12 +3548,12 @@ test "scroll area emits clip commands" {
     tree.get(child).layout_rect = .{ .x = 8, .y = 6, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     // bg rect + clip push + text + clip pop = 4
     try std.testing.expectEqual(@as(usize, 4), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect); // bg
+    try std.testing.expect(dl.commands[0] == .surface); // bg
     try std.testing.expect(dl.commands[1] == .clip); // push
     try std.testing.expect(dl.commands[1].clip.bounds != null);
     try std.testing.expect(dl.commands[2] == .text); // child text
@@ -3710,8 +3573,8 @@ test "scroll area paints child rects at their laid out scroll position" {
     tree.get(child).layout_rect = .{ .x = 8, .y = 10, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 4), dl.commands.len);
     try std.testing.expect(dl.commands[2] == .text);
@@ -3733,17 +3596,17 @@ test "scroll area omits fully offscreen children" {
     tree.get(hidden).layout_rect = .{ .x = 8, .y = 64, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 6), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[0] == .surface);
     try std.testing.expect(dl.commands[1] == .clip);
     try std.testing.expect(dl.commands[2] == .text);
     try std.testing.expectEqualStrings("visible", dl.commands[2].text.text);
     try std.testing.expect(dl.commands[3] == .clip);
-    try std.testing.expect(dl.commands[4] == .rect);
-    try std.testing.expect(dl.commands[5] == .rect);
+    try std.testing.expect(dl.commands[4] == .surface);
+    try std.testing.expect(dl.commands[5] == .surface);
 }
 
 test "root paint culls fully offscreen children" {
@@ -3759,8 +3622,8 @@ test "root paint culls fully offscreen children" {
     tree.get(visible).layout_rect = .{ .x = 8, .y = 10, .w = 44, .h = 14 };
     tree.get(hidden).layout_rect = .{ .x = 8, .y = 64, .w = 40, .h = 14 };
 
-    var dl = try generate(&tree, style.Theme.default, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, style.Theme.default, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     var found_visible = false;
     var found_hidden = false;
@@ -3787,8 +3650,8 @@ test "scroll area still paints visible tree children when expanded parent row is
     tree.get(child).layout_rect = .{ .x = 0, .y = 4, .w = 150, .h = 20 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     var found_child_label = false;
     for (dl.commands) |command| {
@@ -3813,15 +3676,15 @@ test "scroll area emits scrollbar thumb when content overflows" {
     tree.get(child).layout_rect = .{ .x = 6, .y = -34, .w = 108, .h = 300 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 5), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[0] == .surface);
     try std.testing.expect(dl.commands[1] == .clip);
     try std.testing.expect(dl.commands[2] == .clip);
-    try std.testing.expect(dl.commands[3] == .rect);
-    try std.testing.expect(dl.commands[4] == .rect);
+    try std.testing.expect(dl.commands[3] == .surface);
+    try std.testing.expect(dl.commands[4] == .surface);
 }
 
 test "scroll area emits horizontal scrollbar thumb when content overflows width" {
@@ -3836,17 +3699,17 @@ test "scroll area emits horizontal scrollbar thumb when content overflows width"
     tree.get(child).layout_rect = .{ .x = -34, .y = 6, .w = 300, .h = 40 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 5), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[0] == .surface);
     try std.testing.expect(dl.commands[1] == .clip);
     try std.testing.expect(dl.commands[2] == .clip);
-    try std.testing.expect(dl.commands[3] == .rect);
-    try std.testing.expect(dl.commands[4] == .rect);
-    try std.testing.expect(dl.commands[3].rect.bounds.w > dl.commands[3].rect.bounds.h);
-    try std.testing.expect(dl.commands[4].rect.bounds.w > dl.commands[4].rect.bounds.h);
+    try std.testing.expect(dl.commands[3] == .surface);
+    try std.testing.expect(dl.commands[4] == .surface);
+    try std.testing.expect(dl.commands[3].surface.bounds.w > dl.commands[3].surface.bounds.h);
+    try std.testing.expect(dl.commands[4].surface.bounds.w > dl.commands[4].surface.bounds.h);
 }
 
 test "scroll area omits disabled horizontal scrollbar when content overflows width" {
@@ -3861,11 +3724,11 @@ test "scroll area omits disabled horizontal scrollbar when content overflows wid
     tree.get(child).layout_rect = .{ .x = 6, .y = 6, .w = 300, .h = 40 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect);
+    try std.testing.expect(dl.commands[0] == .surface);
     try std.testing.expect(dl.commands[1] == .clip);
     try std.testing.expect(dl.commands[2] == .clip);
 }
@@ -3881,8 +3744,8 @@ test "wrapped text paint commands wrap and preserve newlines" {
     tree.get(text).style_override = .{ .font_size = 16 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
     try std.testing.expectEqualStrings("alpha", dl.commands[0].text.text);
@@ -3901,8 +3764,8 @@ test "wrapped text paint commands preserve leading whitespace" {
     tree.get(text).style_override = .{ .font_size = 16 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
     try std.testing.expectEqualStrings("  alpha", dl.commands[0].text.text);
@@ -3922,8 +3785,8 @@ test "wrapped text culls lines outside scroll viewport" {
     tree.get(text).style_override = .{ .font_size = 10 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     var found_before = false;
     var found_visible_a = false;
@@ -3953,12 +3816,12 @@ test "text input emits bg and text" {
     tree.get(ti).layout_rect = .{ .x = 10, .y = 20, .w = 300, .h = 30 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     // Unfocused, empty, no placeholder: bg rect only = 1 command
     try std.testing.expectEqual(@as(usize, 1), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect); // bg
+    try std.testing.expect(dl.commands[0] == .surface); // bg
 }
 
 test "focused text input emits cursor" {
@@ -3972,14 +3835,14 @@ test "focused text input emits cursor" {
     tree.get(ti).interaction.focused = true;
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     // Focused, empty, no placeholder: bg rect + cursor rect + focus ring = 3 commands
     try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect); // bg
-    try std.testing.expect(dl.commands[1] == .rect); // cursor
-    try std.testing.expect(dl.commands[2] == .rect); // focus ring
+    try std.testing.expect(dl.commands[0] == .surface); // bg
+    try std.testing.expect(dl.commands[1] == .surface); // cursor
+    try std.testing.expect(dl.commands[2] == .surface); // focus ring
 }
 
 test "empty text input shows placeholder" {
@@ -3992,12 +3855,12 @@ test "empty text input shows placeholder" {
     tree.get(ti).layout_rect = .{ .x = 10, .y = 20, .w = 300, .h = 30 };
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     // Empty with placeholder: bg rect + placeholder text = 2 commands
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect); // bg
+    try std.testing.expect(dl.commands[0] == .surface); // bg
     try std.testing.expect(dl.commands[1] == .text); // placeholder
     try std.testing.expectEqualStrings("Enter name", dl.commands[1].text.text);
     try std.testing.expectEqual(theme.placeholder_fg, dl.commands[1].text.color);
@@ -4015,12 +3878,12 @@ test "text input with content shows content not placeholder" {
     tree.get(ti).kind.text_input.insert('i');
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     // Has content: bg rect + content text = 2 commands
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect); // bg
+    try std.testing.expect(dl.commands[0] == .surface); // bg
     try std.testing.expect(dl.commands[1] == .text); // content, not placeholder
     try std.testing.expectEqualStrings("Hi", dl.commands[1].text.text);
     try std.testing.expectEqual(theme.fg, dl.commands[1].text.color);
@@ -4047,17 +3910,17 @@ test "focused text input with selection emits highlight rect" {
     input.selection_anchor = 1;
 
     const theme = style.Theme.default;
-    var dl = try generate(&tree, theme, allocator, null);
-    defer freeDrawList(&dl, allocator);
+    var dl = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&dl, allocator);
 
     // bg rect + selection highlight + text + cursor + focus ring = 5 commands
     try std.testing.expectEqual(@as(usize, 5), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .rect); // bg
-    try std.testing.expect(dl.commands[1] == .rect); // selection highlight
+    try std.testing.expect(dl.commands[0] == .surface); // bg
+    try std.testing.expect(dl.commands[1] == .surface); // selection highlight
     try std.testing.expect(dl.commands[2] == .text); // content
-    try std.testing.expect(dl.commands[3] == .rect); // cursor
-    try std.testing.expect(dl.commands[4] == .rect); // focus ring
+    try std.testing.expect(dl.commands[3] == .surface); // cursor
+    try std.testing.expect(dl.commands[4] == .surface); // focus ring
 
     // Verify selection highlight color
-    try std.testing.expectEqual(theme.selection_bg, dl.commands[1].rect.color);
+    try std.testing.expectEqual(theme.selection_bg, dl.commands[1].surface.color);
 }
