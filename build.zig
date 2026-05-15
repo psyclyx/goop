@@ -14,6 +14,13 @@ pub fn build(b: *std.Build) void {
     });
     const snail_mod = snail_dep.module("snail");
 
+    const egl_util_mod = b.createModule(.{
+        .root_source_file = b.path("demo/egl_util.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
     // ── Core goop module ──
     const goop_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
@@ -94,6 +101,7 @@ pub fn build(b: *std.Build) void {
     demo_mod.addImport("goop", goop_mod);
     demo_mod.addImport("snail", snail_mod);
     demo_mod.addImport("goop_demo_render", render_mod);
+    demo_mod.addImport("goop_demo_egl", egl_util_mod);
     demo_mod.addIncludePath(b.path("demo/protocol"));
     demo_mod.addCSourceFile(.{ .file = b.path("demo/protocol/xdg-shell-protocol.c") });
     demo_mod.linkSystemLibrary("wayland-client", .{});
@@ -127,6 +135,7 @@ pub fn build(b: *std.Build) void {
     file_manager_demo_mod.addImport("goop", goop_mod);
     file_manager_demo_mod.addImport("snail", snail_mod);
     file_manager_demo_mod.addImport("goop_demo_render", render_mod);
+    file_manager_demo_mod.addImport("goop_demo_egl", egl_util_mod);
     file_manager_demo_mod.addIncludePath(b.path("demo/protocol"));
     file_manager_demo_mod.addCSourceFile(.{ .file = b.path("demo/protocol/xdg-shell-protocol.c") });
     file_manager_demo_mod.linkSystemLibrary("wayland-client", .{});
@@ -162,6 +171,7 @@ pub fn build(b: *std.Build) void {
     perf_mod.addImport("goop", goop_mod);
     perf_mod.addImport("goop_demo_render", render_mod);
     perf_mod.addImport("snail", snail_mod);
+    perf_mod.addImport("goop_demo_egl", egl_util_mod);
     perf_mod.linkSystemLibrary("egl", .{});
     perf_mod.linkSystemLibrary("gl", .{});
 
@@ -187,6 +197,7 @@ pub fn build(b: *std.Build) void {
     fm_lib_mod.addImport("goop", goop_mod);
     fm_lib_mod.addImport("snail", snail_mod);
     fm_lib_mod.addImport("goop_demo_render", render_mod);
+    fm_lib_mod.addImport("goop_demo_egl", egl_util_mod);
     fm_lib_mod.addIncludePath(b.path("demo/protocol"));
     fm_lib_mod.addCSourceFile(.{ .file = b.path("demo/protocol/xdg-shell-protocol.c") });
     fm_lib_mod.linkSystemLibrary("wayland-client", .{});
@@ -206,6 +217,7 @@ pub fn build(b: *std.Build) void {
     screenshot_mod.addImport("goop_demo_render", render_mod);
     screenshot_mod.addImport("snail", snail_mod);
     screenshot_mod.addImport("file_manager", fm_lib_mod);
+    screenshot_mod.addImport("goop_demo_egl", egl_util_mod);
     screenshot_mod.linkSystemLibrary("egl", .{});
     screenshot_mod.linkSystemLibrary("gl", .{});
     screenshot_mod.linkSystemLibrary("wayland-client", .{});
@@ -268,6 +280,7 @@ pub fn build(b: *std.Build) void {
     file_manager_test_mod.addImport("goop", goop_mod);
     file_manager_test_mod.addImport("snail", snail_mod);
     file_manager_test_mod.addImport("goop_demo_render", render_mod);
+    file_manager_test_mod.addImport("goop_demo_egl", egl_util_mod);
     file_manager_test_mod.addIncludePath(b.path("demo/protocol"));
     file_manager_test_mod.addCSourceFile(.{ .file = b.path("demo/protocol/xdg-shell-protocol.c") });
     file_manager_test_mod.linkSystemLibrary("wayland-client", .{});

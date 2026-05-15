@@ -142,6 +142,7 @@ pub const Renderer = struct {
     viewport_h: f32,
     scale: f32,
     clear_color: [4]f32,
+    target_encoding: snail.TargetEncoding = .srgb_pixels_on_linear_framebuffer,
     scissor_stack: [16]Scissor = undefined,
     scissor_depth: u32 = 0,
     logical_clip_stack: [16]Rect = undefined,
@@ -272,7 +273,7 @@ pub const Renderer = struct {
                 .pixel_width = self.viewport_w,
                 .pixel_height = self.viewport_h,
                 .subpixel_order = .none,
-                .encoding = .srgb_pixels_on_linear_framebuffer,
+                .encoding = self.target_encoding,
             },
         };
     }
@@ -284,6 +285,11 @@ pub const Renderer = struct {
         self.scissor_depth = 0;
         self.logical_clip_depth = 0;
         gl.glViewport(0, 0, @intCast(w), @intCast(h));
+        if (self.target_encoding.framebuffer == .srgb) {
+            gl.glEnable(gl.GL_FRAMEBUFFER_SRGB);
+        } else {
+            gl.glDisable(gl.GL_FRAMEBUFFER_SRGB);
+        }
         gl.glClearColor(self.clear_color[0], self.clear_color[1], self.clear_color[2], self.clear_color[3]);
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
         gl.glEnable(gl.GL_BLEND);

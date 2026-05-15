@@ -8,6 +8,7 @@ const fm = @import("../file_manager_main.zig");
 const wl = fm.wl;
 const xkb = fm.xkb;
 const egl = fm.egl;
+const egl_util = fm.egl_util;
 const State = fm.State;
 const allocator = fm.allocator;
 
@@ -613,7 +614,12 @@ pub fn createNativePopupSurface(state: *State, ctx: *goop.Context, handle: goop.
 
     const egl_window = wl.wl_egl_window_create(surface, @intCast(buffer_width), @intCast(buffer_height)) orelse return error.EglWindowCreateFailed;
     errdefer wl.wl_egl_window_destroy(egl_window);
-    const egl_surface = egl.eglCreateWindowSurface(state.egl_display, state.egl_config, @intFromPtr(egl_window), null) orelse return error.EglCreateSurfaceFailed;
+    const surface_attribs = egl_util.windowSurfaceAttribs(state.egl_display);
+    const egl_surface = egl.eglCreateWindowSurface(state.egl_display, state.egl_config, @intFromPtr(egl_window), &surface_attribs) orelse fallback: {
+        if (surface_attribs[0] == egl.EGL_NONE) return error.EglCreateSurfaceFailed;
+        const linear_attribs = egl_util.linearWindowSurfaceAttribs();
+        break :fallback egl.eglCreateWindowSurface(state.egl_display, state.egl_config, @intFromPtr(egl_window), &linear_attribs) orelse return error.EglCreateSurfaceFailed;
+    };
     errdefer _ = egl.eglDestroySurface(state.egl_display, egl_surface);
 
     const popup = try allocator.create(PopupSurface);
@@ -1335,7 +1341,13 @@ pub fn initEgl(state: *State, display: *wl.wl_display) !void {
 
     state.egl_window = wl.wl_egl_window_create(state.surface, @intCast(state.buffer_width), @intCast(state.buffer_height)) orelse return error.EglWindowCreateFailed;
 
-    state.egl_surface = egl.eglCreateWindowSurface(state.egl_display, config, @intFromPtr(state.egl_window), null) orelse return error.EglCreateSurfaceFailed;
+    const surface_attribs = egl_util.windowSurfaceAttribs(state.egl_display);
+    state.egl_surface = egl.eglCreateWindowSurface(state.egl_display, config, @intFromPtr(state.egl_window), &surface_attribs) orelse fallback: {
+        if (surface_attribs[0] == egl.EGL_NONE) return error.EglCreateSurfaceFailed;
+        const linear_attribs = egl_util.linearWindowSurfaceAttribs();
+        break :fallback egl.eglCreateWindowSurface(state.egl_display, config, @intFromPtr(state.egl_window), &linear_attribs) orelse return error.EglCreateSurfaceFailed;
+    };
+    state.egl_surface_srgb = egl_util.surfaceIsSrgb(state.egl_display, state.egl_surface);
 
     if (egl.eglMakeCurrent(state.egl_display, state.egl_surface, state.egl_surface, state.egl_context) == 0) return error.EglMakeCurrentFailed;
 }

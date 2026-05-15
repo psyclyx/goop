@@ -14,9 +14,8 @@ const xkb = @cImport({
     @cInclude("xkbcommon/xkbcommon.h");
 });
 
-const egl = @cImport({
-    @cInclude("EGL/egl.h");
-});
+const egl_util = @import("goop_demo_egl");
+const egl = egl_util.egl;
 
 const allocator = std.heap.smp_allocator;
 const clipboard_mime_utf8 = "text/plain;charset=utf-8";
@@ -225,6 +224,7 @@ const State = struct {
     egl_display: egl.EGLDisplay = egl.EGL_NO_DISPLAY,
     egl_surface: egl.EGLSurface = egl.EGL_NO_SURFACE,
     egl_context: egl.EGLContext = egl.EGL_NO_CONTEXT,
+    egl_surface_srgb: bool = false,
 
     // goop
     ctx: ?*goop.Context = null,
@@ -1046,7 +1046,13 @@ fn initEgl(state: *State, display: *wl.wl_display) !void {
 
     state.egl_window = wl.wl_egl_window_create(state.surface, @intCast(state.buffer_width), @intCast(state.buffer_height)) orelse return error.EglWindowCreateFailed;
 
-    state.egl_surface = egl.eglCreateWindowSurface(state.egl_display, config, @intFromPtr(state.egl_window), null) orelse return error.EglCreateSurfaceFailed;
+    const surface_attribs = egl_util.windowSurfaceAttribs(state.egl_display);
+    state.egl_surface = egl.eglCreateWindowSurface(state.egl_display, config, @intFromPtr(state.egl_window), &surface_attribs) orelse fallback: {
+        if (surface_attribs[0] == egl.EGL_NONE) return error.EglCreateSurfaceFailed;
+        const linear_attribs = egl_util.linearWindowSurfaceAttribs();
+        break :fallback egl.eglCreateWindowSurface(state.egl_display, config, @intFromPtr(state.egl_window), &linear_attribs) orelse return error.EglCreateSurfaceFailed;
+    };
+    state.egl_surface_srgb = egl_util.surfaceIsSrgb(state.egl_display, state.egl_surface);
 
     if (egl.eglMakeCurrent(state.egl_display, state.egl_surface, state.egl_surface, state.egl_context) == 0) return error.EglMakeCurrentFailed;
 }
@@ -1472,6 +1478,7 @@ pub fn main(init: std.process.Init) !void {
     // GL renderer (with snail text support)
     var renderer = try render.Renderer.init(state.buffer_width, state.buffer_height, &text_atlas);
     defer renderer.deinit();
+    renderer.target_encoding = if (state.egl_surface_srgb) .srgb else .srgb_pixels_on_linear_framebuffer;
 
     std.debug.print("goop demo running (logical {}x{}, scale {}, buffer {}x{})\n", .{
         state.logical_width,

@@ -11,11 +11,9 @@ const goop = @import("goop");
 const snail = @import("snail");
 const render = @import("goop_demo_render");
 const fm = @import("file_manager");
+const egl_util = @import("goop_demo_egl");
 
-const egl = @cImport({
-    @cInclude("EGL/egl.h");
-    @cInclude("EGL/eglext.h");
-});
+const egl = egl_util.egl;
 const gl = @cImport({
     @cDefine("GL_GLEXT_PROTOTYPES", "1");
     @cInclude("GL/glcorearb.h");
@@ -120,6 +118,7 @@ pub fn main(init: std.process.Init) !void {
 
     var renderer = try render.Renderer.init(args.width, args.height, &text_atlas);
     defer renderer.deinit();
+    renderer.target_encoding = if (offscreen.surface_srgb) .srgb else .srgb_pixels_on_linear_framebuffer;
     renderer.clear_color = .{ 0.95, 0.96, 0.97, 1.0 };
 
     // Stabilize the text atlas: the demo grows it on demand the first time
@@ -220,6 +219,7 @@ const OffscreenSurface = struct {
     display: egl.EGLDisplay = egl.EGL_NO_DISPLAY,
     surface: egl.EGLSurface = egl.EGL_NO_SURFACE,
     context: egl.EGLContext = egl.EGL_NO_CONTEXT,
+    surface_srgb: bool = false,
 
     fn init(width: u32, height: u32) !OffscreenSurface {
         var result = OffscreenSurface{};
@@ -256,14 +256,13 @@ const OffscreenSurface = struct {
             return error.EglCreateContextFailed;
         };
 
-        const surface_attribs = [_]egl.EGLint{
-            egl.EGL_WIDTH,  @as(egl.EGLint, @intCast(width)),
-            egl.EGL_HEIGHT, @as(egl.EGLint, @intCast(height)),
-            egl.EGL_NONE,
+        const surface_attribs = egl_util.pbufferSurfaceAttribs(result.display, width, height);
+        result.surface = egl.eglCreatePbufferSurface(result.display, config, &surface_attribs) orelse fallback: {
+            if (surface_attribs[4] == egl.EGL_NONE) return error.EglCreateSurfaceFailed;
+            const linear_attribs = egl_util.linearPbufferSurfaceAttribs(width, height);
+            break :fallback egl.eglCreatePbufferSurface(result.display, config, &linear_attribs) orelse return error.EglCreateSurfaceFailed;
         };
-        result.surface = egl.eglCreatePbufferSurface(result.display, config, &surface_attribs) orelse {
-            return error.EglCreateSurfaceFailed;
-        };
+        result.surface_srgb = egl_util.surfaceIsSrgb(result.display, result.surface);
         if (egl.eglMakeCurrent(result.display, result.surface, result.surface, result.context) == 0) {
             return error.EglMakeCurrentFailed;
         }
@@ -286,8 +285,8 @@ fn createEglDisplay() !egl.EGLDisplay {
 fn surfacelessDisplay() ?egl.EGLDisplay {
     const client_exts_ptr = egl.eglQueryString(egl.EGL_NO_DISPLAY, egl.EGL_EXTENSIONS) orelse return null;
     const client_exts = std.mem.span(client_exts_ptr);
-    if (!hasExtension(client_exts, "EGL_EXT_platform_base")) return null;
-    if (!hasExtension(client_exts, "EGL_MESA_platform_surfaceless")) return null;
+    if (!egl_util.hasExtension(client_exts, "EGL_EXT_platform_base")) return null;
+    if (!egl_util.hasExtension(client_exts, "EGL_MESA_platform_surfaceless")) return null;
 
     const proc = egl.eglGetProcAddress("eglGetPlatformDisplayEXT") orelse return null;
     const GetPlatformDisplayExt = *const fn (egl.EGLenum, egl.EGLNativeDisplayType, ?*const egl.EGLint) callconv(.c) egl.EGLDisplay;
@@ -295,12 +294,4 @@ fn surfacelessDisplay() ?egl.EGLDisplay {
     const display = get_platform_display(@as(egl.EGLenum, @intCast(egl.EGL_PLATFORM_SURFACELESS_MESA)), null, null);
     if (display == egl.EGL_NO_DISPLAY) return null;
     return display;
-}
-
-fn hasExtension(exts: []const u8, needle: []const u8) bool {
-    var it = std.mem.tokenizeScalar(u8, exts, ' ');
-    while (it.next()) |ext| {
-        if (std.mem.eql(u8, ext, needle)) return true;
-    }
-    return false;
 }
