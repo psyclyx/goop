@@ -22,7 +22,7 @@
 //!   layout/draw caches invalidate. Reaching into `tree.get(h).foo = ...`
 //!   silently bypasses invalidation and may produce stale frames.
 //! - The everyday primitives (`NodeHandle`, `WidgetKind`, `WidgetView`,
-//!   `Style`, `Theme`, `Event`, `DrawCommand`, …) are re-exported at
+//!   `Style`, `Theme`, `Event`, `PaintCommand`, …) are re-exported at
 //!   this level so most code only imports `goop`.
 //! - Sub-namespaces (`widget`, `style`, `draw`, `layout`, `hittest`,
 //!   `event`) hold the helpers and types embedders reach for less often
@@ -75,8 +75,6 @@ pub const PaintCommand = draw.PaintCommand;
 pub const PaintList = draw.PaintList;
 pub const PaintOptions = draw.PaintOptions;
 pub const PaintScope = draw.PaintScope;
-pub const DrawCommand = draw.DrawCommand;
-pub const DrawList = draw.DrawList;
 pub const TextAlign = draw.TextAlign;
 pub const TextOverflow = draw.TextOverflow;
 pub const IconId = draw.IconId;
@@ -131,7 +129,6 @@ pub const Runtime = struct {
     draw_dirty: bool = true,
     last_tree_revision: u64 = 0,
     cached_paint_list: ?PaintList = null,
-    cached_draw_list: ?DrawList = null,
 
     pub fn init(allocator: std.mem.Allocator, opts: InitOptions) !Runtime {
         const min_memory = c.Clay_MinMemorySize();
@@ -153,7 +150,7 @@ pub const Runtime = struct {
     }
 
     pub fn deinit(self: *Runtime) void {
-        self.invalidateDrawCache();
+        self.invalidatePaintCache();
         self.events.deinit(self.allocator);
         if (c.Clay_GetCurrentContext() == self.clay_context) {
             c.Clay_SetCurrentContext(null);
@@ -381,48 +378,30 @@ pub const Runtime = struct {
         self.last_tree_revision = current_revision;
     }
 
-    /// Generate the renderer-facing draw command list.
+    /// Generate the semantic paint command list.
     ///
     /// The returned slice is owned by the Runtime. It stays valid until
-    /// the next call to `generateDrawList`, `generatePaintList`, or
-    /// `deinit` on this runtime — those are the only paths that free
-    /// the underlying memory. Other state changes (events, tree
-    /// mutation, theme/dimension changes) only set the dirty flag; the
-    /// previous list keeps pointing at allocated memory until you
-    /// regenerate. Copy the slice if you need it to outlive the next
-    /// regeneration.
-    pub fn generateDrawList(self: *Runtime, tree: *const Tree, theme: Theme) !DrawList {
-        if (!self.draw_dirty) {
-            if (self.cached_draw_list) |cached| return cached;
-        }
-        const paint_list = try self.generatePaintList(tree, theme);
-        const dl = try draw.lowerPaintList(paint_list, self.allocator, self.text_measure_ctx);
-        self.cached_draw_list = dl;
-        return dl;
-    }
-
-    /// Generate the semantic paint command list. Same lifetime rules as
-    /// `generateDrawList`.
+    /// the next call to `generatePaintList` or `deinit` on this runtime.
+    /// Other state changes (events, tree mutation, theme/dimension
+    /// changes) only set the dirty flag; the previous list keeps pointing
+    /// at allocated memory until you regenerate. Copy the slice if you
+    /// need it to outlive the next regeneration.
     pub fn generatePaintList(self: *Runtime, tree: *const Tree, theme: Theme) !PaintList {
         if (!self.draw_dirty) {
             if (self.cached_paint_list) |cached| return cached;
         }
-        self.invalidateDrawCache();
+        self.invalidatePaintCache();
         const paint_list = try draw.generatePaint(tree, theme, self.allocator, self.text_measure_ctx, .{});
         self.cached_paint_list = paint_list;
         self.draw_dirty = false;
         return paint_list;
     }
 
-    /// Invalidate and free the cached draw list.
-    fn invalidateDrawCache(self: *Runtime) void {
+    /// Invalidate and free the cached paint list.
+    fn invalidatePaintCache(self: *Runtime) void {
         if (self.cached_paint_list) |*cached| {
             draw.freePaintList(cached, self.allocator);
             self.cached_paint_list = null;
-        }
-        if (self.cached_draw_list) |*cached| {
-            draw.freeDrawList(cached, self.allocator);
-            self.cached_draw_list = null;
         }
         self.draw_dirty = true;
     }
@@ -512,12 +491,6 @@ pub const Context = struct {
     /// null for a rough character-width estimate.
     pub fn doLayout(self: *Context, text_ctx: ?*const TextMeasureCtx) void {
         self.runtime.doLayout(&self.tree, self.theme, text_ctx);
-    }
-
-    /// Generate the renderer-facing draw list. See
-    /// `Runtime.generateDrawList` for lifetime rules.
-    pub fn generateDrawList(self: *Context) !DrawList {
-        return self.runtime.generateDrawList(&self.tree, self.theme);
     }
 
     /// Generate the semantic paint list. See `Runtime.generatePaintList`
@@ -729,9 +702,9 @@ test "runtime operates on caller-owned tree" {
     _ = try tree.addChild(root, .{ .button = .{ .label = "OK" } });
 
     runtime.doLayout(&tree, .{}, null);
-    const draw_list = try runtime.generateDrawList(&tree, .{});
+    const paint_list = try runtime.generatePaintList(&tree, .{});
 
-    try std.testing.expect(draw_list.commands.len > 0);
+    try std.testing.expect(paint_list.commands.len > 0);
 }
 
 test "runtime restores previous clay context" {
@@ -767,7 +740,7 @@ test "layout produces non-zero rects" {
     try std.testing.expect(root_rect.h > 0);
 }
 
-test "layout then draw produces commands" {
+test "layout then paint produces commands" {
     var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
     defer ctx.deinit();
 
@@ -776,10 +749,10 @@ test "layout then draw produces commands" {
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "hello" } });
 
     ctx.doLayout(null);
-    const dl = try ctx.generateDrawList();
+    const paint_list = try ctx.generatePaintList();
 
-    // Should have at least: container bg, button bg, button text, text label
-    try std.testing.expect(dl.commands.len >= 4);
+    // Should have at least: container surface, button surface, button text, text label
+    try std.testing.expect(paint_list.commands.len >= 4);
 }
 
 test "event dispatch detects button click" {
@@ -992,7 +965,7 @@ test "same-count topology changes trigger layout" {
     try std.testing.expect(ctx.tree.getConst(second).layout_rect.w > 0);
 }
 
-test "draw list caching returns same list when clean" {
+test "paint list caching returns same list when clean" {
     var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
     defer ctx.deinit();
 
@@ -1001,15 +974,15 @@ test "draw list caching returns same list when clean" {
 
     ctx.doLayout(null);
 
-    const dl1 = try ctx.generateDrawList();
+    const paint1 = try ctx.generatePaintList();
     try std.testing.expect(!ctx.runtime.draw_dirty);
 
     // Second call without changes returns the cached pointer
-    const dl2 = try ctx.generateDrawList();
-    try std.testing.expectEqual(dl1.commands.ptr, dl2.commands.ptr);
+    const paint2 = try ctx.generatePaintList();
+    try std.testing.expectEqual(paint1.commands.ptr, paint2.commands.ptr);
 }
 
-test "draw list regenerated after events" {
+test "paint list regenerated after events" {
     var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
     defer ctx.deinit();
 
@@ -1017,8 +990,8 @@ test "draw list regenerated after events" {
     _ = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
 
     ctx.doLayout(null);
-    const dl1 = try ctx.generateDrawList();
-    const ptr1 = dl1.commands.ptr;
+    const paint1 = try ctx.generatePaintList();
+    const ptr1 = paint1.commands.ptr;
 
     // Pushing an event and processing marks draw dirty
     try ctx.pushEvent(.{ .mouse_move = .{ .x = 50, .y = 50 } });
@@ -1026,7 +999,7 @@ test "draw list regenerated after events" {
     try std.testing.expect(ctx.runtime.draw_dirty);
 
     // Regeneration produces a new list (old cache freed internally)
-    _ = try ctx.generateDrawList();
+    _ = try ctx.generatePaintList();
     try std.testing.expect(!ctx.runtime.draw_dirty);
     _ = ptr1;
 }

@@ -81,12 +81,13 @@ defer ctx.deinit();
 const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
 const button = try ctx.tree.addChild(root, .{ .button = .{ .label = "Run" } });
 
-// One frame: clear last-frame flags, queue input, layout, dispatch, draw.
+// One frame: clear last-frame flags, queue input, layout, dispatch, paint.
 ctx.clearClickedFlags();
 try ctx.pushEvent(.{ .mouse_move = .{ .x = 96, .y = 48 } });
 ctx.doLayout(null);
 ctx.processEvents();
-const draw_list = try ctx.generateDrawList();
+const paint_list = try ctx.generatePaintList();
+_ = paint_list; // Hand this to your renderer.
 
 // Read interaction state through the per-node snapshot.
 if (ctx.tree.node(button)) |view| {
@@ -112,10 +113,10 @@ Runtime contract:
   `WidgetDesc` payload. `WidgetDesc` exposes only the embedder-supplied
   fields; per-frame internal state (drag rects, marquee, editor buffers)
   lives behind each kind's `internal` substruct and is owned by
-  dispatch/draw.
+  dispatch/paint.
 - Mutate widgets after construction through `ctx.setStyle(handle, ...)`,
   `ctx.updateWidget(handle, desc)`, `ctx.mutateKind(handle)`, or
-  `ctx.setCustomDraw(handle, ...)`. These invalidate the layout/draw
+  `ctx.setCustomDraw(handle, ...)`. These invalidate the layout/paint
   caches; reaching into `ctx.tree.get(handle)` directly does not.
 - Read state through `ctx.tree.node(handle)`, which returns a `NodeView`
   snapshot bundling the layout rect, cross-kind per-frame flags
@@ -128,8 +129,8 @@ Runtime contract:
 - `pushEvent` coalesces consecutive `mouse_move` and `mouse_scroll`
   events into the latest position / summed delta. Push a non-mouse event
   between samples if your gesture math depends on every move.
-- Returned `DrawList` and `PaintList` borrow from the runtime; they stay
-  valid until the next regeneration. There is no `freeDrawList`.
+- Returned `PaintList` values borrow from the runtime; they stay valid
+  until the next paint regeneration or context destruction.
 
 ## C API
 

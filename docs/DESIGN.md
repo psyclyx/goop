@@ -5,7 +5,7 @@
 `goop` is a retained-mode, embeddable GUI library for Zig 0.16. The library
 does not own the window, platform event loop, or renderer lifecycle. The
 embedder creates a `Context`, builds a widget tree, pushes input events, runs
-layout, and consumes draw commands.
+layout, and consumes semantic paint commands.
 
 ## Goals
 
@@ -13,7 +13,7 @@ layout, and consumes draw commands.
 - Use simple, explicit data structures over framework-heavy abstractions
 - Let embedders own integration details such as font loading, platform input,
   and swap timing
-- Keep rendering optional: the core emits draw data, not GPU commands
+- Keep rendering optional: the core emits semantic paint data, not GPU commands
 
 ## Non-Goals
 
@@ -34,8 +34,8 @@ owns:
 - queued input events
 - mouse/focus interaction state
 - the active theme
-- layout and draw dirty flags
-- a cached draw list
+- layout and paint dirty flags
+- a cached paint list
 
 The public flow is:
 
@@ -44,7 +44,7 @@ The public flow is:
 3. Push input events
 4. Run layout
 5. Process events
-6. Generate draw commands
+6. Generate a semantic paint list
 
 The C layer mirrors that flow with:
 
@@ -127,21 +127,25 @@ Text measurement is injected by the embedder through `TextMeasureCtx`:
 
 This keeps the core independent from any specific font stack.
 
-### Draw Generation
+### Paint Generation
 
-`src/core/draw.zig` turns the laid-out tree into a `DrawList` containing:
+`src/core/draw.zig` turns the laid-out tree into a `PaintList` containing:
 
-- rectangle commands
+- semantic surface commands
 - text commands
 - clip commands
+- icon commands
+- custom embedder commands
 
-The core does not issue GPU calls. The repo currently ships one renderer in
-`demo/render.zig`, used by the Wayland demo.
+The runtime does not expose primitive renderer commands. A renderer can consume
+the semantic paint list directly, or a backend-specific adapter can lower it to
+whatever primitives that renderer needs. The repo currently ships one renderer
+in `demo/render.zig`, used by the Wayland demo.
 
-`Context.generateDrawList()` caches the last draw list and reuses it when
-`draw_dirty` is false. The cache is owned by the `Runtime` and freed when
+`Context.generatePaintList()` caches the last paint list and reuses it when
+`paint_dirty` is false. The cache is owned by the `Runtime` and freed when
 either invalidated by state changes or when the runtime is deinitialized;
-embedders never free draw lists themselves.
+embedders never free paint lists themselves.
 
 ## Demo Integration
 

@@ -23,8 +23,6 @@ fn pathFreezeOptions(persistent_allocator: std.mem.Allocator, scratch_allocator:
     };
 }
 
-const DrawCommand = goop.DrawCommand;
-const DrawList = goop.DrawList;
 const PaintCommand = goop.PaintCommand;
 const PaintList = goop.PaintList;
 const Rect = goop.draw.Rect;
@@ -295,43 +293,6 @@ pub const Renderer = struct {
         gl.glEnable(gl.GL_BLEND);
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
         gl.glEnable(gl.GL_MULTISAMPLE);
-        gl.glDisable(gl.GL_SCISSOR_TEST);
-    }
-
-    pub fn render(self: *Renderer, draw_list: DrawList) void {
-        self.clearSceneObjects();
-        for (draw_list.commands) |cmd| {
-            switch (cmd) {
-                .rect => |r| {
-                    if (self.commandVisible(r.bounds)) self.addRect(r);
-                },
-                .text => |t| {
-                    if (self.commandVisible(t.bounds)) self.addText(t);
-                },
-                .icon => |icon| {
-                    if (self.commandVisible(icon.bounds)) self.addIcon(icon);
-                },
-                .clip => |c| {
-                    self.finishSegment() catch {
-                        self.clearSceneObjects();
-                        return;
-                    };
-                    self.updateClip(c);
-                },
-                .custom => {
-                    self.finishSegment() catch {
-                        self.clearSceneObjects();
-                        return;
-                    };
-                },
-            }
-        }
-        self.finishSegment() catch {
-            self.clearSceneObjects();
-            return;
-        };
-        self.drawSegments(null);
-        self.clearSceneObjects();
         gl.glDisable(gl.GL_SCISSOR_TEST);
     }
 

@@ -36,9 +36,8 @@ First preview release.
   state (drag rects, marquee, editor buffers) from embedders.
 - Platform-neutral `Event` model (mouse, key, text, focus, resize)
   with a `Modifiers` bitmask carried on key/mouse events.
-- `DrawCommand` output (`rect`, `text`, `clip`, `icon`, `custom`)
-  consumed by an embedder-owned renderer. `PaintCommand` for embedders
-  that want the higher-level pre-render representation.
+- `PaintCommand` output (`surface`, `text`, `clip`, `icon`, `custom`)
+  consumed by an embedder-owned renderer or backend-specific lowering layer.
 - Per-widget style overrides via `Style` (resolved against `Theme`).
 - Optional `TextMeasureCtx` injection for accurate text sizing.
 - Optional `Clipboard` callback interface for cut/copy/paste in text

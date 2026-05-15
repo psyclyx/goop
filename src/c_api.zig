@@ -1319,10 +1319,15 @@ export fn goop_context_generate_draw_list(ctx: ?*CContext, out_draw_list: ?*CDra
     const context = ctx orelse return false;
     const out = out_draw_list orelse return false;
 
-    const draw_list = context.ctx.generateDrawList() catch {
+    const paint_list = context.ctx.generatePaintList() catch {
         out.* = .{};
         return false;
     };
+    var draw_list = draw.lowerPaintList(paint_list, allocator, context.ctx.runtime.text_measure_ctx) catch {
+        out.* = .{};
+        return false;
+    };
+    defer draw.freeDrawList(&draw_list, allocator);
 
     context.draw_commands.clearRetainingCapacity();
     context.draw_commands.ensureTotalCapacity(allocator, draw_list.commands.len) catch {

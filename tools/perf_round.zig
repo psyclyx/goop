@@ -17,7 +17,6 @@ const BenchConfig = struct {
     table_rows: usize = 320,
     layout_iters: usize = 120,
     paint_iters: usize = 240,
-    lower_iters: usize = 240,
     redraw_iters: usize = 240,
     render_iters: usize = 240,
     cache_iters: usize = 20_000,
@@ -26,7 +25,6 @@ const BenchConfig = struct {
 const SceneSummary = struct {
     node_count: usize,
     paint_count: usize,
-    draw_count: usize,
 };
 
 const SnailResources = struct {
@@ -262,28 +260,20 @@ fn runHeadlessSuite(label: []const u8, ctx: *goop.Context, config: BenchConfig, 
     try prepareContext(ctx, config, text_ctx, snail_resources, null);
 
     const initial_paint_list = try ctx.generatePaintList();
-    const initial_draw_list = try ctx.generateDrawList();
     const scene = SceneSummary{
         .node_count = ctx.tree.count(),
         .paint_count = initial_paint_list.commands.len,
-        .draw_count = initial_draw_list.commands.len,
     };
 
     try warmContext(ctx, config, text_ctx);
 
     const layout_paint_total_ns = try benchLayoutAndPaint(ctx, config, text_ctx);
     const paint_regen_total_ns = try benchPaintRegen(ctx, config, text_ctx);
-    const lower_total_ns = try benchLowerCachedPaint(ctx, config, text_ctx);
-    const draw_regen_total_ns = try benchDrawRegen(ctx, config, text_ctx);
     const paint_cache_total_ns = try benchCachedPaint(ctx, config, text_ctx);
-    const draw_cache_total_ns = try benchCachedDraw(ctx, config, text_ctx);
 
     printSummary("layout+paint (resize invalidation)", layout_paint_total_ns, config.layout_iters);
     printSummary("paint regen (mouse move)", paint_regen_total_ns, config.paint_iters);
-    printSummary("lower cached paint -> draw", lower_total_ns, config.lower_iters);
-    printSummary("full draw regen (mouse move)", draw_regen_total_ns, config.redraw_iters);
     printSummary("cached paint list hit", paint_cache_total_ns, config.cache_iters);
-    printSummary("cached draw list hit", draw_cache_total_ns, config.cache_iters);
     printSceneSummary(scene, config.table_rows);
 
     return scene;
@@ -342,7 +332,6 @@ fn warmContext(ctx: *goop.Context, config: BenchConfig, text_ctx: ?*const goop.T
         ctx.setDimensions(config.width + @as(u32, @intCast(i & 1)), config.height);
         ctx.doLayout(text_ctx);
         _ = try ctx.generatePaintList();
-        _ = try ctx.generateDrawList();
     }
     for (0..32) |i| {
         try ctx.pushEvent(.{ .mouse_move = .{
@@ -351,10 +340,8 @@ fn warmContext(ctx: *goop.Context, config: BenchConfig, text_ctx: ?*const goop.T
         } });
         ctx.processEvents();
         _ = try ctx.generatePaintList();
-        _ = try ctx.generateDrawList();
     }
     _ = try ctx.generatePaintList();
-    _ = try ctx.generateDrawList();
 }
 
 fn benchLayoutAndPaint(ctx: *goop.Context, config: BenchConfig, text_ctx: ?*const goop.TextMeasureCtx) !u64 {
@@ -395,46 +382,6 @@ fn benchPaintRegen(ctx: *goop.Context, config: BenchConfig, text_ctx: ?*const go
     return monotonicNs() - start_ns;
 }
 
-fn benchLowerCachedPaint(ctx: *goop.Context, config: BenchConfig, text_ctx: ?*const goop.TextMeasureCtx) !u64 {
-    ctx.setDimensions(config.width, config.height);
-    ctx.doLayout(text_ctx);
-    const paint_list = try ctx.generatePaintList();
-
-    const start_ns = monotonicNs();
-    var draw_accum: usize = 0;
-
-    for (0..config.lower_iters) |_| {
-        var draw_list = try goop.draw.lowerPaintList(paint_list, bench_allocator, text_ctx);
-        draw_accum +%= draw_list.commands.len;
-        goop.draw.freeDrawList(&draw_list, bench_allocator);
-    }
-
-    std.mem.doNotOptimizeAway(draw_accum);
-    return monotonicNs() - start_ns;
-}
-
-fn benchDrawRegen(ctx: *goop.Context, config: BenchConfig, text_ctx: ?*const goop.TextMeasureCtx) !u64 {
-    ctx.setDimensions(config.width, config.height);
-    ctx.doLayout(text_ctx);
-    _ = try ctx.generateDrawList();
-
-    const start_ns = monotonicNs();
-    var draw_accum: usize = 0;
-
-    for (0..config.redraw_iters) |i| {
-        try ctx.pushEvent(.{ .mouse_move = .{
-            .x = 280 + @as(f32, @floatFromInt((i * 7) % 91)),
-            .y = 160 + @as(f32, @floatFromInt((i * 13) % 57)),
-        } });
-        ctx.processEvents();
-        const draw_list = try ctx.generateDrawList();
-        draw_accum +%= draw_list.commands.len;
-    }
-
-    std.mem.doNotOptimizeAway(draw_accum);
-    return monotonicNs() - start_ns;
-}
-
 fn benchCachedPaint(ctx: *goop.Context, config: BenchConfig, text_ctx: ?*const goop.TextMeasureCtx) !u64 {
     ctx.setDimensions(config.width, config.height);
     ctx.doLayout(text_ctx);
@@ -449,23 +396,6 @@ fn benchCachedPaint(ctx: *goop.Context, config: BenchConfig, text_ctx: ?*const g
     }
 
     std.mem.doNotOptimizeAway(paint_accum);
-    return monotonicNs() - start_ns;
-}
-
-fn benchCachedDraw(ctx: *goop.Context, config: BenchConfig, text_ctx: ?*const goop.TextMeasureCtx) !u64 {
-    ctx.setDimensions(config.width, config.height);
-    ctx.doLayout(text_ctx);
-    _ = try ctx.generateDrawList();
-
-    const start_ns = monotonicNs();
-    var draw_accum: usize = 0;
-
-    for (0..config.cache_iters) |_| {
-        const draw_list = try ctx.generateDrawList();
-        draw_accum +%= draw_list.commands.len;
-    }
-
-    std.mem.doNotOptimizeAway(draw_accum);
     return monotonicNs() - start_ns;
 }
 
@@ -643,8 +573,8 @@ fn printSummary(label: []const u8, total_ns: u64, iterations: usize) void {
 
 fn printSceneSummary(scene: SceneSummary, table_rows: usize) void {
     std.debug.print(
-        "scene summary: nodes={}, paint_commands={}, draw_commands={}, table_rows={}\n",
-        .{ scene.node_count, scene.paint_count, scene.draw_count, table_rows },
+        "scene summary: nodes={}, paint_commands={}, table_rows={}\n",
+        .{ scene.node_count, scene.paint_count, table_rows },
     );
 }
 
