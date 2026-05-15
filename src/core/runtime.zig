@@ -49,6 +49,8 @@ pub const WidgetKind = widget.WidgetKind;
 pub const WidgetDesc = widget.WidgetDesc;
 pub const WidgetView = widget.WidgetView;
 pub const NodeView = widget.NodeView;
+pub const NodeSnapshot = widget.NodeSnapshot;
+pub const TreeSnapshot = widget.TreeSnapshot;
 pub const kindFromDesc = widget.kindFromDesc;
 
 // Tree-walking helpers commonly reached for by embedders. Internal
@@ -793,6 +795,24 @@ test "custom widgets expose semantic paint and state" {
         .grow_height = false,
         .focusable = true,
     } }, view.kind);
+}
+
+test "tree snapshot returns live node views with handles" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 320, .height = 200 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    const label = try ctx.tree.addChild(root, .{ .text = .{ .content = "snapshot" } });
+    const removed = try ctx.tree.addChild(root, .{ .button = .{ .label = "gone" } });
+    try ctx.tree.remove(removed);
+
+    var snapshot = try ctx.tree.snapshot(std.testing.allocator);
+    defer snapshot.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), snapshot.nodes.len);
+    try std.testing.expect(snapshot.nodes[0].handle.eql(root));
+    try std.testing.expect(snapshot.nodes[1].handle.eql(label));
+    try std.testing.expectEqual(WidgetView{ .text = .{ .content = "snapshot" } }, snapshot.nodes[1].node.kind);
 }
 
 test "event dispatch detects button click" {

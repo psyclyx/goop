@@ -126,6 +126,9 @@ Runtime contract:
   (`clicked`, `changed`, `toggled`, `drop_received`, `secondary_clicked`),
   and the kind-specific `WidgetView`. `clearClickedFlags()` resets the
   per-frame flags at the start of each frame.
+- For whole-tree reads, `ctx.tree.snapshot(allocator)` returns live
+  `{ handle, node }` snapshots in storage order. The array is caller-owned;
+  string slices inside each `NodeView` still borrow from the tree.
 - Snapshot per-frame pointer/focus/drop state with `ctx.frame()`.
 - Pass a `goop.TextMeasureCtx` into `doLayout()` for accurate text
   sizing; pass `null` for a rough character-width estimate.

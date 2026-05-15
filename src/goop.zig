@@ -19,6 +19,8 @@ pub const WidgetKind = runtime.WidgetKind;
 pub const WidgetDesc = runtime.WidgetDesc;
 pub const WidgetView = runtime.WidgetView;
 pub const NodeView = runtime.NodeView;
+pub const NodeSnapshot = runtime.NodeSnapshot;
+pub const TreeSnapshot = runtime.TreeSnapshot;
 pub const kindFromDesc = runtime.kindFromDesc;
 
 pub const tableHeaderRow = runtime.tableHeaderRow;

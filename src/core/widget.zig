@@ -1414,6 +1414,22 @@ pub const NodeView = struct {
     }
 };
 
+pub const NodeSnapshot = struct {
+    handle: NodeHandle,
+    node: NodeView,
+};
+
+/// Borrowed read model for the live tree in storage order. The slice is
+/// caller-owned, but each `NodeView` still borrows strings from the tree.
+pub const TreeSnapshot = struct {
+    nodes: []const NodeSnapshot,
+
+    pub fn deinit(self: *TreeSnapshot, allocator: std.mem.Allocator) void {
+        allocator.free(self.nodes);
+        self.nodes = &.{};
+    }
+};
+
 /// A single node in the widget tree.
 pub const Node = struct {
     kind: WidgetKind,
@@ -1537,8 +1553,27 @@ pub const Tree = struct {
         return NodeView.fromNode(self.getConst(handle));
     }
 
+    /// Snapshot all live nodes in storage order. The returned slice is
+    /// caller-owned; string/content slices inside each `NodeView` borrow
+    /// from the tree.
+    pub fn snapshot(self: *const Tree, allocator: std.mem.Allocator) !TreeSnapshot {
+        var nodes: std.ArrayListUnmanaged(NodeSnapshot) = .empty;
+        errdefer nodes.deinit(allocator);
+
+        try nodes.ensureTotalCapacity(allocator, self.count());
+        for (self.nodes.items, 0..) |*candidate, index| {
+            if (!candidate.alive) continue;
+            nodes.appendAssumeCapacity(.{
+                .handle = self.handleFromIndex(@intCast(index)),
+                .node = NodeView.fromNode(candidate),
+            });
+        }
+
+        return .{ .nodes = try nodes.toOwnedSlice(allocator) };
+    }
+
     /// Set an embedder-defined stable identifier on a widget. Pure
-        /// field write — does not touch layout or paint caches, so call
+    /// field write — does not touch layout or paint caches, so call
     /// it freely without invalidation concerns.
     pub fn setUserId(self: *Tree, handle: NodeHandle, user_id: u64) void {
         if (!self.isAlive(handle)) return;
