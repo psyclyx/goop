@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/psyclyx/goop/actions/workflows/ci.yml/badge.svg)](https://github.com/psyclyx/goop/actions/workflows/ci.yml)
 
-Retained-mode GUI library for Zig. `goop` owns widget state, layout, and draw
+Retained-mode GUI library for Zig. `goop` owns widget state, layout, and paint
 command generation; the embedder owns the native window, input delivery, text
 measurement, and final rendering.
 
@@ -23,12 +23,12 @@ the library is being built around.
 
 - layout through vendored `clay`
 - input dispatch over platform-neutral events
-- draw-list generation for an embedder-owned renderer
+- paint-list generation for an embedder-owned renderer
 
 The core does not create windows, own the event loop, or touch the GPU. It
-tracks widget state, writes back layout rectangles, and emits simple draw
-commands (`rect`, `text`, `clip`, `icon`, `custom`) the caller renders however
-it wants.
+tracks widget state, writes back layout rectangles, and emits semantic paint
+commands (`surface`, `text`, `clip`, `icon`, `custom`) the caller renders
+however it wants.
 
 In-tree:
 
@@ -116,7 +116,7 @@ Runtime contract:
   dispatch/paint.
 - Mutate widgets after construction through `ctx.setStyle(handle, ...)`,
   `ctx.updateWidget(handle, desc)`, `ctx.mutateKind(handle)`, or
-  `ctx.setCustomDraw(handle, ...)`. These invalidate the layout/paint
+  `ctx.setCustomPaint(handle, ...)`. These invalidate the layout/paint
   caches; reaching into `ctx.tree.get(handle)` directly does not.
 - Read state through `ctx.tree.node(handle)`, which returns a `NodeView`
   snapshot bundling the layout rect, cross-kind per-frame flags
@@ -174,7 +174,7 @@ goop_context_destroy(ctx);
 
 The installed header covers context lifecycle, descriptor-based widget
 add/update/style/remove, platform-neutral event push (with a `mods` bitmask
-on key/mouse events), layout and draw-list generation, the tagged read view,
+on key/mouse events), layout and paint-list generation, the tagged read view,
 per-frame snapshots, and optional clipboard and text-measure callbacks.
 
 For a complete headless example, see [examples/c/basic.c](examples/c/basic.c)

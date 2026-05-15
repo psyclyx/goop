@@ -165,7 +165,7 @@ fn emitNode(
 
     try emitDropTargetOverlay(paint_ctx, node, resolved, theme, commands, allocator);
 
-    if (node.custom_draw and node.kind != .table_cell and node_rect.w > 0 and node_rect.h > 0) {
+    if (node.custom_paint and node.kind != .table_cell and node_rect.w > 0 and node_rect.h > 0) {
         try commands.append(allocator, .{ .custom = .{
             .handle = handle,
             .bounds = node_rect,
@@ -1058,7 +1058,7 @@ fn emitTableCellContents(
         try appendTextCommand(commands, allocator, chevron_bounds, tableSortChevron(direction), theme.accent, resolved.font_size, .center, .visible);
     }
 
-    if (node.custom_draw and rect.w > 0 and rect.h > 0) {
+    if (node.custom_paint and rect.w > 0 and rect.h > 0) {
         try commands.append(allocator, .{ .custom = .{
             .handle = handle,
             .bounds = rect,
@@ -2787,7 +2787,7 @@ test "generate paint commands from tree" {
     _ = try tree.addChild(root, .{ .button = .{ .label = "OK" } });
     _ = try tree.addChild(root, .{ .text = .{ .content = "hello" } });
 
-    // Set some layout rects so draw has something to work with
+    // Set some layout rects so paint has something to work with
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
 
     const theme = style.Theme.default;
@@ -2848,7 +2848,7 @@ test "custom paint commands are emitted before floating popups" {
 
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
     tree.get(button).layout_rect = .{ .x = 10, .y = 10, .w = 96, .h = 32 };
-    tree.get(button).custom_draw = true;
+    tree.get(button).custom_paint = true;
     tree.get(menu).layout_rect = .{ .x = 118, .y = 10, .w = 64, .h = 32 };
     tree.get(popup).layout_rect = .{ .x = 118, .y = 42, .w = 140, .h = 28 };
     const item = tree.getConst(popup).first_child.?;
@@ -2986,7 +2986,7 @@ test "table cells emit custom paint commands after text contents" {
     const cell = try tree.addRoot(.{ .table_cell = .{} });
     _ = try tree.addChild(cell, .{ .text = .{ .content = "Name", .overflow = .ellipsis } });
     tree.get(cell).layout_rect = .{ .x = 10, .y = 20, .w = 160, .h = 28 };
-    tree.get(cell).custom_draw = true;
+    tree.get(cell).custom_paint = true;
 
     var dl = try generatePaint(&tree, style.Theme.default, allocator, null, .{});
     defer freePaintList(&dl, allocator);

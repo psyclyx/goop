@@ -340,7 +340,7 @@ pub fn addNameCell(state: *State, ctx: *goop.Context, row: goop.NodeHandle, entr
             .left = browserNameTextInsetLeftPx(state),
         },
     });
-    _ = ctx.setCustomDraw(cell, true);
+    _ = ctx.setCustomPaint(cell, true);
     if (isRenamingPath(state, entry.path)) {
         const input = try ctx.tree.addChild(cell, .{ .text_input = .{ .placeholder = state.rename_input.placeholder } });
         if (ctx.mutateKind(input)) |kind| {
@@ -710,7 +710,7 @@ pub fn buildGridAssetView(state: *State, ctx: *goop.Context, scroll_handle: goop
             .selected = isPathSelected(state, entry.path),
         } });
         ctx.tree.setUserId(item, widgetUserId(.asset_entry, entry_index));
-        _ = ctx.setCustomDraw(item, true);
+        _ = ctx.setCustomPaint(item, true);
         _ = ctx.setStyle(item, .{
             .bg = if (entry.isDirectory())
                 .{ .r = 243, .g = 247, .b = 255, .a = 255 }

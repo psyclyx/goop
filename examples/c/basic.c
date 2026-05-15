@@ -176,7 +176,7 @@ int main(void) {
 
     goop_draw_list_t draw_list = {0};
     if (!goop_context_generate_draw_list(ctx, &draw_list) || draw_list.len == 0) {
-        fprintf(stderr, "failed to generate draw list\n");
+        fprintf(stderr, "failed to generate paint list\n");
         goop_context_destroy(ctx);
         return 1;
     }
@@ -190,7 +190,7 @@ int main(void) {
 
     if (summary.unknown != 0) {
         fprintf(stderr,
-                "draw list contains %zu commands with unknown kind — "
+                "paint list contains %zu commands with unknown kind — "
                 "C header is likely out of sync with c_api.zig\n",
                 summary.unknown);
         goop_context_destroy(ctx);

@@ -121,7 +121,7 @@ pub const WidgetKind = union(enum) {
         selected: bool = false,
         editing: bool = false,
         rename_committed: bool = false,
-        /// Internal state owned by dispatch/draw. Embedders should not
+        /// Internal state owned by dispatch/paint. Embedders should not
         /// touch this field directly — use the public methods.
         internal: Internal = .{},
 
@@ -182,7 +182,7 @@ pub const WidgetKind = union(enum) {
 
     pub const ListBox = struct {
         selection_mode: SelectionMode = .single,
-        /// Internal state owned by dispatch/draw. Don't touch.
+        /// Internal state owned by dispatch/paint. Don't touch.
         internal: Internal = .{},
 
         pub const Internal = struct {
@@ -202,7 +202,7 @@ pub const WidgetKind = union(enum) {
         label: []const u8,
         group: u32 = 0,
         selected: bool = false,
-        /// Internal state owned by dispatch/draw. Don't touch.
+        /// Internal state owned by dispatch/paint. Don't touch.
         internal: Internal = .{},
 
         pub const Internal = struct {
@@ -219,7 +219,7 @@ pub const WidgetKind = union(enum) {
         column_gap: f32 = 8,
         row_gap: f32 = 8,
         computed_columns: u16 = 1,
-        /// Internal state owned by dispatch/draw/layout. Don't touch.
+        /// Internal state owned by dispatch/paint/layout. Don't touch.
         internal: Internal = .{},
 
         pub const Internal = struct {
@@ -240,7 +240,7 @@ pub const WidgetKind = union(enum) {
         label: []const u8,
         icon: []const u8 = "",
         selected: bool = false,
-        /// Internal state owned by dispatch/draw. Don't touch.
+        /// Internal state owned by dispatch/paint. Don't touch.
         internal: Internal = .{},
 
         pub const Internal = struct {
@@ -268,7 +268,7 @@ pub const WidgetKind = union(enum) {
         sort_direction: SortDirection = .ascending,
         selection_changed: bool = false,
         active_columns: u8 = 0,
-        /// Internal state owned by dispatch/draw/layout. Don't touch.
+        /// Internal state owned by dispatch/paint/layout. Don't touch.
         internal: Internal = .{},
 
         pub const Internal = struct {
@@ -389,7 +389,7 @@ pub const WidgetKind = union(enum) {
     pub const TableRow = struct {
         header: bool = false,
         selected: bool = false,
-        /// Internal state owned by dispatch/draw. Don't touch.
+        /// Internal state owned by dispatch/paint. Don't touch.
         internal: Internal = .{},
 
         pub const Internal = struct {
@@ -1342,7 +1342,7 @@ pub const WidgetView = union(enum) {
 pub const NodeView = struct {
     rect: draw.Rect,
     user_id: u64,
-    custom_draw: bool,
+    custom_paint: bool,
     focused: bool,
     accepts_drop: bool,
     drop_hovered: bool,
@@ -1364,7 +1364,7 @@ pub const NodeView = struct {
         return .{
             .rect = node.layout_rect,
             .user_id = node.user_id,
-            .custom_draw = node.custom_draw,
+            .custom_paint = node.custom_paint,
             .focused = node.interaction.focused,
             .accepts_drop = node.interaction.accepts_drop,
             .drop_hovered = node.interaction.drop_hovered,
@@ -1385,7 +1385,7 @@ pub const Node = struct {
     interaction: InteractionState = .{},
     user_id: u64 = 0,
     layout_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-    custom_draw: bool = false,
+    custom_paint: bool = false,
 
     parent: ?NodeHandle = null,
     first_child: ?NodeHandle = null,
@@ -1502,7 +1502,7 @@ pub const Tree = struct {
     }
 
     /// Set an embedder-defined stable identifier on a widget. Pure
-    /// field write — does not touch layout or draw caches, so call
+        /// field write — does not touch layout or paint caches, so call
     /// it freely without invalidation concerns.
     pub fn setUserId(self: *Tree, handle: NodeHandle, user_id: u64) void {
         if (!self.isAlive(handle)) return;

@@ -31,8 +31,8 @@ First preview release.
 - `Context` (single-tree convenience) and `Runtime` (multi-tree
   primitive) with thin-forward symmetry. `WidgetDesc` for construction,
   `NodeView` / `WidgetView` for reads, `mutateKind` / `setStyle` /
-  `updateWidget` / `setCustomDraw` for writes.
-- Per-kind `internal` substructs hide dispatch/draw-owned per-frame
+  `updateWidget` / `setCustomPaint` for writes.
+- Per-kind `internal` substructs hide dispatch/paint-owned per-frame
   state (drag rects, marquee, editor buffers) from embedders.
 - Platform-neutral `Event` model (mouse, key, text, focus, resize)
   with a `Modifiers` bitmask carried on key/mouse events.

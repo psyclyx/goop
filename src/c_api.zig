@@ -572,7 +572,7 @@ const CWidgetView = extern struct {
 const CNodeView = extern struct {
     rect: CRect = .{},
     user_id: u64 = 0,
-    custom_draw: bool = false,
+    custom_paint: bool = false,
     focused: bool = false,
     accepts_drop: bool = false,
     drop_hovered: bool = false,
@@ -1437,7 +1437,7 @@ export fn goop_context_table_column_fraction(ctx: ?*const CContext, handle: CHan
     return true;
 }
 
-// Mark layout and draw caches stale after caller-owned state changes.
+// Mark layout and paint caches stale after caller-owned state changes.
 export fn goop_context_invalidate(ctx: ?*CContext) bool {
     const context = ctx orelse return false;
     context.ctx.invalidate();
@@ -1456,10 +1456,10 @@ export fn goop_context_user_id(ctx: ?*const CContext, handle: CHandle) u64 {
     return context.ctx.tree.userId(handleFromC(handle));
 }
 
-export fn goop_context_set_custom_draw(ctx: ?*CContext, handle: CHandle, custom: bool) bool {
+export fn goop_context_set_custom_paint(ctx: ?*CContext, handle: CHandle, custom: bool) bool {
     const context = ctx orelse return false;
     if (!validHandle(context, handle)) return false;
-    return context.ctx.setCustomDraw(handleFromC(handle), custom);
+    return context.ctx.setCustomPaint(handleFromC(handle), custom);
 }
 
 export fn goop_context_set_drop_target(ctx: ?*CContext, handle: CHandle, accepts_drop: bool) bool {

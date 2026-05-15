@@ -850,7 +850,7 @@ typedef struct {
 typedef struct {
     goop_rect_t rect;
     uint64_t user_id;
-    bool custom_draw;
+    bool custom_paint;
     bool focused;
     bool accepts_drop;
     bool drop_hovered;
@@ -916,7 +916,7 @@ bool goop_context_table_column_fraction(const goop_context_t *ctx, goop_node_han
 /* Per-widget metadata. */
 bool goop_context_set_user_id(goop_context_t *ctx, goop_node_handle_t handle, uint64_t user_id);
 uint64_t goop_context_user_id(const goop_context_t *ctx, goop_node_handle_t handle);
-bool goop_context_set_custom_draw(goop_context_t *ctx, goop_node_handle_t handle, bool custom);
+bool goop_context_set_custom_paint(goop_context_t *ctx, goop_node_handle_t handle, bool custom);
 bool goop_context_set_drop_target(goop_context_t *ctx, goop_node_handle_t handle, bool accepts_drop);
 
 /* Focus and pointer gestures. Pointer/button state lives on

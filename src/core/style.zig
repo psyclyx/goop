@@ -91,7 +91,7 @@ pub const Style = struct {
     }
 };
 
-/// Fully resolved style — no optional fields, ready for layout/draw.
+/// Fully resolved style — no optional fields, ready for layout/paint.
 /// Structurally identical to `Theme`.
 pub const ResolvedStyle = Theme;
 

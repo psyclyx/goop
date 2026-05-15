@@ -2,7 +2,7 @@
 
 `goop`'s C surface mirrors the retained runtime in the Zig API. You build a
 tree of widgets, push platform-neutral events, run layout/dispatch, and render
-the resulting draw list however you want.
+the resulting paint list however you want.
 
 ## Flow
 
@@ -14,7 +14,7 @@ Typical frame order:
 4. Run `goop_context_do_layout`.
 5. Run `goop_context_process_events`.
 6. Query widget state with `goop_context_node`, which returns a `goop_node_view_t` snapshot (rect, per-frame interaction flags, and the kind-specific view).
-7. Generate draw commands with `goop_context_generate_draw_list`.
+7. Generate paint commands with `goop_context_generate_draw_list`.
 
 `goop_context_process_events` can trigger another internal layout pass when
 text edits, scrolling, or resize events change layout-affecting state.
@@ -34,7 +34,7 @@ Returned strings are borrowed from `goop`:
 
 - `goop_string_t` slices on `goop_node_view_t` (e.g. `view.text_input.content`,
   `view.tree_item.label`, `view.dropdown.selected_text`)
-- draw-list text slices
+- paint-list text slices
 
 Copy returned strings if you need them to outlive the current widget/context
 state.
@@ -62,7 +62,7 @@ be inserted at the exact point `goop` emitted it in draw order.
 If your renderer has baseline-aware text APIs, prefer `baseline_y` over
 guessing from `font_size`.
 
-The draw list is owned by `goop_context_t` and is valid until the next
+The paint list is owned by `goop_context_t` and is valid until the next
 call to `goop_context_generate_draw_list` (or the paint-list equivalent),
 or until `goop_context_destroy`. Other state changes (events, tree edits,
 theme changes, resize) only set the dirty flag — the previous list keeps

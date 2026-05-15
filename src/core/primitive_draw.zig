@@ -11,7 +11,7 @@ pub const IconId = paint.IconId;
 pub const PaintCommand = paint.PaintCommand;
 pub const PaintList = paint.PaintList;
 
-/// Renderer-facing primitive draw commands.
+/// Renderer-facing primitive paint commands.
 pub const DrawCommand = union(enum) {
     rect: DrawRect,
     text: DrawText,

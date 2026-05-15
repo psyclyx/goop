@@ -126,7 +126,7 @@ pub const Runtime = struct {
     mouse: dispatch.MouseState = .{},
     text_measure_ctx: ?*const TextMeasureCtx = null,
     layout_dirty: bool = true,
-    draw_dirty: bool = true,
+    paint_dirty: bool = true,
     last_tree_revision: u64 = 0,
     cached_paint_list: ?PaintList = null,
 
@@ -198,10 +198,10 @@ pub const Runtime = struct {
         try self.events.append(self.allocator, ev);
     }
 
-    /// Mark cached layout and draw output stale after caller-owned state changes.
+    /// Mark cached layout and paint output stale after caller-owned state changes.
     pub fn invalidate(self: *Runtime) void {
         self.layout_dirty = true;
-        self.draw_dirty = true;
+        self.paint_dirty = true;
     }
 
     /// Process all queued events: hit test, update interaction state,
@@ -218,14 +218,14 @@ pub const Runtime = struct {
                 else => {},
             }
         }
-        if (self.events.items.len > 0) self.draw_dirty = true;
+        if (self.events.items.len > 0) self.paint_dirty = true;
         dispatch.processWithClipboard(tree, self.events.items, &self.mouse, theme, clipboard, self.text_measure_ctx);
         if (self.layout_dirty or self.mouse.layout_changed) {
             const previous = self.bindClayContext();
             defer c.Clay_SetCurrentContext(previous);
             layout.run(tree, theme, self.text_measure_ctx);
             self.layout_dirty = false;
-            self.draw_dirty = true;
+            self.paint_dirty = true;
             self.last_tree_revision = tree.revision();
             self.mouse.layout_changed = false;
         }
@@ -287,7 +287,7 @@ pub const Runtime = struct {
     /// edits (e.g. scroll position, popup visibility). Returns null if
     /// the handle is dead. Always pessimistically marks the runtime
     /// dirty — the runtime cannot tell which fields the caller will
-    /// touch, so it assumes layout and draw both need to rerun.
+    /// touch, so it assumes layout and paint both need to rerun.
     pub fn mutateKind(self: *Runtime, tree: *Tree, handle: NodeHandle) ?*WidgetKind {
         if (!tree.isAlive(handle)) return null;
         self.invalidate();
@@ -295,11 +295,11 @@ pub const Runtime = struct {
     }
 
     /// Mark a widget as embedder-rendered. The library still emits a
-    /// `.custom` draw command for it, but skips its built-in painting.
+    /// `.custom` paint command for it, but skips its built-in painting.
     /// Returns false if the handle is dead.
-    pub fn setCustomDraw(self: *Runtime, tree: *Tree, handle: NodeHandle, custom: bool) bool {
+    pub fn setCustomPaint(self: *Runtime, tree: *Tree, handle: NodeHandle, custom: bool) bool {
         if (!tree.isAlive(handle)) return false;
-        tree.get(handle).custom_draw = custom;
+        tree.get(handle).custom_paint = custom;
         self.invalidate();
         return true;
     }
@@ -343,7 +343,7 @@ pub const Runtime = struct {
         }
         tree.get(handle).interaction.focused = true;
         self.mouse.focused = handle;
-        self.draw_dirty = true;
+        self.paint_dirty = true;
         return true;
     }
 
@@ -353,13 +353,13 @@ pub const Runtime = struct {
             if (node.alive) node.interaction.focused = false;
         }
         self.mouse.focused = null;
-        self.draw_dirty = true;
+        self.paint_dirty = true;
     }
 
     /// Cancel the active pointer gesture, clearing any drag or marquee state.
     pub fn cancelPointerGesture(self: *Runtime, tree: *Tree) void {
         dispatch.cancelPointerGesture(tree, &self.mouse);
-        self.draw_dirty = true;
+        self.paint_dirty = true;
     }
 
     /// Run layout: walk the widget tree through clay and write back rects.
@@ -374,7 +374,7 @@ pub const Runtime = struct {
         defer c.Clay_SetCurrentContext(previous);
         layout.run(tree, theme, text_ctx);
         self.layout_dirty = false;
-        self.draw_dirty = true;
+        self.paint_dirty = true;
         self.last_tree_revision = current_revision;
     }
 
@@ -387,13 +387,13 @@ pub const Runtime = struct {
     /// at allocated memory until you regenerate. Copy the slice if you
     /// need it to outlive the next regeneration.
     pub fn generatePaintList(self: *Runtime, tree: *const Tree, theme: Theme) !PaintList {
-        if (!self.draw_dirty) {
+        if (!self.paint_dirty) {
             if (self.cached_paint_list) |cached| return cached;
         }
         self.invalidatePaintCache();
         const paint_list = try paint.generatePaint(tree, theme, self.allocator, self.text_measure_ctx, .{});
         self.cached_paint_list = paint_list;
-        self.draw_dirty = false;
+        self.paint_dirty = false;
         return paint_list;
     }
 
@@ -403,7 +403,7 @@ pub const Runtime = struct {
             paint.freePaintList(cached, self.allocator);
             self.cached_paint_list = null;
         }
-        self.draw_dirty = true;
+        self.paint_dirty = true;
     }
 
     /// Update layout dimensions (e.g. on window resize).
@@ -538,11 +538,11 @@ pub const Context = struct {
     }
 
     /// Mark a widget as embedder-rendered. See `Runtime.setCustomPaint`.
-    pub fn setCustomDraw(self: *Context, handle: NodeHandle, custom: bool) bool {
-        return self.runtime.setCustomDraw(&self.tree, handle, custom);
+    pub fn setCustomPaint(self: *Context, handle: NodeHandle, custom: bool) bool {
+        return self.runtime.setCustomPaint(&self.tree, handle, custom);
     }
 
-    /// Mark cached layout and draw output stale after caller-owned
+    /// Mark cached layout and paint output stale after caller-owned
     /// state changes. See `Runtime.invalidate`.
     pub fn invalidate(self: *Context) void {
         self.runtime.invalidate();
@@ -975,7 +975,7 @@ test "paint list caching returns same list when clean" {
     ctx.doLayout(null);
 
     const paint1 = try ctx.generatePaintList();
-    try std.testing.expect(!ctx.runtime.draw_dirty);
+    try std.testing.expect(!ctx.runtime.paint_dirty);
 
     // Second call without changes returns the cached pointer
     const paint2 = try ctx.generatePaintList();
@@ -993,14 +993,14 @@ test "paint list regenerated after events" {
     const paint1 = try ctx.generatePaintList();
     const ptr1 = paint1.commands.ptr;
 
-    // Pushing an event and processing marks draw dirty
+    // Pushing an event and processing marks paint dirty
     try ctx.pushEvent(.{ .mouse_move = .{ .x = 50, .y = 50 } });
     ctx.processEvents();
-    try std.testing.expect(ctx.runtime.draw_dirty);
+    try std.testing.expect(ctx.runtime.paint_dirty);
 
     // Regeneration produces a new list (old cache freed internally)
     _ = try ctx.generatePaintList();
-    try std.testing.expect(!ctx.runtime.draw_dirty);
+    try std.testing.expect(!ctx.runtime.paint_dirty);
     _ = ptr1;
 }
 
