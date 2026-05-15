@@ -1,12 +1,12 @@
 const std = @import("std");
 const widget = @import("widget.zig");
-const draw = @import("paint.zig");
+const paint = @import("paint.zig");
 const style = @import("style.zig");
 
 const HitState = struct {
     offset_x: f32 = 0,
     offset_y: f32 = 0,
-    clip: ?draw.Rect = null,
+    clip: ?paint.Rect = null,
 };
 
 /// Find the topmost interactive widget at (x, y), giving floating popup
@@ -82,7 +82,7 @@ pub fn isInteractive(kind: widget.WidgetKind) bool {
     };
 }
 
-pub fn pointInRect(x: f32, y: f32, rect: draw.Rect) bool {
+pub fn pointInRect(x: f32, y: f32, rect: paint.Rect) bool {
     return x >= rect.x and x < rect.x + rect.w and
         y >= rect.y and y < rect.y + rect.h;
 }
@@ -203,7 +203,7 @@ fn childHitState(node: *const widget.Node, state: HitState) HitState {
     };
 }
 
-fn translatedRect(rect: draw.Rect, state: HitState) draw.Rect {
+fn translatedRect(rect: paint.Rect, state: HitState) paint.Rect {
     return .{
         .x = rect.x + state.offset_x,
         .y = rect.y + state.offset_y,
@@ -212,7 +212,7 @@ fn translatedRect(rect: draw.Rect, state: HitState) draw.Rect {
     };
 }
 
-fn intersectRects(a: draw.Rect, b: draw.Rect) draw.Rect {
+fn intersectRects(a: paint.Rect, b: paint.Rect) paint.Rect {
     const x0 = @max(a.x, b.x);
     const y0 = @max(a.y, b.y);
     const x1 = @min(a.x + a.w, b.x + b.w);
@@ -225,8 +225,8 @@ fn intersectRects(a: draw.Rect, b: draw.Rect) draw.Rect {
     };
 }
 
-fn splitterDividerRect(rect: draw.Rect, splitter: widget.WidgetKind.Splitter, resolved: style.ResolvedStyle) draw.Rect {
-    const inner = draw.Rect{
+fn splitterDividerRect(rect: paint.Rect, splitter: widget.WidgetKind.Splitter, resolved: style.ResolvedStyle) paint.Rect {
+    const inner = paint.Rect{
         .x = rect.x + resolved.padding.left,
         .y = rect.y + resolved.padding.top,
         .w = @max(rect.w - resolved.padding.left - resolved.padding.right, 0),
@@ -250,7 +250,7 @@ fn splitterDividerRect(rect: draw.Rect, splitter: widget.WidgetKind.Splitter, re
     };
 }
 
-fn splitterHandleRect(divider: draw.Rect, splitter: widget.WidgetKind.Splitter) draw.Rect {
+fn splitterHandleRect(divider: paint.Rect, splitter: widget.WidgetKind.Splitter) paint.Rect {
     const handle_thickness = @max(splitter.thickness, splitterGapThickness(splitter));
     return switch (splitter.direction) {
         .row => .{
@@ -270,7 +270,7 @@ fn splitterHandleRect(divider: draw.Rect, splitter: widget.WidgetKind.Splitter) 
 
 fn clampedSplitterRatio(
     splitter: widget.WidgetKind.Splitter,
-    rect: draw.Rect,
+    rect: paint.Rect,
     resolved: style.ResolvedStyle,
 ) f32 {
     const raw = std.math.clamp(splitter.ratio, 0, 1);

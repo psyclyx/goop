@@ -4,7 +4,7 @@ const event = @import("event.zig");
 const focus = @import("focus.zig");
 const hittest = @import("hittest.zig");
 const layout = @import("layout.zig");
-const draw = @import("paint.zig");
+const paint = @import("paint.zig");
 
 /// Transient input state tracked across events.
 pub const SecondaryClick = struct {
@@ -1447,7 +1447,7 @@ fn snapshotTableSelection(tree: *widget.Tree, table: widget.NodeHandle) void {
     }
 }
 
-fn treeDropPositionAtY(rect: draw.Rect, y: f32) widget.WidgetKind.TreeItem.DropPosition {
+fn treeDropPositionAtY(rect: paint.Rect, y: f32) widget.WidgetKind.TreeItem.DropPosition {
     if (rect.h <= 0) return .into;
     const rel = (y - rect.y) / rect.h;
     if (rel <= 0.25) return .before;
@@ -1455,7 +1455,7 @@ fn treeDropPositionAtY(rect: draw.Rect, y: f32) widget.WidgetKind.TreeItem.DropP
     return .into;
 }
 
-fn normalizedRect(x0: f32, y0: f32, x1: f32, y1: f32) draw.Rect {
+fn normalizedRect(x0: f32, y0: f32, x1: f32, y1: f32) paint.Rect {
     return .{
         .x = @min(x0, x1),
         .y = @min(y0, y1),
@@ -1464,7 +1464,7 @@ fn normalizedRect(x0: f32, y0: f32, x1: f32, y1: f32) draw.Rect {
     };
 }
 
-fn clampRectToBounds(rect: draw.Rect, bounds: draw.Rect) draw.Rect {
+fn clampRectToBounds(rect: paint.Rect, bounds: paint.Rect) paint.Rect {
     const left = std.math.clamp(rect.x, bounds.x, bounds.x + bounds.w);
     const top = std.math.clamp(rect.y, bounds.y, bounds.y + bounds.h);
     const right = std.math.clamp(rect.x + rect.w, bounds.x, bounds.x + bounds.w);
@@ -1477,14 +1477,14 @@ fn clampRectToBounds(rect: draw.Rect, bounds: draw.Rect) draw.Rect {
     };
 }
 
-fn rectsIntersect(a: draw.Rect, b: draw.Rect) bool {
+fn rectsIntersect(a: paint.Rect, b: paint.Rect) bool {
     return a.x < b.x + b.w and a.x + a.w > b.x and a.y < b.y + b.h and a.y + a.h > b.y;
 }
 
 const ScrollbarMetrics = struct {
     axis: ScrollbarAxis,
-    track: draw.Rect,
-    thumb: draw.Rect,
+    track: paint.Rect,
+    thumb: paint.Rect,
     max_scroll: f32,
 };
 
@@ -1512,7 +1512,7 @@ fn verticalScrollbarMetrics(
     const scrollbar_inset: f32 = 2;
     const track_w = @max(resolved.thumb_width * 0.5, 6);
     const horizontal_reserve = if (has_horizontal_scrollbar) track_w + scrollbar_inset else 0;
-    const track = draw.Rect{
+    const track = paint.Rect{
         .x = viewport.x + viewport.w - track_w - scrollbar_inset,
         .y = viewport.y + scrollbar_inset,
         .w = track_w,
@@ -1553,7 +1553,7 @@ fn horizontalScrollbarMetrics(
     const scrollbar_inset: f32 = 2;
     const track_h = @max(resolved.thumb_width * 0.5, 6);
     const vertical_reserve = if (has_vertical_scrollbar) track_h + scrollbar_inset else 0;
-    const track = draw.Rect{
+    const track = paint.Rect{
         .x = viewport.x + scrollbar_inset,
         .y = viewport.y + viewport.h - track_h - scrollbar_inset,
         .w = @max(viewport.w - scrollbar_inset * 2 - vertical_reserve, 0),
@@ -2915,7 +2915,7 @@ fn spinBoxMiddleEnd(tree: *const widget.Tree, handle: widget.NodeHandle) f32 {
 
 fn clampSplitterRatio(
     splitter: widget.WidgetKind.Splitter,
-    rect: draw.Rect,
+    rect: paint.Rect,
     resolved: style.ResolvedStyle,
     ratio: f32,
 ) f32 {
@@ -2931,7 +2931,7 @@ fn clampSplitterRatio(
 
 fn splitterAvailableExtent(
     splitter: widget.WidgetKind.Splitter,
-    rect: draw.Rect,
+    rect: paint.Rect,
     resolved: style.ResolvedStyle,
 ) f32 {
     return switch (splitter.direction) {

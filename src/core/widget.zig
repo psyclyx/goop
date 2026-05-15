@@ -1,6 +1,6 @@
 const std = @import("std");
 const style = @import("style.zig");
-const draw = @import("paint.zig");
+const paint = @import("paint.zig");
 const handle_mod = @import("handle.zig");
 
 pub const NodeHandle = handle_mod.NodeHandle;
@@ -23,7 +23,7 @@ pub const CommitResult = enum {
 /// observe `active` (via `WidgetView.<kind>.dragging`).
 pub const DragState = struct {
     active: bool = false,
-    rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    rect: paint.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
     offset_x: f32 = 0,
     offset_y: f32 = 0,
 };
@@ -92,7 +92,7 @@ pub const WidgetKind = union(enum) {
 
     pub const Text = struct {
         content: []const u8,
-        overflow: draw.TextOverflow = .visible,
+        overflow: paint.TextOverflow = .visible,
     };
 
     pub const Button = struct {
@@ -113,7 +113,7 @@ pub const WidgetKind = union(enum) {
     pub const TreeItem = struct {
         label: []const u8,
         group: u32 = 0,
-        icon: ?draw.IconId = null,
+        icon: ?paint.IconId = null,
         icon_color: ?style.Color = null,
         editable: bool = false,
         rename_trigger: RenameTrigger = .none,
@@ -189,7 +189,7 @@ pub const WidgetKind = union(enum) {
         pub const Internal = struct {
             anchor_index: ?u16 = null,
             marquee_active: bool = false,
-            marquee_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+            marquee_rect: paint.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
             drop_preview_background: bool = false,
         };
 
@@ -227,7 +227,7 @@ pub const WidgetKind = union(enum) {
             anchor_index: ?u16 = null,
             content_height: f32 = 0,
             marquee_active: bool = false,
-            marquee_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+            marquee_rect: paint.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
             drop_preview_background: bool = false,
         };
 
@@ -275,7 +275,7 @@ pub const WidgetKind = union(enum) {
         pub const Internal = struct {
             anchor_row: ?u16 = null,
             marquee_active: bool = false,
-            marquee_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+            marquee_rect: paint.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
             drop_preview_background: bool = false,
             column_weights: [max_columns]f32 = [_]f32{0} ** max_columns,
         };
@@ -891,7 +891,7 @@ pub const WidgetDesc = union(enum) {
 
     pub const Text = struct {
         content: []const u8,
-        overflow: draw.TextOverflow = .visible,
+        overflow: paint.TextOverflow = .visible,
     };
 
     pub const Button = struct {
@@ -912,7 +912,7 @@ pub const WidgetDesc = union(enum) {
     pub const TreeItem = struct {
         label: []const u8,
         group: u32 = 0,
-        icon: ?draw.IconId = null,
+        icon: ?paint.IconId = null,
         icon_color: ?style.Color = null,
         editable: bool = false,
         rename_trigger: WidgetKind.TreeItem.RenameTrigger = .none,
@@ -1376,7 +1376,7 @@ pub const WidgetView = union(enum) {
 /// Returned by `Tree.node`. Slices borrow from tree storage and stay
 /// valid until the next mutation that touches the node.
 pub const NodeView = struct {
-    rect: draw.Rect,
+    rect: paint.Rect,
     user_id: u64,
     custom_paint: bool,
     focused: bool,
@@ -1436,7 +1436,7 @@ pub const Node = struct {
     style_override: style.Style = .{},
     interaction: InteractionState = .{},
     user_id: u64 = 0,
-    layout_rect: draw.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    layout_rect: paint.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
     custom_paint: bool = false,
 
     parent: ?NodeHandle = null,
@@ -1816,7 +1816,7 @@ pub fn tableHeaderRow(tree: *const Tree, table: NodeHandle) ?NodeHandle {
     return best;
 }
 
-pub fn tableResizeHandleRect(tree: *const Tree, table: NodeHandle, divider_index: u8) ?draw.Rect {
+pub fn tableResizeHandleRect(tree: *const Tree, table: NodeHandle, divider_index: u8) ?paint.Rect {
     const node = tree.getConst(table);
     if (node.kind != .table or !node.kind.table.resizable) return null;
 

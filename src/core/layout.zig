@@ -2,7 +2,7 @@ const std = @import("std");
 const c = @cImport({
     @cInclude("clay.h");
 });
-const draw = @import("paint.zig");
+const paint = @import("paint.zig");
 const widget = @import("widget.zig");
 const style_mod = @import("style.zig");
 
@@ -1928,7 +1928,7 @@ fn splitterLayoutRatio(
 
 fn clampedSplitterRatio(
     splitter: widget.WidgetKind.Splitter,
-    rect: draw.Rect,
+    rect: paint.Rect,
     resolved: style_mod.ResolvedStyle,
 ) f32 {
     const raw = std.math.clamp(splitter.ratio, 0, 1);
@@ -1943,7 +1943,7 @@ fn clampedSplitterRatio(
 
 fn splitterAvailableExtent(
     splitter: widget.WidgetKind.Splitter,
-    rect: draw.Rect,
+    rect: paint.Rect,
     resolved: style_mod.ResolvedStyle,
 ) f32 {
     return switch (splitter.direction) {
@@ -2191,8 +2191,8 @@ fn clampPopupRects(tree: *widget.Tree) void {
     }
 }
 
-fn popupViewport(tree: *const widget.Tree) ?draw.Rect {
-    var viewport: ?draw.Rect = null;
+fn popupViewport(tree: *const widget.Tree) ?paint.Rect {
+    var viewport: ?paint.Rect = null;
 
     for (tree.nodes.items, 0..) |node, i| {
         if (!node.alive or node.parent != null or node.kind == .popup or node.kind == .tooltip) continue;
@@ -2211,7 +2211,7 @@ fn popupViewport(tree: *const widget.Tree) ?draw.Rect {
     return viewport;
 }
 
-fn clampPopupSubtree(tree: *widget.Tree, handle: widget.NodeHandle, viewport: draw.Rect) void {
+fn clampPopupSubtree(tree: *widget.Tree, handle: widget.NodeHandle, viewport: paint.Rect) void {
     const bounds = popupSubtreeBounds(tree, handle) orelse return;
 
     var dx: f32 = 0;
@@ -2235,7 +2235,7 @@ fn clampPopupSubtree(tree: *widget.Tree, handle: widget.NodeHandle, viewport: dr
     if (dx != 0 or dy != 0) shiftSubtree(tree, handle, dx, dy);
 }
 
-fn popupSubtreeBounds(tree: *const widget.Tree, handle: widget.NodeHandle) ?draw.Rect {
+fn popupSubtreeBounds(tree: *const widget.Tree, handle: widget.NodeHandle) ?paint.Rect {
     const node = tree.getConst(handle);
     if (node.layout_rect.w <= 0 or node.layout_rect.h <= 0) return null;
 
@@ -2260,7 +2260,7 @@ fn shiftSubtree(tree: *widget.Tree, handle: widget.NodeHandle, dx: f32, dy: f32)
     }
 }
 
-fn unionRect(current: ?draw.Rect, next: draw.Rect) ?draw.Rect {
+fn unionRect(current: ?paint.Rect, next: paint.Rect) ?paint.Rect {
     if (next.w <= 0 or next.h <= 0) return current;
     if (current == null) return next;
 
@@ -2672,8 +2672,8 @@ test "wrapped text layout height matches paint line count for path boundaries" {
 
     run(&tree, theme, null);
 
-    var paint_list = try draw.generatePaint(&tree, theme, allocator, null, .{});
-    defer draw.freePaintList(&paint_list, allocator);
+    var paint_list = try paint.generatePaint(&tree, theme, allocator, null, .{});
+    defer paint.freePaintList(&paint_list, allocator);
 
     var text_command_count: usize = 0;
     for (paint_list.commands) |command| {
