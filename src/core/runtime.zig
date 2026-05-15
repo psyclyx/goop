@@ -1,11 +1,11 @@
 //! `goop` is a retained-mode GUI library. The embedder owns the native
 //! window, input pump, text shaper, and renderer; `goop` owns widget
-//! state, layout, hit testing, event dispatch, and draw-list generation.
+//! state, layout, hit testing, event dispatch, and paint-list generation.
 //!
 //! Public surface, in rough import order:
 //!
 //! - `Runtime` is the primitive: it owns clay state, the event queue,
-//!   draw caches, and hit/dispatch state for one or more caller-owned
+//!   paint caches, and hit/dispatch state for one or more caller-owned
 //!   `Tree`s. Embedders that drive multiple trees (e.g. main window plus
 //!   detached popup surfaces) wire up `Runtime` directly.
 //! - `Context` is the single-tree convenience layer over `Runtime`. It
@@ -18,13 +18,13 @@
 //!   changes. *In-place* mutations (style overrides, kind payload,
 //!   per-frame flags) must go through `Runtime.setStyle`,
 //!   `Runtime.updateWidget`, `Runtime.mutateKind`, or
-//!   `Runtime.setCustomDraw` (or the matching `Context` method) so the
-//!   layout/draw caches invalidate. Reaching into `tree.get(h).foo = ...`
+//!   `Runtime.setCustomPaint` (or the matching `Context` method) so the
+//!   layout/paint caches invalidate. Reaching into `tree.get(h).foo = ...`
 //!   silently bypasses invalidation and may produce stale frames.
 //! - The everyday primitives (`NodeHandle`, `WidgetKind`, `WidgetView`,
 //!   `Style`, `Theme`, `Event`, `PaintCommand`, …) are re-exported at
 //!   this level so most code only imports `goop`.
-//! - Sub-namespaces (`widget`, `style`, `draw`, `layout`, `hittest`,
+//! - Sub-namespaces (`widget`, `style`, `paint`, `layout`, `hittest`,
 //!   `event`) hold the helpers and types embedders reach for less often
 //!   (rect math, text measurement, hit testing, paint command shape).
 //!   `dispatch` is intentionally private — it runs through `Runtime`.
@@ -37,7 +37,7 @@ const c = @cImport({
 pub const widget = @import("widget.zig");
 pub const event = @import("event.zig");
 pub const style = @import("style.zig");
-pub const draw = @import("draw.zig");
+pub const paint = @import("paint.zig");
 pub const layout = @import("layout.zig");
 pub const hittest = @import("hittest.zig");
 
@@ -66,18 +66,18 @@ pub const tableDataRowIndex = widget.tableDataRowIndex;
 pub const gridSelectorItemCount = widget.gridSelectorItemCount;
 pub const gridItemAt = widget.gridItemAt;
 pub const gridItemIndex = widget.gridItemIndex;
-pub const Rect = draw.Rect;
+pub const Rect = paint.Rect;
 pub const Event = event.Event;
 pub const Theme = style.Theme;
 pub const Style = style.Style;
 pub const Color = style.Color;
-pub const PaintCommand = draw.PaintCommand;
-pub const PaintList = draw.PaintList;
-pub const PaintOptions = draw.PaintOptions;
-pub const PaintScope = draw.PaintScope;
-pub const TextAlign = draw.TextAlign;
-pub const TextOverflow = draw.TextOverflow;
-pub const IconId = draw.IconId;
+pub const PaintCommand = paint.PaintCommand;
+pub const PaintList = paint.PaintList;
+pub const PaintOptions = paint.PaintOptions;
+pub const PaintScope = paint.PaintScope;
+pub const TextAlign = paint.TextAlign;
+pub const TextOverflow = paint.TextOverflow;
+pub const IconId = paint.IconId;
 pub const TextMeasureCtx = layout.TextMeasureCtx;
 pub const MeasureTextFn = layout.MeasureTextFn;
 pub const TextDimensions = layout.TextDimensions;
@@ -391,7 +391,7 @@ pub const Runtime = struct {
             if (self.cached_paint_list) |cached| return cached;
         }
         self.invalidatePaintCache();
-        const paint_list = try draw.generatePaint(tree, theme, self.allocator, self.text_measure_ctx, .{});
+        const paint_list = try paint.generatePaint(tree, theme, self.allocator, self.text_measure_ctx, .{});
         self.cached_paint_list = paint_list;
         self.draw_dirty = false;
         return paint_list;
@@ -400,7 +400,7 @@ pub const Runtime = struct {
     /// Invalidate and free the cached paint list.
     fn invalidatePaintCache(self: *Runtime) void {
         if (self.cached_paint_list) |*cached| {
-            draw.freePaintList(cached, self.allocator);
+            paint.freePaintList(cached, self.allocator);
             self.cached_paint_list = null;
         }
         self.draw_dirty = true;
@@ -442,7 +442,7 @@ pub const Runtime = struct {
 ///
 /// Read-only access to `tree`, `theme`, `runtime`, and `clipboard` is
 /// fine. Mutating state should go through the methods below
-/// (especially `setTheme` / `setClipboard`) so the layout/draw caches
+/// (especially `setTheme` / `setClipboard`) so the layout/paint caches
 /// invalidate.
 pub const Context = struct {
     tree: Tree,
@@ -506,7 +506,7 @@ pub const Context = struct {
 
     // --- Settings ------------------------------------------------------
 
-    /// Replace the active theme. Invalidates layout/draw caches.
+    /// Replace the active theme. Invalidates layout/paint caches.
     pub fn setTheme(self: *Context, theme: Theme) void {
         self.theme = theme;
         self.runtime.invalidate();
@@ -537,7 +537,7 @@ pub const Context = struct {
         return self.runtime.mutateKind(&self.tree, handle);
     }
 
-    /// Mark a widget as embedder-rendered. See `Runtime.setCustomDraw`.
+    /// Mark a widget as embedder-rendered. See `Runtime.setCustomPaint`.
     pub fn setCustomDraw(self: *Context, handle: NodeHandle, custom: bool) bool {
         return self.runtime.setCustomDraw(&self.tree, handle, custom);
     }
@@ -1032,7 +1032,7 @@ test "collapsed tree item can be reopened across context frames" {
 
     ctx.clearClickedFlags();
     ctx.doLayout(null);
-    try std.testing.expectEqual(draw.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(child).layout_rect);
+    try std.testing.expectEqual(paint.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(child).layout_rect);
 
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = disclosure_x, .y = disclosure_y } });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = disclosure_x, .y = disclosure_y } });
@@ -1094,7 +1094,7 @@ test "tab panels switch visibility across context frames" {
     ctx.doLayout(null);
 
     try std.testing.expect(ctx.tree.getConst(scene_text).layout_rect.w > 0);
-    try std.testing.expectEqual(draw.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(render_text).layout_rect);
+    try std.testing.expectEqual(paint.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(render_text).layout_rect);
 
     const render_rect = ctx.tree.getConst(render).layout_rect;
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = render_rect.x + 5, .y = render_rect.y + 5 } });
@@ -1107,7 +1107,7 @@ test "tab panels switch visibility across context frames" {
     ctx.clearClickedFlags();
     ctx.doLayout(null);
 
-    try std.testing.expectEqual(draw.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(scene_text).layout_rect);
+    try std.testing.expectEqual(paint.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(scene_text).layout_rect);
     try std.testing.expect(ctx.tree.getConst(render_text).layout_rect.w > 0);
 }
 
@@ -1621,7 +1621,7 @@ test "tooltip layout updates in the same frame as hover" {
 
     ctx.clearClickedFlags();
     ctx.doLayout(null);
-    try std.testing.expectEqual(draw.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(tooltip).layout_rect);
+    try std.testing.expectEqual(paint.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(tooltip).layout_rect);
 
     const owner_rect = ctx.tree.getConst(owner).layout_rect;
     try ctx.pushEvent(.{ .mouse_move = .{
@@ -1636,7 +1636,7 @@ test "tooltip layout updates in the same frame as hover" {
 
     try ctx.pushEvent(.{ .mouse_move = .{ .x = 390, .y = 290 } });
     ctx.processEvents();
-    try std.testing.expectEqual(draw.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(tooltip).layout_rect);
+    try std.testing.expectEqual(paint.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(tooltip).layout_rect);
 }
 
 test "menu popup layout updates in the same frame as activation" {
@@ -1728,7 +1728,7 @@ test {
     _ = widget;
     _ = style;
     _ = layout;
-    _ = draw;
+    _ = paint;
     _ = dispatch;
     _ = @import("focus.zig");
     _ = @import("hittest.zig");

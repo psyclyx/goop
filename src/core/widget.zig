@@ -1,6 +1,6 @@
 const std = @import("std");
 const style = @import("style.zig");
-const draw = @import("draw.zig");
+const draw = @import("paint.zig");
 const handle_mod = @import("handle.zig");
 
 pub const NodeHandle = handle_mod.NodeHandle;

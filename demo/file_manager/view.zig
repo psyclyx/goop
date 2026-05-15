@@ -900,7 +900,7 @@ pub fn browserEntryLinkBadgeColor(theme: goop.Theme, selected: bool) goop.Color 
     return if (selected) theme.accent else .rgb(44, 140, 134);
 }
 
-pub fn iconRectInTableCell(state: *const State, cell_rect: goop.draw.Rect) goop.draw.Rect {
+pub fn iconRectInTableCell(state: *const State, cell_rect: goop.paint.Rect) goop.paint.Rect {
     const size = @min(@max(cell_rect.h - uiPx(state, 10), uiPx(state, 14)), uiPx(state, 18));
     return .{
         .x = cell_rect.x + browserNameIconInsetLeftPx(state),
@@ -910,11 +910,11 @@ pub fn iconRectInTableCell(state: *const State, cell_rect: goop.draw.Rect) goop.
     };
 }
 
-pub fn iconRectInGridItem(ctx: *goop.Context, handle: goop.NodeHandle) goop.draw.Rect {
+pub fn iconRectInGridItem(ctx: *goop.Context, handle: goop.NodeHandle) goop.paint.Rect {
     const node = ctx.tree.getConst(handle);
     const resolved = node.style_override.resolve(ctx.theme);
     const rect = node.layout_rect;
-    const inner = goop.draw.Rect{
+    const inner = goop.paint.Rect{
         .x = rect.x + resolved.padding.left,
         .y = rect.y + resolved.padding.top,
         .w = @max(rect.w - resolved.padding.left - resolved.padding.right, 0),
@@ -929,7 +929,7 @@ pub fn iconRectInGridItem(ctx: *goop.Context, handle: goop.NodeHandle) goop.draw
     };
 }
 
-pub fn symlinkBadgeRect(base: goop.draw.Rect) goop.draw.Rect {
+pub fn symlinkBadgeRect(base: goop.paint.Rect) goop.paint.Rect {
     const size = @max(@min(base.w, base.h) * 0.42, 7);
     return .{
         .x = base.x + base.w - size * 0.82,
@@ -943,7 +943,7 @@ pub fn appendEntryIconCommands(
     state: *State,
     ctx: *goop.Context,
     entry: BrowserEntry,
-    bounds: goop.draw.Rect,
+    bounds: goop.paint.Rect,
 ) !void {
     const selected = isPathSelected(state, entry.path);
     try state.composed_paint_commands.append(allocator, .{ .icon = .{
@@ -1044,7 +1044,7 @@ pub fn debugWidgetKindName(kind: goop.widget.WidgetKind) []const u8 {
     };
 }
 
-pub fn entryNameTextRect(state: *const State, ctx: *const goop.Context, visible_index: usize, entry: BrowserEntry) ?goop.draw.Rect {
+pub fn entryNameTextRect(state: *const State, ctx: *const goop.Context, visible_index: usize, entry: BrowserEntry) ?goop.paint.Rect {
     if (visible_index >= state.name_cell_handles.items.len) return null;
     const cell = state.name_cell_handles.items[visible_index];
     if (!ctx.tree.isAlive(cell)) return null;
@@ -1063,7 +1063,7 @@ pub fn entryNameTextRect(state: *const State, ctx: *const goop.Context, visible_
     };
 }
 
-pub fn pointInRect(x: f32, y: f32, rect: goop.draw.Rect) bool {
+pub fn pointInRect(x: f32, y: f32, rect: goop.paint.Rect) bool {
     return x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h;
 }
 
@@ -1185,8 +1185,8 @@ pub fn debugLogFilePanelLayout(state: *State) void {
         const body_table_handle = state.asset_table_body;
         const header_alive = if (header_table_handle) |handle| ctx.tree.isAlive(handle) else false;
         const body_table_alive = if (body_table_handle) |handle| ctx.tree.isAlive(handle) else false;
-        const header_rect = if (header_alive) ctx.tree.getConst(header_table_handle.?).layout_rect else goop.draw.Rect{ .x = -1, .y = -1, .w = -1, .h = -1 };
-        const body_rect = if (body_table_alive) ctx.tree.getConst(body_table_handle.?).layout_rect else goop.draw.Rect{ .x = -1, .y = -1, .w = -1, .h = -1 };
+        const header_rect = if (header_alive) ctx.tree.getConst(header_table_handle.?).layout_rect else goop.paint.Rect{ .x = -1, .y = -1, .w = -1, .h = -1 };
+        const body_rect = if (body_table_alive) ctx.tree.getConst(body_table_handle.?).layout_rect else goop.paint.Rect{ .x = -1, .y = -1, .w = -1, .h = -1 };
         const header_row = if (header_alive) goop.widget.tableHeaderRow(&ctx.tree, header_table_handle.?) else null;
         const body_row = if (state.row_handles.items.len > 0) state.row_handles.items[0] else null;
         const header_widths = collectRowCellWidths(ctx, header_row);

@@ -1,6 +1,6 @@
 const std = @import("std");
 const widget = @import("widget.zig");
-const draw = @import("draw.zig");
+const draw = @import("paint.zig");
 const style = @import("style.zig");
 
 const HitState = struct {

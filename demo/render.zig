@@ -25,7 +25,7 @@ fn pathFreezeOptions(persistent_allocator: std.mem.Allocator, scratch_allocator:
 
 const PaintCommand = goop.PaintCommand;
 const PaintList = goop.PaintList;
-const Rect = goop.draw.Rect;
+const Rect = goop.paint.Rect;
 
 /// The demo's icon vocabulary. Widgets in the demo set
 /// `tree_item.icon = @intFromEnum(DemoIcon.folder)` (etc.); this renderer
@@ -934,7 +934,7 @@ pub const Renderer = struct {
         };
     }
 
-    fn textBaselineY(self: *Renderer, bounds: goop.draw.Rect, font_size: f32) f32 {
+    fn textBaselineY(self: *Renderer, bounds: goop.paint.Rect, font_size: f32) f32 {
         const units_per_em = self.text_atlas.unitsPerEm() catch return bounds.y + font_size;
         const scale = font_size / @as(f32, @floatFromInt(units_per_em));
         const height = (self.ascent_units + self.descent_units) * scale;
@@ -1082,7 +1082,7 @@ pub const Renderer = struct {
     }
 };
 
-fn textXForBounds(bounds: goop.draw.Rect, text_width: f32, text_align: goop.TextAlign) f32 {
+fn textXForBounds(bounds: goop.paint.Rect, text_width: f32, text_align: goop.TextAlign) f32 {
     return switch (text_align) {
         .start => bounds.x,
         .center => bounds.x + @max(bounds.w - text_width, 0) * 0.5,
@@ -1090,7 +1090,7 @@ fn textXForBounds(bounds: goop.draw.Rect, text_width: f32, text_align: goop.Text
     };
 }
 
-fn scaledSnappedRect(rect: goop.draw.Rect, scale: f32) snail.Rect {
+fn scaledSnappedRect(rect: goop.paint.Rect, scale: f32) snail.Rect {
     const x0 = @round(rect.x * scale);
     const y0 = @round(rect.y * scale);
     const x1 = @round((rect.x + rect.w) * scale);

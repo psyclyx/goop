@@ -3,7 +3,7 @@ const api = @import("goop.zig");
 const widget = @import("core/widget.zig");
 const event = @import("core/event.zig");
 const style = @import("core/style.zig");
-const draw = @import("core/draw.zig");
+const paint = @import("core/paint.zig");
 const primitive_draw = @import("core/primitive_draw.zig");
 const layout = @import("core/layout.zig");
 const dispatch = @import("core/dispatch.zig");
@@ -898,7 +898,7 @@ fn cToZ(comptime DstT: type, src: anytype) DstT {
         return .{ .r = src.r, .g = src.g, .b = src.b, .a = src.a };
     if (DstT == style.Edges and SrcT == CEdges)
         return .{ .top = src.top, .right = src.right, .bottom = src.bottom, .left = src.left };
-    if (DstT == draw.Rect and SrcT == CRect)
+    if (DstT == paint.Rect and SrcT == CRect)
         return .{ .x = src.x, .y = src.y, .w = src.w, .h = src.h };
 
     // C-side optional pattern (struct { has_value, value }) → ?T
@@ -939,7 +939,7 @@ fn zToC(comptime DstT: type, src: anytype) DstT {
         return .{ .r = src.r, .g = src.g, .b = src.b, .a = src.a };
     if (DstT == CEdges and SrcT == style.Edges)
         return .{ .top = src.top, .right = src.right, .bottom = src.bottom, .left = src.left };
-    if (DstT == CRect and SrcT == draw.Rect)
+    if (DstT == CRect and SrcT == paint.Rect)
         return .{ .x = src.x, .y = src.y, .w = src.w, .h = src.h };
 
     // ?T → C-side optional pattern
@@ -978,7 +978,7 @@ fn handleToC(handle: widget.NodeHandle) CHandle {
     return zToC(CHandle, handle);
 }
 
-fn rectToC(rect: draw.Rect) CRect {
+fn rectToC(rect: paint.Rect) CRect {
     return zToC(CRect, rect);
 }
 

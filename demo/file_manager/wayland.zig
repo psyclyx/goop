@@ -155,7 +155,7 @@ pub const PopupSurface = struct {
     xdg_popup: *wl.xdg_popup,
     egl_window: *wl.wl_egl_window,
     egl_surface: egl.EGLSurface,
-    rect: goop.draw.Rect,
+    rect: goop.paint.Rect,
     buffer_width: u32,
     buffer_height: u32,
     parent_popup: ?goop.NodeHandle,
@@ -183,7 +183,7 @@ pub const PopupParentInfo = struct {
     parent_origin_y: f32,
     parent_width: f32,
     parent_height: f32,
-    anchor_rect: goop.draw.Rect,
+    anchor_rect: goop.paint.Rect,
 };
 
 // ── MIME helpers ──
@@ -700,8 +700,8 @@ pub fn renderNativePopupSurfaces(state: *State, renderer: *render.Renderer) !voi
     while (it) |popup| : (it = popup.next) {
         if (!popup.configured or !popupNeedsNativeSurface(ctx, popup.handle)) continue;
 
-        var popup_paint_list = try goop.draw.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx, .{ .scope = .{ .popup = popup.handle } });
-        defer goop.draw.freePaintList(&popup_paint_list, allocator);
+        var popup_paint_list = try goop.paint.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx, .{ .scope = .{ .popup = popup.handle } });
+        defer goop.paint.freePaintList(&popup_paint_list, allocator);
 
         if (egl.eglMakeCurrent(state.egl_display, popup.egl_surface, popup.egl_surface, state.egl_context) == 0) return error.EglMakeCurrentFailed;
         const previous_clear = renderer.clear_color;
@@ -743,7 +743,7 @@ pub fn optionalHandleChanged(a: ?goop.NodeHandle, b: ?goop.NodeHandle) bool {
     return !a.?.eql(b.?);
 }
 
-pub fn rectsNearlyEqual(a: goop.draw.Rect, b: goop.draw.Rect) bool {
+pub fn rectsNearlyEqual(a: goop.paint.Rect, b: goop.paint.Rect) bool {
     return nearlyEqual(a.x, b.x) and nearlyEqual(a.y, b.y) and nearlyEqual(a.w, b.w) and nearlyEqual(a.h, b.h);
 }
 

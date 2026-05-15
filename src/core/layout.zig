@@ -2,7 +2,7 @@ const std = @import("std");
 const c = @cImport({
     @cInclude("clay.h");
 });
-const draw = @import("draw.zig");
+const draw = @import("paint.zig");
 const widget = @import("widget.zig");
 const style_mod = @import("style.zig");
 

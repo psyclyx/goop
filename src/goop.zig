@@ -9,7 +9,7 @@ const runtime = @import("core/runtime.zig");
 pub const widget = runtime.widget;
 pub const event = runtime.event;
 pub const style = runtime.style;
-pub const draw = runtime.draw;
+pub const paint = runtime.paint;
 pub const layout = runtime.layout;
 pub const hittest = runtime.hittest;
 

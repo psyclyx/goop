@@ -12,7 +12,7 @@ comptime {
 pub const widget = goop.widget;
 pub const event = goop.event;
 pub const style = goop.style;
-pub const draw = goop.draw;
+pub const paint = goop.paint;
 pub const layout = goop.layout;
 pub const hittest = goop.hittest;
 

@@ -3080,8 +3080,8 @@ pub fn main(init: std.process.Init) !void {
         }
         debugLogFilePanelLayout(&state);
         updatePointerCursor(&state);
-        var atlas_paint_list = try goop.draw.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx, .{});
-        defer goop.draw.freePaintList(&atlas_paint_list, allocator);
+        var atlas_paint_list = try goop.paint.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx, .{});
+        defer goop.paint.freePaintList(&atlas_paint_list, allocator);
         if (try ensureAtlasForPaintList(&ensured_text, &text_atlas, &renderer, atlas_paint_list)) {
             const updated_metrics = fontLineMetrics(&text_atlas);
             text_measure.ascent_units = updated_metrics.ascent;
@@ -3090,8 +3090,8 @@ pub fn main(init: std.process.Init) !void {
             ctx.doLayout(&text_measure_ctx);
         }
         try syncNativePopupSurfaces(&state, &ctx);
-        var base_paint_list = try goop.draw.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx, .{ .scope = .{ .full = .{ .include_floating = false } } });
-        defer goop.draw.freePaintList(&base_paint_list, allocator);
+        var base_paint_list = try goop.paint.generatePaint(&ctx.tree, ctx.theme, allocator, state.text_measure_ctx, .{ .scope = .{ .full = .{ .include_floating = false } } });
+        defer goop.paint.freePaintList(&base_paint_list, allocator);
         const paint_list = try composeFileBrowserPaintList(&state, base_paint_list);
 
         renderer.beginFrame(state.buffer_width, state.buffer_height, @floatFromInt(state.buffer_scale));

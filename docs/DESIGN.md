@@ -129,7 +129,7 @@ This keeps the core independent from any specific font stack.
 
 ### Paint Generation
 
-`src/core/draw.zig` turns the laid-out tree into a `PaintList` containing:
+`src/core/paint.zig` turns the laid-out tree into a `PaintList` containing:
 
 - semantic surface commands
 - text commands

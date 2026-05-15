@@ -4,7 +4,7 @@ const event = @import("event.zig");
 const focus = @import("focus.zig");
 const hittest = @import("hittest.zig");
 const layout = @import("layout.zig");
-const draw = @import("draw.zig");
+const draw = @import("paint.zig");
 
 /// Transient input state tracked across events.
 pub const SecondaryClick = struct {
