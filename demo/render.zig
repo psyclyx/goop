@@ -346,8 +346,8 @@ pub const Renderer = struct {
         self.clearSceneObjects();
         for (paint_list.commands) |cmd| {
             switch (cmd) {
-                .box => |box| {
-                    if (self.commandVisible(box.bounds)) self.addRect(box);
+                .surface => |surface| {
+                    if (self.commandVisible(surface.bounds)) self.addRect(surface);
                 },
                 .text => |text| {
                     if (self.commandVisible(text.bounds)) self.addText(text);
@@ -804,13 +804,20 @@ pub const Renderer = struct {
         h = mixHash(h, paint_list.commands.len);
         for (paint_list.commands) |command| {
             switch (command) {
-                .box => |box| {
+                .surface => |surface| {
                     h = mixHash(h, 1);
-                    h = hashRect(h, box.bounds);
-                    h = hashColor(h, box.color);
-                    h = hashColor(h, box.border_color);
-                    h = hashF32(h, box.border_width);
-                    h = hashF32(h, box.corner_radius);
+                    h = hashRect(h, surface.bounds);
+                    h = mixHash(h, @intFromEnum(surface.role));
+                    h = mixHash(h, @intFromBool(surface.state.hovered));
+                    h = mixHash(h, @intFromBool(surface.state.pressed));
+                    h = mixHash(h, @intFromBool(surface.state.focused));
+                    h = mixHash(h, @intFromBool(surface.state.selected));
+                    h = mixHash(h, @intFromBool(surface.state.active));
+                    h = mixHash(h, @intFromBool(surface.state.disabled));
+                    h = hashColor(h, surface.color);
+                    h = hashColor(h, surface.border_color);
+                    h = hashF32(h, surface.border_width);
+                    h = hashF32(h, surface.corner_radius);
                 },
                 .text => |text| {
                     h = mixHash(h, 2);

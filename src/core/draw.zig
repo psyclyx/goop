@@ -51,14 +51,38 @@ pub const IconId = u32;
 
 /// A semantic paint command emitted by the core.
 pub const PaintCommand = union(enum) {
-    box: Box,
+    surface: Surface,
     text: Text,
     clip: ClipRect,
     icon: Icon,
     custom: Custom,
 
-    pub const Box = struct {
+    pub const SurfaceRole = enum {
+        generic,
+        container,
+        control,
+        selection,
+        indicator,
+        focus_ring,
+        drop_target,
+        guide,
+        divider,
+        overlay,
+    };
+
+    pub const SurfaceState = packed struct {
+        hovered: bool = false,
+        pressed: bool = false,
+        focused: bool = false,
+        selected: bool = false,
+        active: bool = false,
+        disabled: bool = false,
+    };
+
+    pub const Surface = struct {
         bounds: Rect,
+        role: SurfaceRole = .generic,
+        state: SurfaceState = .{},
         color: style.Color,
         border_color: style.Color,
         border_width: f32,
@@ -244,7 +268,7 @@ pub fn lowerPaintList(paint_list: PaintList, allocator: std.mem.Allocator, text_
 
     for (paint_list.commands) |command| {
         switch (command) {
-            .box => |box| try commands.append(allocator, .{ .rect = .{
+            .surface => |box| try commands.append(allocator, .{ .rect = .{
                 .bounds = box.bounds,
                 .color = box.color,
                 .border_color = box.border_color,
@@ -361,7 +385,7 @@ fn emitContainer(
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
     // Background rect
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
@@ -644,7 +668,7 @@ fn emitButton(
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
     // Background rect
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = interactionBg(node, resolved, theme),
         .border_color = resolved.border,
@@ -673,7 +697,7 @@ fn emitCheckbox(
     const box_size = resolved.font_size;
 
     // Checkbox box
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = .{
             .x = rect.x + resolved.padding.left,
             .y = rect.y + resolved.padding.top,
@@ -689,7 +713,7 @@ fn emitCheckbox(
     // Check indicator (filled inner rect when checked)
     if (cb.checked) {
         const inset: f32 = 3;
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = .{
                 .x = rect.x + resolved.padding.left + inset,
                 .y = rect.y + resolved.padding.top + inset,
@@ -725,7 +749,7 @@ fn emitRadioButton(
     const circle_radius = box_size / 2;
 
     // Outer circle
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = .{
             .x = rect.x + resolved.padding.left,
             .y = rect.y + resolved.padding.top,
@@ -741,7 +765,7 @@ fn emitRadioButton(
     // Inner dot when selected
     if (rb.selected) {
         const inset: f32 = 3;
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = .{
                 .x = rect.x + resolved.padding.left + inset,
                 .y = rect.y + resolved.padding.top + inset,
@@ -794,7 +818,7 @@ fn emitTreeItem(
 
     const chrome = treeItemChrome(node, item, resolved, theme);
     if (chrome.color.a > 0 or chrome.border_width > 0) {
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = rect,
             .color = chrome.color,
             .border_color = chrome.border_color,
@@ -812,7 +836,7 @@ fn emitTreeItem(
             treeParentGuideCenterX(rect, resolved, theme, depth)
         else
             disclosure_center_x;
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = .{
                 .x = connector_start_x,
                 .y = rect.y + rect.h * 0.5,
@@ -845,7 +869,7 @@ fn emitTreeItem(
             const range = editor.selectionRange();
             const sel_start_x = text_x + layout.textWidthUpTo(label, range.start, resolved.font_size, text_ctx);
             const sel_end_x = text_x + layout.textWidthUpTo(label, range.end, resolved.font_size, text_ctx);
-            try commands.append(allocator, .{ .box = .{
+            try commands.append(allocator, .{ .surface = .{
                 .bounds = .{ .x = sel_start_x, .y = label_bounds.y, .w = sel_end_x - sel_start_x, .h = label_bounds.h },
                 .color = theme.selection_bg,
                 .border_color = theme.selection_bg,
@@ -859,7 +883,7 @@ fn emitTreeItem(
         }
 
         const cursor_x = text_x + layout.textWidthUpTo(label, editor.cursor, resolved.font_size, text_ctx);
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = .{ .x = cursor_x, .y = label_bounds.y, .w = 1, .h = label_bounds.h },
             .color = resolved.fg,
             .border_color = resolved.fg,
@@ -902,7 +926,7 @@ fn emitDropdown(
     const label_bounds = customTextBounds(rect, resolved, rect.x + resolved.padding.left, chevron_x - theme.spacing - (rect.x + resolved.padding.left));
     const chevron_bounds = customTextBounds(rect, resolved, chevron_x, rect.x + rect.w - resolved.padding.right - chevron_x);
 
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = interactionBg(node, resolved, theme),
         .border_color = resolved.border,
@@ -932,7 +956,7 @@ fn emitListBox(
     in_floating_subtree: bool,
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = if (list_box.internal.drop_preview_background)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
@@ -946,7 +970,7 @@ fn emitListBox(
 
     if (list_box.internal.marquee_active and list_box.internal.marquee_rect.w > 0 and list_box.internal.marquee_rect.h > 0) {
         const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = list_box.internal.marquee_rect,
             .color = fill,
             .border_color = theme.accent,
@@ -968,7 +992,7 @@ fn emitSelectable(
 ) !void {
     const fill = selectableBg(node, selectable.selected, theme);
     const rect = paint_ctx.paintRect(node.layout_rect);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = if (selectable.internal.drag.active)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
@@ -997,7 +1021,7 @@ fn emitGridSelector(
     in_floating_subtree: bool,
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = if (grid_selector.internal.drop_preview_background)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
@@ -1011,7 +1035,7 @@ fn emitGridSelector(
 
     if (grid_selector.internal.marquee_active and grid_selector.internal.marquee_rect.w > 0 and grid_selector.internal.marquee_rect.h > 0) {
         const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = grid_selector.internal.marquee_rect,
             .color = fill,
             .border_color = theme.accent,
@@ -1036,7 +1060,7 @@ fn emitGridItem(
         style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
     else
         selectableBg(node, grid_item.selected, theme);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = fill,
         .border_color = if (grid_item.internal.drop_preview or grid_item.selected) theme.accent else resolved.border,
@@ -1057,7 +1081,7 @@ fn emitGridItem(
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 96)
         else
             style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 72);
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = icon_rect,
             .color = icon_fill,
             .border_color = if (grid_item.selected) theme.accent else resolved.border,
@@ -1095,7 +1119,7 @@ fn emitTable(
     in_floating_subtree: bool,
 ) !void {
     const rect = snappedRect(paint_ctx.paintRect(node.layout_rect));
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = if (table.internal.drop_preview_background)
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
@@ -1110,7 +1134,7 @@ fn emitTable(
 
     if (table.internal.marquee_active and table.internal.marquee_rect.w > 0 and table.internal.marquee_rect.h > 0) {
         const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = table.internal.marquee_rect,
             .color = fill,
             .border_color = theme.accent,
@@ -1130,7 +1154,7 @@ fn emitTable(
                 .w = widget.WidgetKind.Table.resize_grip_width,
                 .h = widget.WidgetKind.Table.resize_grip_height,
             };
-            try commands.append(allocator, .{ .box = .{
+            try commands.append(allocator, .{ .surface = .{
                 .bounds = grip_rect,
                 .color = grip_color,
                 .border_color = grip_color,
@@ -1158,7 +1182,7 @@ fn emitTableRow(
     const row_fill_rect = tableRowFillRect(tree, handle, rect);
     const fill = tableRowFill(tree, handle, node, row, theme);
     if (fill.a > 0 and row_fill_rect.w > 0 and row_fill_rect.h > 0) {
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = row_fill_rect,
             .color = fill,
             .border_color = fill,
@@ -1168,7 +1192,7 @@ fn emitTableRow(
     }
 
     if (row.internal.drop_preview and row_fill_rect.w > 0 and row_fill_rect.h > 0) {
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = row_fill_rect,
             .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 36),
             .border_color = theme.accent,
@@ -1186,7 +1210,7 @@ fn emitTableRow(
                 .w = rect.w,
                 .h = divider_thickness,
             });
-            try commands.append(allocator, .{ .box = .{
+            try commands.append(allocator, .{ .surface = .{
                 .bounds = divider,
                 .color = resolved.border,
                 .border_color = resolved.border,
@@ -1312,7 +1336,7 @@ fn emitTableCellDivider(
                 .w = divider_thickness,
                 .h = row_rect.h,
             });
-            try commands.append(allocator, .{ .box = .{
+            try commands.append(allocator, .{ .surface = .{
                 .bounds = divider,
                 .color = resolved.border,
                 .border_color = resolved.border,
@@ -1336,7 +1360,7 @@ fn emitMenuBar(
     in_floating_subtree: bool,
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
@@ -1359,7 +1383,7 @@ fn emitToolbar(
     in_floating_subtree: bool,
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
@@ -1382,7 +1406,7 @@ fn emitStatusBar(
     in_floating_subtree: bool,
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
@@ -1407,7 +1431,7 @@ fn emitMenu(
 ) !void {
     _ = in_floating_subtree;
     const rect = paint_ctx.paintRect(node.layout_rect);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = if (menuHasActiveFill(tree, handle, node))
             theme.bg_active
@@ -1434,7 +1458,7 @@ fn emitPopup(
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
@@ -1456,7 +1480,7 @@ fn emitTooltip(
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
@@ -1486,7 +1510,7 @@ fn emitMenuItem(
     const reserve_width = @max(resolved.font_size, 12);
     const gap = @max(resolved.padding.left * 0.75, 6);
     const rect = paint_ctx.paintRect(node.layout_rect);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = if (menuPopupVisible(tree, handle))
             theme.bg_active
@@ -1506,7 +1530,7 @@ fn emitMenuItem(
             .w = indicator_size,
             .h = indicator_size,
         };
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = indicator_bounds,
             .color = text_color,
             .border_color = text_color,
@@ -1563,7 +1587,7 @@ fn emitDragValue(
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
 
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = interactionBg(node, resolved, theme),
         .border_color = if (node.interaction.pressed or drag_value.editing) theme.accent else resolved.border,
@@ -1598,21 +1622,21 @@ fn emitSpinBox(
         .w = rect.w - buttons.dec.w - buttons.inc.w,
         .h = rect.h,
     };
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = interactionBg(node, resolved, theme),
         .border_color = if (spinbox.editing) theme.accent else resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = buttons.dec,
         .color = theme.bg_hover,
         .border_color = resolved.border,
         .border_width = 0,
         .corner_radius = resolved.border_radius,
     } });
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = buttons.inc,
         .color = theme.bg_hover,
         .border_color = resolved.border,
@@ -1647,7 +1671,7 @@ fn emitTabBar(
     in_floating_subtree: bool,
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
@@ -1700,7 +1724,7 @@ fn emitTabItemHeader(
 ) !void {
     const chrome = tabItemChrome(node, item, resolved, theme);
     const rect = paint_ctx.paintRect(node.layout_rect);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = chrome.color,
         .border_color = chrome.border_color,
@@ -1708,7 +1732,7 @@ fn emitTabItemHeader(
         .corner_radius = resolved.border_radius,
     } });
     if (item.selected) {
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = .{
                 .x = rect.x,
                 .y = rect.y + rect.h - 2,
@@ -1741,7 +1765,7 @@ fn emitSplitter(
     in_floating_subtree: bool,
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
@@ -1762,7 +1786,7 @@ fn emitSplitter(
     else
         resolved.border;
 
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = visible_divider,
         .color = divider_color,
         .border_color = divider_color,
@@ -1776,14 +1800,14 @@ fn emitSplitter(
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
         else
             style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 40);
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = handle_rect,
             .color = overlay_color,
             .border_color = style.Color.rgba(0, 0, 0, 0),
             .border_width = 0,
             .corner_radius = 2,
         } });
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = grip,
             .color = if (node.interaction.pressed or node.interaction.focused) theme.accent else resolved.fg,
             .border_color = if (node.interaction.pressed or node.interaction.focused) theme.accent else resolved.fg,
@@ -1807,7 +1831,7 @@ fn emitSlider(
     const rect = paint_ctx.paintRect(node.layout_rect);
 
     // Track
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
@@ -1822,7 +1846,7 @@ fn emitSlider(
     const usable = rect.w - thumb_w;
     const thumb_x = rect.x + usable * t;
 
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = .{ .x = thumb_x, .y = rect.y, .w = thumb_w, .h = rect.h },
         .color = theme.accent,
         .border_color = resolved.border,
@@ -1846,7 +1870,7 @@ fn emitTextInput(
     const rect = paint_ctx.paintRect(node.layout_rect);
 
     // Background
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = interactionBg(node, resolved, theme),
         .border_color = resolved.border,
@@ -1881,7 +1905,7 @@ fn emitInlineEditorContents(
         const range = ti.selectionRange();
         const sel_start_x = text_bounds.x + layout.textWidthUpTo(content, range.start, resolved.font_size, text_ctx);
         const sel_end_x = text_bounds.x + layout.textWidthUpTo(content, range.end, resolved.font_size, text_ctx);
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = .{ .x = sel_start_x, .y = text_bounds.y, .w = sel_end_x - sel_start_x, .h = text_bounds.h },
             .color = theme.selection_bg,
             .border_color = theme.selection_bg,
@@ -1896,7 +1920,7 @@ fn emitInlineEditorContents(
 
     if (show_cursor) {
         const cursor_x = text_bounds.x + layout.textWidthUpTo(content, ti.cursor, resolved.font_size, text_ctx);
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = .{ .x = cursor_x, .y = text_bounds.y, .w = 1, .h = text_bounds.h },
             .color = resolved.fg,
             .border_color = resolved.fg,
@@ -1927,7 +1951,7 @@ fn emitScrollArea(
     defer paint_ctx.cull_rect = previous_cull_rect;
 
     // Background
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
@@ -1963,14 +1987,14 @@ fn emitScrollArea(
         const thumb_t = if (max_scroll > 0) std.math.clamp(node.kind.scroll_area.scroll_y / max_scroll, 0, 1) else 0;
         const thumb_y = track.y + (track.h - thumb_h) * thumb_t;
 
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = track,
             .color = style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 64),
             .border_color = style.Color.rgba(0, 0, 0, 0),
             .border_width = 0,
             .corner_radius = track.w * 0.5,
         } });
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = .{ .x = track.x, .y = thumb_y, .w = track.w, .h = thumb_h },
             .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 180),
             .border_color = style.Color.rgba(0, 0, 0, 0),
@@ -1994,14 +2018,14 @@ fn emitScrollArea(
         const thumb_t = if (max_scroll > 0) std.math.clamp(node.kind.scroll_area.scroll_x / max_scroll, 0, 1) else 0;
         const thumb_x = track.x + (track.w - thumb_w) * thumb_t;
 
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = track,
             .color = style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 64),
             .border_color = style.Color.rgba(0, 0, 0, 0),
             .border_width = 0,
             .corner_radius = track.h * 0.5,
         } });
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = .{ .x = thumb_x, .y = track.y, .w = thumb_w, .h = track.h },
             .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 180),
             .border_color = style.Color.rgba(0, 0, 0, 0),
@@ -2055,7 +2079,7 @@ fn emitFocusRingRect(
     if (!focused) return;
     const r = rect;
     const inset: f32 = -2;
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = .{
             .x = r.x + inset,
             .y = r.y + inset,
@@ -2106,7 +2130,7 @@ fn emitDropTargetOverlay(
     if (!node.interaction.drop_hovered) return;
     const rect = paint_ctx.paintRect(node.layout_rect);
     if (rect.w <= 0 or rect.h <= 0) return;
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 32),
         .border_color = theme.accent,
@@ -2223,21 +2247,21 @@ fn emitMenuArrow(
 ) !void {
     const mid_y = rect.y + rect.h * 0.5;
     const right = rect.x + rect.w - resolved.padding.right * 0.75;
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = .{ .x = right - 5, .y = mid_y - 3, .w = 1, .h = 6 },
         .color = color,
         .border_color = color,
         .border_width = 0,
         .corner_radius = 0,
     } });
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = .{ .x = right - 3, .y = mid_y - 2, .w = 1, .h = 4 },
         .color = color,
         .border_color = color,
         .border_width = 0,
         .corner_radius = 0,
     } });
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = .{ .x = right - 1, .y = mid_y - 1, .w = 1, .h = 2 },
         .color = color,
         .border_color = color,
@@ -2479,7 +2503,7 @@ fn emitTreeItemDropIndicator(
         },
         .into => return,
     };
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = indicator_bounds,
         .color = theme.accent,
         .border_color = theme.accent,
@@ -2574,7 +2598,7 @@ fn appendTreeGuideVertical(
 ) !void {
     const top = @min(y0, y1);
     const bottom = @max(y0, y1);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = .{
             .x = x,
             .y = top,
@@ -2606,7 +2630,7 @@ fn emitTreeDisclosure(
         .h = size,
     };
 
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = box_rect,
         .color = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
         .border_color = if (expanded) theme.accent else resolved.border,
@@ -2615,7 +2639,7 @@ fn emitTreeDisclosure(
     } });
 
     const bar_y = box_rect.y + @floor(box_rect.h * 0.5);
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = .{
             .x = box_rect.x + 2,
             .y = bar_y,
@@ -2630,7 +2654,7 @@ fn emitTreeDisclosure(
 
     if (!expanded) {
         const bar_x = box_rect.x + @floor(box_rect.w * 0.5);
-        try commands.append(allocator, .{ .box = .{
+        try commands.append(allocator, .{ .surface = .{
             .bounds = .{
                 .x = bar_x,
                 .y = box_rect.y + 2,
@@ -2831,7 +2855,7 @@ fn emitDragGhosts(
                         .w = icon_size,
                         .h = @min(icon_size, inner.h - resolved.font_size - theme.spacing),
                     };
-                    try commands.append(allocator, .{ .box = .{
+                    try commands.append(allocator, .{ .surface = .{
                         .bounds = icon_rect,
                         .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 68),
                         .border_color = dragGhostColor(theme.accent, 170),
@@ -2868,7 +2892,7 @@ fn emitDragGhostRect(
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
 ) !void {
-    try commands.append(allocator, .{ .box = .{
+    try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = style.Color.rgba(theme.bg_active.r, theme.bg_active.g, theme.bg_active.b, 150),
         .border_color = dragGhostColor(theme.accent, 180),
@@ -3109,17 +3133,17 @@ test "popup paint can be split from main paint" {
     var main_paint = try generatePaint(&tree, style.Theme.default, allocator, null, .{ .scope = .{ .full = .{ .include_floating = false } } });
     defer freePaintList(&main_paint, allocator);
     for (main_paint.commands) |command| {
-        if (command == .box) {
-            try std.testing.expect(command.box.bounds.y < tree.getConst(popup).layout_rect.y);
+        if (command == .surface) {
+            try std.testing.expect(command.surface.bounds.y < tree.getConst(popup).layout_rect.y);
         }
     }
 
     var popup_paint = try generatePaint(&tree, style.Theme.default, allocator, null, .{ .scope = .{ .popup = popup } });
     defer freePaintList(&popup_paint, allocator);
     try std.testing.expect(popup_paint.commands.len >= 3);
-    try std.testing.expect(popup_paint.commands[0] == .box);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), popup_paint.commands[0].box.bounds.x, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), popup_paint.commands[0].box.bounds.y, 0.01);
+    try std.testing.expect(popup_paint.commands[0] == .surface);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), popup_paint.commands[0].surface.bounds.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), popup_paint.commands[0].surface.bounds.y, 0.01);
 }
 
 test "checked menu item emits checked indicator" {
@@ -3143,8 +3167,8 @@ test "checked menu item emits checked indicator" {
 
     var found_indicator = false;
     for (paint.commands) |command| {
-        if (command != .box) continue;
-        const box = command.box;
+        if (command != .surface) continue;
+        const box = command.surface;
         if (box.bounds.w > 0 and box.bounds.w < 10 and box.bounds.h > 0 and box.bounds.h < 10) {
             found_indicator = true;
             try std.testing.expectEqual(theme.fg, box.color);
@@ -3186,8 +3210,8 @@ test "hovered top-level menu uses active fill while menu bar is open" {
 
     var found_edit_box = false;
     for (paint.commands) |command| {
-        if (command != .box) continue;
-        const box = command.box;
+        if (command != .surface) continue;
+        const box = command.surface;
         if (box.bounds.x == tree.getConst(edit).layout_rect.x and
             box.bounds.y == tree.getConst(edit).layout_rect.y and
             box.bounds.w == tree.getConst(edit).layout_rect.w and
