@@ -1392,8 +1392,8 @@ export fn goop_context_remove_widget(ctx: ?*CContext, handle: CHandle) bool {
     const context = ctx orelse return false;
     if (!validHandle(context, handle)) return false;
     context.ctx.tree.remove(handleFromC(handle)) catch return false;
-    // tree.remove changes the live-node count; the runtime detects the
-    // change on the next doLayout call.
+    // tree.remove bumps the tree revision; the runtime detects the
+    // topology change on the next doLayout call.
     return true;
 }
 

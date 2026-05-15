@@ -129,7 +129,7 @@ pub const Runtime = struct {
     text_measure_ctx: ?*const TextMeasureCtx = null,
     layout_dirty: bool = true,
     draw_dirty: bool = true,
-    last_node_count: u32 = 0,
+    last_tree_revision: u64 = 0,
     cached_paint_list: ?PaintList = null,
     cached_draw_list: ?DrawList = null,
 
@@ -229,7 +229,7 @@ pub const Runtime = struct {
             layout.run(tree, theme, self.text_measure_ctx);
             self.layout_dirty = false;
             self.draw_dirty = true;
-            self.last_node_count = tree.count();
+            self.last_tree_revision = tree.revision();
             self.mouse.layout_changed = false;
         }
         self.events.clearRetainingCapacity();
@@ -372,14 +372,14 @@ pub const Runtime = struct {
     /// or null to use a rough character-width approximation.
     pub fn doLayout(self: *Runtime, tree: *Tree, theme: Theme, text_ctx: ?*const TextMeasureCtx) void {
         self.text_measure_ctx = text_ctx;
-        const current_count = tree.count();
-        if (!self.layout_dirty and current_count == self.last_node_count) return;
+        const current_revision = tree.revision();
+        if (!self.layout_dirty and current_revision == self.last_tree_revision) return;
         const previous = self.bindClayContext();
         defer c.Clay_SetCurrentContext(previous);
         layout.run(tree, theme, text_ctx);
         self.layout_dirty = false;
         self.draw_dirty = true;
-        self.last_node_count = current_count;
+        self.last_tree_revision = current_revision;
     }
 
     /// Generate the renderer-facing draw command list.
@@ -966,12 +966,31 @@ test "adding nodes triggers layout" {
     ctx.doLayout(null);
     try std.testing.expect(!ctx.runtime.layout_dirty);
 
-    // Adding a node changes tree count — doLayout should detect and run
+    // Adding a node changes tree revision — doLayout should detect and run
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "new" } });
     ctx.doLayout(null);
-    // After running, dirty is cleared and count is updated
+    // After running, dirty is cleared and revision is updated
     try std.testing.expect(!ctx.runtime.layout_dirty);
-    try std.testing.expectEqual(@as(u32, 2), ctx.runtime.last_node_count);
+    try std.testing.expectEqual(ctx.tree.revision(), ctx.runtime.last_tree_revision);
+}
+
+test "same-count topology changes trigger layout" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    const first = try ctx.tree.addChild(root, .{ .text = .{ .content = "first" } });
+    ctx.doLayout(null);
+
+    const previous_revision = ctx.runtime.last_tree_revision;
+    try ctx.tree.remove(first);
+    const second = try ctx.tree.addChild(root, .{ .button = .{ .label = "second" } });
+    try std.testing.expectEqual(@as(u32, 2), ctx.tree.count());
+    try std.testing.expect(ctx.tree.revision() != previous_revision);
+
+    ctx.doLayout(null);
+    try std.testing.expectEqual(ctx.tree.revision(), ctx.runtime.last_tree_revision);
+    try std.testing.expect(ctx.tree.getConst(second).layout_rect.w > 0);
 }
 
 test "draw list caching returns same list when clean" {

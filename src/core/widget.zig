@@ -1410,6 +1410,7 @@ pub const Node = struct {
 pub const Tree = struct {
     nodes: std.ArrayListUnmanaged(Node) = .empty,
     free_list: std.ArrayListUnmanaged(u32) = .empty,
+    structural_revision: u64 = 0,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) Tree {
@@ -1476,6 +1477,7 @@ pub const Tree = struct {
         n.next_sibling = null;
         n.prev_sibling = null;
         try self.free_list.append(self.allocator, handle.index);
+        self.bumpRevision();
     }
 
     /// Get a pointer to a node by handle.
@@ -1558,6 +1560,12 @@ pub const Tree = struct {
         return @intCast(self.nodes.items.len);
     }
 
+    /// Monotonic structural revision. Bumped whenever parent/child topology
+    /// changes so runtime cache checks don't infer topology from live counts.
+    pub fn revision(self: *const Tree) u64 {
+        return self.structural_revision;
+    }
+
     /// Iterate children of a node.
     pub fn children(self: *const Tree, parent: NodeHandle) ChildIterator {
         return .{
@@ -1604,6 +1612,7 @@ pub const Tree = struct {
             parent.last_child = handle;
         }
 
+        self.bumpRevision();
         return handle;
     }
 
@@ -1612,6 +1621,10 @@ pub const Tree = struct {
         const n = &self.nodes.items[handle.index];
         std.debug.assert(n.alive and n.generation == handle.generation);
         return n;
+    }
+
+    fn bumpRevision(self: *Tree) void {
+        self.structural_revision +%= 1;
     }
 
     pub const ChildIterator = struct {
