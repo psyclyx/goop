@@ -4,7 +4,6 @@ const widget = @import("core/widget.zig");
 const event = @import("core/event.zig");
 const style = @import("core/style.zig");
 const paint = @import("core/paint.zig");
-const primitive_draw = @import("core/primitive_draw.zig");
 const layout = @import("core/layout.zig");
 const dispatch = @import("core/dispatch.zig");
 
@@ -741,12 +740,34 @@ const CEvent = extern struct {
     } = .{ .mouse_move = .{} },
 };
 
-const CDrawCommandKind = enum(c_int) {
-    rect = 0,
+const CPaintCommandKind = enum(c_int) {
+    surface = 0,
     text = 1,
     clip = 2,
     icon = 3,
     custom = 4,
+};
+
+const CPaintSurfaceRole = enum(c_int) {
+    generic = 0,
+    container = 1,
+    control = 2,
+    selection = 3,
+    indicator = 4,
+    focus_ring = 5,
+    drop_target = 6,
+    guide = 7,
+    divider = 8,
+    overlay = 9,
+};
+
+const CPaintSurfaceState = extern struct {
+    hovered: bool = false,
+    pressed: bool = false,
+    focused: bool = false,
+    selected: bool = false,
+    active: bool = false,
+    disabled: bool = false,
 };
 
 const CTextAlign = enum(c_int) {
@@ -762,17 +783,18 @@ const CTextOverflow = enum(c_int) {
     wrap = 3,
 };
 
-const CDrawRect = extern struct {
+const CPaintSurface = extern struct {
     bounds: CRect = .{},
+    role: CPaintSurfaceRole = .generic,
+    state: CPaintSurfaceState = .{},
     color: CColor = .{},
     border_color: CColor = .{},
     border_width: f32 = 0,
     corner_radius: f32 = 0,
 };
 
-const CDrawText = extern struct {
+const CPaintText = extern struct {
     bounds: CRect = .{},
-    baseline_y: f32 = 0,
     text: CStr = .{},
     color: CColor = .{},
     font_size: f32 = 0,
@@ -785,30 +807,30 @@ const CClipRect = extern struct {
     bounds: CRect = .{},
 };
 
-const CDrawCustom = extern struct {
+const CPaintCustom = extern struct {
     handle: CHandle = .{},
     bounds: CRect = .{},
 };
 
-const CDrawIcon = extern struct {
+const CPaintIcon = extern struct {
     bounds: CRect = .{},
     kind: u32 = 0,
     color: CColor = .{},
 };
 
-const CDrawCommand = extern struct {
-    kind: CDrawCommandKind = .rect,
+const CPaintCommand = extern struct {
+    kind: CPaintCommandKind = .surface,
     data: extern union {
-        rect: CDrawRect,
-        text: CDrawText,
+        surface: CPaintSurface,
+        text: CPaintText,
         clip: CClipRect,
-        icon: CDrawIcon,
-        custom: CDrawCustom,
-    } = .{ .rect = .{} },
+        icon: CPaintIcon,
+        custom: CPaintCustom,
+    } = .{ .surface = .{} },
 };
 
-const CDrawList = extern struct {
-    commands: [*c]const CDrawCommand = null,
+const CPaintList = extern struct {
+    commands: [*c]const CPaintCommand = null,
     len: usize = 0,
 };
 
@@ -886,7 +908,7 @@ const CDrop = extern struct {
 
 const CContext = struct {
     ctx: api.Context,
-    draw_commands: std.ArrayListUnmanaged(CDrawCommand) = .empty,
+    paint_commands: std.ArrayListUnmanaged(CPaintCommand) = .empty,
     clipboard_provider: CClipboard = .{},
     clipboard_enabled: bool = false,
     measure_provider: CTextMeasureCtx = .{},
@@ -1198,8 +1220,8 @@ fn validHandle(ctx: *const CContext, handle: CHandle) bool {
     return ctx.ctx.tree.isAlive(handleFromC(handle));
 }
 
-fn convertDrawCommand(cmd: primitive_draw.DrawCommand) CDrawCommand {
-    const Data = @FieldType(CDrawCommand, "data");
+fn convertPaintCommand(cmd: paint.PaintCommand) CPaintCommand {
+    const Data = @FieldType(CPaintCommand, "data");
     return switch (cmd) {
         // Clip uses the flat `has_bounds + bounds` C optional pattern,
         // which the generic struct walker doesn't model.
@@ -1211,7 +1233,7 @@ fn convertDrawCommand(cmd: primitive_draw.DrawCommand) CDrawCommand {
             } },
         },
         inline else => |payload, tag| .{
-            .kind = @field(CDrawCommandKind, @tagName(tag)),
+            .kind = @field(CPaintCommandKind, @tagName(tag)),
             .data = @unionInit(
                 Data,
                 @tagName(tag),
@@ -1282,7 +1304,7 @@ export fn goop_context_create(opts: ?*const CContextOptions) ?*CContext {
 
 export fn goop_context_destroy(ctx: ?*CContext) void {
     const context = ctx orelse return;
-    context.draw_commands.deinit(allocator);
+    context.paint_commands.deinit(allocator);
     context.ctx.deinit();
     allocator.destroy(context);
 }
@@ -1341,32 +1363,27 @@ export fn goop_context_do_layout(ctx: ?*CContext, measure: ?*const CTextMeasureC
     return true;
 }
 
-export fn goop_context_generate_draw_list(ctx: ?*CContext, out_draw_list: ?*CDrawList) bool {
+export fn goop_context_generate_paint_list(ctx: ?*CContext, out_paint_list: ?*CPaintList) bool {
     const context = ctx orelse return false;
-    const out = out_draw_list orelse return false;
+    const out = out_paint_list orelse return false;
 
     const paint_list = context.ctx.generatePaintList() catch {
         out.* = .{};
         return false;
     };
-    var draw_list = primitive_draw.lowerPaintList(paint_list, allocator, context.ctx.runtime.text_measure_ctx) catch {
-        out.* = .{};
-        return false;
-    };
-    defer primitive_draw.freeDrawList(&draw_list, allocator);
 
-    context.draw_commands.clearRetainingCapacity();
-    context.draw_commands.ensureTotalCapacity(allocator, draw_list.commands.len) catch {
+    context.paint_commands.clearRetainingCapacity();
+    context.paint_commands.ensureTotalCapacity(allocator, paint_list.commands.len) catch {
         out.* = .{};
         return false;
     };
-    for (draw_list.commands) |command| {
-        context.draw_commands.appendAssumeCapacity(convertDrawCommand(command));
+    for (paint_list.commands) |command| {
+        context.paint_commands.appendAssumeCapacity(convertPaintCommand(command));
     }
 
     out.* = .{
-        .commands = if (context.draw_commands.items.len == 0) null else context.draw_commands.items.ptr,
-        .len = context.draw_commands.items.len,
+        .commands = if (context.paint_commands.items.len == 0) null else context.paint_commands.items.ptr,
+        .len = context.paint_commands.items.len,
     };
     return true;
 }
@@ -1558,9 +1575,9 @@ test "c api smoke" {
     try std.testing.expect(goop_context_node(ctx, button, &node));
     try std.testing.expect(node.clicked);
 
-    var draw_list: CDrawList = .{};
-    try std.testing.expect(goop_context_generate_draw_list(ctx, &draw_list));
-    try std.testing.expect(draw_list.len > 0);
+    var paint_list: CPaintList = .{};
+    try std.testing.expect(goop_context_generate_paint_list(ctx, &paint_list));
+    try std.testing.expect(paint_list.len > 0);
 }
 
 test "c api menu item exposes checked state and defaults to enabled" {
@@ -1675,13 +1692,14 @@ test "c header parses" {
         .{ .Z = CResizeEvent, .C = c.goop_resize_event_t },
         .{ .Z = CEvent, .C = c.goop_event_t },
 
-        .{ .Z = CDrawRect, .C = c.goop_draw_rect_t },
-        .{ .Z = CDrawText, .C = c.goop_draw_text_t },
+        .{ .Z = CPaintSurfaceState, .C = c.goop_paint_surface_state_t },
+        .{ .Z = CPaintSurface, .C = c.goop_paint_surface_t },
+        .{ .Z = CPaintText, .C = c.goop_paint_text_t },
         .{ .Z = CClipRect, .C = c.goop_clip_rect_t },
-        .{ .Z = CDrawIcon, .C = c.goop_draw_icon_t },
-        .{ .Z = CDrawCustom, .C = c.goop_draw_custom_t },
-        .{ .Z = CDrawCommand, .C = c.goop_draw_command_t },
-        .{ .Z = CDrawList, .C = c.goop_draw_list_t },
+        .{ .Z = CPaintIcon, .C = c.goop_paint_icon_t },
+        .{ .Z = CPaintCustom, .C = c.goop_paint_custom_t },
+        .{ .Z = CPaintCommand, .C = c.goop_paint_command_t },
+        .{ .Z = CPaintList, .C = c.goop_paint_list_t },
 
         .{ .Z = CTextDimensions, .C = c.goop_text_dimensions_t },
         .{ .Z = CTextMeasureCtx, .C = c.goop_text_measure_ctx_t },
@@ -1724,15 +1742,15 @@ test "c header parses" {
     }
 }
 
-test "c header draw command kinds match" {
+test "c header paint command kinds match" {
     const c = @cImport({
         @cInclude("goop.h");
     });
-    try std.testing.expectEqual(@as(c_int, @intFromEnum(CDrawCommandKind.rect)), c.GOOP_DRAW_RECT);
-    try std.testing.expectEqual(@as(c_int, @intFromEnum(CDrawCommandKind.text)), c.GOOP_DRAW_TEXT);
-    try std.testing.expectEqual(@as(c_int, @intFromEnum(CDrawCommandKind.clip)), c.GOOP_DRAW_CLIP);
-    try std.testing.expectEqual(@as(c_int, @intFromEnum(CDrawCommandKind.icon)), c.GOOP_DRAW_ICON);
-    try std.testing.expectEqual(@as(c_int, @intFromEnum(CDrawCommandKind.custom)), c.GOOP_DRAW_CUSTOM);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CPaintCommandKind.surface)), c.GOOP_PAINT_SURFACE);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CPaintCommandKind.text)), c.GOOP_PAINT_TEXT);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CPaintCommandKind.clip)), c.GOOP_PAINT_CLIP);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CPaintCommandKind.icon)), c.GOOP_PAINT_ICON);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CPaintCommandKind.custom)), c.GOOP_PAINT_CUSTOM);
 }
 
 test "c header widget kinds match" {

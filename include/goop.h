@@ -724,12 +724,12 @@ typedef struct {
 } goop_event_t;
 
 typedef enum {
-    GOOP_DRAW_RECT = 0,
-    GOOP_DRAW_TEXT = 1,
-    GOOP_DRAW_CLIP = 2,
-    GOOP_DRAW_ICON = 3,
-    GOOP_DRAW_CUSTOM = 4,
-} goop_draw_command_kind_t;
+    GOOP_PAINT_SURFACE = 0,
+    GOOP_PAINT_TEXT = 1,
+    GOOP_PAINT_CLIP = 2,
+    GOOP_PAINT_ICON = 3,
+    GOOP_PAINT_CUSTOM = 4,
+} goop_paint_command_kind_t;
 
 typedef enum {
     GOOP_TEXT_ALIGN_START = 0,
@@ -744,23 +744,46 @@ typedef enum {
     GOOP_TEXT_OVERFLOW_WRAP = 3,
 } goop_text_overflow_t;
 
+typedef enum {
+    GOOP_PAINT_SURFACE_GENERIC = 0,
+    GOOP_PAINT_SURFACE_CONTAINER = 1,
+    GOOP_PAINT_SURFACE_CONTROL = 2,
+    GOOP_PAINT_SURFACE_SELECTION = 3,
+    GOOP_PAINT_SURFACE_INDICATOR = 4,
+    GOOP_PAINT_SURFACE_FOCUS_RING = 5,
+    GOOP_PAINT_SURFACE_DROP_TARGET = 6,
+    GOOP_PAINT_SURFACE_GUIDE = 7,
+    GOOP_PAINT_SURFACE_DIVIDER = 8,
+    GOOP_PAINT_SURFACE_OVERLAY = 9,
+} goop_paint_surface_role_t;
+
+typedef struct {
+    bool hovered;
+    bool pressed;
+    bool focused;
+    bool selected;
+    bool active;
+    bool disabled;
+} goop_paint_surface_state_t;
+
 typedef struct {
     goop_rect_t bounds;
+    goop_paint_surface_role_t role;
+    goop_paint_surface_state_t state;
     goop_color_t color;
     goop_color_t border_color;
     float border_width;
     float corner_radius;
-} goop_draw_rect_t;
+} goop_paint_surface_t;
 
 typedef struct {
     goop_rect_t bounds;
-    float baseline_y;
     goop_string_t text;
     goop_color_t color;
     float font_size;
     goop_text_align_t text_align;
     goop_text_overflow_t overflow;
-} goop_draw_text_t;
+} goop_paint_text_t;
 
 typedef struct {
     bool has_bounds;
@@ -774,28 +797,28 @@ typedef struct {
     goop_rect_t bounds;
     uint32_t kind;
     goop_color_t color;
-} goop_draw_icon_t;
+} goop_paint_icon_t;
 
 typedef struct {
     goop_node_handle_t handle;
     goop_rect_t bounds;
-} goop_draw_custom_t;
+} goop_paint_custom_t;
 
 typedef struct {
-    goop_draw_command_kind_t kind;
+    goop_paint_command_kind_t kind;
     union {
-        goop_draw_rect_t rect;
-        goop_draw_text_t text;
+        goop_paint_surface_t surface;
+        goop_paint_text_t text;
         goop_clip_rect_t clip;
-        goop_draw_icon_t icon;
-        goop_draw_custom_t custom;
+        goop_paint_icon_t icon;
+        goop_paint_custom_t custom;
     } data;
-} goop_draw_command_t;
+} goop_paint_command_t;
 
 typedef struct {
-    const goop_draw_command_t *commands;
+    const goop_paint_command_t *commands;
     size_t len;
-} goop_draw_list_t;
+} goop_paint_list_t;
 
 typedef struct {
     float width;
@@ -919,7 +942,7 @@ bool goop_context_clear_clicked_flags(goop_context_t *ctx);
 bool goop_context_push_event(goop_context_t *ctx, const goop_event_t *ev);
 bool goop_context_process_events(goop_context_t *ctx);
 bool goop_context_do_layout(goop_context_t *ctx, const goop_text_measure_ctx_t *measure);
-bool goop_context_generate_draw_list(goop_context_t *ctx, goop_draw_list_t *out_draw_list);
+bool goop_context_generate_paint_list(goop_context_t *ctx, goop_paint_list_t *out_paint_list);
 bool goop_context_set_dimensions(goop_context_t *ctx, uint32_t width, uint32_t height);
 
 bool goop_context_add_root(goop_context_t *ctx, const goop_widget_t *desc, goop_node_handle_t *out_handle);

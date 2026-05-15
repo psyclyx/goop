@@ -14,7 +14,7 @@ Typical frame order:
 4. Run `goop_context_do_layout`.
 5. Run `goop_context_process_events`.
 6. Query widget state with `goop_context_node`, which returns a `goop_node_view_t` snapshot (rect, per-frame interaction flags, and the kind-specific view).
-7. Generate paint commands with `goop_context_generate_draw_list`.
+7. Generate paint commands with `goop_context_generate_paint_list`.
 
 `goop_context_process_events` can trigger another internal layout pass when
 text edits, scrolling, or resize events change layout-affecting state.
@@ -39,34 +39,34 @@ Returned strings are borrowed from `goop`:
 Copy returned strings if you need them to outlive the current widget/context
 state.
 
-## Drawing
+## Painting
 
-`goop_context_generate_draw_list` returns a flat list of:
+`goop_context_generate_paint_list` returns a flat list of:
 
-- `GOOP_DRAW_RECT`
-- `GOOP_DRAW_TEXT`
-- `GOOP_DRAW_CLIP`
-- `GOOP_DRAW_CUSTOM`
+- `GOOP_PAINT_SURFACE`
+- `GOOP_PAINT_TEXT`
+- `GOOP_PAINT_CLIP`
+- `GOOP_PAINT_ICON`
+- `GOOP_PAINT_CUSTOM`
 
-`GOOP_DRAW_CUSTOM` marks a widget that the embedder should render itself. It
+`GOOP_PAINT_CUSTOM` marks a widget that the embedder should render itself. It
 carries the widget handle plus the resolved `bounds`, so custom rendering can
-be inserted at the exact point `goop` emitted it in draw order.
+be inserted at the exact point `goop` emitted it in paint order.
 Use `GOOP_WIDGET_CUSTOM` for a first-class embedder-defined widget that should
 always emit this command; use `goop_context_set_custom_paint` when another
 widget kind needs an additional embedder paint hook.
 
-`GOOP_DRAW_TEXT` carries:
+`GOOP_PAINT_TEXT` carries:
 
 - `bounds`: the content box used for alignment and clipping
-- `baseline_y`: the baseline in Y-down coordinates
 - `text_align`: horizontal alignment within `bounds`
 - `overflow`: clip / wrap / ellipsis policy
 
-If your renderer has baseline-aware text APIs, prefer `baseline_y` over
-guessing from `font_size`.
+The C API exposes the same semantic text command as Zig. Renderers that need a
+baseline can derive one in their text backend using their own font metrics.
 
 The paint list is owned by `goop_context_t` and is valid until the next
-call to `goop_context_generate_draw_list` (or the paint-list equivalent),
+call to `goop_context_generate_paint_list` (or the paint-list equivalent),
 or until `goop_context_destroy`. Other state changes (events, tree edits,
 theme changes, resize) only set the dirty flag — the previous list keeps
 pointing at allocated memory until you regenerate. Copy the slice if you

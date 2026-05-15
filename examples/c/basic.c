@@ -44,32 +44,32 @@ static bool push_text(goop_context_t *ctx, uint32_t codepoint) {
 }
 
 typedef struct {
-    size_t rect;
+    size_t surface;
     size_t text;
     size_t clip;
     size_t icon;
     size_t custom;
     size_t unknown;
-} draw_summary_t;
+} paint_summary_t;
 
-static draw_summary_t summarize_draw_list(const goop_draw_list_t *draw_list) {
-    draw_summary_t summary = {0};
+static paint_summary_t summarize_paint_list(const goop_paint_list_t *paint_list) {
+    paint_summary_t summary = {0};
 
-    for (size_t i = 0; i < draw_list->len; ++i) {
-        switch (draw_list->commands[i].kind) {
-            case GOOP_DRAW_RECT:
-                ++summary.rect;
+    for (size_t i = 0; i < paint_list->len; ++i) {
+        switch (paint_list->commands[i].kind) {
+            case GOOP_PAINT_SURFACE:
+                ++summary.surface;
                 break;
-            case GOOP_DRAW_TEXT:
+            case GOOP_PAINT_TEXT:
                 ++summary.text;
                 break;
-            case GOOP_DRAW_CLIP:
+            case GOOP_PAINT_CLIP:
                 ++summary.clip;
                 break;
-            case GOOP_DRAW_ICON:
+            case GOOP_PAINT_ICON:
                 ++summary.icon;
                 break;
-            case GOOP_DRAW_CUSTOM:
+            case GOOP_PAINT_CUSTOM:
                 ++summary.custom;
                 break;
             default:
@@ -174,19 +174,19 @@ int main(void) {
         return 1;
     }
 
-    goop_draw_list_t draw_list = {0};
-    if (!goop_context_generate_draw_list(ctx, &draw_list) || draw_list.len == 0) {
+    goop_paint_list_t paint_list = {0};
+    if (!goop_context_generate_paint_list(ctx, &paint_list) || paint_list.len == 0) {
         fprintf(stderr, "failed to generate paint list\n");
         goop_context_destroy(ctx);
         return 1;
     }
 
-    printf("goop c example: text=%.*s clicked=%d draw_commands=%zu\n",
-           (int)value.len, value.ptr, clicked ? 1 : 0, draw_list.len);
+    printf("goop c example: text=%.*s clicked=%d paint_commands=%zu\n",
+           (int)value.len, value.ptr, clicked ? 1 : 0, paint_list.len);
 
-    const draw_summary_t summary = summarize_draw_list(&draw_list);
-    printf("draw summary: rect=%zu text=%zu clip=%zu icon=%zu custom=%zu\n",
-           summary.rect, summary.text, summary.clip, summary.icon, summary.custom);
+    const paint_summary_t summary = summarize_paint_list(&paint_list);
+    printf("paint summary: surface=%zu text=%zu clip=%zu icon=%zu custom=%zu\n",
+           summary.surface, summary.text, summary.clip, summary.icon, summary.custom);
 
     if (summary.unknown != 0) {
         fprintf(stderr,
@@ -197,8 +197,8 @@ int main(void) {
         return 1;
     }
 
-    if (summary.rect + summary.text + summary.clip + summary.icon + summary.custom != draw_list.len) {
-        fprintf(stderr, "draw summary did not classify every command\n");
+    if (summary.surface + summary.text + summary.clip + summary.icon + summary.custom != paint_list.len) {
+        fprintf(stderr, "paint summary did not classify every command\n");
         goop_context_destroy(ctx);
         return 1;
     }
@@ -206,16 +206,16 @@ int main(void) {
     if (summary.text < 1) {
         fprintf(stderr,
                 "expected at least one text command (button label), got %zu — "
-                "draw command layout may be misaligned\n",
+                "paint command layout may be misaligned\n",
                 summary.text);
         goop_context_destroy(ctx);
         return 1;
     }
 
     bool found_button_label = false;
-    for (size_t i = 0; i < draw_list.len; ++i) {
-        if (draw_list.commands[i].kind != GOOP_DRAW_TEXT) continue;
-        const goop_draw_text_t *t = &draw_list.commands[i].data.text;
+    for (size_t i = 0; i < paint_list.len; ++i) {
+        if (paint_list.commands[i].kind != GOOP_PAINT_TEXT) continue;
+        const goop_paint_text_t *t = &paint_list.commands[i].data.text;
         if (t->text.len == 5 && t->text.ptr != NULL &&
             memcmp(t->text.ptr, "Apply", 5) == 0) {
             found_button_label = true;
@@ -225,7 +225,7 @@ int main(void) {
     if (!found_button_label) {
         fprintf(stderr,
                 "expected a text command with content \"Apply\" — "
-                "goop_draw_text_t field layout likely diverged from c_api.zig\n");
+                "goop_paint_text_t field layout likely diverged from c_api.zig\n");
         goop_context_destroy(ctx);
         return 1;
     }

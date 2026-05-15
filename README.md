@@ -169,8 +169,8 @@ if (goop_context_node(ctx, button, &view) && view.kind.kind == GOOP_WIDGET_BUTTO
     /* view.clicked, view.kind.data.button.label */
 }
 
-goop_draw_list_t draw_list;
-goop_context_generate_draw_list(ctx, &draw_list);
+goop_paint_list_t paint_list;
+goop_context_generate_paint_list(ctx, &paint_list);
 
 goop_context_destroy(ctx);
 ```

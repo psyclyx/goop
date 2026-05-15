@@ -53,7 +53,7 @@ The C layer mirrors that flow with:
 3. `goop_context_push_event`
 4. `goop_context_do_layout`
 5. `goop_context_process_events`
-6. `goop_context_generate_draw_list`
+6. `goop_context_generate_paint_list`
 
 ### Widget Tree
 
