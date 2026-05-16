@@ -11,6 +11,7 @@ const dispatch_activation = @import("dispatch/activation.zig");
 const dispatch_control = @import("dispatch/control.zig");
 const dispatch_navigation = @import("dispatch/navigation.zig");
 const dispatch_drag = @import("dispatch/drag.zig");
+const dispatch_focus = @import("dispatch/focus_state.zig");
 const dispatch_hit = @import("dispatch/hit.zig");
 const dispatch_keyboard = @import("dispatch/keyboard.zig");
 const dispatch_menu = @import("dispatch/menu.zig");
@@ -102,18 +103,6 @@ pub fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
     mouse.list_drop_preview = null;
     mouse.table_drop_preview = null;
     mouse.widget_drop_preview = null;
-}
-
-fn setFocusedWidget(tree: *widget.Tree, mouse: *MouseState, target: ?widget.NodeHandle) void {
-    if (mouse.focused) |previous_focus| {
-        if (target == null or !target.?.eql(previous_focus)) {
-            if (tree.isAlive(previous_focus)) {
-                dispatch_text.commitOrCancelNumericEditorOnBlur(tree, previous_focus);
-            }
-        }
-    }
-    mouse.focused = target;
-    focus.syncFocusFlags(tree, mouse.focused);
 }
 
 fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard, text_ctx: ?*const layout.TextMeasureCtx) void {
@@ -217,7 +206,7 @@ fn handleMouseScroll(tree: *widget.Tree, mouse: *MouseState, ms: event.Event.Mou
 
 fn handleFocus(tree: *widget.Tree, mouse: *MouseState, f: event.Event.Focus) void {
     if (!f.focused) {
-        setFocusedWidget(tree, mouse, null);
+        dispatch_focus.setFocusedWidget(tree, mouse, null);
     }
 }
 
@@ -266,11 +255,11 @@ fn dragTextEditorSelection(
 fn setFocusFromPressTarget(tree: *widget.Tree, mouse: *MouseState, target: ?widget.NodeHandle) void {
     if (target) |handle| {
         if (focus.isFocusable(tree.getConst(handle).kind)) {
-            setFocusedWidget(tree, mouse, handle);
+            dispatch_focus.setFocusedWidget(tree, mouse, handle);
             return;
         }
     }
-    setFocusedWidget(tree, mouse, null);
+    dispatch_focus.setFocusedWidget(tree, mouse, null);
 }
 
 fn clearPressedTarget(tree: *widget.Tree, mouse: *MouseState, handle: widget.NodeHandle) void {
