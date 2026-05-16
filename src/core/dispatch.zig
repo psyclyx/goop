@@ -12,6 +12,7 @@ const dispatch_control = @import("dispatch/control.zig");
 const dispatch_navigation = @import("dispatch/navigation.zig");
 const dispatch_drag = @import("dispatch/drag.zig");
 const dispatch_hit = @import("dispatch/hit.zig");
+const dispatch_keyboard = @import("dispatch/keyboard.zig");
 const dispatch_menu = @import("dispatch/menu.zig");
 const dispatch_scroll = @import("dispatch/scroll.zig");
 const dispatch_selection = @import("dispatch/selection.zig");
@@ -121,7 +122,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
         .mouse_button => |mb| handleMouseButton(tree, mouse, theme, text_ctx, mb),
         .mouse_scroll => |ms| handleMouseScroll(tree, mouse, ms),
         .focus => |f| handleFocus(tree, mouse, f),
-        .key => |k| handleKey(tree, mouse, theme, clipboard, k),
+        .key => |k| dispatch_keyboard.handleKey(tree, mouse, theme, clipboard, k),
         .text => |t| dispatch_text.handleText(tree, mouse, t),
         else => {},
     }
@@ -218,70 +219,6 @@ fn handleFocus(tree: *widget.Tree, mouse: *MouseState, f: event.Event.Focus) voi
     if (!f.focused) {
         setFocusedWidget(tree, mouse, null);
     }
-}
-
-fn handleKey(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard, k: event.Event.Key) void {
-    updateModifierState(mouse, k);
-    if (dispatch_text.handleClipboardShortcut(tree, mouse, clipboard, k)) return;
-    if (dispatch_navigation.handleFocusTraversalKey(tree, mouse, k)) return;
-    if (dispatch_text.handleTextEditorKey(tree, mouse, k)) return;
-    if (dispatch_navigation.handleFocusedNavigationKey(tree, mouse, theme, k)) return;
-    if (handleActivationKey(tree, mouse, k)) return;
-    if (handleEscapeKey(tree, mouse, k)) return;
-}
-
-fn keyPressed(k: event.Event.Key) bool {
-    return k.state == .pressed;
-}
-
-fn keyPressedOrRepeat(k: event.Event.Key) bool {
-    return k.state == .pressed or k.state == .repeat;
-}
-
-fn updateModifierState(mouse: *MouseState, k: event.Event.Key) void {
-    // Modifier state is read from two sources:
-    //   1. `Key.mods` set by embedders that translate native modifier state directly.
-    //   2. Discrete modifier press/release events from embedders that do not fill `mods`.
-    if (k.mods.shift or k.mods.ctrl) {
-        mouse.shift_down = k.mods.shift;
-        mouse.ctrl_down = k.mods.ctrl;
-    }
-    switch (k.keycode) {
-        .left_shift, .right_shift => mouse.shift_down = keyPressedOrRepeat(k),
-        .left_ctrl, .right_ctrl => mouse.ctrl_down = keyPressedOrRepeat(k),
-        else => {},
-    }
-}
-
-fn handleActivationKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Key) bool {
-    if (k.keycode != .space and k.keycode != .enter) return false;
-    if (!keyPressed(k)) return true;
-    const focused = mouse.focused orelse return true;
-    if (dispatch_text.treeItemEditing(tree, focused)) {
-        if (k.keycode == .enter) dispatch_activation.commitTreeItemRename(tree, focused);
-    } else if (dispatch_text.numericEditorEditing(tree, focused)) {
-        if (k.keycode == .enter) _ = dispatch_text.commitNumericEditor(tree, focused);
-    } else if (dispatch_text.focusedTextEditor(tree, focused) == null) {
-        dispatch_activation.fireClick(tree, focused);
-    }
-    return true;
-}
-
-fn handleEscapeKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Key) bool {
-    if (k.keycode != .escape) return false;
-    if (!keyPressed(k)) return true;
-    if (mouse.focused) |focused| {
-        if (dispatch_text.treeItemEditing(tree, focused)) {
-            dispatch_activation.cancelTreeItemRename(tree, focused);
-        } else if (dispatch_text.numericEditorEditing(tree, focused)) {
-            dispatch_text.cancelNumericEditor(tree, focused);
-        } else {
-            dispatch_menu.closeAllPopups(tree);
-        }
-    } else {
-        dispatch_menu.closeAllPopups(tree);
-    }
-    return true;
 }
 
 fn handleInlineTextEditorPress(
