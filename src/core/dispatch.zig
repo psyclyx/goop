@@ -7,6 +7,7 @@ const layout = @import("layout.zig");
 const style = @import("style.zig");
 
 const dispatch_types = @import("dispatch/types.zig");
+const dispatch_activation = @import("dispatch/activation.zig");
 const dispatch_control = @import("dispatch/control.zig");
 const dispatch_navigation = @import("dispatch/navigation.zig");
 const dispatch_drag = @import("dispatch/drag.zig");
@@ -256,11 +257,11 @@ fn handleActivationKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Ke
     if (!keyPressed(k)) return true;
     const focused = mouse.focused orelse return true;
     if (dispatch_text.treeItemEditing(tree, focused)) {
-        if (k.keycode == .enter) commitTreeItemRename(tree, focused);
+        if (k.keycode == .enter) dispatch_activation.commitTreeItemRename(tree, focused);
     } else if (dispatch_text.numericEditorEditing(tree, focused)) {
         if (k.keycode == .enter) _ = dispatch_text.commitNumericEditor(tree, focused);
     } else if (dispatch_text.focusedTextEditor(tree, focused) == null) {
-        fireClick(tree, focused);
+        dispatch_activation.fireClick(tree, focused);
     }
     return true;
 }
@@ -270,7 +271,7 @@ fn handleEscapeKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Key) b
     if (!keyPressed(k)) return true;
     if (mouse.focused) |focused| {
         if (dispatch_text.treeItemEditing(tree, focused)) {
-            cancelTreeItemRename(tree, focused);
+            dispatch_activation.cancelTreeItemRename(tree, focused);
         } else if (dispatch_text.numericEditorEditing(tree, focused)) {
             dispatch_text.cancelNumericEditor(tree, focused);
         } else {
@@ -436,7 +437,7 @@ fn pressTreeItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseSta
         dragTextEditorSelection(tree, handle, mouse.x, theme, text_ctx);
     } else {
         const item = &tree.get(handle).kind.tree_item;
-        if (item.editable and shouldBeginTreeRename(item.*, clickInTreeLabel(tree, handle, mouse.x, theme), isDoubleClick(mouse, mb))) {
+        if (item.editable and dispatch_activation.shouldBeginTreeRename(item.*, clickInTreeLabel(tree, handle, mouse.x, theme), isDoubleClick(mouse, mb))) {
             item.beginRename();
             clearPressedTarget(tree, mouse, handle);
         } else {
@@ -524,12 +525,12 @@ fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
             if (rt.eql(pt) and !dragSuppressedClick(tree, dragged_target, pt)) {
                 if (tree.isAlive(pt)) {
                     switch (tree.getConst(pt).kind) {
-                        .table => activateTable(tree, pt, mouse.x, mouse.y),
-                        .selectable => activateSelectable(tree, pt, mouse),
-                        .grid_selector => activateGridSelector(tree, pt, mouse),
-                        .grid_item => activateGridItem(tree, pt, mouse),
-                        .table_row => activateTableRow(tree, pt, mouse),
-                        else => fireClick(tree, pt),
+                        .table => dispatch_activation.activateTable(tree, pt, mouse.x, mouse.y),
+                        .selectable => dispatch_activation.activateSelectable(tree, pt, mouse),
+                        .grid_selector => dispatch_activation.activateGridSelector(tree, pt, mouse),
+                        .grid_item => dispatch_activation.activateGridItem(tree, pt, mouse),
+                        .table_row => dispatch_activation.activateTableRow(tree, pt, mouse),
+                        else => dispatch_activation.fireClick(tree, pt),
                     }
                 }
             }
@@ -556,7 +557,7 @@ fn handleSecondaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
     const release_target = hittest.hitTest(tree, mouse.x, mouse.y);
     if (mouse.right_press_target) |pt| {
         if (release_target) |rt| {
-            if (rt.eql(pt)) fireSecondaryClick(tree, pt, mouse);
+            if (rt.eql(pt)) dispatch_activation.fireSecondaryClick(tree, pt, mouse);
         }
     }
     mouse.right_press_target = null;
@@ -606,77 +607,6 @@ fn treeHasTooltip(tree: *const widget.Tree) bool {
     return false;
 }
 
-fn activateTable(tree: *widget.Tree, handle: widget.NodeHandle, x: f32, y: f32) void {
-    const column = widget.tableHeaderCellIndexAtPoint(tree, handle, x, y) orelse return;
-    const node = tree.get(handle);
-    node.interaction.primary_clicked = true;
-    _ = node.kind.table.toggleSort(column);
-}
-
-fn activateSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*const MouseState) void {
-    const node = tree.get(handle);
-    if (node.kind != .selectable) return;
-
-    node.interaction.primary_clicked = true;
-
-    if (mouse) |state| {
-        if (dispatch_selection.selectableParentListBox(tree, handle)) |list_box| {
-            if (tree.getConst(list_box).kind.list_box.selection_mode == .multiple) {
-                _ = dispatch_selection.selectListBoxMulti(tree, list_box, handle, state);
-                return;
-            }
-        }
-    }
-
-    _ = dispatch_selection.selectSelectable(tree, handle);
-}
-
-fn activateGridSelector(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*const MouseState) void {
-    const node = tree.get(handle);
-    if (node.kind != .grid_selector) return;
-
-    node.interaction.primary_clicked = true;
-    if (mouse) |state| {
-        if (state.ctrl_down or state.shift_down) return;
-    }
-    _ = dispatch_selection.clearGridSelectorSelection(tree, handle);
-}
-
-fn activateGridItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*const MouseState) void {
-    const node = tree.get(handle);
-    if (node.kind != .grid_item) return;
-
-    node.interaction.primary_clicked = true;
-
-    if (mouse) |state| {
-        if (widget.gridItemParentSelector(tree, handle)) |selector| {
-            if (tree.getConst(selector).kind.grid_selector.selection_mode == .multiple) {
-                _ = dispatch_selection.selectGridItemsMulti(tree, selector, handle, state);
-                return;
-            }
-        }
-    }
-
-    _ = dispatch_selection.selectGridItem(tree, handle);
-}
-
-fn activateTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*const MouseState) void {
-    if (!widget.tableRowSelectable(tree, handle)) return;
-
-    const node = tree.get(handle);
-    node.interaction.primary_clicked = true;
-
-    if (mouse) |state| {
-        const table_handle = node.parent orelse return;
-        if (tree.getConst(table_handle).kind.table.selection_mode == .multiple) {
-            _ = dispatch_selection.selectTableRowsMulti(tree, table_handle, handle, state);
-            return;
-        }
-    }
-
-    _ = dispatch_selection.selectTableRow(tree, handle);
-}
-
 /// Check if a mouse press constitutes a double-click based on timing and position.
 fn isDoubleClick(mouse: *const MouseState, mb: event.Event.MouseButton) bool {
     if (mouse.last_click_time_ms == 0 or mb.timestamp_ms == 0) return false;
@@ -688,112 +618,6 @@ fn isDoubleClick(mouse: *const MouseState, mb: event.Event.MouseButton) bool {
 }
 
 /// Fire a click on a widget.
-fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
-    const node = tree.get(handle);
-    switch (node.kind) {
-        .button => {
-            node.interaction.primary_clicked = true;
-        },
-        .checkbox => {
-            node.interaction.primary_clicked = true;
-            node.kind.checkbox.checked = !node.kind.checkbox.checked;
-        },
-        .radio_button => {
-            node.interaction.primary_clicked = true;
-            const group = node.kind.radio_button.group;
-            // Deselect all other radio buttons in the same group
-            for (tree.nodes.items) |*n| {
-                if (n.kind == .radio_button and n.kind.radio_button.group == group) {
-                    n.kind.radio_button.selected = false;
-                }
-            }
-            node.kind.radio_button.selected = true;
-        },
-        .tree_item => {
-            if (node.kind.tree_item.editing) return;
-            node.interaction.primary_clicked = true;
-            const group = node.kind.tree_item.group;
-            for (tree.nodes.items) |*n| {
-                if (n.alive and n.kind == .tree_item and n.kind.tree_item.group == group) {
-                    n.kind.tree_item.selected = false;
-                }
-            }
-            node.kind.tree_item.selected = true;
-        },
-        .dropdown => {
-            node.interaction.primary_clicked = true;
-            node.kind.dropdown.open = !node.kind.dropdown.open;
-        },
-        .selectable => {
-            activateSelectable(tree, handle, null);
-        },
-        .grid_item => {
-            activateGridItem(tree, handle, null);
-        },
-        .drag_value => {
-            if (!node.kind.drag_value.editing) node.kind.drag_value.beginEdit();
-        },
-        .spinbox => {
-            if (!node.kind.spinbox.editing) node.kind.spinbox.beginEdit();
-        },
-        .table_row => {
-            activateTableRow(tree, handle, null);
-        },
-        .menu => {
-            node.interaction.primary_clicked = true;
-            dispatch_menu.toggleOwnedPopup(tree, handle, null);
-        },
-        .menu_item => {
-            if (node.kind.menu_item.disabled) return;
-            node.interaction.primary_clicked = true;
-            if (dispatch_menu.directPopupChild(tree, handle) != null) {
-                dispatch_menu.toggleOwnedPopup(tree, handle, null);
-            } else {
-                dispatch_menu.applyMenuSelection(tree, handle);
-            }
-        },
-        .tab_item => {
-            node.interaction.primary_clicked = true;
-            dispatch_navigation.selectTabItem(tree, handle);
-        },
-        .custom => {
-            node.interaction.primary_clicked = true;
-        },
-        else => {},
-    }
-}
-
-fn fireSecondaryClick(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
-    const node = tree.get(handle);
-    node.interaction.secondary_clicked = true;
-    mouse.last_secondary_click = .{
-        .target = handle,
-        .x = mouse.x,
-        .y = mouse.y,
-    };
-}
-
-fn commitTreeItemRename(tree: *widget.Tree, handle: widget.NodeHandle) void {
-    const node = tree.get(handle);
-    if (node.kind != .tree_item or !node.kind.tree_item.editing) return;
-    node.kind.tree_item.commitRename();
-}
-
-fn cancelTreeItemRename(tree: *widget.Tree, handle: widget.NodeHandle) void {
-    const node = tree.get(handle);
-    if (node.kind != .tree_item or !node.kind.tree_item.editing) return;
-    node.kind.tree_item.cancelRename();
-}
-
-fn shouldBeginTreeRename(item: widget.WidgetKind.TreeItem, clicked_label: bool, is_double_click: bool) bool {
-    if (!clicked_label) return false;
-    return switch (item.rename_trigger) {
-        .none => false,
-        .selected_click => item.selected,
-        .double_click => is_double_click,
-    };
-}
-
 fn clickInTreeDisclosure(tree: *const widget.Tree, handle: widget.NodeHandle, mouse_x: f32, theme: style.Theme) bool {
     if (!dispatch_navigation.hasTreeItemChildren(tree, handle)) return false;
     const left = treeDisclosureX(tree, handle, theme);
