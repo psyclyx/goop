@@ -1,4 +1,5 @@
 const widget = @import("../widget.zig");
+const scrollbar = @import("../scrollbar.zig");
 
 /// Transient input state tracked across events.
 pub const SecondaryClick = struct {
@@ -58,7 +59,7 @@ pub const Drop = union(enum) {
     }
 };
 
-pub const ScrollbarAxis = enum { vertical, horizontal };
+pub const ScrollbarAxis = scrollbar.Axis;
 
 pub const MouseState = struct {
     x: f32 = 0,

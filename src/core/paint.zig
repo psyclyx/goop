@@ -5,6 +5,7 @@ const layout = @import("layout.zig");
 const paint_types = @import("paint_types.zig");
 const primitive_draw = @import("primitive_draw.zig");
 const geometry = @import("geometry.zig");
+const scrollbar = @import("scrollbar.zig");
 
 pub const Rect = paint_types.Rect;
 pub const TextAlign = paint_types.TextAlign;
@@ -97,7 +98,7 @@ fn emitRootNode(
 ) std.mem.Allocator.Error!void {
     const previous_cull_rect = paint_ctx.cull_rect;
     paint_ctx.cull_rect = if (previous_cull_rect) |cull_rect|
-        intersectRects(cull_rect, paint_ctx.paintRect(tree.getConst(handle).layout_rect))
+        geometry.intersectRects(cull_rect, paint_ctx.paintRect(tree.getConst(handle).layout_rect))
     else
         paint_ctx.paintRect(tree.getConst(handle).layout_rect);
     defer paint_ctx.cull_rect = previous_cull_rect;
@@ -126,7 +127,7 @@ fn emitNode(
     if (!in_floating_subtree and (node.kind == .popup or node.kind == .tooltip)) return;
     if (!in_floating_subtree) {
         if (paint_ctx.cull_rect) |cull_rect| {
-            if (node_rect.w > 0 and node_rect.h > 0 and !rectsIntersect(node_rect, cull_rect) and !shouldTraverseCulledNode(tree, handle)) return;
+            if (node_rect.w > 0 and node_rect.h > 0 and !geometry.rectsIntersect(node_rect, cull_rect) and !shouldTraverseCulledNode(tree, handle)) return;
         }
     }
     const resolved = node.style_override.resolve(theme);
@@ -574,7 +575,7 @@ fn appendWrappedLineCommand(
 ) !void {
     const line_bounds = Rect{ .x = bounds.x, .y = y, .w = bounds.w, .h = line_h };
     if (paint_ctx.cull_rect) |cull_rect| {
-        if (!rectsIntersect(line_bounds, cull_rect)) return;
+        if (!geometry.rectsIntersect(line_bounds, cull_rect)) return;
     }
     try appendTextCommand(commands, allocator, line_bounds, text, color, font_size, .start, .clip);
 }
@@ -750,9 +751,9 @@ fn emitTreeItem(
     in_floating_subtree: bool,
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
-    const depth = treeDepth(tree, handle);
-    const indent = @as(f32, @floatFromInt(depth)) * treeIndent(theme, resolved);
-    const slot_width = disclosureSlotWidth(resolved);
+    const depth = geometry.treeDepth(tree, handle);
+    const indent = @as(f32, @floatFromInt(depth)) * geometry.treeIndent(theme, resolved);
+    const slot_width = geometry.treeDisclosureSlotWidth(resolved);
     const disclosure_x = rect.x + resolved.padding.left + indent;
     const disclosure_center_x = disclosure_x + slot_width * 0.5;
     const label_x = disclosure_x + slot_width;
@@ -761,7 +762,7 @@ fn emitTreeItem(
     const text_x = label_x + icon_size + icon_gap;
     const label_bounds = customTextBounds(rect, resolved, text_x, rect.x + rect.w - resolved.padding.right - text_x);
     const label = if (item.editing) node.kind.tree_item.internal.editor.content() else item.label;
-    const has_parent = findTreeParent(tree, handle) != null;
+    const has_parent = geometry.findTreeParent(tree, handle) != null;
     const has_children = treeItemHasChildren(tree, handle);
 
     try emitTreeGuides(paint_ctx, tree, handle, rect, resolved, theme, disclosure_center_x, commands, allocator);
@@ -1447,7 +1448,7 @@ fn emitMenuItem(
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    const has_popup = directPopupChild(tree, handle) != null;
+    const has_popup = geometry.directPopupChild(tree, handle) != null;
     const text_color = if (item.disabled)
         style.Color.rgba(resolved.fg.r, resolved.fg.g, resolved.fg.b, 120)
     else
@@ -1560,7 +1561,7 @@ fn emitSpinBox(
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const rect = paint_ctx.paintRect(node.layout_rect);
-    const buttons = spinBoxButtons(rect);
+    const buttons = geometry.spinBoxButtons(rect);
     const field_rect = Rect{
         .x = buttons.dec.x + buttons.dec.w,
         .y = rect.y,
@@ -1631,7 +1632,7 @@ fn emitTabBar(
         try emitTabItemHeader(paint_ctx, child_node, child_node.kind.tab_item, child_node.style_override.resolve(theme), theme, commands, allocator, text_ctx);
     }
 
-    if (selectedTabItem(tree, handle)) |selected| {
+    if (geometry.selectedTabItem(tree, handle)) |selected| {
         try emitChildren(paint_ctx, tree, selected, theme, commands, allocator, text_ctx, in_floating_subtree);
     }
 }
@@ -1890,7 +1891,7 @@ fn emitScrollArea(
     const rect = paint_ctx.paintRect(node.layout_rect);
     const previous_cull_rect = paint_ctx.cull_rect;
     paint_ctx.cull_rect = if (previous_cull_rect) |cull_rect|
-        intersectRects(cull_rect, rect)
+        geometry.intersectRects(cull_rect, rect)
     else
         rect;
     defer paint_ctx.cull_rect = previous_cull_rect;
@@ -1912,93 +1913,45 @@ fn emitScrollArea(
     // Pop clip
     try commands.append(allocator, .{ .clip = .{ .bounds = null } });
 
-    const extent = scrollContentExtent(tree, handle);
-    const scroll = node.kind.scroll_area;
-    const has_vertical_scrollbar = !scroll.disable_vertical_scroll and extent.h > rect.h + 0.01;
-    const has_horizontal_scrollbar = !scroll.disable_horizontal_scroll and extent.w > rect.w + 0.01;
-
-    if (has_vertical_scrollbar) {
-        const scrollbar_inset: f32 = 2;
-        const track_w = @max(resolved.thumb_width * 0.5, 6);
-        const horizontal_reserve = if (has_horizontal_scrollbar) track_w + scrollbar_inset else 0;
-        const track = Rect{
-            .x = rect.x + rect.w - track_w - scrollbar_inset,
-            .y = rect.y + scrollbar_inset,
-            .w = track_w,
-            .h = @max(rect.h - scrollbar_inset * 2 - horizontal_reserve, 0),
-        };
-        const thumb_h = @max(track.h * (rect.h / extent.h), @min(resolved.thumb_width * 1.5, track.h));
-        const max_scroll = @max(extent.h - rect.h, 0);
-        const thumb_t = if (max_scroll > 0) std.math.clamp(node.kind.scroll_area.scroll_y / max_scroll, 0, 1) else 0;
-        const thumb_y = track.y + (track.h - thumb_h) * thumb_t;
-
-        try commands.append(allocator, .{ .surface = .{
-            .bounds = track,
-            .color = style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 64),
-            .border_color = style.Color.rgba(0, 0, 0, 0),
-            .border_width = 0,
-            .corner_radius = track.w * 0.5,
-        } });
-        try commands.append(allocator, .{ .surface = .{
-            .bounds = .{ .x = track.x, .y = thumb_y, .w = track.w, .h = thumb_h },
-            .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 180),
-            .border_color = style.Color.rgba(0, 0, 0, 0),
-            .border_width = 0,
-            .corner_radius = track.w * 0.5,
-        } });
+    if (scrollbar.verticalMetrics(tree, handle, theme)) |metrics| {
+        try emitScrollbar(paintScrollbarMetrics(paint_ctx, metrics), theme, commands, allocator);
     }
-
-    if (has_horizontal_scrollbar) {
-        const scrollbar_inset: f32 = 2;
-        const track_h = @max(resolved.thumb_width * 0.5, 6);
-        const vertical_reserve = if (has_vertical_scrollbar) track_h + scrollbar_inset else 0;
-        const track = Rect{
-            .x = rect.x + scrollbar_inset,
-            .y = rect.y + rect.h - track_h - scrollbar_inset,
-            .w = @max(rect.w - scrollbar_inset * 2 - vertical_reserve, 0),
-            .h = track_h,
-        };
-        const thumb_w = @max(track.w * (rect.w / extent.w), @min(resolved.thumb_width * 1.5, track.w));
-        const max_scroll = @max(extent.w - rect.w, 0);
-        const thumb_t = if (max_scroll > 0) std.math.clamp(node.kind.scroll_area.scroll_x / max_scroll, 0, 1) else 0;
-        const thumb_x = track.x + (track.w - thumb_w) * thumb_t;
-
-        try commands.append(allocator, .{ .surface = .{
-            .bounds = track,
-            .color = style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 64),
-            .border_color = style.Color.rgba(0, 0, 0, 0),
-            .border_width = 0,
-            .corner_radius = track.h * 0.5,
-        } });
-        try commands.append(allocator, .{ .surface = .{
-            .bounds = .{ .x = thumb_x, .y = track.y, .w = thumb_w, .h = track.h },
-            .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 180),
-            .border_color = style.Color.rgba(0, 0, 0, 0),
-            .border_width = 0,
-            .corner_radius = track.h * 0.5,
-        } });
+    if (scrollbar.horizontalMetrics(tree, handle, theme)) |metrics| {
+        try emitScrollbar(paintScrollbarMetrics(paint_ctx, metrics), theme, commands, allocator);
     }
 }
 
-fn scrollContentExtent(tree: *const widget.Tree, handle: widget.NodeHandle) struct { w: f32, h: f32 } {
-    const node = tree.getConst(handle);
-    const parent_rect = node.layout_rect;
-    const scroll = node.kind.scroll_area;
-    var max_x: f32 = parent_rect.x;
-    var max_y: f32 = parent_rect.y;
+fn paintScrollbarMetrics(paint_ctx: *const PaintCtx, metrics: scrollbar.Metrics) scrollbar.Metrics {
+    var painted = metrics;
+    painted.track = paint_ctx.paintRect(metrics.track);
+    painted.thumb = paint_ctx.paintRect(metrics.thumb);
+    return painted;
+}
 
-    var iter = tree.children(handle);
-    while (iter.next()) |child| {
-        if (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip) continue;
-        const r = tree.getConst(child).layout_rect;
-        max_x = @max(max_x, r.x + scroll.effectiveScrollX() + r.w);
-        max_y = @max(max_y, r.y + scroll.effectiveScrollY() + r.h);
-    }
-
-    return .{
-        .w = max_x - parent_rect.x,
-        .h = max_y - parent_rect.y,
+fn emitScrollbar(
+    metrics: scrollbar.Metrics,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(PaintCommand),
+    allocator: std.mem.Allocator,
+) !void {
+    const radius = switch (metrics.axis) {
+        .vertical => metrics.track.w * 0.5,
+        .horizontal => metrics.track.h * 0.5,
     };
+    try commands.append(allocator, .{ .surface = .{
+        .bounds = metrics.track,
+        .color = style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 64),
+        .border_color = style.Color.rgba(0, 0, 0, 0),
+        .border_width = 0,
+        .corner_radius = radius,
+    } });
+    try commands.append(allocator, .{ .surface = .{
+        .bounds = metrics.thumb,
+        .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 180),
+        .border_color = style.Color.rgba(0, 0, 0, 0),
+        .border_width = 0,
+        .corner_radius = radius,
+    } });
 }
 
 /// Emit a focus ring around a widget's layout rect if it has focus.
@@ -2154,16 +2107,8 @@ fn tableSortChevron(direction: widget.WidgetKind.Table.SortDirection) []const u8
     };
 }
 
-fn directPopupChild(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
-    var iter = tree.children(handle);
-    while (iter.next()) |child| {
-        if (tree.getConst(child).kind == .popup) return child;
-    }
-    return null;
-}
-
 fn menuPopupVisible(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
-    const popup = directPopupChild(tree, handle) orelse return false;
+    const popup = geometry.directPopupChild(tree, handle) orelse return false;
     return shouldDrawNode(tree, popup);
 }
 
@@ -2177,7 +2122,7 @@ fn menuHasActiveFill(tree: *const widget.Tree, handle: widget.NodeHandle, node: 
 
     var iter = tree.children(parent_handle);
     while (iter.next()) |child| {
-        const popup = directPopupChild(tree, child) orelse continue;
+        const popup = geometry.directPopupChild(tree, child) orelse continue;
         if (shouldDrawNode(tree, popup)) return true;
     }
     return false;
@@ -2258,14 +2203,6 @@ fn tableDividerThickness(border_width: f32) f32 {
 fn splitterVisibleRect(divider: Rect, direction: widget.WidgetKind.Container.Direction) Rect {
     _ = direction;
     return snappedRect(divider);
-}
-
-fn spinBoxButtons(rect: Rect) struct { dec: Rect, inc: Rect } {
-    const button_w = @min(rect.h, 28);
-    return .{
-        .dec = .{ .x = rect.x, .y = rect.y, .w = button_w, .h = rect.h },
-        .inc = .{ .x = rect.x + rect.w - button_w, .y = rect.y, .w = button_w, .h = rect.h },
-    };
 }
 
 fn tabItemChrome(
@@ -2374,7 +2311,7 @@ fn emitTreeGuides(
     allocator: std.mem.Allocator,
 ) !void {
     var ancestor = tree.getConst(handle).parent;
-    var ancestor_depth = treeDepth(tree, handle);
+    var ancestor_depth = geometry.treeDepth(tree, handle);
 
     while (ancestor) |ancestor_handle| {
         const ancestor_node = tree.getConst(ancestor_handle);
@@ -2394,11 +2331,11 @@ fn emitTreeGuides(
         ancestor = ancestor_node.parent;
     }
 
-    if (findTreeParent(tree, handle)) |parent_handle| {
+    if (geometry.findTreeParent(tree, handle)) |parent_handle| {
         const parent_rect = paint_ctx.paintRect(tree.getConst(parent_handle).layout_rect);
         const parent_bottom_y = parent_rect.y + parent_rect.h;
         const row_center_y = row_rect.y + row_rect.h * 0.5;
-        const parent_guide_x = treeParentGuideCenterX(row_rect, resolved, theme, treeDepth(tree, handle));
+        const parent_guide_x = treeParentGuideCenterX(row_rect, resolved, theme, geometry.treeDepth(tree, handle));
         const start_y = if (previousTreeSibling(tree, handle) != null)
             row_rect.y
         else
@@ -2471,7 +2408,7 @@ fn emitTreeDisclosure(
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
 ) !void {
-    const slot_width = disclosureSlotWidth(resolved);
+    const slot_width = geometry.treeDisclosureSlotWidth(resolved);
     const size = @max(resolved.font_size * 0.7, 10);
     const box_rect = Rect{
         .x = disclosure_x + (slot_width - size) * 0.5,
@@ -2549,8 +2486,8 @@ fn treeGuideCenterX(
     theme: style.Theme,
     depth: u32,
 ) f32 {
-    const indent = @as(f32, @floatFromInt(depth)) * treeIndent(theme, resolved);
-    return row_rect.x + resolved.padding.left + indent + disclosureSlotWidth(resolved) * 0.5;
+    const indent = @as(f32, @floatFromInt(depth)) * geometry.treeIndent(theme, resolved);
+    return row_rect.x + resolved.padding.left + indent + geometry.treeDisclosureSlotWidth(resolved) * 0.5;
 }
 
 fn treeParentGuideCenterX(
@@ -2560,34 +2497,6 @@ fn treeParentGuideCenterX(
     depth: u32,
 ) f32 {
     return treeGuideCenterX(row_rect, resolved, theme, if (depth == 0) 0 else depth - 1);
-}
-
-fn findTreeParent(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
-    var current = tree.getConst(handle).parent;
-    while (current) |parent_handle| {
-        if (tree.getConst(parent_handle).kind == .tree_item) return parent_handle;
-        current = tree.getConst(parent_handle).parent;
-    }
-    return null;
-}
-
-fn selectedTabItem(tree: *const widget.Tree, parent: widget.NodeHandle) ?widget.NodeHandle {
-    var iter = tree.children(parent);
-    while (iter.next()) |child| {
-        const node = tree.getConst(child);
-        if (node.kind == .tab_item and node.kind.tab_item.selected) return child;
-    }
-    return null;
-}
-
-fn formatScalar(buf: *[64]u8, value: f32, precision: u8) []const u8 {
-    return switch (@min(precision, 4)) {
-        0 => std.fmt.bufPrint(buf, "{d:.0}", .{value}) catch "0",
-        1 => std.fmt.bufPrint(buf, "{d:.1}", .{value}) catch "0.0",
-        2 => std.fmt.bufPrint(buf, "{d:.2}", .{value}) catch "0.00",
-        3 => std.fmt.bufPrint(buf, "{d:.3}", .{value}) catch "0.000",
-        else => std.fmt.bufPrint(buf, "{d:.4}", .{value}) catch "0.0000",
-    };
 }
 
 fn emitChildren(
@@ -2801,24 +2710,6 @@ fn emitDragGhostRect(
     } });
 }
 
-fn rectsIntersect(a: Rect, b: Rect) bool {
-    if (a.w <= 0 or a.h <= 0 or b.w <= 0 or b.h <= 0) return false;
-    return a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h;
-}
-
-fn intersectRects(a: Rect, b: Rect) Rect {
-    const x0 = @max(a.x, b.x);
-    const y0 = @max(a.y, b.y);
-    const x1 = @min(a.x + a.w, b.x + b.w);
-    const y1 = @min(a.y + a.h, b.y + b.h);
-    return .{
-        .x = x0,
-        .y = y0,
-        .w = @max(x1 - x0, 0),
-        .h = @max(y1 - y0, 0),
-    };
-}
-
 fn shouldDrawNode(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     const node = tree.getConst(handle);
     return drawPredicate(node.kind)(tree, handle, node);
@@ -2885,25 +2776,6 @@ fn treeItemIconSize(item: widget.WidgetKind.TreeItem, row_rect: Rect, resolved: 
 fn treeItemIconGap(item: widget.WidgetKind.TreeItem, theme: style.Theme) f32 {
     if (item.icon == null) return 0;
     return @max(theme.spacing * 0.5, 4);
-}
-
-fn treeDepth(tree: *const widget.Tree, handle: widget.NodeHandle) u32 {
-    var depth: u32 = 0;
-    var current = tree.getConst(handle).parent;
-    while (current) |parent_handle| {
-        const parent = tree.getConst(parent_handle);
-        if (parent.kind == .tree_item) depth += 1;
-        current = parent.parent;
-    }
-    return depth;
-}
-
-fn treeIndent(theme: style.Theme, resolved: style.ResolvedStyle) f32 {
-    return resolved.font_size + theme.spacing;
-}
-
-fn disclosureSlotWidth(resolved: style.ResolvedStyle) f32 {
-    return resolved.font_size + 4;
 }
 
 fn dropdownChevronDown() []const u8 {

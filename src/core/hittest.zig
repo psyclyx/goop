@@ -110,8 +110,7 @@ fn falseInteractive(_: widget.WidgetKind) bool {
 }
 
 pub fn pointInRect(x: f32, y: f32, rect: paint.Rect) bool {
-    return x >= rect.x and x < rect.x + rect.w and
-        y >= rect.y and y < rect.y + rect.h;
+    return geometry.pointInRect(x, y, rect);
 }
 
 fn hitTestFloatingSubtrees(
@@ -332,7 +331,7 @@ fn childHitState(node: *const widget.Node, state: HitState) HitState {
     return .{
         .offset_x = state.offset_x - scroll.effectiveScrollX(),
         .offset_y = state.offset_y - scroll.effectiveScrollY(),
-        .clip = if (state.clip) |clip| intersectRects(clip, node_rect) else node_rect,
+        .clip = if (state.clip) |clip| geometry.intersectRects(clip, node_rect) else node_rect,
     };
 }
 
@@ -342,19 +341,6 @@ fn translatedRect(rect: paint.Rect, state: HitState) paint.Rect {
         .y = rect.y + state.offset_y,
         .w = rect.w,
         .h = rect.h,
-    };
-}
-
-fn intersectRects(a: paint.Rect, b: paint.Rect) paint.Rect {
-    const x0 = @max(a.x, b.x);
-    const y0 = @max(a.y, b.y);
-    const x1 = @min(a.x + a.w, b.x + b.w);
-    const y1 = @min(a.y + a.h, b.y + b.h);
-    return .{
-        .x = x0,
-        .y = y0,
-        .w = @max(x1 - x0, 0),
-        .h = @max(y1 - y0, 0),
     };
 }
 

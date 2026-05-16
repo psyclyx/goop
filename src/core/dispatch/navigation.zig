@@ -3,6 +3,7 @@ const widget = @import("../widget.zig");
 const event = @import("../event.zig");
 const focus = @import("../focus.zig");
 const style = @import("../style.zig");
+const geometry = @import("../geometry.zig");
 const types = @import("types.zig");
 const control = @import("control.zig");
 const selection = @import("selection.zig");
@@ -55,7 +56,7 @@ fn navigateLeft(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, focu
         const node = tree.get(focused);
         if (node.kind.tree_item.expanded and hasTreeItemChildren(tree, focused)) {
             toggleTreeItem(tree, focused);
-        } else if (findTreeParent(tree, focused)) |parent| {
+        } else if (geometry.findTreeParent(tree, focused)) |parent| {
             mouse.focused = parent;
             focus.syncFocusFlags(tree, mouse.focused);
         }
@@ -193,15 +194,6 @@ pub fn hasTreeItemChildren(tree: *const widget.Tree, handle: widget.NodeHandle) 
         if (tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) return true;
     }
     return false;
-}
-
-fn findTreeParent(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
-    var current = tree.getConst(handle).parent;
-    while (current) |parent_handle| {
-        if (tree.getConst(parent_handle).kind == .tree_item) return parent_handle;
-        current = tree.getConst(parent_handle).parent;
-    }
-    return null;
 }
 
 fn prevTabItem(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {

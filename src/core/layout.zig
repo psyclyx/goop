@@ -578,10 +578,10 @@ fn emitTreeItem(
 ) void {
     const node = tree.getConst(handle);
     const label = if (item.editing) node.kind.tree_item.internal.editor.content() else item.label;
-    const depth = treeDepth(tree, handle);
-    const left_indent = @as(f32, @floatFromInt(depth)) * treeIndent(theme, resolved);
+    const depth = geometry.treeDepth(tree, handle);
+    const left_indent = @as(f32, @floatFromInt(depth)) * geometry.treeIndent(theme, resolved);
     var header_padding = resolved.padding;
-    header_padding.left += left_indent + disclosureSlotWidth(resolved) + treeItemIconSlotWidth(item, theme, resolved);
+    header_padding.left += left_indent + geometry.treeDisclosureSlotWidth(resolved) + geometry.treeItemIconSlotWidth(item, theme, resolved);
     const min_width = header_padding.left + header_padding.right +
         measureTextDimensions(label, resolved.font_size, currentTextMeasureCtx()).width;
 
@@ -1176,7 +1176,7 @@ fn emitMenuItem(
     resolved: style_mod.ResolvedStyle,
     theme: style_mod.Theme,
 ) void {
-    const has_submenu = directPopupChild(tree, handle) != null;
+    const has_submenu = geometry.directPopupChild(tree, handle) != null;
     const text_color = if (item.disabled)
         style_mod.Color.rgba(resolved.fg.r, resolved.fg.g, resolved.fg.b, 120)
     else
@@ -1449,7 +1449,7 @@ fn emitTabBar(
     }
     c.Clay__CloseElement();
 
-    if (selectedTabItem(tree, handle)) |selected| {
+    if (geometry.selectedTabItem(tree, handle)) |selected| {
         c.Clay__OpenElement();
         c.Clay__ConfigureOpenElement(.{
             .id = .{},
@@ -2040,14 +2040,6 @@ fn gridItemSizing(tree: *const widget.Tree, handle: widget.NodeHandle) struct { 
     return .{ .w = 96, .h = 96 };
 }
 
-fn directPopupChild(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
-    var iter = tree.children(handle);
-    while (iter.next()) |child| {
-        if (tree.getConst(child).kind == .popup) return child;
-    }
-    return null;
-}
-
 fn emitSplitterPaneOpen(direction: widget.WidgetKind.Container.Direction, ratio: f32) void {
     c.Clay__OpenElement();
     c.Clay__ConfigureOpenElement(.{
@@ -2161,7 +2153,7 @@ fn popupMenuContentMinWidth(
         found_menu_item = true;
 
         const item_resolved = child_node.style_override.resolve(theme);
-        const has_submenu = directPopupChild(tree, child) != null;
+        const has_submenu = geometry.directPopupChild(tree, child) != null;
         width = @max(width, menuItemContentMinWidth(child_node.kind.menu_item, item_resolved, has_submenu, text_ctx));
     }
 
@@ -2186,49 +2178,6 @@ fn menuItemContentMinWidth(
     }
     if (has_submenu) width += gap + reserve_width;
     return width;
-}
-
-fn treeDepth(tree: *const widget.Tree, handle: widget.NodeHandle) u32 {
-    var depth: u32 = 0;
-    var current = tree.getConst(handle).parent;
-    while (current) |parent_handle| {
-        const parent = tree.getConst(parent_handle);
-        if (parent.kind == .tree_item) depth += 1;
-        current = parent.parent;
-    }
-    return depth;
-}
-
-fn treeIndent(theme: style_mod.Theme, resolved: style_mod.ResolvedStyle) f32 {
-    return resolved.font_size + theme.spacing;
-}
-
-fn disclosureSlotWidth(resolved: style_mod.ResolvedStyle) f32 {
-    return resolved.font_size + 4;
-}
-
-fn treeItemIconSlotWidth(item: widget.WidgetKind.TreeItem, theme: style_mod.Theme, resolved: style_mod.ResolvedStyle) f32 {
-    if (item.icon == null) return 0;
-    return @max(resolved.font_size, 10) + @max(theme.spacing * 0.5, 4);
-}
-
-fn selectedTabItem(tree: *const widget.Tree, parent: widget.NodeHandle) ?widget.NodeHandle {
-    var iter = tree.children(parent);
-    while (iter.next()) |child| {
-        const node = tree.getConst(child);
-        if (node.kind == .tab_item and node.kind.tab_item.selected) return child;
-    }
-    return null;
-}
-
-fn formatScalar(buf: *[64]u8, value: f32, precision: u8) []const u8 {
-    return switch (@min(precision, 4)) {
-        0 => std.fmt.bufPrint(buf, "{d:.0}", .{value}) catch "0",
-        1 => std.fmt.bufPrint(buf, "{d:.1}", .{value}) catch "0.0",
-        2 => std.fmt.bufPrint(buf, "{d:.2}", .{value}) catch "0.00",
-        3 => std.fmt.bufPrint(buf, "{d:.3}", .{value}) catch "0.000",
-        else => std.fmt.bufPrint(buf, "{d:.4}", .{value}) catch "0.0000",
-    };
 }
 
 fn popupShouldRender(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
@@ -2385,14 +2334,14 @@ fn popupViewport(tree: *const widget.Tree) ?paint.Rect {
     for (tree.nodes.items, 0..) |node, i| {
         if (!node.alive or node.parent != null or node.kind == .popup or node.kind == .tooltip) continue;
         const rect = tree.handleFromIndex(@intCast(i));
-        viewport = unionRect(viewport, tree.getConst(rect).layout_rect);
+        viewport = geometry.unionRect(viewport, tree.getConst(rect).layout_rect);
     }
 
     if (viewport == null) {
         for (tree.nodes.items, 0..) |node, i| {
             if (!node.alive or node.parent != null) continue;
             const handle = tree.handleFromIndex(@intCast(i));
-            viewport = unionRect(viewport, tree.getConst(handle).layout_rect);
+            viewport = geometry.unionRect(viewport, tree.getConst(handle).layout_rect);
         }
     }
 
@@ -2431,7 +2380,7 @@ fn popupSubtreeBounds(tree: *const widget.Tree, handle: widget.NodeHandle) ?pain
     var iter = tree.children(handle);
     while (iter.next()) |child| {
         if (popupSubtreeBounds(tree, child)) |child_bounds| {
-            bounds = unionRect(bounds, child_bounds).?;
+            bounds = geometry.unionRect(bounds, child_bounds).?;
         }
     }
     return bounds;
@@ -2446,23 +2395,6 @@ fn shiftSubtree(tree: *widget.Tree, handle: widget.NodeHandle, dx: f32, dy: f32)
     while (iter.next()) |child| {
         shiftSubtree(tree, child, dx, dy);
     }
-}
-
-fn unionRect(current: ?paint.Rect, next: paint.Rect) ?paint.Rect {
-    if (next.w <= 0 or next.h <= 0) return current;
-    if (current == null) return next;
-
-    const c_rect = current.?;
-    const left = @min(c_rect.x, next.x);
-    const top = @min(c_rect.y, next.y);
-    const right = @max(c_rect.x + c_rect.w, next.x + next.w);
-    const bottom = @max(c_rect.y + c_rect.h, next.y + next.h);
-    return .{
-        .x = left,
-        .y = top,
-        .w = right - left,
-        .h = bottom - top,
-    };
 }
 
 /// Measure the pixel width of text[0..pos].

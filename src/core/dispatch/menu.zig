@@ -1,5 +1,6 @@
 const std = @import("std");
 const widget = @import("../widget.zig");
+const geometry = @import("../geometry.zig");
 const types = @import("types.zig");
 const tree_util = @import("tree.zig");
 
@@ -103,11 +104,7 @@ pub fn closePopupsForPress(tree: *widget.Tree, target: ?widget.NodeHandle) void 
 }
 
 pub fn directPopupChild(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
-    var iter = tree.children(handle);
-    while (iter.next()) |child| {
-        if (tree.getConst(child).kind == .popup) return child;
-    }
-    return null;
+    return geometry.directPopupChild(tree, handle);
 }
 
 pub fn toggleOwnedPopup(tree: *widget.Tree, owner: widget.NodeHandle, mouse: ?*MouseState) void {
