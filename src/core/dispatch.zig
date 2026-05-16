@@ -13,6 +13,7 @@ const dispatch_drag = @import("dispatch/drag.zig");
 const dispatch_menu = @import("dispatch/menu.zig");
 const dispatch_scroll = @import("dispatch/scroll.zig");
 const dispatch_selection = @import("dispatch/selection.zig");
+const dispatch_text = @import("dispatch/text.zig");
 pub const SecondaryClick = dispatch_types.SecondaryClick;
 pub const TreeDrop = dispatch_types.TreeDrop;
 pub const ContainerDrop = dispatch_types.ContainerDrop;
@@ -104,7 +105,7 @@ fn setFocusedWidget(tree: *widget.Tree, mouse: *MouseState, target: ?widget.Node
     if (mouse.focused) |previous_focus| {
         if (target == null or !target.?.eql(previous_focus)) {
             if (tree.isAlive(previous_focus)) {
-                commitOrCancelNumericEditorOnBlur(tree, previous_focus);
+                dispatch_text.commitOrCancelNumericEditorOnBlur(tree, previous_focus);
             }
         }
     }
@@ -119,7 +120,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
         .mouse_scroll => |ms| handleMouseScroll(tree, mouse, ms),
         .focus => |f| handleFocus(tree, mouse, f),
         .key => |k| handleKey(tree, mouse, theme, clipboard, k),
-        .text => |t| handleText(tree, mouse, t),
+        .text => |t| dispatch_text.handleText(tree, mouse, t),
         else => {},
     }
 }
@@ -219,9 +220,9 @@ fn handleFocus(tree: *widget.Tree, mouse: *MouseState, f: event.Event.Focus) voi
 
 fn handleKey(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard, k: event.Event.Key) void {
     updateModifierState(mouse, k);
-    if (handleClipboardShortcut(tree, mouse, clipboard, k)) return;
+    if (dispatch_text.handleClipboardShortcut(tree, mouse, clipboard, k)) return;
     if (handleFocusTraversalKey(tree, mouse, k)) return;
-    if (handleTextEditorKey(tree, mouse, k)) return;
+    if (dispatch_text.handleTextEditorKey(tree, mouse, k)) return;
     if (handleFocusedNavigationKey(tree, mouse, theme, k)) return;
     if (handleActivationKey(tree, mouse, k)) return;
     if (handleEscapeKey(tree, mouse, k)) return;
@@ -250,153 +251,16 @@ fn updateModifierState(mouse: *MouseState, k: event.Event.Key) void {
     }
 }
 
-fn handleClipboardShortcut(tree: *widget.Tree, mouse: *MouseState, clipboard: ?Clipboard, k: event.Event.Key) bool {
-    if (!mouse.ctrl_down) return false;
-    switch (k.keycode) {
-        .a => {
-            if (!keyPressedOrRepeat(k)) return true;
-            const focused = mouse.focused orelse return true;
-            if (focusedTextEditor(tree, focused)) |editor| {
-                if (editor.len > 0) {
-                    editor.selection_anchor = 0;
-                    editor.cursor = editor.len;
-                }
-            } else if (tree.getConst(focused).kind == .grid_item) {
-                if (widget.gridItemParentSelector(tree, focused)) |selector| {
-                    if (tree.getConst(selector).kind.grid_selector.selection_mode == .multiple) {
-                        _ = dispatch_selection.selectAllGridSelector(tree, selector);
-                    }
-                }
-            }
-            return true;
-        },
-        .c => {
-            if (!keyPressed(k)) return true;
-            const cb = clipboard orelse return true;
-            const focused = mouse.focused orelse return true;
-            const editor = focusedTextEditor(tree, focused) orelse return true;
-            if (editor.hasSelection()) cb.setText(editor.selectedContent());
-            return true;
-        },
-        .x => {
-            if (!keyPressed(k)) return true;
-            const cb = clipboard orelse return true;
-            const focused = mouse.focused orelse return true;
-            const editor = focusedTextEditor(tree, focused) orelse return true;
-            if (editor.hasSelection()) {
-                cb.setText(editor.selectedContent());
-                editor.deleteSelection();
-            }
-            return true;
-        },
-        .v => {
-            if (!keyPressed(k)) return true;
-            const cb = clipboard orelse return true;
-            const focused = mouse.focused orelse return true;
-            const editor = focusedTextEditor(tree, focused) orelse return true;
-            if (cb.getText()) |text| editor.insertSlice(text);
-            return true;
-        },
-        else => return false,
-    }
-}
-
 fn handleFocusTraversalKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Key) bool {
     if (k.keycode != .tab) return false;
     if (!keyPressedOrRepeat(k)) return true;
-    if (mouse.focused) |f| commitOrCancelNumericEditorOnBlur(tree, f);
+    if (mouse.focused) |f| dispatch_text.commitOrCancelNumericEditorOnBlur(tree, f);
     mouse.focused = if (mouse.shift_down)
         focus.focusPrev(tree, mouse.focused)
     else
         focus.focusNext(tree, mouse.focused);
     focus.syncFocusFlags(tree, mouse.focused);
     return true;
-}
-
-fn handleTextEditorKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Key) bool {
-    if (!keyPressedOrRepeat(k)) return false;
-    const focused = mouse.focused orelse return switch (k.keycode) {
-        .backspace, .delete, .left, .right, .home, .end => true,
-        else => false,
-    };
-    const editor = focusedTextEditor(tree, focused) orelse return switch (k.keycode) {
-        .backspace, .delete => true,
-        else => false,
-    };
-
-    switch (k.keycode) {
-        .backspace => {
-            if (mouse.ctrl_down) editor.deleteBackWord() else editor.deleteBack();
-            return true;
-        },
-        .delete => {
-            if (mouse.ctrl_down) editor.deleteForwardWord() else editor.deleteForward();
-            return true;
-        },
-        .left => {
-            moveTextCursorLeft(editor, mouse);
-            return true;
-        },
-        .right => {
-            moveTextCursorRight(editor, mouse);
-            return true;
-        },
-        .home => {
-            if (mouse.shift_down) {
-                if (editor.selection_anchor == null) editor.selection_anchor = editor.cursor;
-            } else {
-                editor.clearSelection();
-            }
-            editor.cursor = 0;
-            return true;
-        },
-        .end => {
-            if (mouse.shift_down) {
-                if (editor.selection_anchor == null) editor.selection_anchor = editor.cursor;
-            } else {
-                editor.clearSelection();
-            }
-            editor.cursor = editor.len;
-            return true;
-        },
-        else => return false,
-    }
-}
-
-fn moveTextCursorLeft(editor: *widget.WidgetKind.TextInput, mouse: *const MouseState) void {
-    if (mouse.shift_down) {
-        if (editor.selection_anchor == null) editor.selection_anchor = editor.cursor;
-        if (mouse.ctrl_down) {
-            editor.cursor = editor.prevWordBoundary(editor.cursor);
-        } else if (editor.cursor > 0) {
-            editor.cursor = editor.prevCodepointBoundary(editor.cursor);
-        }
-    } else if (editor.hasSelection()) {
-        editor.cursor = editor.selectionRange().start;
-        editor.clearSelection();
-    } else if (mouse.ctrl_down) {
-        editor.cursor = editor.prevWordBoundary(editor.cursor);
-    } else if (editor.cursor > 0) {
-        editor.cursor = editor.prevCodepointBoundary(editor.cursor);
-    }
-}
-
-fn moveTextCursorRight(editor: *widget.WidgetKind.TextInput, mouse: *const MouseState) void {
-    if (mouse.shift_down) {
-        if (editor.selection_anchor == null) editor.selection_anchor = editor.cursor;
-        if (mouse.ctrl_down) {
-            editor.cursor = editor.nextWordBoundary(editor.cursor);
-        } else if (editor.cursor < editor.len) {
-            editor.cursor = editor.nextCodepointBoundary(editor.cursor);
-        }
-    } else if (editor.hasSelection()) {
-        editor.cursor = editor.selectionRange().end;
-        editor.clearSelection();
-    } else if (mouse.ctrl_down) {
-        editor.cursor = editor.nextWordBoundary(editor.cursor);
-    } else if (editor.cursor < editor.len) {
-        editor.cursor = editor.nextCodepointBoundary(editor.cursor);
-    }
 }
 
 fn handleFocusedNavigationKey(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, k: event.Event.Key) bool {
@@ -472,7 +336,7 @@ fn navigateUp(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, focuse
         if (gridItemAbove(tree, focused)) |prev| setKeyboardFocusAfterNavigation(tree, mouse, prev, .grid);
     } else if (tree.getConst(focused).kind == .table_row) {
         if (prevTableRowSibling(tree, focused)) |prev| setKeyboardFocusAfterNavigation(tree, mouse, prev, .table);
-    } else if (tree.getConst(focused).kind == .tree_item and !treeItemEditing(tree, focused)) {
+    } else if (tree.getConst(focused).kind == .tree_item and !dispatch_text.treeItemEditing(tree, focused)) {
         mouse.focused = prevVisibleTreeItem(tree, focused) orelse mouse.focused;
         focus.syncFocusFlags(tree, mouse.focused);
     }
@@ -492,7 +356,7 @@ fn navigateDown(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, focu
         if (gridItemBelow(tree, focused)) |next| setKeyboardFocusAfterNavigation(tree, mouse, next, .grid);
     } else if (tree.getConst(focused).kind == .table_row) {
         if (nextTableRowSibling(tree, focused)) |next| setKeyboardFocusAfterNavigation(tree, mouse, next, .table);
-    } else if (tree.getConst(focused).kind == .tree_item and !treeItemEditing(tree, focused)) {
+    } else if (tree.getConst(focused).kind == .tree_item and !dispatch_text.treeItemEditing(tree, focused)) {
         mouse.focused = nextVisibleTreeItem(tree, focused) orelse mouse.focused;
         focus.syncFocusFlags(tree, mouse.focused);
     }
@@ -538,11 +402,11 @@ fn handleActivationKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Ke
     if (k.keycode != .space and k.keycode != .enter) return false;
     if (!keyPressed(k)) return true;
     const focused = mouse.focused orelse return true;
-    if (treeItemEditing(tree, focused)) {
+    if (dispatch_text.treeItemEditing(tree, focused)) {
         if (k.keycode == .enter) commitTreeItemRename(tree, focused);
-    } else if (numericEditorEditing(tree, focused)) {
-        if (k.keycode == .enter) _ = commitNumericEditor(tree, focused);
-    } else if (focusedTextEditor(tree, focused) == null) {
+    } else if (dispatch_text.numericEditorEditing(tree, focused)) {
+        if (k.keycode == .enter) _ = dispatch_text.commitNumericEditor(tree, focused);
+    } else if (dispatch_text.focusedTextEditor(tree, focused) == null) {
         fireClick(tree, focused);
     }
     return true;
@@ -552,10 +416,10 @@ fn handleEscapeKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Key) b
     if (k.keycode != .escape) return false;
     if (!keyPressed(k)) return true;
     if (mouse.focused) |focused| {
-        if (treeItemEditing(tree, focused)) {
+        if (dispatch_text.treeItemEditing(tree, focused)) {
             cancelTreeItemRename(tree, focused);
-        } else if (numericEditorEditing(tree, focused)) {
-            cancelNumericEditor(tree, focused);
+        } else if (dispatch_text.numericEditorEditing(tree, focused)) {
+            dispatch_text.cancelNumericEditor(tree, focused);
         } else {
             dispatch_menu.closeAllPopups(tree);
         }
@@ -563,60 +427,6 @@ fn handleEscapeKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Key) b
         dispatch_menu.closeAllPopups(tree);
     }
     return true;
-}
-
-fn handleText(tree: *widget.Tree, mouse: *MouseState, t: event.Event.Text) void {
-    if (mouse.focused) |f| {
-        if (focusedTextEditor(tree, f)) |editor| {
-            if (isPrintableTextCodepoint(t.codepoint) and
-                (!numericEditorEditing(tree, f) or isNumericEditorCodepoint(t.codepoint)))
-            {
-                editor.insertCodepoint(t.codepoint);
-            }
-        } else if (isPrintableTextCodepoint(t.codepoint)) {
-            beginNumericEditorTextInput(tree, f, t.codepoint);
-        }
-    }
-}
-
-fn isPrintableTextCodepoint(codepoint: u21) bool {
-    if (!std.unicode.utf8ValidCodepoint(codepoint)) return false;
-    return switch (codepoint) {
-        0x00...0x1F, 0x7F...0x9F => false,
-        else => true,
-    };
-}
-
-fn isNumericEditorCodepoint(codepoint: u21) bool {
-    return switch (codepoint) {
-        '+', '-', '.', 'e', 'E', '0'...'9' => true,
-        else => false,
-    };
-}
-
-fn focusedTextEditor(tree: *widget.Tree, handle: widget.NodeHandle) ?*widget.WidgetKind.TextInput {
-    const node = tree.get(handle);
-    return switch (node.kind) {
-        .text_input => &node.kind.text_input,
-        .tree_item => if (node.kind.tree_item.editing) &node.kind.tree_item.internal.editor else null,
-        .drag_value => if (node.kind.drag_value.editing) &node.kind.drag_value.internal.editor else null,
-        .spinbox => if (node.kind.spinbox.editing) &node.kind.spinbox.internal.editor else null,
-        else => null,
-    };
-}
-
-fn treeItemEditing(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
-    const node = tree.getConst(handle);
-    return node.kind == .tree_item and node.kind.tree_item.editing;
-}
-
-fn numericEditorEditing(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
-    const node = tree.getConst(handle);
-    return switch (node.kind) {
-        .drag_value => node.kind.drag_value.editing,
-        .spinbox => node.kind.spinbox.editing,
-        else => false,
-    };
 }
 
 fn handleInlineTextEditorPress(
@@ -645,58 +455,6 @@ fn handleInlineTextEditorPress(
     }
 }
 
-fn beginDragValueEdit(tree: *widget.Tree, handle: widget.NodeHandle) void {
-    const drag_value = &tree.get(handle).kind.drag_value;
-    if (!drag_value.editing) drag_value.beginEdit();
-}
-
-fn beginSpinBoxEdit(tree: *widget.Tree, handle: widget.NodeHandle) void {
-    const spinbox = &tree.get(handle).kind.spinbox;
-    if (!spinbox.editing) spinbox.beginEdit();
-}
-
-fn beginNumericEditorTextInput(tree: *widget.Tree, handle: widget.NodeHandle, codepoint: u21) void {
-    if (!tree.isAlive(handle) or !isNumericEditorCodepoint(codepoint)) return;
-    switch (tree.getConst(handle).kind) {
-        .drag_value => {
-            beginDragValueEdit(tree, handle);
-            tree.get(handle).kind.drag_value.internal.editor.insertCodepoint(codepoint);
-        },
-        .spinbox => {
-            beginSpinBoxEdit(tree, handle);
-            tree.get(handle).kind.spinbox.internal.editor.insertCodepoint(codepoint);
-        },
-        else => {},
-    }
-}
-
-fn commitNumericEditor(tree: *widget.Tree, handle: widget.NodeHandle) bool {
-    if (!tree.isAlive(handle)) return false;
-    const node = tree.get(handle);
-    const result: widget.CommitResult = switch (node.kind) {
-        .drag_value => node.kind.drag_value.commitEdit(),
-        .spinbox => node.kind.spinbox.commitEdit(),
-        else => return false,
-    };
-    if (result == .changed) node.interaction.changed = true;
-    return result != .invalid;
-}
-
-fn cancelNumericEditor(tree: *widget.Tree, handle: widget.NodeHandle) void {
-    if (!tree.isAlive(handle)) return;
-    const node = tree.get(handle);
-    switch (node.kind) {
-        .drag_value => node.kind.drag_value.cancelEdit(),
-        .spinbox => node.kind.spinbox.cancelEdit(),
-        else => {},
-    }
-}
-
-fn commitOrCancelNumericEditorOnBlur(tree: *widget.Tree, handle: widget.NodeHandle) void {
-    if (!numericEditorEditing(tree, handle)) return;
-    if (!commitNumericEditor(tree, handle)) cancelNumericEditor(tree, handle);
-}
-
 fn dragTextEditorSelection(
     tree: *widget.Tree,
     handle: widget.NodeHandle,
@@ -704,7 +462,7 @@ fn dragTextEditorSelection(
     theme: style.Theme,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) void {
-    if (focusedTextEditor(tree, handle)) |editor| {
+    if (dispatch_text.focusedTextEditor(tree, handle)) |editor| {
         if (textEditorTextX(tree, handle, theme)) |text_x| {
             const font_size = tree.getConst(handle).style_override.resolve(theme).font_size;
             const rel_x = mouse_x - text_x;
