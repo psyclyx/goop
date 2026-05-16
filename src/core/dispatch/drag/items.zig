@@ -1,3 +1,4 @@
+const std = @import("std");
 const widget = @import("../../widget.zig");
 const hittest = @import("../../hittest.zig");
 const paint = @import("../../paint.zig");
@@ -141,11 +142,7 @@ pub fn finalizeSelectableDrag(tree: *widget.Tree, source: widget.NodeHandle, mou
 pub fn clearListDragPreview(tree: *widget.Tree) void {
     for (tree.nodes.items) |*node| {
         if (!node.alive) continue;
-        switch (node.kind) {
-            .list_box => node.kind.list_box.internal.drop_preview_background = false,
-            .selectable => node.kind.selectable.internal.drop_preview = false,
-            else => {},
-        }
+        listPreviewClearer(node.kind)(node);
     }
 }
 
@@ -223,11 +220,7 @@ pub fn finalizeGridItemDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse
 pub fn clearGridDragPreview(tree: *widget.Tree) void {
     for (tree.nodes.items) |*node| {
         if (!node.alive) continue;
-        switch (node.kind) {
-            .grid_selector => node.kind.grid_selector.internal.drop_preview_background = false,
-            .grid_item => node.kind.grid_item.internal.drop_preview = false,
-            else => {},
-        }
+        gridPreviewClearer(node.kind)(node);
     }
 }
 
@@ -307,12 +300,78 @@ pub fn finalizeTableRowDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse
 pub fn clearTableDragPreview(tree: *widget.Tree) void {
     for (tree.nodes.items) |*node| {
         if (!node.alive) continue;
-        switch (node.kind) {
-            .table => node.kind.table.internal.drop_preview_background = false,
-            .table_row => node.kind.table_row.internal.drop_preview = false,
-            else => {},
-        }
+        tablePreviewClearer(node.kind)(node);
     }
+}
+
+const PreviewClearer = *const fn (*widget.Node) void;
+
+fn listPreviewClearer(kind: widget.WidgetKind) PreviewClearer {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return list_preview_clearers[@intFromEnum(tag)];
+}
+
+fn gridPreviewClearer(kind: widget.WidgetKind) PreviewClearer {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return grid_preview_clearers[@intFromEnum(tag)];
+}
+
+fn tablePreviewClearer(kind: widget.WidgetKind) PreviewClearer {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return table_preview_clearers[@intFromEnum(tag)];
+}
+
+const list_preview_clearers = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var clearers: [std.meta.fields(Tag).len]PreviewClearer = undefined;
+    for (&clearers) |*clearer| clearer.* = clearPreviewNoop;
+    clearers[@intFromEnum(Tag.list_box)] = clearListBoxPreview;
+    clearers[@intFromEnum(Tag.selectable)] = clearSelectablePreview;
+    break :blk clearers;
+};
+
+const grid_preview_clearers = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var clearers: [std.meta.fields(Tag).len]PreviewClearer = undefined;
+    for (&clearers) |*clearer| clearer.* = clearPreviewNoop;
+    clearers[@intFromEnum(Tag.grid_selector)] = clearGridSelectorPreview;
+    clearers[@intFromEnum(Tag.grid_item)] = clearGridItemPreview;
+    break :blk clearers;
+};
+
+const table_preview_clearers = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var clearers: [std.meta.fields(Tag).len]PreviewClearer = undefined;
+    for (&clearers) |*clearer| clearer.* = clearPreviewNoop;
+    clearers[@intFromEnum(Tag.table)] = clearTablePreview;
+    clearers[@intFromEnum(Tag.table_row)] = clearTableRowPreview;
+    break :blk clearers;
+};
+
+fn clearPreviewNoop(_: *widget.Node) void {}
+
+fn clearListBoxPreview(node: *widget.Node) void {
+    node.kind.list_box.internal.drop_preview_background = false;
+}
+
+fn clearSelectablePreview(node: *widget.Node) void {
+    node.kind.selectable.internal.drop_preview = false;
+}
+
+fn clearGridSelectorPreview(node: *widget.Node) void {
+    node.kind.grid_selector.internal.drop_preview_background = false;
+}
+
+fn clearGridItemPreview(node: *widget.Node) void {
+    node.kind.grid_item.internal.drop_preview = false;
+}
+
+fn clearTablePreview(node: *widget.Node) void {
+    node.kind.table.internal.drop_preview_background = false;
+}
+
+fn clearTableRowPreview(node: *widget.Node) void {
+    node.kind.table_row.internal.drop_preview = false;
 }
 
 pub fn updateTableRowDragGhostRect(tree: *widget.Tree, source: widget.NodeHandle, mouse: *const MouseState) void {

@@ -54,33 +54,59 @@ pub fn hitTestKind(tree: *const widget.Tree, x: f32, y: f32, kind_tag: std.meta.
 }
 
 pub fn isInteractive(kind: widget.WidgetKind) bool {
-    return switch (kind) {
-        .button,
-        .checkbox,
-        .radio_button,
-        .tree_item,
-        .dropdown,
-        .list_box,
-        .selectable,
-        .grid_selector,
-        .grid_item,
-        .table,
-        .table_row,
-        .menu,
-        .popup,
-        .menu_item,
-        .drag_value,
-        .spinbox,
-        .tab_item,
-        .splitter,
-        .slider,
-        .scroll_area,
-        .container,
-        .text_input,
-        .custom,
-        => true,
-        .text, .table_cell, .toolbar, .status_bar, .menu_bar, .tooltip, .tab_bar, .spacer => false,
-    };
+    return interactiveKind(kind)(kind);
+}
+
+const InteractiveKind = *const fn (widget.WidgetKind) bool;
+
+fn interactiveKind(kind: widget.WidgetKind) InteractiveKind {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return interactive_kinds[@intFromEnum(tag)];
+}
+
+const interactive_kinds = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var kinds: [std.meta.fields(Tag).len]InteractiveKind = undefined;
+    kinds[@intFromEnum(Tag.container)] = trueInteractive;
+    kinds[@intFromEnum(Tag.text)] = falseInteractive;
+    kinds[@intFromEnum(Tag.button)] = trueInteractive;
+    kinds[@intFromEnum(Tag.checkbox)] = trueInteractive;
+    kinds[@intFromEnum(Tag.radio_button)] = trueInteractive;
+    kinds[@intFromEnum(Tag.tree_item)] = trueInteractive;
+    kinds[@intFromEnum(Tag.dropdown)] = trueInteractive;
+    kinds[@intFromEnum(Tag.list_box)] = trueInteractive;
+    kinds[@intFromEnum(Tag.selectable)] = trueInteractive;
+    kinds[@intFromEnum(Tag.grid_selector)] = trueInteractive;
+    kinds[@intFromEnum(Tag.grid_item)] = trueInteractive;
+    kinds[@intFromEnum(Tag.table)] = trueInteractive;
+    kinds[@intFromEnum(Tag.table_row)] = trueInteractive;
+    kinds[@intFromEnum(Tag.table_cell)] = falseInteractive;
+    kinds[@intFromEnum(Tag.toolbar)] = falseInteractive;
+    kinds[@intFromEnum(Tag.status_bar)] = falseInteractive;
+    kinds[@intFromEnum(Tag.menu_bar)] = falseInteractive;
+    kinds[@intFromEnum(Tag.menu)] = trueInteractive;
+    kinds[@intFromEnum(Tag.popup)] = trueInteractive;
+    kinds[@intFromEnum(Tag.tooltip)] = falseInteractive;
+    kinds[@intFromEnum(Tag.menu_item)] = trueInteractive;
+    kinds[@intFromEnum(Tag.drag_value)] = trueInteractive;
+    kinds[@intFromEnum(Tag.spinbox)] = trueInteractive;
+    kinds[@intFromEnum(Tag.tab_bar)] = falseInteractive;
+    kinds[@intFromEnum(Tag.tab_item)] = trueInteractive;
+    kinds[@intFromEnum(Tag.splitter)] = trueInteractive;
+    kinds[@intFromEnum(Tag.slider)] = trueInteractive;
+    kinds[@intFromEnum(Tag.spacer)] = falseInteractive;
+    kinds[@intFromEnum(Tag.scroll_area)] = trueInteractive;
+    kinds[@intFromEnum(Tag.text_input)] = trueInteractive;
+    kinds[@intFromEnum(Tag.custom)] = trueInteractive;
+    break :blk kinds;
+};
+
+fn trueInteractive(_: widget.WidgetKind) bool {
+    return true;
+}
+
+fn falseInteractive(_: widget.WidgetKind) bool {
+    return false;
 }
 
 pub fn pointInRect(x: f32, y: f32, rect: paint.Rect) bool {
@@ -150,15 +176,58 @@ fn hitTestSubtree(
 
 fn isVisible(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     const node = tree.getConst(handle);
-    return switch (node.kind) {
-        .popup => popupVisible(tree, handle),
-        .tooltip => tooltipVisible(tree, handle),
-        else => node.layout_rect.w > 0 and node.layout_rect.h > 0,
-    };
+    return visibilityTester(node.kind)(tree, handle, node);
 }
 
-fn popupVisible(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
-    const node = tree.getConst(handle);
+const VisibilityTester = *const fn (*const widget.Tree, widget.NodeHandle, *const widget.Node) bool;
+
+fn visibilityTester(kind: widget.WidgetKind) VisibilityTester {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return visibility_testers[@intFromEnum(tag)];
+}
+
+const visibility_testers = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var testers: [std.meta.fields(Tag).len]VisibilityTester = undefined;
+    testers[@intFromEnum(Tag.container)] = rectVisible;
+    testers[@intFromEnum(Tag.text)] = rectVisible;
+    testers[@intFromEnum(Tag.button)] = rectVisible;
+    testers[@intFromEnum(Tag.checkbox)] = rectVisible;
+    testers[@intFromEnum(Tag.radio_button)] = rectVisible;
+    testers[@intFromEnum(Tag.tree_item)] = rectVisible;
+    testers[@intFromEnum(Tag.dropdown)] = rectVisible;
+    testers[@intFromEnum(Tag.list_box)] = rectVisible;
+    testers[@intFromEnum(Tag.selectable)] = rectVisible;
+    testers[@intFromEnum(Tag.grid_selector)] = rectVisible;
+    testers[@intFromEnum(Tag.grid_item)] = rectVisible;
+    testers[@intFromEnum(Tag.table)] = rectVisible;
+    testers[@intFromEnum(Tag.table_row)] = rectVisible;
+    testers[@intFromEnum(Tag.table_cell)] = rectVisible;
+    testers[@intFromEnum(Tag.toolbar)] = rectVisible;
+    testers[@intFromEnum(Tag.status_bar)] = rectVisible;
+    testers[@intFromEnum(Tag.menu_bar)] = rectVisible;
+    testers[@intFromEnum(Tag.menu)] = rectVisible;
+    testers[@intFromEnum(Tag.popup)] = popupVisible;
+    testers[@intFromEnum(Tag.tooltip)] = tooltipVisible;
+    testers[@intFromEnum(Tag.menu_item)] = rectVisible;
+    testers[@intFromEnum(Tag.drag_value)] = rectVisible;
+    testers[@intFromEnum(Tag.spinbox)] = rectVisible;
+    testers[@intFromEnum(Tag.tab_bar)] = rectVisible;
+    testers[@intFromEnum(Tag.tab_item)] = rectVisible;
+    testers[@intFromEnum(Tag.splitter)] = rectVisible;
+    testers[@intFromEnum(Tag.slider)] = rectVisible;
+    testers[@intFromEnum(Tag.spacer)] = rectVisible;
+    testers[@intFromEnum(Tag.scroll_area)] = rectVisible;
+    testers[@intFromEnum(Tag.text_input)] = rectVisible;
+    testers[@intFromEnum(Tag.custom)] = rectVisible;
+    break :blk testers;
+};
+
+fn rectVisible(_: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node) bool {
+    return node.layout_rect.w > 0 and node.layout_rect.h > 0;
+}
+
+fn popupVisible(tree: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node) bool {
     if (!node.kind.popup.visible) return false;
     if (node.parent) |parent_handle| {
         const parent = tree.getConst(parent_handle);
@@ -169,10 +238,10 @@ fn popupVisible(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     return node.layout_rect.w > 0 and node.layout_rect.h > 0;
 }
 
-fn tooltipVisible(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
-    const node = tree.getConst(handle);
+fn tooltipVisible(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node) bool {
     const owner_handle = node.parent orelse return false;
     const owner = tree.getConst(owner_handle);
+    _ = handle;
     return (owner.interaction.hovered or owner.interaction.focused) and node.layout_rect.w > 0 and node.layout_rect.h > 0;
 }
 
@@ -180,16 +249,79 @@ fn pointHitsWidget(tree: *const widget.Tree, handle: widget.NodeHandle, x: f32, 
     const node = tree.getConst(handle);
     const local_x = x - state.offset_x;
     const local_y = y - state.offset_y;
-    return switch (node.kind) {
-        .table => pointInRect(local_x, local_y, node.layout_rect),
-        .table_row => widget.tableRowSelectable(tree, handle) and pointInRect(local_x, local_y, node.layout_rect),
-        .splitter => {
-            const resolved = node.style_override.resolve(style.Theme.default);
-            const divider = geometry.splitterDividerRect(node.layout_rect, node.kind.splitter, resolved);
-            return pointInRect(local_x, local_y, geometry.splitterHandleRect(divider, node.kind.splitter));
-        },
-        else => pointInRect(local_x, local_y, node.layout_rect),
-    };
+    if (node.widget_type) |widget_type| {
+        return widget_type.hitTest(.{
+            .widget = .{
+                .tree = @constCast(tree),
+                .handle = handle,
+                .node = @constCast(node),
+                .state = node.widget_state,
+                .theme = .{},
+            },
+            .rect = node.layout_rect,
+            .x = local_x,
+            .y = local_y,
+        });
+    }
+    return pointHitTester(node.kind)(tree, handle, node, local_x, local_y);
+}
+
+const PointHitTester = *const fn (*const widget.Tree, widget.NodeHandle, *const widget.Node, f32, f32) bool;
+
+fn pointHitTester(kind: widget.WidgetKind) PointHitTester {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return point_hit_testers[@intFromEnum(tag)];
+}
+
+const point_hit_testers = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var testers: [std.meta.fields(Tag).len]PointHitTester = undefined;
+    testers[@intFromEnum(Tag.container)] = rectPointHit;
+    testers[@intFromEnum(Tag.text)] = rectPointHit;
+    testers[@intFromEnum(Tag.button)] = rectPointHit;
+    testers[@intFromEnum(Tag.checkbox)] = rectPointHit;
+    testers[@intFromEnum(Tag.radio_button)] = rectPointHit;
+    testers[@intFromEnum(Tag.tree_item)] = rectPointHit;
+    testers[@intFromEnum(Tag.dropdown)] = rectPointHit;
+    testers[@intFromEnum(Tag.list_box)] = rectPointHit;
+    testers[@intFromEnum(Tag.selectable)] = rectPointHit;
+    testers[@intFromEnum(Tag.grid_selector)] = rectPointHit;
+    testers[@intFromEnum(Tag.grid_item)] = rectPointHit;
+    testers[@intFromEnum(Tag.table)] = rectPointHit;
+    testers[@intFromEnum(Tag.table_row)] = tableRowPointHit;
+    testers[@intFromEnum(Tag.table_cell)] = rectPointHit;
+    testers[@intFromEnum(Tag.toolbar)] = rectPointHit;
+    testers[@intFromEnum(Tag.status_bar)] = rectPointHit;
+    testers[@intFromEnum(Tag.menu_bar)] = rectPointHit;
+    testers[@intFromEnum(Tag.menu)] = rectPointHit;
+    testers[@intFromEnum(Tag.popup)] = rectPointHit;
+    testers[@intFromEnum(Tag.tooltip)] = rectPointHit;
+    testers[@intFromEnum(Tag.menu_item)] = rectPointHit;
+    testers[@intFromEnum(Tag.drag_value)] = rectPointHit;
+    testers[@intFromEnum(Tag.spinbox)] = rectPointHit;
+    testers[@intFromEnum(Tag.tab_bar)] = rectPointHit;
+    testers[@intFromEnum(Tag.tab_item)] = rectPointHit;
+    testers[@intFromEnum(Tag.splitter)] = splitterPointHit;
+    testers[@intFromEnum(Tag.slider)] = rectPointHit;
+    testers[@intFromEnum(Tag.spacer)] = rectPointHit;
+    testers[@intFromEnum(Tag.scroll_area)] = rectPointHit;
+    testers[@intFromEnum(Tag.text_input)] = rectPointHit;
+    testers[@intFromEnum(Tag.custom)] = rectPointHit;
+    break :blk testers;
+};
+
+fn rectPointHit(_: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, x: f32, y: f32) bool {
+    return pointInRect(x, y, node.layout_rect);
+}
+
+fn tableRowPointHit(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, x: f32, y: f32) bool {
+    return widget.tableRowSelectable(tree, handle) and pointInRect(x, y, node.layout_rect);
+}
+
+fn splitterPointHit(_: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, x: f32, y: f32) bool {
+    const resolved = node.style_override.resolve(style.Theme.default);
+    const divider = geometry.splitterDividerRect(node.layout_rect, node.kind.splitter, resolved);
+    return pointInRect(x, y, geometry.splitterHandleRect(divider, node.kind.splitter));
 }
 
 fn childHitState(node: *const widget.Node, state: HitState) HitState {

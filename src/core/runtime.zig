@@ -51,6 +51,19 @@ pub const WidgetView = widget.WidgetView;
 pub const NodeView = widget.NodeView;
 pub const NodeSnapshot = widget.NodeSnapshot;
 pub const TreeSnapshot = widget.TreeSnapshot;
+pub const WidgetType = widget.WidgetType;
+pub const WidgetRegistry = widget.WidgetRegistry;
+pub const WidgetCtx = widget.WidgetCtx;
+pub const LayoutCtx = widget.LayoutCtx;
+pub const LayoutSpec = widget.LayoutSpec;
+pub const PaintCtx = widget.PaintCtx;
+pub const HitTestCtx = widget.HitTestCtx;
+pub const PointerEvent = widget.PointerEvent;
+pub const PointerCtx = widget.PointerCtx;
+pub const KeyCtx = widget.KeyCtx;
+pub const TextInputCtx = widget.TextInputCtx;
+pub const ActivateCtx = widget.ActivateCtx;
+pub const TextEditState = widget.TextEditState;
 pub const kindFromDesc = widget.kindFromDesc;
 
 // Tree-walking helpers commonly reached for by embedders. Internal
@@ -242,20 +255,27 @@ pub const Runtime = struct {
     pub fn clearClickedFlags(self: *Runtime, tree: *Tree) void {
         self.mouse.last_secondary_click = null;
         self.mouse.last_drop = null;
-        for (tree.nodes.items) |*node| {
+        for (tree.nodes.items, 0..) |*node, index| {
             if (!node.alive) continue;
             node.interaction.primary_clicked = false;
             node.interaction.secondary_clicked = false;
             node.interaction.drop_received = false;
             node.interaction.changed = false;
             node.interaction.toggled = false;
-            switch (node.kind) {
-                inline else => |*payload| {
-                    if (@hasDecl(@TypeOf(payload.*), "resetPerFrameEvents")) {
-                        payload.resetPerFrameEvents();
-                    }
-                },
+            if (node.widget_type) |widget_type| {
+                if (widget_type.resetFrame) |reset| {
+                    const handle = tree.handleFromIndex(@intCast(index));
+                    reset(.{
+                        .tree = tree,
+                        .handle = handle,
+                        .node = node,
+                        .state = node.widget_state,
+                        .theme = .{},
+                    });
+                }
+                continue;
             }
+            widget.resetPerFrameEvents(&node.kind);
         }
     }
 
@@ -268,6 +288,7 @@ pub const Runtime = struct {
     pub fn updateWidget(self: *Runtime, tree: *Tree, handle: NodeHandle, desc: WidgetDesc) bool {
         if (!tree.isAlive(handle)) return false;
         const node = tree.get(handle);
+        if (node.widget_type != null) return false;
         if (@as(std.meta.Tag(WidgetKind), node.kind) != @as(std.meta.Tag(WidgetDesc), desc)) return false;
         node.kind = widget.kindFromDesc(desc);
         widget.syncDerivedState(&node.kind);
@@ -526,6 +547,20 @@ pub const Context = struct {
     /// Replace a widget's payload. See `Runtime.updateWidget`.
     pub fn updateWidget(self: *Context, handle: NodeHandle, desc: WidgetDesc) bool {
         return self.runtime.updateWidget(&self.tree, handle, desc);
+    }
+
+    /// Add a root-level behavior-backed widget.
+    pub fn addRootWidget(self: *Context, widget_type: *const WidgetType, state: ?*anyopaque) !NodeHandle {
+        const handle = try self.tree.addRootWidget(widget_type, state);
+        self.runtime.invalidate();
+        return handle;
+    }
+
+    /// Add a behavior-backed child widget.
+    pub fn addChildWidget(self: *Context, parent: NodeHandle, widget_type: *const WidgetType, state: ?*anyopaque) !NodeHandle {
+        const handle = try self.tree.addChildWidget(parent, widget_type, state);
+        self.runtime.invalidate();
+        return handle;
     }
 
     /// Replace a widget's per-node style overrides. See `Runtime.setStyle`.
@@ -795,6 +830,125 @@ test "custom widgets expose semantic paint and state" {
         .grow_height = false,
         .focusable = true,
     } }, view.kind);
+}
+
+const TestBehaviorState = struct {
+    pointer_presses: u8 = 0,
+    activations: u8 = 0,
+    key_presses: u8 = 0,
+    text_bytes: u8 = 0,
+};
+
+fn testBehaviorLayout(_: LayoutCtx) LayoutSpec {
+    return .{
+        .width = .{ .size = 80, .grow = false },
+        .height = .{ .size = 24, .grow = false },
+    };
+}
+
+fn testBehaviorPaint(ctx: PaintCtx) !void {
+    var paint_ctx = ctx;
+    try paint_ctx.append(.{ .surface = .{
+        .bounds = ctx.rect,
+        .color = Color.rgb(10, 20, 30),
+        .border_color = Color.rgb(40, 50, 60),
+        .border_width = 1,
+        .corner_radius = 2,
+    } });
+}
+
+fn testBehaviorHit(ctx: HitTestCtx) bool {
+    return ctx.x >= ctx.rect.x + 8 and ctx.x < ctx.rect.x + ctx.rect.w and
+        ctx.y >= ctx.rect.y and ctx.y < ctx.rect.y + ctx.rect.h;
+}
+
+fn testBehaviorFocusable(_: WidgetCtx) bool {
+    return true;
+}
+
+fn testBehaviorPointer(ctx: PointerCtx) bool {
+    if (ctx.event == .press) {
+        const state = ctx.widget.stateAs(TestBehaviorState).?;
+        state.pointer_presses += 1;
+        return true;
+    }
+    return false;
+}
+
+fn testBehaviorActivate(ctx: ActivateCtx) bool {
+    const state = ctx.widget.stateAs(TestBehaviorState).?;
+    state.activations += 1;
+    ctx.widget.node.interaction.primary_clicked = true;
+    return true;
+}
+
+fn testBehaviorKey(ctx: KeyCtx) bool {
+    if (ctx.event.state == .pressed) {
+        const state = ctx.widget.stateAs(TestBehaviorState).?;
+        state.key_presses += 1;
+        return true;
+    }
+    return false;
+}
+
+fn testBehaviorText(ctx: TextInputCtx) bool {
+    const state = ctx.widget.stateAs(TestBehaviorState).?;
+    state.text_bytes += @intCast(ctx.text.len);
+    return true;
+}
+
+const test_behavior_type = WidgetType{
+    .name = "test_behavior",
+    .layout = testBehaviorLayout,
+    .paint = testBehaviorPaint,
+    .hitTest = testBehaviorHit,
+    .focusable = testBehaviorFocusable,
+    .pointer = testBehaviorPointer,
+    .key = testBehaviorKey,
+    .textInput = testBehaviorText,
+    .activate = testBehaviorActivate,
+};
+
+test "behavior-backed widget participates in core passes" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 320, .height = 200 });
+    var registry = WidgetRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    defer ctx.deinit();
+
+    var state = TestBehaviorState{};
+    const widget_type = try registry.register(test_behavior_type);
+    const handle = try ctx.addRootWidget(widget_type, &state);
+    ctx.doLayout(null);
+
+    const rect = ctx.tree.getConst(handle).layout_rect;
+    try std.testing.expectApproxEqAbs(@as(f32, 80), rect.w, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 24), rect.h, 0.01);
+
+    const paint_list = try ctx.generatePaintList();
+    try std.testing.expectEqual(@as(usize, 1), paint_list.commands.len);
+    try std.testing.expect(paint_list.commands[0] == .surface);
+
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = rect.x + 2, .y = rect.y + 2 } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = rect.x + 2, .y = rect.y + 2 } });
+    ctx.processEvents();
+    try std.testing.expectEqual(@as(u8, 0), state.pointer_presses);
+    try std.testing.expectEqual(@as(u8, 0), state.activations);
+
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = rect.x + 10, .y = rect.y + 2 } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = rect.x + 10, .y = rect.y + 2 } });
+    ctx.processEvents();
+    try std.testing.expectEqual(@as(u8, 1), state.pointer_presses);
+    try std.testing.expectEqual(@as(u8, 1), state.activations);
+
+    try ctx.pushEvent(.{ .key = .{ .keycode = .a, .state = .pressed } });
+    try ctx.pushEvent(.{ .text = .{ .codepoint = 'x' } });
+    ctx.processEvents();
+    try std.testing.expectEqual(@as(u8, 1), state.key_presses);
+    try std.testing.expectEqual(@as(u8, 1), state.text_bytes);
+
+    const view = ctx.tree.node(handle).?;
+    try std.testing.expect(view.clicked);
+    try std.testing.expect(view.focused);
 }
 
 test "tree snapshot returns live node views with handles" {

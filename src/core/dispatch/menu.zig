@@ -1,3 +1,4 @@
+const std = @import("std");
 const widget = @import("../widget.zig");
 const types = @import("types.zig");
 const tree_util = @import("tree.zig");
@@ -59,12 +60,34 @@ pub fn applyMenuSelection(tree: *widget.Tree, handle: widget.NodeHandle) void {
 pub fn closeAllPopups(tree: *widget.Tree) void {
     for (tree.nodes.items) |*node| {
         if (!node.alive) continue;
-        switch (node.kind) {
-            .popup => node.kind.popup.visible = false,
-            .dropdown => node.kind.dropdown.open = false,
-            else => {},
-        }
+        menuCloseAction(node.kind)(node);
     }
+}
+
+const MenuCloseAction = *const fn (*widget.Node) void;
+
+fn menuCloseAction(kind: widget.WidgetKind) MenuCloseAction {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return menu_close_actions[@intFromEnum(tag)];
+}
+
+const menu_close_actions = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var actions: [std.meta.fields(Tag).len]MenuCloseAction = undefined;
+    for (&actions) |*action| action.* = closeMenuNoop;
+    actions[@intFromEnum(Tag.popup)] = closePopupNode;
+    actions[@intFromEnum(Tag.dropdown)] = closeDropdownNode;
+    break :blk actions;
+};
+
+fn closeMenuNoop(_: *widget.Node) void {}
+
+fn closePopupNode(node: *widget.Node) void {
+    node.kind.popup.visible = false;
+}
+
+fn closeDropdownNode(node: *widget.Node) void {
+    node.kind.dropdown.open = false;
 }
 
 pub fn closePopupsForPress(tree: *widget.Tree, target: ?widget.NodeHandle) void {

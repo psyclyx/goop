@@ -12,12 +12,31 @@ const Clipboard = types.Clipboard;
 
 pub fn handleKey(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard, k: event.Event.Key) void {
     updateModifierState(mouse, k);
+    if (handleBehaviorKey(tree, mouse, theme, k)) return;
     if (text.handleClipboardShortcut(tree, mouse, clipboard, k)) return;
     if (navigation.handleFocusTraversalKey(tree, mouse, k)) return;
     if (text.handleTextEditorKey(tree, mouse, k)) return;
     if (navigation.handleFocusedNavigationKey(tree, mouse, theme, k)) return;
     if (handleActivationKey(tree, mouse, k)) return;
     if (handleEscapeKey(tree, mouse, k)) return;
+}
+
+fn handleBehaviorKey(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, k: event.Event.Key) bool {
+    const focused = mouse.focused orelse return false;
+    if (!tree.isAlive(focused)) return false;
+    const node = tree.get(focused);
+    const widget_type = node.widget_type orelse return false;
+    const key_fn = widget_type.key orelse return false;
+    return key_fn(.{
+        .widget = .{
+            .tree = tree,
+            .handle = focused,
+            .node = node,
+            .state = node.widget_state,
+            .theme = theme,
+        },
+        .event = k,
+    });
 }
 
 fn keyPressed(k: event.Event.Key) bool {

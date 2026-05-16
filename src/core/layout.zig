@@ -143,39 +143,230 @@ fn emitNode(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style_mo
     const node = tree.getConst(handle);
     const resolved = node.style_override.resolve(theme);
 
-    switch (node.kind) {
-        .text => |txt| emitText(handle, txt, resolved),
-        .button => |btn| emitButton(handle, btn, resolved),
-        .checkbox => |cb| emitCheckbox(handle, cb, resolved),
-        .radio_button => |rb| emitRadioButton(handle, rb, resolved),
-        .tree_item => |tree_item| emitTreeItem(tree, handle, tree_item, resolved, theme),
-        .dropdown => |dropdown| emitDropdown(tree, handle, dropdown, resolved, theme),
-        .list_box => emitListBox(tree, handle, resolved, theme),
-        .selectable => |selectable| emitSelectable(handle, selectable, resolved),
-        .grid_selector => |grid_selector| emitGridSelector(tree, handle, grid_selector, resolved, theme),
-        .grid_item => |grid_item| emitGridItem(tree, handle, grid_item, resolved),
-        .table => |table| emitTable(tree, handle, table, resolved, theme),
-        .table_row => |row| emitTableRow(tree, handle, row, resolved, theme),
-        .table_cell => emitTableCell(tree, handle, resolved, theme),
-        .toolbar => emitToolbar(tree, handle, resolved, theme),
-        .status_bar => emitStatusBar(tree, handle, resolved, theme),
-        .menu_bar => emitMenuBar(tree, handle, resolved, theme),
-        .menu => |menu| emitMenu(tree, handle, menu, resolved, theme),
-        .popup => |popup| emitPopup(tree, handle, popup, resolved, theme),
-        .tooltip => |tooltip| emitTooltip(tree, handle, tooltip, resolved, theme),
-        .menu_item => |menu_item| emitMenuItem(tree, handle, menu_item, resolved, theme),
-        .drag_value => emitDragValue(handle, &node.kind.drag_value, resolved),
-        .spinbox => emitSpinBox(handle, &node.kind.spinbox, resolved),
-        .tab_bar => |tab_bar| emitTabBar(tree, handle, tab_bar, resolved, theme),
-        .tab_item => |tab_item| emitTabItem(tree, handle, tab_item, resolved, theme),
-        .splitter => |splitter| emitSplitter(tree, handle, splitter, resolved, theme),
-        .container => |cont| emitContainer(tree, handle, cont, resolved, theme),
-        .slider => emitSlider(handle, resolved),
-        .spacer => |spacer| emitSpacer(handle, spacer),
-        .text_input => |ti| emitTextInput(handle, ti, resolved),
-        .scroll_area => emitScrollArea(tree, handle, resolved, theme),
-        .custom => |custom| emitCustom(handle, custom),
+    if (node.widget_type) |_| {
+        emitBehaviorNode(tree, handle, node, resolved, theme);
+        return;
     }
+
+    layoutEmitter(node.kind)(tree, handle, node, resolved, theme);
+}
+
+const LayoutEmitter = *const fn (*const widget.Tree, widget.NodeHandle, *const widget.Node, style_mod.ResolvedStyle, style_mod.Theme) void;
+
+fn layoutEmitter(kind: widget.WidgetKind) LayoutEmitter {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return layout_emitters[@intFromEnum(tag)];
+}
+
+const layout_emitters = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var emitters: [std.meta.fields(Tag).len]LayoutEmitter = undefined;
+    emitters[@intFromEnum(Tag.container)] = emitContainerNode;
+    emitters[@intFromEnum(Tag.text)] = emitTextNode;
+    emitters[@intFromEnum(Tag.button)] = emitButtonNode;
+    emitters[@intFromEnum(Tag.checkbox)] = emitCheckboxNode;
+    emitters[@intFromEnum(Tag.radio_button)] = emitRadioButtonNode;
+    emitters[@intFromEnum(Tag.tree_item)] = emitTreeItemNode;
+    emitters[@intFromEnum(Tag.dropdown)] = emitDropdownNode;
+    emitters[@intFromEnum(Tag.list_box)] = emitListBoxNode;
+    emitters[@intFromEnum(Tag.selectable)] = emitSelectableNode;
+    emitters[@intFromEnum(Tag.grid_selector)] = emitGridSelectorNode;
+    emitters[@intFromEnum(Tag.grid_item)] = emitGridItemNode;
+    emitters[@intFromEnum(Tag.table)] = emitTableNode;
+    emitters[@intFromEnum(Tag.table_row)] = emitTableRowNode;
+    emitters[@intFromEnum(Tag.table_cell)] = emitTableCellNode;
+    emitters[@intFromEnum(Tag.toolbar)] = emitToolbarNode;
+    emitters[@intFromEnum(Tag.status_bar)] = emitStatusBarNode;
+    emitters[@intFromEnum(Tag.menu_bar)] = emitMenuBarNode;
+    emitters[@intFromEnum(Tag.menu)] = emitMenuNode;
+    emitters[@intFromEnum(Tag.popup)] = emitPopupNode;
+    emitters[@intFromEnum(Tag.tooltip)] = emitTooltipNode;
+    emitters[@intFromEnum(Tag.menu_item)] = emitMenuItemNode;
+    emitters[@intFromEnum(Tag.drag_value)] = emitDragValueNode;
+    emitters[@intFromEnum(Tag.spinbox)] = emitSpinBoxNode;
+    emitters[@intFromEnum(Tag.tab_bar)] = emitTabBarNode;
+    emitters[@intFromEnum(Tag.tab_item)] = emitTabItemNode;
+    emitters[@intFromEnum(Tag.splitter)] = emitSplitterNode;
+    emitters[@intFromEnum(Tag.slider)] = emitSliderNode;
+    emitters[@intFromEnum(Tag.spacer)] = emitSpacerNode;
+    emitters[@intFromEnum(Tag.scroll_area)] = emitScrollAreaNode;
+    emitters[@intFromEnum(Tag.text_input)] = emitTextInputNode;
+    emitters[@intFromEnum(Tag.custom)] = emitCustomNode;
+    break :blk emitters;
+};
+
+fn emitContainerNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitContainer(tree, handle, node.kind.container, resolved, theme);
+}
+
+fn emitTextNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
+    emitText(handle, node.kind.text, resolved);
+}
+
+fn emitButtonNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
+    emitButton(handle, node.kind.button, resolved);
+}
+
+fn emitCheckboxNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
+    emitCheckbox(handle, node.kind.checkbox, resolved);
+}
+
+fn emitRadioButtonNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
+    emitRadioButton(handle, node.kind.radio_button, resolved);
+}
+
+fn emitTreeItemNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitTreeItem(tree, handle, node.kind.tree_item, resolved, theme);
+}
+
+fn emitDropdownNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitDropdown(tree, handle, node.kind.dropdown, resolved, theme);
+}
+
+fn emitListBoxNode(tree: *const widget.Tree, handle: widget.NodeHandle, _: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitListBox(tree, handle, resolved, theme);
+}
+
+fn emitSelectableNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
+    emitSelectable(handle, node.kind.selectable, resolved);
+}
+
+fn emitGridSelectorNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitGridSelector(tree, handle, node.kind.grid_selector, resolved, theme);
+}
+
+fn emitGridItemNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
+    emitGridItem(tree, handle, node.kind.grid_item, resolved);
+}
+
+fn emitTableNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitTable(tree, handle, node.kind.table, resolved, theme);
+}
+
+fn emitTableRowNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitTableRow(tree, handle, node.kind.table_row, resolved, theme);
+}
+
+fn emitTableCellNode(tree: *const widget.Tree, handle: widget.NodeHandle, _: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitTableCell(tree, handle, resolved, theme);
+}
+
+fn emitToolbarNode(tree: *const widget.Tree, handle: widget.NodeHandle, _: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitToolbar(tree, handle, resolved, theme);
+}
+
+fn emitStatusBarNode(tree: *const widget.Tree, handle: widget.NodeHandle, _: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitStatusBar(tree, handle, resolved, theme);
+}
+
+fn emitMenuBarNode(tree: *const widget.Tree, handle: widget.NodeHandle, _: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitMenuBar(tree, handle, resolved, theme);
+}
+
+fn emitMenuNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitMenu(tree, handle, node.kind.menu, resolved, theme);
+}
+
+fn emitPopupNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitPopup(tree, handle, node.kind.popup, resolved, theme);
+}
+
+fn emitTooltipNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitTooltip(tree, handle, node.kind.tooltip, resolved, theme);
+}
+
+fn emitMenuItemNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitMenuItem(tree, handle, node.kind.menu_item, resolved, theme);
+}
+
+fn emitDragValueNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
+    emitDragValue(handle, &node.kind.drag_value, resolved);
+}
+
+fn emitSpinBoxNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
+    emitSpinBox(handle, &node.kind.spinbox, resolved);
+}
+
+fn emitTabBarNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitTabBar(tree, handle, node.kind.tab_bar, resolved, theme);
+}
+
+fn emitTabItemNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitTabItem(tree, handle, node.kind.tab_item, resolved, theme);
+}
+
+fn emitSplitterNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitSplitter(tree, handle, node.kind.splitter, resolved, theme);
+}
+
+fn emitSliderNode(_: *const widget.Tree, handle: widget.NodeHandle, _: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
+    emitSlider(handle, resolved);
+}
+
+fn emitSpacerNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, _: style_mod.ResolvedStyle, _: style_mod.Theme) void {
+    emitSpacer(handle, node.kind.spacer);
+}
+
+fn emitScrollAreaNode(tree: *const widget.Tree, handle: widget.NodeHandle, _: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitScrollArea(tree, handle, resolved, theme);
+}
+
+fn emitTextInputNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
+    emitTextInput(handle, node.kind.text_input, resolved);
+}
+
+fn emitCustomNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, _: style_mod.ResolvedStyle, _: style_mod.Theme) void {
+    emitCustom(handle, node.kind.custom);
+}
+
+fn emitBehaviorNode(
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    resolved: style_mod.ResolvedStyle,
+    theme: style_mod.Theme,
+) void {
+    const widget_type = node.widget_type orelse return;
+    const spec = widget_type.layout(.{
+        .widget = .{
+            .tree = @constCast(tree),
+            .handle = handle,
+            .node = @constCast(node),
+            .state = node.widget_state,
+            .theme = theme,
+        },
+        .resolved = resolved,
+    });
+
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = nodeId(handle),
+        .layout = .{
+            .sizing = .{
+                .width = behaviorSizingAxis(spec.width),
+                .height = behaviorSizingAxis(spec.height),
+            },
+            .padding = clayPadding(spec.padding),
+            .childGap = 0,
+            .childAlignment = .{},
+            .layoutDirection = switch (spec.direction) {
+                .row => c.CLAY_LEFT_TO_RIGHT,
+                .column => c.CLAY_TOP_TO_BOTTOM,
+            },
+        },
+        .backgroundColor = .{},
+        .cornerRadius = .{},
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
+    emitChildrenSkippingPopups(tree, handle, theme);
+    c.Clay__CloseElement();
+    emitPopupChildren(tree, handle, theme);
 }
 
 fn emitText(handle: widget.NodeHandle, txt: widget.WidgetKind.Text, resolved: style_mod.ResolvedStyle) void {
@@ -1673,6 +1864,10 @@ fn customSizingAxis(size: f32, min_size: f32, grow: bool) c.Clay_SizingAxis {
     return if (grow) growSizingMin(min_size) else fitSizingMin(min_size);
 }
 
+fn behaviorSizingAxis(axis: widget.LayoutSpec.Axis) c.Clay_SizingAxis {
+    return customSizingAxis(axis.size, axis.min, axis.grow);
+}
+
 fn percentSizing(percent: f32) c.Clay_SizingAxis {
     return .{
         .size = .{ .percent = std.math.clamp(percent, 0, 1) },
@@ -2067,21 +2262,43 @@ fn nodeParticipatesInLayout(tree: *const widget.Tree, handle: widget.NodeHandle)
         const parent_handle = node.parent orelse return true;
         const parent = tree.getConst(parent_handle);
 
-        switch (parent.kind) {
-            .tree_item => {
-                if (!parent.kind.tree_item.expanded and node.kind != .popup and node.kind != .tooltip) return false;
-            },
-            .tab_item => {
-                if (!parent.kind.tab_item.selected) return false;
-            },
-            .dropdown => {
-                if (node.kind == .popup and !parent.kind.dropdown.open) return false;
-            },
-            else => {},
-        }
+        if (!parentLayoutGate(parent.kind)(parent, node)) return false;
 
         current = parent_handle;
     }
+}
+
+const ParentLayoutGate = *const fn (*const widget.Node, *const widget.Node) bool;
+
+fn parentLayoutGate(kind: widget.WidgetKind) ParentLayoutGate {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return parent_layout_gates[@intFromEnum(tag)];
+}
+
+const parent_layout_gates = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var gates: [std.meta.fields(Tag).len]ParentLayoutGate = undefined;
+    for (&gates) |*gate| gate.* = allowChildLayout;
+    gates[@intFromEnum(Tag.tree_item)] = allowTreeItemChildLayout;
+    gates[@intFromEnum(Tag.tab_item)] = allowTabItemChildLayout;
+    gates[@intFromEnum(Tag.dropdown)] = allowDropdownChildLayout;
+    break :blk gates;
+};
+
+fn allowChildLayout(_: *const widget.Node, _: *const widget.Node) bool {
+    return true;
+}
+
+fn allowTreeItemChildLayout(parent: *const widget.Node, node: *const widget.Node) bool {
+    return parent.kind.tree_item.expanded or node.kind == .popup or node.kind == .tooltip;
+}
+
+fn allowTabItemChildLayout(parent: *const widget.Node, _: *const widget.Node) bool {
+    return parent.kind.tab_item.selected;
+}
+
+fn allowDropdownChildLayout(parent: *const widget.Node, node: *const widget.Node) bool {
+    return node.kind != .popup or parent.kind.dropdown.open;
 }
 
 fn popupFloatingConfig(tree: *const widget.Tree, handle: widget.NodeHandle, popup: widget.WidgetKind.Popup) c.Clay_FloatingElementConfig {

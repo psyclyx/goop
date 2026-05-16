@@ -29,47 +29,7 @@ pub fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
         if (!node.alive) continue;
         node.interaction.drop_hovered = false;
         node.interaction.drop_received = false;
-        switch (node.kind) {
-            .tree_item => |*item| {
-                item.internal.drag.active = false;
-                item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                item.internal.drop_preview = null;
-            },
-            .list_box => |*list_box| {
-                list_box.internal.marquee_active = false;
-                list_box.internal.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                list_box.internal.drop_preview_background = false;
-            },
-            .selectable => |*item| {
-                item.internal.marquee_base_selected = false;
-                item.internal.drag.active = false;
-                item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                item.internal.drop_preview = false;
-            },
-            .grid_selector => |*selector| {
-                selector.internal.marquee_active = false;
-                selector.internal.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                selector.internal.drop_preview_background = false;
-            },
-            .grid_item => |*item| {
-                item.internal.marquee_base_selected = false;
-                item.internal.drag.active = false;
-                item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                item.internal.drop_preview = false;
-            },
-            .table => |*table| {
-                table.internal.marquee_active = false;
-                table.internal.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                table.internal.drop_preview_background = false;
-            },
-            .table_row => |*row| {
-                row.internal.marquee_base_selected = false;
-                row.internal.drag.active = false;
-                row.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                row.internal.drop_preview = false;
-            },
-            else => {},
-        }
+        pointerKindOps(node.kind).cancel_gesture(node);
     }
 
     mouse.left_down = false;
@@ -89,27 +49,14 @@ pub fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
 pub fn handleMouseMove(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mm: event.Event.MouseMove) void {
     mouse.x = mm.x;
     mouse.y = mm.y;
+    if (mouse.left_down) {
+        if (mouse.press_target) |pt| {
+            _ = dispatchBehaviorPointer(tree, pt, theme, .{ .move = mm });
+        }
+    }
     drag.maybeBeginDeferredDrag(tree, mouse);
     if (mouse.drag_target) |dt| {
-        switch (tree.getConst(dt).kind) {
-            .slider => control.updateSliderValue(tree, dt, mouse.x, theme),
-            .drag_value => control.updateDragValue(tree, dt, mouse.x, mouse),
-            .splitter => control.updateSplitterRatio(tree, dt, mouse.x, mouse.y, mouse, theme),
-            .scroll_area => {
-                if (scroll_dispatch.updateScrollAreaDrag(tree, dt, mouse, theme)) mouse.layout_changed = true;
-            },
-            .table => {
-                if (control.updateTableColumns(tree, dt, mouse)) mouse.layout_changed = true;
-                drag.updateTableMarquee(tree, dt, mouse);
-            },
-            .tree_item => drag.updateTreeDragPreview(tree, dt, mouse),
-            .selectable => drag.updateSelectableDragPreview(tree, dt, mouse),
-            .list_box => drag.updateListBoxMarquee(tree, dt, mouse),
-            .grid_item => drag.updateGridItemDragPreview(tree, dt, mouse),
-            .grid_selector => drag.updateGridSelectorMarquee(tree, dt, mouse),
-            .table_row => drag.updateTableRowDragPreview(tree, dt, mouse),
-            else => {},
-        }
+        pointerKindOps(tree.getConst(dt).kind).drag_move(tree, dt, mouse, theme);
         drag.updateWidgetDropPreview(tree, dt, mouse);
     }
     // Text editor drag selection
@@ -150,6 +97,9 @@ pub fn handleMouseButton(tree: *widget.Tree, mouse: *MouseState, theme: style.Th
 }
 
 pub fn handleMouseScroll(tree: *widget.Tree, mouse: *MouseState, ms: event.Event.MouseScroll) void {
+    if (hittest.hitTest(tree, mouse.x, mouse.y)) |hit| {
+        if (dispatchBehaviorPointer(tree, hit, .{}, .{ .scroll = ms })) return;
+    }
     // Find the scroll area under the cursor and adjust scroll offset
     const target = hittest.hitTestKind(tree, mouse.x, mouse.y, .scroll_area);
     if (target) |t| {
@@ -217,7 +167,7 @@ fn dragTextEditorSelection(
 
 fn setFocusFromPressTarget(tree: *widget.Tree, mouse: *MouseState, target: ?widget.NodeHandle) void {
     if (target) |handle| {
-        if (focus.isFocusable(tree.getConst(handle).kind)) {
+        if (focus.nodeIsFocusable(tree, handle)) {
             focus_state.setFocusedWidget(tree, mouse, handle);
             return;
         }
@@ -338,39 +288,8 @@ fn pressTreeItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseSta
 
 fn handlePrimaryPressTarget(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton, handle: widget.NodeHandle) void {
     tree.get(handle).interaction.pressed = true;
-    switch (tree.getConst(handle).kind) {
-        .text_input => pressTextInput(tree, handle, mouse, theme, text_ctx, mb),
-        .slider => {
-            beginImmediateDrag(mouse, handle);
-            mouse.drag_origin_value = tree.getConst(handle).kind.slider.value;
-            control.updateSliderValue(tree, handle, mouse.x, theme);
-        },
-        .drag_value => pressDragValue(tree, handle, mouse, theme, text_ctx, mb),
-        .splitter => {
-            beginImmediateDrag(mouse, handle);
-            mouse.drag_origin_value = tree.getConst(handle).kind.splitter.ratio;
-        },
-        .scroll_area => pressScrollArea(tree, handle, mouse, theme),
-        .table => pressTable(tree, handle, mouse),
-        .spinbox => pressSpinBox(tree, handle, mouse, theme, text_ctx, mb),
-        .tree_item => pressTreeItem(tree, handle, mouse, theme, text_ctx, mb),
-        .selectable => {
-            if (selection.selectableParentListBox(tree, handle) != null) mouse.press_can_defer_drag = true;
-        },
-        .list_box => {
-            mouse.press_can_defer_drag = tree.getConst(handle).kind.list_box.selection_mode == .multiple;
-        },
-        .grid_item => {
-            mouse.press_can_defer_drag = true;
-        },
-        .grid_selector => {
-            mouse.press_can_defer_drag = tree.getConst(handle).kind.grid_selector.selection_mode == .multiple;
-        },
-        .table_row => {
-            if (widget.tableRowSelectable(tree, handle)) mouse.press_can_defer_drag = true;
-        },
-        else => {},
-    }
+    if (dispatchBehaviorPointer(tree, handle, theme, .{ .press = mb })) return;
+    pointerKindOps(tree.getConst(handle).kind).press(tree, handle, mouse, theme, text_ctx, mb);
 }
 
 fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
@@ -391,17 +310,7 @@ fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
     mouse.left_down = false;
     const dragged_target = mouse.drag_target;
     if (dragged_target) |dt| {
-        switch (tree.getConst(dt).kind) {
-            .tree_item => drag.finalizeTreeDrag(tree, dt, mouse),
-            .selectable => drag.finalizeSelectableDrag(tree, dt, mouse),
-            .list_box => drag.finalizeListBoxMarquee(tree, dt),
-            .grid_item => drag.finalizeGridItemDrag(tree, dt, mouse),
-            .drag_value => {},
-            .grid_selector => drag.finalizeGridSelectorMarquee(tree, dt),
-            .table_row => drag.finalizeTableRowDrag(tree, dt, mouse),
-            .table => drag.finalizeTableMarquee(tree, dt),
-            else => {},
-        }
+        pointerKindOps(tree.getConst(dt).kind).release_drag(tree, dt, mouse);
         drag.finalizeWidgetDrop(tree, dt, mouse);
     }
     mouse.drag_target = null;
@@ -411,17 +320,18 @@ fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
     const release_target = hittest.hitTest(tree, mouse.x, mouse.y);
 
     if (mouse.press_target) |pt| {
+        if (tree.isAlive(pt)) {
+            _ = dispatchBehaviorPointer(tree, pt, .{}, .{ .release = .{
+                .button = .left,
+                .state = .released,
+                .x = mouse.x,
+                .y = mouse.y,
+            } });
+        }
         if (release_target) |rt| {
             if (rt.eql(pt) and !dragSuppressedClick(tree, dragged_target, pt)) {
                 if (tree.isAlive(pt)) {
-                    switch (tree.getConst(pt).kind) {
-                        .table => activation.activateTable(tree, pt, mouse.x, mouse.y),
-                        .selectable => activation.activateSelectable(tree, pt, mouse),
-                        .grid_selector => activation.activateGridSelector(tree, pt, mouse),
-                        .grid_item => activation.activateGridItem(tree, pt, mouse),
-                        .table_row => activation.activateTableRow(tree, pt, mouse),
-                        else => activation.fireClick(tree, pt),
-                    }
+                    pointerKindOps(tree.getConst(pt).kind).release_activate(tree, pt, mouse);
                 }
             }
         }
@@ -432,6 +342,335 @@ fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
     mouse.press_target = null;
     mouse.press_can_defer_drag = false;
     _ = updateHover(tree, mouse);
+}
+
+fn dispatchBehaviorPointer(tree: *widget.Tree, handle: widget.NodeHandle, theme: style.Theme, pointer_event: widget.PointerEvent) bool {
+    if (!tree.isAlive(handle)) return false;
+    const node = tree.get(handle);
+    const widget_type = node.widget_type orelse return false;
+    const pointer_fn = widget_type.pointer orelse return false;
+    return pointer_fn(.{
+        .widget = .{
+            .tree = tree,
+            .handle = handle,
+            .node = node,
+            .state = node.widget_state,
+            .theme = theme,
+        },
+        .event = pointer_event,
+    });
+}
+
+const PointerKindOps = struct {
+    cancel_gesture: CancelGestureFn = cancelGestureNoop,
+    drag_move: DragMoveFn = dragMoveNoop,
+    press: PressFn = pressNoop,
+    release_drag: ReleaseDragFn = releaseDragNoop,
+    release_activate: ReleaseActivateFn = releaseActivateDefault,
+    suppresses_drag_click: bool = false,
+};
+
+const CancelGestureFn = *const fn (*widget.Node) void;
+const DragMoveFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState, style.Theme) void;
+const PressFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState, style.Theme, ?*const layout.TextMeasureCtx, event.Event.MouseButton) void;
+const ReleaseDragFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState) void;
+const ReleaseActivateFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState) void;
+
+fn pointerKindOps(kind: widget.WidgetKind) PointerKindOps {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return pointer_kind_ops[@intFromEnum(tag)];
+}
+
+const pointer_kind_ops = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var ops: [std.meta.fields(Tag).len]PointerKindOps = undefined;
+    for (&ops) |*op| op.* = .{};
+    ops[@intFromEnum(Tag.text_input)] = .{ .press = pressTextInputOp };
+    ops[@intFromEnum(Tag.slider)] = .{
+        .drag_move = dragMoveSlider,
+        .press = pressSlider,
+    };
+    ops[@intFromEnum(Tag.drag_value)] = .{
+        .drag_move = dragMoveDragValue,
+        .press = pressDragValueOp,
+        .suppresses_drag_click = true,
+    };
+    ops[@intFromEnum(Tag.splitter)] = .{
+        .drag_move = dragMoveSplitter,
+        .press = pressSplitter,
+    };
+    ops[@intFromEnum(Tag.scroll_area)] = .{
+        .drag_move = dragMoveScrollArea,
+        .press = pressScrollAreaOp,
+    };
+    ops[@intFromEnum(Tag.table)] = .{
+        .cancel_gesture = cancelTableGesture,
+        .drag_move = dragMoveTable,
+        .press = pressTableOp,
+        .release_drag = releaseTableDrag,
+        .release_activate = releaseActivateTable,
+        .suppresses_drag_click = true,
+    };
+    ops[@intFromEnum(Tag.tree_item)] = .{
+        .cancel_gesture = cancelTreeItemGesture,
+        .drag_move = dragMoveTreeItem,
+        .press = pressTreeItemOp,
+        .release_drag = releaseTreeItemDrag,
+        .suppresses_drag_click = true,
+    };
+    ops[@intFromEnum(Tag.selectable)] = .{
+        .cancel_gesture = cancelSelectableGesture,
+        .drag_move = dragMoveSelectable,
+        .press = pressSelectable,
+        .release_drag = releaseSelectableDrag,
+        .release_activate = releaseActivateSelectable,
+        .suppresses_drag_click = true,
+    };
+    ops[@intFromEnum(Tag.list_box)] = .{
+        .cancel_gesture = cancelListBoxGesture,
+        .drag_move = dragMoveListBox,
+        .press = pressListBox,
+        .release_drag = releaseListBoxDrag,
+        .suppresses_drag_click = true,
+    };
+    ops[@intFromEnum(Tag.grid_selector)] = .{
+        .cancel_gesture = cancelGridSelectorGesture,
+        .drag_move = dragMoveGridSelector,
+        .press = pressGridSelector,
+        .release_drag = releaseGridSelectorDrag,
+        .release_activate = releaseActivateGridSelector,
+        .suppresses_drag_click = true,
+    };
+    ops[@intFromEnum(Tag.grid_item)] = .{
+        .cancel_gesture = cancelGridItemGesture,
+        .drag_move = dragMoveGridItem,
+        .press = pressGridItem,
+        .release_drag = releaseGridItemDrag,
+        .release_activate = releaseActivateGridItem,
+        .suppresses_drag_click = true,
+    };
+    ops[@intFromEnum(Tag.table_row)] = .{
+        .cancel_gesture = cancelTableRowGesture,
+        .drag_move = dragMoveTableRow,
+        .press = pressTableRow,
+        .release_drag = releaseTableRowDrag,
+        .release_activate = releaseActivateTableRow,
+        .suppresses_drag_click = true,
+    };
+    ops[@intFromEnum(Tag.spinbox)] = .{ .press = pressSpinBoxOp };
+    break :blk ops;
+};
+
+fn cancelGestureNoop(_: *widget.Node) void {}
+
+fn cancelTreeItemGesture(node: *widget.Node) void {
+    const item = &node.kind.tree_item;
+    item.internal.drag.active = false;
+    item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    item.internal.drop_preview = null;
+}
+
+fn cancelListBoxGesture(node: *widget.Node) void {
+    const list_box = &node.kind.list_box;
+    list_box.internal.marquee_active = false;
+    list_box.internal.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    list_box.internal.drop_preview_background = false;
+}
+
+fn cancelSelectableGesture(node: *widget.Node) void {
+    const item = &node.kind.selectable;
+    item.internal.marquee_base_selected = false;
+    item.internal.drag.active = false;
+    item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    item.internal.drop_preview = false;
+}
+
+fn cancelGridSelectorGesture(node: *widget.Node) void {
+    const selector = &node.kind.grid_selector;
+    selector.internal.marquee_active = false;
+    selector.internal.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    selector.internal.drop_preview_background = false;
+}
+
+fn cancelGridItemGesture(node: *widget.Node) void {
+    const item = &node.kind.grid_item;
+    item.internal.marquee_base_selected = false;
+    item.internal.drag.active = false;
+    item.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    item.internal.drop_preview = false;
+}
+
+fn cancelTableGesture(node: *widget.Node) void {
+    const table = &node.kind.table;
+    table.internal.marquee_active = false;
+    table.internal.marquee_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    table.internal.drop_preview_background = false;
+}
+
+fn cancelTableRowGesture(node: *widget.Node) void {
+    const row = &node.kind.table_row;
+    row.internal.marquee_base_selected = false;
+    row.internal.drag.active = false;
+    row.internal.drag.rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    row.internal.drop_preview = false;
+}
+
+fn dragMoveNoop(_: *widget.Tree, _: widget.NodeHandle, _: *MouseState, _: style.Theme) void {}
+
+fn dragMoveSlider(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme) void {
+    control.updateSliderValue(tree, handle, mouse.x, theme);
+}
+
+fn dragMoveDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme) void {
+    control.updateDragValue(tree, handle, mouse.x, mouse);
+}
+
+fn dragMoveSplitter(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme) void {
+    control.updateSplitterRatio(tree, handle, mouse.x, mouse.y, mouse, theme);
+}
+
+fn dragMoveScrollArea(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme) void {
+    if (scroll_dispatch.updateScrollAreaDrag(tree, handle, mouse, theme)) mouse.layout_changed = true;
+}
+
+fn dragMoveTable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme) void {
+    if (control.updateTableColumns(tree, handle, mouse)) mouse.layout_changed = true;
+    drag.updateTableMarquee(tree, handle, mouse);
+}
+
+fn dragMoveTreeItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme) void {
+    drag.updateTreeDragPreview(tree, handle, mouse);
+}
+
+fn dragMoveSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme) void {
+    drag.updateSelectableDragPreview(tree, handle, mouse);
+}
+
+fn dragMoveListBox(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme) void {
+    drag.updateListBoxMarquee(tree, handle, mouse);
+}
+
+fn dragMoveGridItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme) void {
+    drag.updateGridItemDragPreview(tree, handle, mouse);
+}
+
+fn dragMoveGridSelector(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme) void {
+    drag.updateGridSelectorMarquee(tree, handle, mouse);
+}
+
+fn dragMoveTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme) void {
+    drag.updateTableRowDragPreview(tree, handle, mouse);
+}
+
+fn pressNoop(_: *widget.Tree, _: widget.NodeHandle, _: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {}
+
+fn pressTextInputOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+    pressTextInput(tree, handle, mouse, theme, text_ctx, mb);
+}
+
+fn pressSlider(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+    beginImmediateDrag(mouse, handle);
+    mouse.drag_origin_value = tree.getConst(handle).kind.slider.value;
+    control.updateSliderValue(tree, handle, mouse.x, theme);
+}
+
+fn pressDragValueOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+    pressDragValue(tree, handle, mouse, theme, text_ctx, mb);
+}
+
+fn pressSplitter(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+    beginImmediateDrag(mouse, handle);
+    mouse.drag_origin_value = tree.getConst(handle).kind.splitter.ratio;
+}
+
+fn pressScrollAreaOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+    pressScrollArea(tree, handle, mouse, theme);
+}
+
+fn pressTableOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+    pressTable(tree, handle, mouse);
+}
+
+fn pressSpinBoxOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+    pressSpinBox(tree, handle, mouse, theme, text_ctx, mb);
+}
+
+fn pressTreeItemOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+    pressTreeItem(tree, handle, mouse, theme, text_ctx, mb);
+}
+
+fn pressSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+    if (selection.selectableParentListBox(tree, handle) != null) mouse.press_can_defer_drag = true;
+}
+
+fn pressListBox(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+    mouse.press_can_defer_drag = tree.getConst(handle).kind.list_box.selection_mode == .multiple;
+}
+
+fn pressGridItem(_: *widget.Tree, _: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+    mouse.press_can_defer_drag = true;
+}
+
+fn pressGridSelector(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+    mouse.press_can_defer_drag = tree.getConst(handle).kind.grid_selector.selection_mode == .multiple;
+}
+
+fn pressTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+    if (widget.tableRowSelectable(tree, handle)) mouse.press_can_defer_drag = true;
+}
+
+fn releaseDragNoop(_: *widget.Tree, _: widget.NodeHandle, _: *MouseState) void {}
+
+fn releaseTreeItemDrag(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    drag.finalizeTreeDrag(tree, handle, mouse);
+}
+
+fn releaseSelectableDrag(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    drag.finalizeSelectableDrag(tree, handle, mouse);
+}
+
+fn releaseListBoxDrag(tree: *widget.Tree, handle: widget.NodeHandle, _: *MouseState) void {
+    drag.finalizeListBoxMarquee(tree, handle);
+}
+
+fn releaseGridItemDrag(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    drag.finalizeGridItemDrag(tree, handle, mouse);
+}
+
+fn releaseGridSelectorDrag(tree: *widget.Tree, handle: widget.NodeHandle, _: *MouseState) void {
+    drag.finalizeGridSelectorMarquee(tree, handle);
+}
+
+fn releaseTableRowDrag(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    drag.finalizeTableRowDrag(tree, handle, mouse);
+}
+
+fn releaseTableDrag(tree: *widget.Tree, handle: widget.NodeHandle, _: *MouseState) void {
+    drag.finalizeTableMarquee(tree, handle);
+}
+
+fn releaseActivateDefault(tree: *widget.Tree, handle: widget.NodeHandle, _: *MouseState) void {
+    activation.fireClick(tree, handle);
+}
+
+fn releaseActivateTable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    activation.activateTable(tree, handle, mouse.x, mouse.y);
+}
+
+fn releaseActivateSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    activation.activateSelectable(tree, handle, mouse);
+}
+
+fn releaseActivateGridSelector(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    activation.activateGridSelector(tree, handle, mouse);
+}
+
+fn releaseActivateGridItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    activation.activateGridItem(tree, handle, mouse);
+}
+
+fn releaseActivateTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    activation.activateTableRow(tree, handle, mouse);
 }
 
 fn handleSecondaryPress(tree: *widget.Tree, mouse: *MouseState) void {
@@ -476,17 +715,7 @@ fn hoverChanged(mouse: *const MouseState, hovered: ?widget.NodeHandle) bool {
 fn dragSuppressedClick(tree: *const widget.Tree, dragged_target: ?widget.NodeHandle, pressed_target: widget.NodeHandle) bool {
     const dragged = dragged_target orelse return false;
     if (!dragged.eql(pressed_target) or !tree.isAlive(pressed_target)) return false;
-    return switch (tree.getConst(pressed_target).kind) {
-        .table => true,
-        .tree_item => true,
-        .selectable => true,
-        .list_box => true,
-        .grid_item => true,
-        .grid_selector => true,
-        .table_row => true,
-        .drag_value => true,
-        else => false,
-    };
+    return pointerKindOps(tree.getConst(pressed_target).kind).suppresses_drag_click;
 }
 
 fn treeHasTooltip(tree: *const widget.Tree) bool {

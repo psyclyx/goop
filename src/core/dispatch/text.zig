@@ -154,6 +154,7 @@ pub fn moveTextCursorRight(editor: *widget.WidgetKind.TextInput, mouse: *const M
 
 pub fn handleText(tree: *widget.Tree, mouse: *MouseState, t: event.Event.Text) void {
     if (mouse.focused) |f| {
+        if (handleBehaviorTextInput(tree, f, t.codepoint)) return;
         if (focusedTextEditor(tree, f)) |editor| {
             if (isPrintableTextCodepoint(t.codepoint) and
                 (!numericEditorEditing(tree, f) or isNumericEditorCodepoint(t.codepoint)))
@@ -164,6 +165,25 @@ pub fn handleText(tree: *widget.Tree, mouse: *MouseState, t: event.Event.Text) v
             beginNumericEditorTextInput(tree, f, t.codepoint);
         }
     }
+}
+
+fn handleBehaviorTextInput(tree: *widget.Tree, handle: widget.NodeHandle, codepoint: u21) bool {
+    if (!tree.isAlive(handle) or !isPrintableTextCodepoint(codepoint)) return false;
+    const node = tree.get(handle);
+    const widget_type = node.widget_type orelse return false;
+    const text_fn = widget_type.textInput orelse return false;
+    var buf: [4]u8 = undefined;
+    const len = std.unicode.utf8Encode(codepoint, &buf) catch return false;
+    return text_fn(.{
+        .widget = .{
+            .tree = tree,
+            .handle = handle,
+            .node = node,
+            .state = node.widget_state,
+            .theme = .{},
+        },
+        .text = buf[0..len],
+    });
 }
 
 pub fn isPrintableTextCodepoint(codepoint: u21) bool {
@@ -183,13 +203,7 @@ pub fn isNumericEditorCodepoint(codepoint: u21) bool {
 
 pub fn focusedTextEditor(tree: *widget.Tree, handle: widget.NodeHandle) ?*widget.WidgetKind.TextInput {
     const node = tree.get(handle);
-    return switch (node.kind) {
-        .text_input => &node.kind.text_input,
-        .tree_item => if (node.kind.tree_item.editing) &node.kind.tree_item.internal.editor else null,
-        .drag_value => if (node.kind.drag_value.editing) &node.kind.drag_value.internal.editor else null,
-        .spinbox => if (node.kind.spinbox.editing) &node.kind.spinbox.internal.editor else null,
-        else => null,
-    };
+    return textKindOps(node.kind).editor(node);
 }
 
 pub fn treeItemEditing(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
@@ -199,11 +213,7 @@ pub fn treeItemEditing(tree: *const widget.Tree, handle: widget.NodeHandle) bool
 
 pub fn numericEditorEditing(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     const node = tree.getConst(handle);
-    return switch (node.kind) {
-        .drag_value => node.kind.drag_value.editing,
-        .spinbox => node.kind.spinbox.editing,
-        else => false,
-    };
+    return textKindOps(node.kind).numeric_editing(node);
 }
 
 pub fn beginDragValueEdit(tree: *widget.Tree, handle: widget.NodeHandle) void {
@@ -218,27 +228,14 @@ pub fn beginSpinBoxEdit(tree: *widget.Tree, handle: widget.NodeHandle) void {
 
 pub fn beginNumericEditorTextInput(tree: *widget.Tree, handle: widget.NodeHandle, codepoint: u21) void {
     if (!tree.isAlive(handle) or !isNumericEditorCodepoint(codepoint)) return;
-    switch (tree.getConst(handle).kind) {
-        .drag_value => {
-            beginDragValueEdit(tree, handle);
-            tree.get(handle).kind.drag_value.internal.editor.insertCodepoint(codepoint);
-        },
-        .spinbox => {
-            beginSpinBoxEdit(tree, handle);
-            tree.get(handle).kind.spinbox.internal.editor.insertCodepoint(codepoint);
-        },
-        else => {},
-    }
+    const node = tree.getConst(handle);
+    textKindOps(node.kind).begin_numeric_text(tree, handle, codepoint);
 }
 
 pub fn commitNumericEditor(tree: *widget.Tree, handle: widget.NodeHandle) bool {
     if (!tree.isAlive(handle)) return false;
     const node = tree.get(handle);
-    const result: widget.CommitResult = switch (node.kind) {
-        .drag_value => node.kind.drag_value.commitEdit(),
-        .spinbox => node.kind.spinbox.commitEdit(),
-        else => return false,
-    };
+    const result = textKindOps(node.kind).commit_numeric(node) orelse return false;
     if (result == .changed) node.interaction.changed = true;
     return result != .invalid;
 }
@@ -246,11 +243,115 @@ pub fn commitNumericEditor(tree: *widget.Tree, handle: widget.NodeHandle) bool {
 pub fn cancelNumericEditor(tree: *widget.Tree, handle: widget.NodeHandle) void {
     if (!tree.isAlive(handle)) return;
     const node = tree.get(handle);
-    switch (node.kind) {
-        .drag_value => node.kind.drag_value.cancelEdit(),
-        .spinbox => node.kind.spinbox.cancelEdit(),
-        else => {},
-    }
+    textKindOps(node.kind).cancel_numeric(node);
+}
+
+const TextKindOps = struct {
+    editor: EditorGetter = noTextEditor,
+    numeric_editing: NumericEditingFn = numericNotEditing,
+    begin_numeric_text: BeginNumericTextFn = beginNumericTextNoop,
+    commit_numeric: CommitNumericFn = commitNumericNone,
+    cancel_numeric: CancelNumericFn = cancelNumericNoop,
+};
+
+const EditorGetter = *const fn (*widget.Node) ?*widget.WidgetKind.TextInput;
+const NumericEditingFn = *const fn (*const widget.Node) bool;
+const BeginNumericTextFn = *const fn (*widget.Tree, widget.NodeHandle, u21) void;
+const CommitNumericFn = *const fn (*widget.Node) ?widget.CommitResult;
+const CancelNumericFn = *const fn (*widget.Node) void;
+
+fn textKindOps(kind: widget.WidgetKind) TextKindOps {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return text_kind_ops[@intFromEnum(tag)];
+}
+
+const text_kind_ops = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var ops: [std.meta.fields(Tag).len]TextKindOps = undefined;
+    for (&ops) |*op| op.* = .{};
+    ops[@intFromEnum(Tag.text_input)] = .{ .editor = textInputEditor };
+    ops[@intFromEnum(Tag.tree_item)] = .{ .editor = treeItemEditor };
+    ops[@intFromEnum(Tag.drag_value)] = .{
+        .editor = dragValueEditor,
+        .numeric_editing = dragValueEditing,
+        .begin_numeric_text = beginDragValueText,
+        .commit_numeric = commitDragValue,
+        .cancel_numeric = cancelDragValue,
+    };
+    ops[@intFromEnum(Tag.spinbox)] = .{
+        .editor = spinBoxEditor,
+        .numeric_editing = spinBoxEditing,
+        .begin_numeric_text = beginSpinBoxText,
+        .commit_numeric = commitSpinBox,
+        .cancel_numeric = cancelSpinBox,
+    };
+    break :blk ops;
+};
+
+fn noTextEditor(_: *widget.Node) ?*widget.WidgetKind.TextInput {
+    return null;
+}
+
+fn textInputEditor(node: *widget.Node) ?*widget.WidgetKind.TextInput {
+    return &node.kind.text_input;
+}
+
+fn treeItemEditor(node: *widget.Node) ?*widget.WidgetKind.TextInput {
+    return if (node.kind.tree_item.editing) &node.kind.tree_item.internal.editor else null;
+}
+
+fn dragValueEditor(node: *widget.Node) ?*widget.WidgetKind.TextInput {
+    return if (node.kind.drag_value.editing) &node.kind.drag_value.internal.editor else null;
+}
+
+fn spinBoxEditor(node: *widget.Node) ?*widget.WidgetKind.TextInput {
+    return if (node.kind.spinbox.editing) &node.kind.spinbox.internal.editor else null;
+}
+
+fn numericNotEditing(_: *const widget.Node) bool {
+    return false;
+}
+
+fn dragValueEditing(node: *const widget.Node) bool {
+    return node.kind.drag_value.editing;
+}
+
+fn spinBoxEditing(node: *const widget.Node) bool {
+    return node.kind.spinbox.editing;
+}
+
+fn beginNumericTextNoop(_: *widget.Tree, _: widget.NodeHandle, _: u21) void {}
+
+fn beginDragValueText(tree: *widget.Tree, handle: widget.NodeHandle, codepoint: u21) void {
+    beginDragValueEdit(tree, handle);
+    tree.get(handle).kind.drag_value.internal.editor.insertCodepoint(codepoint);
+}
+
+fn beginSpinBoxText(tree: *widget.Tree, handle: widget.NodeHandle, codepoint: u21) void {
+    beginSpinBoxEdit(tree, handle);
+    tree.get(handle).kind.spinbox.internal.editor.insertCodepoint(codepoint);
+}
+
+fn commitNumericNone(_: *widget.Node) ?widget.CommitResult {
+    return null;
+}
+
+fn commitDragValue(node: *widget.Node) ?widget.CommitResult {
+    return node.kind.drag_value.commitEdit();
+}
+
+fn commitSpinBox(node: *widget.Node) ?widget.CommitResult {
+    return node.kind.spinbox.commitEdit();
+}
+
+fn cancelNumericNoop(_: *widget.Node) void {}
+
+fn cancelDragValue(node: *widget.Node) void {
+    node.kind.drag_value.cancelEdit();
+}
+
+fn cancelSpinBox(node: *widget.Node) void {
+    node.kind.spinbox.cancelEdit();
 }
 
 pub fn commitOrCancelNumericEditorOnBlur(tree: *widget.Tree, handle: widget.NodeHandle) void {

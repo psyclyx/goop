@@ -1,3 +1,4 @@
+const std = @import("std");
 const widget = @import("../widget.zig");
 const hittest = @import("../hittest.zig");
 const types = @import("types.zig");
@@ -51,17 +52,7 @@ pub fn maybeBeginDeferredDrag(tree: *widget.Tree, mouse: *MouseState) void {
     const dy = mouse.y - mouse.press_origin_y;
     if (dx * dx + dy * dy < MouseState.drag_threshold * MouseState.drag_threshold) return;
 
-    switch (tree.getConst(target).kind) {
-        .tree_item => beginTreeDrag(tree, target, mouse),
-        .selectable => beginSelectableDrag(tree, target, mouse),
-        .list_box => beginListBoxMarquee(tree, target, mouse),
-        .grid_item => beginGridItemDrag(tree, target, mouse),
-        .drag_value => beginDragValueScrub(tree, target, mouse),
-        .grid_selector => beginGridSelectorMarquee(tree, target, mouse),
-        .table_row => beginTableRowDrag(tree, target, mouse),
-        .table => beginTableMarquee(tree, target, mouse),
-        else => {},
-    }
+    dragKindOps(tree.getConst(target).kind).begin_deferred(tree, target, mouse);
 }
 
 pub fn beginDragValueScrub(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
@@ -74,11 +65,49 @@ pub fn beginDragValueScrub(tree: *widget.Tree, handle: widget.NodeHandle, mouse:
 }
 
 pub fn dragSourceCanDrop(kind: widget.WidgetKind) bool {
-    return switch (kind) {
-        .tree_item, .selectable, .grid_item, .table_row => true,
-        else => false,
-    };
+    return dragKindOps(kind).can_drop;
 }
+
+const DragKindOps = struct {
+    begin_deferred: BeginDeferredDragFn = beginDeferredDragNoop,
+    can_drop: bool = false,
+};
+
+const BeginDeferredDragFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState) void;
+
+fn dragKindOps(kind: widget.WidgetKind) DragKindOps {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return drag_kind_ops[@intFromEnum(tag)];
+}
+
+const drag_kind_ops = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var ops: [std.meta.fields(Tag).len]DragKindOps = undefined;
+    for (&ops) |*op| op.* = .{};
+    ops[@intFromEnum(Tag.tree_item)] = .{
+        .begin_deferred = beginTreeDrag,
+        .can_drop = true,
+    };
+    ops[@intFromEnum(Tag.selectable)] = .{
+        .begin_deferred = beginSelectableDrag,
+        .can_drop = true,
+    };
+    ops[@intFromEnum(Tag.list_box)] = .{ .begin_deferred = beginListBoxMarquee };
+    ops[@intFromEnum(Tag.grid_item)] = .{
+        .begin_deferred = beginGridItemDrag,
+        .can_drop = true,
+    };
+    ops[@intFromEnum(Tag.drag_value)] = .{ .begin_deferred = beginDragValueScrub };
+    ops[@intFromEnum(Tag.grid_selector)] = .{ .begin_deferred = beginGridSelectorMarquee };
+    ops[@intFromEnum(Tag.table_row)] = .{
+        .begin_deferred = beginTableRowDrag,
+        .can_drop = true,
+    };
+    ops[@intFromEnum(Tag.table)] = .{ .begin_deferred = beginTableMarquee };
+    break :blk ops;
+};
+
+fn beginDeferredDragNoop(_: *widget.Tree, _: widget.NodeHandle, _: *MouseState) void {}
 
 pub fn updateWidgetDropPreview(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
     clearWidgetDropPreview(tree);

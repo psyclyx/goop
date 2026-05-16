@@ -1,9 +1,165 @@
 const std = @import("std");
 const style = @import("style.zig");
 const paint = @import("paint.zig");
+const event = @import("event.zig");
 const handle_mod = @import("handle.zig");
 
 pub const NodeHandle = handle_mod.NodeHandle;
+
+/// Type-erased behavior hooks for a retained widget node.
+pub const WidgetType = struct {
+    name: []const u8,
+    layout: LayoutFn = defaultLayout,
+    paint: ?PaintFn = null,
+    hitTest: HitTestFn = defaultHitTest,
+    focusable: FocusableFn = neverFocusable,
+    pointer: ?PointerFn = null,
+    key: ?KeyFn = null,
+    textInput: ?TextInputFn = null,
+    activate: ?ActivateFn = null,
+    resetFrame: ?ResetFrameFn = null,
+    deinit: ?DeinitFn = null,
+
+    pub const LayoutFn = *const fn (ctx: LayoutCtx) LayoutSpec;
+    pub const PaintFn = *const fn (ctx: PaintCtx) anyerror!void;
+    pub const HitTestFn = *const fn (ctx: HitTestCtx) bool;
+    pub const FocusableFn = *const fn (ctx: WidgetCtx) bool;
+    pub const PointerFn = *const fn (ctx: PointerCtx) bool;
+    pub const KeyFn = *const fn (ctx: KeyCtx) bool;
+    pub const TextInputFn = *const fn (ctx: TextInputCtx) bool;
+    pub const ActivateFn = *const fn (ctx: ActivateCtx) bool;
+    pub const ResetFrameFn = *const fn (ctx: WidgetCtx) void;
+    pub const DeinitFn = *const fn (ctx: WidgetCtx) void;
+
+    fn defaultLayout(_: LayoutCtx) LayoutSpec {
+        return .{};
+    }
+
+    fn defaultHitTest(ctx: HitTestCtx) bool {
+        return pointInRect(ctx.x, ctx.y, ctx.rect);
+    }
+
+    fn neverFocusable(_: WidgetCtx) bool {
+        return false;
+    }
+};
+
+/// Optional owner for dynamically registered widget types. Static
+/// `const WidgetType` values can be passed directly to `addRootWidget`;
+/// this registry is for embedders/plugins that need runtime registration
+/// with stable type addresses. A registry must outlive any tree nodes that
+/// still reference its types.
+pub const WidgetRegistry = struct {
+    allocator: std.mem.Allocator,
+    types: std.ArrayListUnmanaged(*WidgetType) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator) WidgetRegistry {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *WidgetRegistry) void {
+        for (self.types.items) |ty| {
+            self.allocator.destroy(ty);
+        }
+        self.types.deinit(self.allocator);
+    }
+
+    pub fn register(self: *WidgetRegistry, ty: WidgetType) !*const WidgetType {
+        const stored = try self.allocator.create(WidgetType);
+        errdefer self.allocator.destroy(stored);
+        stored.* = ty;
+        try self.types.append(self.allocator, stored);
+        return stored;
+    }
+};
+
+pub const WidgetCtx = struct {
+    tree: *Tree,
+    handle: NodeHandle,
+    node: *Node,
+    state: ?*anyopaque,
+    theme: style.Theme,
+
+    pub fn stateAs(self: WidgetCtx, comptime T: type) ?*T {
+        const ptr = self.state orelse return null;
+        return @ptrCast(@alignCast(ptr));
+    }
+};
+
+pub const LayoutCtx = struct {
+    widget: WidgetCtx,
+    resolved: style.ResolvedStyle,
+};
+
+pub const LayoutSpec = struct {
+    width: Axis = .{},
+    height: Axis = .{},
+    padding: style.Edges = .{},
+    direction: WidgetKind.Container.Direction = .column,
+
+    pub const Axis = struct {
+        size: f32 = 0,
+        min: f32 = 0,
+        grow: bool = true,
+    };
+};
+
+pub const PaintCtx = struct {
+    widget: WidgetCtx,
+    rect: paint.Rect,
+    resolved: style.ResolvedStyle,
+    commands: *std.ArrayListUnmanaged(paint.PaintCommand),
+    allocator: std.mem.Allocator,
+
+    pub fn append(self: *PaintCtx, command: paint.PaintCommand) !void {
+        try self.commands.append(self.allocator, command);
+    }
+
+    pub fn appendCustom(self: *PaintCtx) !void {
+        if (self.rect.w <= 0 or self.rect.h <= 0) return;
+        try self.append(.{ .custom = .{
+            .handle = self.widget.handle,
+            .bounds = self.rect,
+        } });
+    }
+};
+
+pub const HitTestCtx = struct {
+    widget: WidgetCtx,
+    rect: paint.Rect,
+    x: f32,
+    y: f32,
+};
+
+pub const PointerCtx = struct {
+    widget: WidgetCtx,
+    event: PointerEvent,
+};
+
+pub const PointerEvent = union(enum) {
+    move: event.Event.MouseMove,
+    press: event.Event.MouseButton,
+    release: event.Event.MouseButton,
+    scroll: event.Event.MouseScroll,
+};
+
+pub const KeyCtx = struct {
+    widget: WidgetCtx,
+    event: event.Event.Key,
+};
+
+pub const TextInputCtx = struct {
+    widget: WidgetCtx,
+    text: []const u8,
+};
+
+pub const ActivateCtx = struct {
+    widget: WidgetCtx,
+};
+
+fn pointInRect(x: f32, y: f32, rect: paint.Rect) bool {
+    return x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h;
+}
 
 /// Outcome of committing an inline numeric editor (`DragValue`,
 /// `SpinBox`). Lets dispatch distinguish parse failure from a clean
@@ -838,6 +994,8 @@ pub const WidgetKind = union(enum) {
     };
 };
 
+pub const TextEditState = WidgetKind.TextInput;
+
 /// User-authored construction inputs for a widget node.
 ///
 /// `WidgetDesc` is the type the embedder hands to `Tree.addRoot` and
@@ -1433,6 +1591,8 @@ pub const TreeSnapshot = struct {
 /// A single node in the widget tree.
 pub const Node = struct {
     kind: WidgetKind,
+    widget_type: ?*const WidgetType = null,
+    widget_state: ?*anyopaque = null,
     style_override: style.Style = .{},
     interaction: InteractionState = .{},
     user_id: u64 = 0,
@@ -1461,6 +1621,10 @@ pub const Tree = struct {
     }
 
     pub fn deinit(self: *Tree) void {
+        for (self.nodes.items, 0..) |candidate, index| {
+            if (!candidate.alive) continue;
+            self.deinitNodeBehavior(self.handleFromIndex(@intCast(index)));
+        }
         self.free_list.deinit(self.allocator);
         self.nodes.deinit(self.allocator);
     }
@@ -1473,6 +1637,20 @@ pub const Tree = struct {
     /// Add a child widget under the given parent. Returns its handle.
     pub fn addChild(self: *Tree, parent: NodeHandle, desc: WidgetDesc) !NodeHandle {
         return self.addNode(kindFromDesc(desc), parent);
+    }
+
+    /// Add a root-level behavior-backed widget. This is the general
+    /// widget path: the supplied `WidgetType` controls layout, paint,
+    /// focus, hit testing, and input hooks. `state` is type-erased and
+    /// remains caller-owned unless the widget type's `deinit` hook takes
+    /// ownership by convention.
+    pub fn addRootWidget(self: *Tree, widget_type: *const WidgetType, state: ?*anyopaque) !NodeHandle {
+        return self.addWidgetNode(widget_type, state, null);
+    }
+
+    /// Add a behavior-backed child widget under the given parent.
+    pub fn addChildWidget(self: *Tree, parent: NodeHandle, widget_type: *const WidgetType, state: ?*anyopaque) !NodeHandle {
+        return self.addWidgetNode(widget_type, state, parent);
     }
 
     /// Remove a node and all its descendants from the tree.
@@ -1511,9 +1689,13 @@ pub const Tree = struct {
             self.nodes.items[nxt.index].prev_sibling = n.prev_sibling;
         }
 
+        self.deinitNodeBehavior(handle);
+
         // Mark dead, bump generation, push to free list
         n.alive = false;
         n.generation +%= 1;
+        n.widget_type = null;
+        n.widget_state = null;
         n.parent = null;
         n.first_child = null;
         n.last_child = null;
@@ -1676,6 +1858,61 @@ pub const Tree = struct {
 
         self.bumpRevision();
         return handle;
+    }
+
+    fn addWidgetNode(self: *Tree, widget_type: *const WidgetType, state: ?*anyopaque, parent_handle: ?NodeHandle) !NodeHandle {
+        var index: u32 = undefined;
+        var generation: u32 = undefined;
+
+        if (self.free_list.pop()) |reuse_index| {
+            index = reuse_index;
+            generation = self.nodes.items[index].generation;
+            self.nodes.items[index] = .{
+                .kind = .{ .custom = .{ .type_id = @intFromPtr(widget_type) } },
+                .widget_type = widget_type,
+                .widget_state = state,
+                .parent = parent_handle,
+                .generation = generation,
+            };
+        } else {
+            index = @intCast(self.nodes.items.len);
+            generation = 0;
+            try self.nodes.append(self.allocator, .{
+                .kind = .{ .custom = .{ .type_id = @intFromPtr(widget_type) } },
+                .widget_type = widget_type,
+                .widget_state = state,
+                .parent = parent_handle,
+            });
+        }
+
+        const handle: NodeHandle = .{ .index = index, .generation = generation };
+
+        if (parent_handle) |ph| {
+            const parent = self.get(ph);
+            if (parent.last_child) |last| {
+                self.nodes.items[last.index].next_sibling = handle;
+                self.nodes.items[index].prev_sibling = last;
+            } else {
+                parent.first_child = handle;
+            }
+            parent.last_child = handle;
+        }
+
+        self.bumpRevision();
+        return handle;
+    }
+
+    fn deinitNodeBehavior(self: *Tree, handle: NodeHandle) void {
+        const target_node = &self.nodes.items[handle.index];
+        const widget_type = target_node.widget_type orelse return;
+        const deinit_fn = widget_type.deinit orelse return;
+        deinit_fn(.{
+            .tree = self,
+            .handle = handle,
+            .node = target_node,
+            .state = target_node.widget_state,
+            .theme = .{},
+        });
     }
 
     /// Internal: get a mutable pointer without generation check (for remove).
@@ -1891,12 +2128,59 @@ pub fn tableDataRowIndex(tree: *const Tree, row: NodeHandle) ?u16 {
 }
 
 pub fn syncDerivedState(kind: *WidgetKind) void {
-    switch (kind.*) {
-        .table => |*table| table.syncColumns(table.columns),
-        .drag_value => |*drag_value| drag_value.syncLabel(),
-        .spinbox => |*spinbox| spinbox.syncLabel(),
-        else => {},
-    }
+    kindOps(kind.*).sync(kind);
+}
+
+pub fn resetPerFrameEvents(kind: *WidgetKind) void {
+    kindOps(kind.*).reset_frame(kind);
+}
+
+const KindOps = struct {
+    sync: KindMutFn = kindMutNoop,
+    reset_frame: KindMutFn = kindMutNoop,
+};
+
+const KindMutFn = *const fn (*WidgetKind) void;
+
+fn kindOps(kind: WidgetKind) KindOps {
+    const tag: std.meta.Tag(WidgetKind) = kind;
+    return kind_ops[@intFromEnum(tag)];
+}
+
+const kind_ops = blk: {
+    const Tag = std.meta.Tag(WidgetKind);
+    var ops: [std.meta.fields(Tag).len]KindOps = undefined;
+    for (&ops) |*op| op.* = .{};
+    ops[@intFromEnum(Tag.tree_item)] = .{ .reset_frame = resetTreeItemFrame };
+    ops[@intFromEnum(Tag.table)] = .{
+        .sync = syncTableState,
+        .reset_frame = resetTableFrame,
+    };
+    ops[@intFromEnum(Tag.drag_value)] = .{ .sync = syncDragValueState };
+    ops[@intFromEnum(Tag.spinbox)] = .{ .sync = syncSpinBoxState };
+    break :blk ops;
+};
+
+fn kindMutNoop(_: *WidgetKind) void {}
+
+fn resetTreeItemFrame(kind: *WidgetKind) void {
+    kind.tree_item.resetPerFrameEvents();
+}
+
+fn resetTableFrame(kind: *WidgetKind) void {
+    kind.table.resetPerFrameEvents();
+}
+
+fn syncTableState(kind: *WidgetKind) void {
+    kind.table.syncColumns(kind.table.columns);
+}
+
+fn syncDragValueState(kind: *WidgetKind) void {
+    kind.drag_value.syncLabel();
+}
+
+fn syncSpinBoxState(kind: *WidgetKind) void {
+    kind.spinbox.syncLabel();
 }
 
 fn formatScalarLabel(buf: *[64]u8, value: f32, precision: u8) []const u8 {

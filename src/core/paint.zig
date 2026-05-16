@@ -131,45 +131,232 @@ fn emitNode(
     }
     const resolved = node.style_override.resolve(theme);
 
-    switch (node.kind) {
-        .container => try emitContainer(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .text => |txt| try emitText(paint_ctx, node, txt, resolved, commands, allocator, text_ctx),
-        .button => |btn| try emitButton(paint_ctx, tree, handle, node, btn, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .checkbox => |cb| try emitCheckbox(paint_ctx, node, cb, resolved, theme, commands, allocator, text_ctx),
-        .radio_button => |rb| try emitRadioButton(paint_ctx, node, rb, resolved, theme, commands, allocator, text_ctx),
-        .tree_item => |tree_item| try emitTreeItem(paint_ctx, tree, handle, node, tree_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .dropdown => |dropdown| try emitDropdown(paint_ctx, tree, handle, node, dropdown, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .list_box => |list_box| try emitListBox(paint_ctx, tree, handle, node, list_box, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .selectable => |selectable| try emitSelectable(paint_ctx, node, selectable, resolved, theme, commands, allocator, text_ctx),
-        .grid_selector => |grid_selector| try emitGridSelector(paint_ctx, tree, handle, node, grid_selector, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .grid_item => |grid_item| try emitGridItem(paint_ctx, node, grid_item, resolved, theme, commands, allocator, text_ctx),
-        .table => |table| try emitTable(paint_ctx, tree, handle, node, table, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .table_row => |row| try emitTableRow(paint_ctx, tree, handle, node, row, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .table_cell => try emitTableCell(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .toolbar => try emitToolbar(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .status_bar => try emitStatusBar(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .menu_bar => try emitMenuBar(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .menu => |menu| try emitMenu(paint_ctx, tree, handle, node, menu, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .popup => try emitPopup(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx),
-        .tooltip => try emitTooltip(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx),
-        .menu_item => |item| try emitMenuItem(paint_ctx, tree, handle, node, item, resolved, theme, commands, allocator, text_ctx),
-        .drag_value => try emitDragValue(paint_ctx, node, &node.kind.drag_value, resolved, theme, commands, allocator, text_ctx),
-        .spinbox => try emitSpinBox(paint_ctx, node, &node.kind.spinbox, resolved, theme, commands, allocator, text_ctx),
-        .tab_bar => |tab_bar| try emitTabBar(paint_ctx, tree, handle, node, tab_bar, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .tab_item => |tab_item| try emitTabItem(paint_ctx, tree, handle, node, tab_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .splitter => |splitter| try emitSplitter(paint_ctx, tree, handle, node, splitter, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .slider => |sl| try emitSlider(paint_ctx, node, sl, resolved, theme, commands, allocator),
-        .spacer => {},
-        .text_input => try emitTextInput(paint_ctx, node, resolved, theme, commands, allocator, text_ctx),
-        .scroll_area => try emitScrollArea(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree),
-        .custom => try appendCustomPaint(commands, allocator, handle, node_rect),
+    if (node.widget_type) |_| {
+        try emitBehaviorNode(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+        return;
     }
+
+    try paintEmitter(node.kind)(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     try emitDropTargetOverlay(paint_ctx, node, resolved, theme, commands, allocator);
 
     if (node.custom_paint and node.kind != .table_cell and node.kind != .custom) {
         try appendCustomPaint(commands, allocator, handle, node_rect);
     }
+}
+
+const PaintEmitter = *const fn (
+    *PaintCtx,
+    *const widget.Tree,
+    widget.NodeHandle,
+    *const widget.Node,
+    style.ResolvedStyle,
+    style.Theme,
+    *std.ArrayListUnmanaged(PaintCommand),
+    std.mem.Allocator,
+    ?*const layout.TextMeasureCtx,
+    bool,
+) std.mem.Allocator.Error!void;
+
+fn paintEmitter(kind: widget.WidgetKind) PaintEmitter {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return paint_emitters[@intFromEnum(tag)];
+}
+
+const paint_emitters = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var emitters: [std.meta.fields(Tag).len]PaintEmitter = undefined;
+    emitters[@intFromEnum(Tag.container)] = paintContainerNode;
+    emitters[@intFromEnum(Tag.text)] = paintTextNode;
+    emitters[@intFromEnum(Tag.button)] = paintButtonNode;
+    emitters[@intFromEnum(Tag.checkbox)] = paintCheckboxNode;
+    emitters[@intFromEnum(Tag.radio_button)] = paintRadioButtonNode;
+    emitters[@intFromEnum(Tag.tree_item)] = paintTreeItemNode;
+    emitters[@intFromEnum(Tag.dropdown)] = paintDropdownNode;
+    emitters[@intFromEnum(Tag.list_box)] = paintListBoxNode;
+    emitters[@intFromEnum(Tag.selectable)] = paintSelectableNode;
+    emitters[@intFromEnum(Tag.grid_selector)] = paintGridSelectorNode;
+    emitters[@intFromEnum(Tag.grid_item)] = paintGridItemNode;
+    emitters[@intFromEnum(Tag.table)] = paintTableNode;
+    emitters[@intFromEnum(Tag.table_row)] = paintTableRowNode;
+    emitters[@intFromEnum(Tag.table_cell)] = paintTableCellNode;
+    emitters[@intFromEnum(Tag.toolbar)] = paintToolbarNode;
+    emitters[@intFromEnum(Tag.status_bar)] = paintStatusBarNode;
+    emitters[@intFromEnum(Tag.menu_bar)] = paintMenuBarNode;
+    emitters[@intFromEnum(Tag.menu)] = paintMenuNode;
+    emitters[@intFromEnum(Tag.popup)] = paintPopupNode;
+    emitters[@intFromEnum(Tag.tooltip)] = paintTooltipNode;
+    emitters[@intFromEnum(Tag.menu_item)] = paintMenuItemNode;
+    emitters[@intFromEnum(Tag.drag_value)] = paintDragValueNode;
+    emitters[@intFromEnum(Tag.spinbox)] = paintSpinBoxNode;
+    emitters[@intFromEnum(Tag.tab_bar)] = paintTabBarNode;
+    emitters[@intFromEnum(Tag.tab_item)] = paintTabItemNode;
+    emitters[@intFromEnum(Tag.splitter)] = paintSplitterNode;
+    emitters[@intFromEnum(Tag.slider)] = paintSliderNode;
+    emitters[@intFromEnum(Tag.spacer)] = paintSpacerNode;
+    emitters[@intFromEnum(Tag.scroll_area)] = paintScrollAreaNode;
+    emitters[@intFromEnum(Tag.text_input)] = paintTextInputNode;
+    emitters[@intFromEnum(Tag.custom)] = paintCustomNode;
+    break :blk emitters;
+};
+
+fn paintContainerNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitContainer(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintTextNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, _: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
+    try emitText(paint_ctx, node, node.kind.text, resolved, commands, allocator, text_ctx);
+}
+
+fn paintButtonNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitButton(paint_ctx, tree, handle, node, node.kind.button, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintCheckboxNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
+    try emitCheckbox(paint_ctx, node, node.kind.checkbox, resolved, theme, commands, allocator, text_ctx);
+}
+
+fn paintRadioButtonNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
+    try emitRadioButton(paint_ctx, node, node.kind.radio_button, resolved, theme, commands, allocator, text_ctx);
+}
+
+fn paintTreeItemNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitTreeItem(paint_ctx, tree, handle, node, node.kind.tree_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintDropdownNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitDropdown(paint_ctx, tree, handle, node, node.kind.dropdown, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintListBoxNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitListBox(paint_ctx, tree, handle, node, node.kind.list_box, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintSelectableNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
+    try emitSelectable(paint_ctx, node, node.kind.selectable, resolved, theme, commands, allocator, text_ctx);
+}
+
+fn paintGridSelectorNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitGridSelector(paint_ctx, tree, handle, node, node.kind.grid_selector, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintGridItemNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
+    try emitGridItem(paint_ctx, node, node.kind.grid_item, resolved, theme, commands, allocator, text_ctx);
+}
+
+fn paintTableNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitTable(paint_ctx, tree, handle, node, node.kind.table, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintTableRowNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitTableRow(paint_ctx, tree, handle, node, node.kind.table_row, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintTableCellNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitTableCell(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintToolbarNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitToolbar(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintStatusBarNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitStatusBar(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintMenuBarNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitMenuBar(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintMenuNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitMenu(paint_ctx, tree, handle, node, node.kind.menu, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintPopupNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
+    try emitPopup(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx);
+}
+
+fn paintTooltipNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
+    try emitTooltip(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx);
+}
+
+fn paintMenuItemNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
+    try emitMenuItem(paint_ctx, tree, handle, node, node.kind.menu_item, resolved, theme, commands, allocator, text_ctx);
+}
+
+fn paintDragValueNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
+    try emitDragValue(paint_ctx, node, &node.kind.drag_value, resolved, theme, commands, allocator, text_ctx);
+}
+
+fn paintSpinBoxNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
+    try emitSpinBox(paint_ctx, node, &node.kind.spinbox, resolved, theme, commands, allocator, text_ctx);
+}
+
+fn paintTabBarNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitTabBar(paint_ctx, tree, handle, node, node.kind.tab_bar, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintTabItemNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitTabItem(paint_ctx, tree, handle, node, node.kind.tab_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintSplitterNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitSplitter(paint_ctx, tree, handle, node, node.kind.splitter, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintSliderNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, _: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
+    try emitSlider(paint_ctx, node, node.kind.slider, resolved, theme, commands, allocator);
+}
+
+fn paintSpacerNode(_: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, _: *const widget.Node, _: style.ResolvedStyle, _: style.Theme, _: *std.ArrayListUnmanaged(PaintCommand), _: std.mem.Allocator, _: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {}
+
+fn paintScrollAreaNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
+    try emitScrollArea(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+}
+
+fn paintTextInputNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
+    try emitTextInput(paint_ctx, node, resolved, theme, commands, allocator, text_ctx);
+}
+
+fn paintCustomNode(paint_ctx: *PaintCtx, _: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, _: style.ResolvedStyle, _: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, _: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
+    try appendCustomPaint(commands, allocator, handle, paint_ctx.paintRect(node.layout_rect));
+}
+
+fn emitBehaviorNode(
+    paint_ctx: *PaintCtx,
+    tree: *const widget.Tree,
+    handle: widget.NodeHandle,
+    node: *const widget.Node,
+    resolved: style.ResolvedStyle,
+    theme: style.Theme,
+    commands: *std.ArrayListUnmanaged(PaintCommand),
+    allocator: std.mem.Allocator,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    in_floating_subtree: bool,
+) std.mem.Allocator.Error!void {
+    const rect = paint_ctx.paintRect(node.layout_rect);
+    const widget_type = node.widget_type orelse return;
+    if (widget_type.paint) |paint_fn| {
+        const ctx = widget.PaintCtx{
+            .widget = .{
+                .tree = @constCast(tree),
+                .handle = handle,
+                .node = @constCast(node),
+                .state = node.widget_state,
+                .theme = theme,
+            },
+            .rect = rect,
+            .resolved = resolved,
+            .commands = commands,
+            .allocator = allocator,
+        };
+        paint_fn(ctx) catch return error.OutOfMemory;
+    } else {
+        try appendCustomPaint(commands, allocator, handle, rect);
+    }
+
+    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitDropTargetOverlay(paint_ctx, node, resolved, theme, commands, allocator);
 }
 
 fn appendCustomPaint(
@@ -1977,7 +2164,7 @@ fn directPopupChild(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget
 
 fn menuPopupVisible(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     const popup = directPopupChild(tree, handle) orelse return false;
-    return popupShouldDraw(tree, popup);
+    return shouldDrawNode(tree, popup);
 }
 
 fn menuHasActiveFill(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node) bool {
@@ -1991,7 +2178,7 @@ fn menuHasActiveFill(tree: *const widget.Tree, handle: widget.NodeHandle, node: 
     var iter = tree.children(parent_handle);
     while (iter.next()) |child| {
         const popup = directPopupChild(tree, child) orelse continue;
-        if (popupShouldDraw(tree, popup)) return true;
+        if (shouldDrawNode(tree, popup)) return true;
     }
     return false;
 }
@@ -2462,11 +2649,35 @@ fn emitFloatingSubtrees(
 
 fn shouldTraverseCulledNode(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     const node = tree.getConst(handle);
-    switch (node.kind) {
-        .tree_item => |item| return item.expanded and hasNonFloatingChild(tree, handle),
-        .tab_item => |item| return item.selected and hasNonFloatingChild(tree, handle),
-        else => return false,
-    }
+    return culledTraversePredicate(node.kind)(tree, handle, node);
+}
+
+const CulledTraversePredicate = *const fn (*const widget.Tree, widget.NodeHandle, *const widget.Node) bool;
+
+fn culledTraversePredicate(kind: widget.WidgetKind) CulledTraversePredicate {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return culled_traverse_predicates[@intFromEnum(tag)];
+}
+
+const culled_traverse_predicates = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var predicates: [std.meta.fields(Tag).len]CulledTraversePredicate = undefined;
+    for (&predicates) |*predicate| predicate.* = neverTraverseCulledNode;
+    predicates[@intFromEnum(Tag.tree_item)] = traverseCulledTreeItem;
+    predicates[@intFromEnum(Tag.tab_item)] = traverseCulledTabItem;
+    break :blk predicates;
+};
+
+fn neverTraverseCulledNode(_: *const widget.Tree, _: widget.NodeHandle, _: *const widget.Node) bool {
+    return false;
+}
+
+fn traverseCulledTreeItem(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node) bool {
+    return node.kind.tree_item.expanded and hasNonFloatingChild(tree, handle);
+}
+
+fn traverseCulledTabItem(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node) bool {
+    return node.kind.tab_item.selected and hasNonFloatingChild(tree, handle);
 }
 
 fn hasNonFloatingChild(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
@@ -2489,59 +2700,85 @@ fn emitDragGhosts(
     _ = paint_ctx;
     for (tree.nodes.items) |node| {
         if (!node.alive) continue;
-        switch (node.kind) {
-            .tree_item => |item| {
-                if (!item.internal.drag.active or item.internal.drag.rect.w <= 0 or item.internal.drag.rect.h <= 0) continue;
-                const resolved = node.style_override.resolve(theme);
-                try emitDragGhostRect(item.internal.drag.rect, resolved, theme, commands, allocator);
-                const label_x = item.internal.drag.rect.x + resolved.padding.left;
-                const label_bounds = customTextBounds(item.internal.drag.rect, resolved, label_x, rectRight(item.internal.drag.rect) - resolved.padding.right - label_x);
-                try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .start, .clip);
-            },
-            .selectable => |item| {
-                if (!item.internal.drag.active or item.internal.drag.rect.w <= 0 or item.internal.drag.rect.h <= 0) continue;
-                const resolved = node.style_override.resolve(theme);
-                try emitDragGhostRect(item.internal.drag.rect, resolved, theme, commands, allocator);
-                const label_bounds = defaultTextBounds(item.internal.drag.rect, resolved);
-                try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .start, .clip);
-            },
-            .grid_item => |item| {
-                if (!item.internal.drag.active or item.internal.drag.rect.w <= 0 or item.internal.drag.rect.h <= 0) continue;
-                const resolved = node.style_override.resolve(theme);
-                try emitDragGhostRect(item.internal.drag.rect, resolved, theme, commands, allocator);
-                const inner = defaultTextBounds(item.internal.drag.rect, resolved);
-                const icon_size = @max(@min(inner.w, inner.h - resolved.font_size - theme.spacing), 0);
-                if (icon_size > 8) {
-                    const icon_rect = Rect{
-                        .x = inner.x + (inner.w - icon_size) * 0.5,
-                        .y = inner.y,
-                        .w = icon_size,
-                        .h = @min(icon_size, inner.h - resolved.font_size - theme.spacing),
-                    };
-                    try commands.append(allocator, .{ .surface = .{
-                        .bounds = icon_rect,
-                        .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 68),
-                        .border_color = dragGhostColor(theme.accent, 170),
-                        .border_width = 1,
-                        .corner_radius = @min(resolved.border_radius, 8),
-                    } });
-                }
-                const label_bounds = Rect{
-                    .x = inner.x,
-                    .y = item.internal.drag.rect.y + item.internal.drag.rect.h - resolved.padding.bottom - resolved.font_size * 1.4,
-                    .w = inner.w,
-                    .h = resolved.font_size * 1.4,
-                };
-                try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .center, .ellipsis);
-            },
-            .table_row => |row| {
-                if (!row.internal.drag.active or row.internal.drag.rect.w <= 0 or row.internal.drag.rect.h <= 0) continue;
-                const resolved = node.style_override.resolve(theme);
-                try emitDragGhostRect(row.internal.drag.rect, resolved, theme, commands, allocator);
-            },
-            else => {},
-        }
+        try dragGhostEmitter(node.kind)(&node, theme, commands, allocator);
     }
+}
+
+const DragGhostEmitter = *const fn (*const widget.Node, style.Theme, *std.ArrayListUnmanaged(PaintCommand), std.mem.Allocator) std.mem.Allocator.Error!void;
+
+fn dragGhostEmitter(kind: widget.WidgetKind) DragGhostEmitter {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return drag_ghost_emitters[@intFromEnum(tag)];
+}
+
+const drag_ghost_emitters = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var emitters: [std.meta.fields(Tag).len]DragGhostEmitter = undefined;
+    for (&emitters) |*emitter| emitter.* = emitNoDragGhost;
+    emitters[@intFromEnum(Tag.tree_item)] = emitTreeItemDragGhost;
+    emitters[@intFromEnum(Tag.selectable)] = emitSelectableDragGhost;
+    emitters[@intFromEnum(Tag.grid_item)] = emitGridItemDragGhost;
+    emitters[@intFromEnum(Tag.table_row)] = emitTableRowDragGhost;
+    break :blk emitters;
+};
+
+fn emitNoDragGhost(_: *const widget.Node, _: style.Theme, _: *std.ArrayListUnmanaged(PaintCommand), _: std.mem.Allocator) std.mem.Allocator.Error!void {}
+
+fn emitTreeItemDragGhost(node: *const widget.Node, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator) std.mem.Allocator.Error!void {
+    const item = node.kind.tree_item;
+    if (!item.internal.drag.active or item.internal.drag.rect.w <= 0 or item.internal.drag.rect.h <= 0) return;
+    const resolved = node.style_override.resolve(theme);
+    try emitDragGhostRect(item.internal.drag.rect, resolved, theme, commands, allocator);
+    const label_x = item.internal.drag.rect.x + resolved.padding.left;
+    const label_bounds = customTextBounds(item.internal.drag.rect, resolved, label_x, rectRight(item.internal.drag.rect) - resolved.padding.right - label_x);
+    try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .start, .clip);
+}
+
+fn emitSelectableDragGhost(node: *const widget.Node, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator) std.mem.Allocator.Error!void {
+    const item = node.kind.selectable;
+    if (!item.internal.drag.active or item.internal.drag.rect.w <= 0 or item.internal.drag.rect.h <= 0) return;
+    const resolved = node.style_override.resolve(theme);
+    try emitDragGhostRect(item.internal.drag.rect, resolved, theme, commands, allocator);
+    const label_bounds = defaultTextBounds(item.internal.drag.rect, resolved);
+    try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .start, .clip);
+}
+
+fn emitGridItemDragGhost(node: *const widget.Node, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator) std.mem.Allocator.Error!void {
+    const item = node.kind.grid_item;
+    if (!item.internal.drag.active or item.internal.drag.rect.w <= 0 or item.internal.drag.rect.h <= 0) return;
+    const resolved = node.style_override.resolve(theme);
+    try emitDragGhostRect(item.internal.drag.rect, resolved, theme, commands, allocator);
+    const inner = defaultTextBounds(item.internal.drag.rect, resolved);
+    const icon_size = @max(@min(inner.w, inner.h - resolved.font_size - theme.spacing), 0);
+    if (icon_size > 8) {
+        const icon_rect = Rect{
+            .x = inner.x + (inner.w - icon_size) * 0.5,
+            .y = inner.y,
+            .w = icon_size,
+            .h = @min(icon_size, inner.h - resolved.font_size - theme.spacing),
+        };
+        try commands.append(allocator, .{ .surface = .{
+            .bounds = icon_rect,
+            .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 68),
+            .border_color = dragGhostColor(theme.accent, 170),
+            .border_width = 1,
+            .corner_radius = @min(resolved.border_radius, 8),
+        } });
+    }
+    const label_bounds = Rect{
+        .x = inner.x,
+        .y = item.internal.drag.rect.y + item.internal.drag.rect.h - resolved.padding.bottom - resolved.font_size * 1.4,
+        .w = inner.w,
+        .h = resolved.font_size * 1.4,
+    };
+    try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .center, .ellipsis);
+}
+
+fn emitTableRowDragGhost(node: *const widget.Node, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator) std.mem.Allocator.Error!void {
+    const row = node.kind.table_row;
+    if (!row.internal.drag.active or row.internal.drag.rect.w <= 0 or row.internal.drag.rect.h <= 0) return;
+    const resolved = node.style_override.resolve(theme);
+    try emitDragGhostRect(row.internal.drag.rect, resolved, theme, commands, allocator);
 }
 
 fn dragGhostColor(color: style.Color, alpha: u8) style.Color {
@@ -2584,15 +2821,30 @@ fn intersectRects(a: Rect, b: Rect) Rect {
 
 fn shouldDrawNode(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     const node = tree.getConst(handle);
-    return switch (node.kind) {
-        .popup => popupShouldDraw(tree, handle),
-        .tooltip => tooltipShouldDraw(tree, handle),
-        else => true,
-    };
+    return drawPredicate(node.kind)(tree, handle, node);
 }
 
-fn popupShouldDraw(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
-    const node = tree.getConst(handle);
+const DrawPredicate = *const fn (*const widget.Tree, widget.NodeHandle, *const widget.Node) bool;
+
+fn drawPredicate(kind: widget.WidgetKind) DrawPredicate {
+    const tag: std.meta.Tag(widget.WidgetKind) = kind;
+    return draw_predicates[@intFromEnum(tag)];
+}
+
+const draw_predicates = blk: {
+    const Tag = std.meta.Tag(widget.WidgetKind);
+    var predicates: [std.meta.fields(Tag).len]DrawPredicate = undefined;
+    for (&predicates) |*predicate| predicate.* = alwaysDrawNode;
+    predicates[@intFromEnum(Tag.popup)] = popupShouldDraw;
+    predicates[@intFromEnum(Tag.tooltip)] = tooltipShouldDraw;
+    break :blk predicates;
+};
+
+fn alwaysDrawNode(_: *const widget.Tree, _: widget.NodeHandle, _: *const widget.Node) bool {
+    return true;
+}
+
+fn popupShouldDraw(tree: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node) bool {
     if (!node.kind.popup.visible) return false;
 
     if (node.parent) |parent_handle| {
@@ -2604,8 +2856,7 @@ fn popupShouldDraw(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     return true;
 }
 
-fn tooltipShouldDraw(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
-    const node = tree.getConst(handle);
+fn tooltipShouldDraw(tree: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node) bool {
     const owner_handle = node.parent orelse return false;
     const owner = tree.getConst(owner_handle);
     return (owner.interaction.hovered or owner.interaction.focused) and node.layout_rect.w > 0 and node.layout_rect.h > 0;
