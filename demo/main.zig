@@ -1478,7 +1478,7 @@ pub fn main(init: std.process.Init) !void {
     // GL renderer (with snail text support)
     var renderer = try render.Renderer.init(state.buffer_width, state.buffer_height, &text_atlas);
     defer renderer.deinit();
-    renderer.target_encoding = if (state.egl_surface_srgb) .srgb else .srgb_pixels_on_linear_framebuffer;
+    renderer.target_encoding = if (state.egl_surface_srgb) .srgb else .srgb_pixels_on_linear_attachment;
 
     std.debug.print("goop demo running (logical {}x{}, scale {}, buffer {}x{})\n", .{
         state.logical_width,

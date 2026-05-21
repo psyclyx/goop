@@ -287,7 +287,7 @@ fn runRenderSuite(label: []const u8, ctx: *goop.Context, config: BenchConfig, te
 
     var renderer = try render.Renderer.init(config.width, config.height, &snail_resources.text_atlas);
     defer renderer.deinit();
-    renderer.target_encoding = if (offscreen.surface_srgb) .srgb else .srgb_pixels_on_linear_framebuffer;
+    renderer.target_encoding = if (offscreen.surface_srgb) .srgb else .srgb_pixels_on_linear_attachment;
 
     try prepareContext(ctx, config, text_ctx, snail_resources, &renderer);
     const paint_list = try ctx.generatePaintList();

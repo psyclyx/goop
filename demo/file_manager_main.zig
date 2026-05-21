@@ -2904,7 +2904,7 @@ pub fn main(init: std.process.Init) !void {
     // GL renderer (with snail text support)
     var renderer = try render.Renderer.init(state.buffer_width, state.buffer_height, &text_atlas);
     defer renderer.deinit();
-    renderer.target_encoding = if (state.egl_surface_srgb) .srgb else .srgb_pixels_on_linear_framebuffer;
+    renderer.target_encoding = if (state.egl_surface_srgb) .srgb else .srgb_pixels_on_linear_attachment;
     renderer.clear_color = .{ 0.95, 0.96, 0.97, 1.0 };
 
     std.debug.print("goop file manager running (logical {}x{}, scale {}, ui-scale {d:.2}, buffer {}x{})\n", .{

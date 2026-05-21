@@ -10,6 +10,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .@"c-api" = false,
         .@"cpu-renderer" = false,
+        .gl44 = false,
+        .gles30 = false,
         .vulkan = false,
     });
     const snail_mod = snail_dep.module("snail");

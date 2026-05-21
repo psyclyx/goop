@@ -118,7 +118,7 @@ pub fn main(init: std.process.Init) !void {
 
     var renderer = try render.Renderer.init(args.width, args.height, &text_atlas);
     defer renderer.deinit();
-    renderer.target_encoding = if (offscreen.surface_srgb) .srgb else .srgb_pixels_on_linear_framebuffer;
+    renderer.target_encoding = if (offscreen.surface_srgb) .srgb else .srgb_pixels_on_linear_attachment;
     renderer.clear_color = .{ 0.95, 0.96, 0.97, 1.0 };
 
     // Stabilize the text atlas: the demo grows it on demand the first time

@@ -27,6 +27,10 @@ const PaintCommand = goop.PaintCommand;
 const PaintList = goop.PaintList;
 const Rect = goop.paint.Rect;
 
+const text_atlas_key = snail.ResourceKey.named("goop_text_atlas");
+const frame_paths_key = snail.ResourceKey.named("goop_frame_paths");
+const text_resource_keys = snail.TextResourceKeys{ .atlas = text_atlas_key };
+
 /// The demo's icon vocabulary. Widgets in the demo set
 /// `tree_item.icon = @intFromEnum(DemoIcon.folder)` (etc.); this renderer
 /// switches on the same enum when it draws the icon command. Goop core does
@@ -140,14 +144,14 @@ pub const Renderer = struct {
     viewport_h: f32,
     scale: f32,
     clear_color: [4]f32,
-    target_encoding: snail.TargetEncoding = .srgb_pixels_on_linear_framebuffer,
+    target_encoding: snail.TargetEncoding = .srgb_pixels_on_linear_attachment,
     scissor_stack: [16]Scissor = undefined,
     scissor_depth: u32 = 0,
     logical_clip_stack: [16]Rect = undefined,
     logical_clip_depth: u32 = 0,
 
     // Snail text state
-    text_renderer: snail.GlRenderer,
+    text_renderer: snail.Gl33Renderer,
     frame_arena: *std.heap.ArenaAllocator,
     scene: snail.Scene,
     run_kind: ?RunKind = null,
@@ -159,7 +163,7 @@ pub const Renderer = struct {
     frame_text_blob_initialized: bool = false,
     runs: std.ArrayListUnmanaged(FrameRun) = .empty,
     draw_words: std.ArrayListUnmanaged(u32) = .empty,
-    draw_segments: std.ArrayListUnmanaged(snail.DrawSegment) = .empty,
+    draw_segments: std.ArrayListUnmanaged(snail.DrawList.Segment) = .empty,
     scratch_buf: []u8,
     text_atlas: *const snail.TextAtlas,
     text_resources: ?snail.PreparedResources = null,
@@ -173,7 +177,7 @@ pub const Renderer = struct {
     };
 
     pub fn init(w: u32, h: u32, text_atlas: *const snail.TextAtlas) !Renderer {
-        var text_renderer = try snail.GlRenderer.init(render_allocator);
+        var text_renderer = try snail.Gl33Renderer.init(render_allocator);
         var text_renderer_owned = true;
         errdefer if (text_renderer_owned) text_renderer.deinit();
 
@@ -256,22 +260,31 @@ pub const Renderer = struct {
         }
         if (text_atlas.pageCount() == 0) return;
 
-        var resource_entries: [1]snail.ResourceSet.Entry = undefined;
-        var resources = snail.ResourceSet.init(&resource_entries);
-        try resources.putTextAtlas(.goop_text_atlas, text_atlas);
+        var resource_entries = [_]snail.ResourceManifest.Entry{.{
+            .text_atlas = .{
+                .key = text_atlas_key,
+                .atlas = text_atlas,
+            },
+        }};
+        var resources = snail.ResourceManifest{
+            .entries = &resource_entries,
+            .len = resource_entries.len,
+        };
 
         const next = try self.text_renderer.uploadResourcesBlocking(uploadAllocators(), &resources);
         self.text_resources = next;
     }
 
-    fn drawOptions(self: *const Renderer) snail.DrawOptions {
+    fn drawState(self: *const Renderer) snail.DrawState {
         return .{
             .mvp = snail.Mat4.ortho(0, self.viewport_w, self.viewport_h, 0, -1, 1),
-            .target = .{
+            .surface = .{
                 .pixel_width = self.viewport_w,
                 .pixel_height = self.viewport_h,
-                .subpixel_order = .none,
                 .encoding = self.target_encoding,
+            },
+            .raster = .{
+                .subpixel_order = .none,
             },
         };
     }
@@ -283,7 +296,7 @@ pub const Renderer = struct {
         self.scissor_depth = 0;
         self.logical_clip_depth = 0;
         gl.glViewport(0, 0, @intCast(w), @intCast(h));
-        if (self.target_encoding.framebuffer == .srgb) {
+        if (self.target_encoding.attachment == .srgb) {
             gl.glEnable(gl.GL_FRAMEBUFFER_SRGB);
         } else {
             gl.glDisable(gl.GL_FRAMEBUFFER_SRGB);
@@ -375,19 +388,19 @@ pub const Renderer = struct {
 
     fn drawScene(self: *Renderer, prepared: *const snail.PreparedResources, scene: *const snail.Scene) void {
         if (scene.commandCount() == 0) return;
-        const options = self.drawOptions();
-        const word_count = @max(snail.DrawList.estimate(scene, options), 1);
-        const segment_count = @max(snail.DrawList.estimateSegments(scene, options), 1);
+        const state = self.drawState();
+        const word_count = @max(snail.DrawList.estimate(scene), 1);
+        const segment_count = @max(snail.DrawList.estimateSegments(scene), 1);
         self.draw_words.resize(render_allocator, word_count) catch return;
         self.draw_segments.resize(render_allocator, segment_count) catch return;
 
         var draw = snail.DrawList.init(self.draw_words.items, self.draw_segments.items);
-        draw.addScene(prepared, scene, options) catch return;
-        self.text_renderer.draw(prepared, draw.slice(), options) catch {};
+        draw.addScene(prepared, scene) catch return;
+        self.text_renderer.draw(prepared, &draw, state) catch {};
     }
 
     fn drawPreparedScene(self: *Renderer, prepared: *const snail.PreparedResources, scene: *const snail.PreparedScene) bool {
-        self.text_renderer.drawPrepared(prepared, scene, self.drawOptions()) catch return false;
+        self.text_renderer.drawPrepared(prepared, scene, self.drawState()) catch return false;
         return true;
     }
 
@@ -437,7 +450,7 @@ pub const Renderer = struct {
         if (end <= start) return;
         const blob = try self.ensureFrameTextBlob();
         try self.beginRun(.text);
-        try self.scene.addText(.{ .blob = blob, .glyphs = .{
+        try self.scene.addText(.{ .blob = blob, .resources = text_resource_keys, .glyphs = .{
             .start = start,
             .count = end - start,
         } });
@@ -455,7 +468,7 @@ pub const Renderer = struct {
         if (end <= start) return;
         const picture = try self.ensureFramePathPicture();
         try self.beginRun(.path);
-        try self.scene.addPath(.{ .picture = picture, .shapes = .{
+        try self.scene.addPath(.{ .picture = picture, .resource_key = frame_paths_key, .shapes = .{
             .start = start,
             .count = end - start,
         } });
@@ -609,9 +622,9 @@ pub const Renderer = struct {
         picture.* = try self.path_builder.freeze(pathFreezeOptions(self.frameAllocator(), self.frameAllocator()));
         self.frame_path_picture_initialized = true;
 
-        var resource_entries: [1]snail.ResourceSet.Entry = undefined;
-        var resources = snail.ResourceSet.init(&resource_entries);
-        try resources.putPathPicture(.goop_frame_paths, picture);
+        var resource_entries: [1]snail.ResourceManifest.Entry = undefined;
+        var resources = snail.ResourceManifest.init(&resource_entries);
+        try resources.putPathPicture(frame_paths_key, picture);
         return try self.text_renderer.uploadResourcesBlocking(uploadAllocators(), &resources);
     }
 
@@ -673,9 +686,9 @@ pub const Renderer = struct {
 
         var path_resources: ?snail.PreparedResources = null;
         if (cache_picture) |picture| {
-            var resource_entries: [1]snail.ResourceSet.Entry = undefined;
-            var resources = snail.ResourceSet.init(&resource_entries);
-            try resources.putPathPicture(.goop_frame_paths, picture);
+            var resource_entries: [1]snail.ResourceManifest.Entry = undefined;
+            var resources = snail.ResourceManifest.init(&resource_entries);
+            try resources.putPathPicture(frame_paths_key, picture);
             path_resources = try self.text_renderer.uploadResourcesBlocking(uploadAllocators(), &resources);
         }
         errdefer if (path_resources) |*prepared| prepared.deinit();
@@ -705,14 +718,17 @@ pub const Renderer = struct {
         for (run.scene.commands.items) |source_command| {
             var command = source_command;
             switch (command) {
-                .path => |*path| path.picture = cache_picture orelse return error.MissingPathPicture,
+                .path => |*path| {
+                    path.picture = cache_picture orelse return error.MissingPathPicture;
+                    path.resource_key = frame_paths_key;
+                },
                 .text => {},
             }
             try scene.commands.append(scene.allocator, command);
         }
         if (scene.commandCount() == 0) return;
 
-        const prepared_scene = try snail.PreparedScene.initOwned(render_allocator, prepared, &scene, self.drawOptions());
+        const prepared_scene = try snail.PreparedScene.initOwned(render_allocator, prepared, &scene);
         errdefer {
             var mutable = prepared_scene;
             mutable.deinit();

@@ -4,7 +4,7 @@ let
   zig = pkgs.zig_0_16;
   deps = pkgs.linkFarm "zig-packages" [
     {
-      name = "snail-0.7.0-vw75SGWlbgAgTmJcxDpZgzyFaQS0bJ4pyV0yGnqBf2bC";
+      name = "snail-0.11.1-vw75SFfHfQC7KmN2XCWuGeiNiueZL34dAHOZeE2bzbxL";
       path = sources.snail;
     }
   ];

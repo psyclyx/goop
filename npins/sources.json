@@ -17,10 +17,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.7.0",
-      "revision": "4aba591c675a0a3e22cf129c9b8298363c307e4b",
-      "url": "https://api.github.com/repos/psyclyx/snail/tarball/refs/tags/v0.7.0",
-      "hash": "sha256-yn7KL5FTVv2HKFQY8yLKGIUvroq+sYRZ/PMyPaZGTPs="
+      "version": "v0.11.1",
+      "revision": "b063478b1efe475d32570644d0c1462eb43fa4cb",
+      "url": "https://api.github.com/repos/psyclyx/snail/tarball/refs/tags/v0.11.1",
+      "hash": "sha256-LruG2093PHsV0v65miJE3H6ZR6a/H99fEz6k8hwO6Hc="
     }
   },
   "version": 7
