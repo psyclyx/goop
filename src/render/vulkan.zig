@@ -195,8 +195,20 @@ pub const Renderer = struct {
                     ) orelse continue;
                 }
                 switch (paint_command.paint) {
-                    .surface => |surface| drawSurface(target, surface, visible),
-                    .icon => |icon| drawIcon(target, icon, visible),
+                    .surface => |surface| try drawSurface(
+                        self,
+                        target,
+                        text,
+                        surface,
+                        visible,
+                    ),
+                    .icon => |icon| try drawIcon(
+                        self,
+                        target,
+                        text,
+                        icon,
+                        visible,
+                    ),
                     .text => |text_command| {
                         const metrics = try text.measure(
                             text_command.text,
@@ -402,52 +414,96 @@ fn drawState(target: present.FrameTarget, scissor: ?display.Rect) render_state.D
 }
 
 fn drawSurface(
+    self: *Renderer,
     target: present.FrameTarget,
+    text: *goop_snail.TextEngine,
     surface: display.PaintCommand.Surface,
     visible: display.Rect,
-) void {
-    const border = @max(0, surface.border_width);
+) !void {
+    try drawColorRect(
+        self,
+        target,
+        text,
+        surface.bounds,
+        surface.color,
+        visible,
+    );
+
+    const border = @min(
+        @max(0, surface.border_width),
+        @min(surface.bounds.w, surface.bounds.h) * 0.5,
+    );
     if (border > 0 and surface.border_color.a > 0) {
-        clearRect(
-            target.command_buffer,
-            visible,
-            surface.border_color,
-            target.extent,
-            target.format,
-        );
-        const inner = display.Rect{
-            .x = surface.bounds.x + border,
-            .y = surface.bounds.y + border,
-            .w = @max(0, surface.bounds.w - border * 2),
-            .h = @max(0, surface.bounds.h - border * 2),
+        const b = surface.bounds;
+        const edges = [_]display.Rect{
+            .{ .x = b.x, .y = b.y, .w = b.w, .h = border },
+            .{ .x = b.x, .y = b.y + b.h - border, .w = b.w, .h = border },
+            .{ .x = b.x, .y = b.y + border, .w = border, .h = @max(0, b.h - border * 2) },
+            .{ .x = b.x + b.w - border, .y = b.y + border, .w = border, .h = @max(0, b.h - border * 2) },
         };
-        if (intersect(inner, visible)) |fill| {
+        for (edges) |edge| {
+            if (intersect(edge, visible)) |clipped| {
+                try drawColorRect(
+                    self,
+                    target,
+                    text,
+                    edge,
+                    surface.border_color,
+                    clipped,
+                );
+            }
+        }
+    }
+}
+
+const ColorRectMode = enum { skip, replace, blend };
+
+fn colorRectMode(color: display.Color) ColorRectMode {
+    return if (color.a == 0)
+        .skip
+    else if (color.a == 255)
+        .replace
+    else
+        .blend;
+}
+
+fn drawColorRect(
+    self: *Renderer,
+    target: present.FrameTarget,
+    text: *goop_snail.TextEngine,
+    bounds: display.Rect,
+    color: display.Color,
+    visible: display.Rect,
+) !void {
+    switch (colorRectMode(color)) {
+        .skip => return,
+        .replace => {
             clearRect(
                 target.command_buffer,
-                fill,
-                surface.color,
+                visible,
+                color,
                 target.extent,
                 target.format,
             );
-        }
-        return;
+            return;
+        },
+        .blend => {
+            var prepared = try text.prepareRect(self.allocator, bounds, color);
+            defer prepared.deinit();
+            try self.drawPrepared(target, text, &prepared, visible);
+        },
     }
-    clearRect(
-        target.command_buffer,
-        visible,
-        surface.color,
-        target.extent,
-        target.format,
-    );
 }
 
 /// Compact fallback icon vocabulary. Icons stay a renderer concern: the
 /// display protocol carries only opaque semantic IDs.
 fn drawIcon(
+    self: *Renderer,
     target: present.FrameTarget,
+    text: *goop_snail.TextEngine,
     icon: display.PaintCommand.Icon,
     visible: display.Rect,
-) void {
+) !void {
     const b = icon.bounds;
     const parts = switch (icon.kind) {
         0 => [_]display.Rect{
@@ -484,12 +540,13 @@ fn drawIcon(
     for (parts) |part| {
         if (part.w <= 0 or part.h <= 0) continue;
         if (intersect(part, visible)) |clipped| {
-            clearRect(
-                target.command_buffer,
-                clipped,
+            try drawColorRect(
+                self,
+                target,
+                text,
+                part,
                 icon.color,
-                target.extent,
-                target.format,
+                clipped,
             );
         }
     }
@@ -550,4 +607,19 @@ test "damage intersection rejects disjoint rectangles" {
         .{ .x = 5, .y = 2, .w = 10, .h = 4 },
     ).?;
     try std.testing.expectEqual(@as(f32, 5), overlap.w);
+}
+
+test "surface alpha selects skip, replacement, or blended drawing" {
+    try std.testing.expectEqual(
+        ColorRectMode.skip,
+        colorRectMode(.rgba(20, 30, 40, 0)),
+    );
+    try std.testing.expectEqual(
+        ColorRectMode.blend,
+        colorRectMode(.rgba(20, 30, 40, 84)),
+    );
+    try std.testing.expectEqual(
+        ColorRectMode.replace,
+        colorRectMode(.rgba(20, 30, 40, 255)),
+    );
 }

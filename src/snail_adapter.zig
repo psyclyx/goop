@@ -14,6 +14,11 @@ pub const DrawRecords = snail.render.records.DrawRecords;
 pub const Atlas = snail.Atlas;
 pub const PagePool = snail.PagePool;
 
+const unit_rect_key = snail.record_key.RecordKey{
+    .namespace = snail.record_key.ns.path_fill,
+    .a = 0x676f_6f70,
+};
+
 pub const Metrics = struct {
     width: f32,
     ascent: f32,
@@ -46,6 +51,7 @@ pub const TextEngine = struct {
         faces: snail.Faces,
         pool: *snail.PagePool,
         atlas: snail.Atlas,
+        unit_rect_design_to_source: snail.Transform2D,
     };
 
     pub const Options = struct {
@@ -80,6 +86,8 @@ pub const TextEngine = struct {
         state.faces = try snail.Faces.build(allocator, &.{
             .{ .font = &state.font, .font_id = options.font_id },
         });
+        errdefer state.faces.deinit();
+        state.unit_rect_design_to_source = try recordUnitRect(state);
         return .{ .state = state };
     }
 
@@ -147,6 +155,30 @@ pub const TextEngine = struct {
         };
     }
 
+    /// Prepare a solid rectangle through the same backend-neutral shape
+    /// stream as text. Render backends can therefore use their normal blend
+    /// pipeline for translucent UI surfaces instead of replacing attachment
+    /// pixels with a clear operation.
+    pub fn prepareRect(
+        self: *const TextEngine,
+        allocator: std.mem.Allocator,
+        bounds: display.Rect,
+        color: display.Color,
+    ) !PreparedText {
+        const shapes = try allocator.alloc(snail.Shape, 1);
+        shapes[0] = .{
+            .key = unit_rect_key,
+            .local_transform = snail.Transform2D.multiply(.{
+                .xx = bounds.w,
+                .yy = bounds.h,
+                .tx = bounds.x,
+                .ty = bounds.y,
+            }, self.state.unit_rect_design_to_source),
+            .local_color = linearColor(color),
+        };
+        return .{ .allocator = allocator, .shapes = shapes };
+    }
+
     /// Emit one prepared run into caller-owned buffers. Vulkan, software, and
     /// future backends all consume this same record stream.
     pub fn emit(
@@ -171,6 +203,29 @@ pub const TextEngine = struct {
         );
     }
 };
+
+fn recordUnitRect(state: *TextEngine.State) !snail.Transform2D {
+    var scratch = std.heap.ArenaAllocator.init(state.allocator);
+    defer scratch.deinit();
+
+    var path = snail.Path.init(state.allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = 0, .y = 0, .w = 1, .h = 1 });
+
+    var prepared = try path.prepare(state.allocator);
+    defer prepared.deinit();
+    var curves = try prepared.fillCurves(state.allocator, scratch.allocator());
+    defer curves.deinit();
+
+    try state.atlas.extendInPlace(state.allocator, &.{.{
+        .key = unit_rect_key,
+        .curves = curves,
+        .paint = try prepared.paintForDesign(.{
+            .solid = .{ 1, 1, 1, 1 },
+        }),
+    }});
+    return prepared.design_to_source;
+}
 
 pub fn linearColor(color: display.Color) [4]f32 {
     const scale = 1.0 / 255.0;
