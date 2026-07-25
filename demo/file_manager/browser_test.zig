@@ -120,6 +120,34 @@ fn initBrowserListTestState(state: *State, ctx: *goop.Context, text_measure_ctx:
     }
 }
 
+test "file browser list rows receive pointer hover" {
+    var state = State{};
+    defer deinitBrowserState(&state);
+
+    const text_measure_ctx = goop.TextMeasureCtx{
+        .measureFn = &browserTestMeasureText,
+    };
+
+    var ctx = try goop.Context.init(allocator, .{
+        .width = 960,
+        .height = 720,
+        .theme = browserTestTheme(),
+    });
+    defer ctx.deinit();
+
+    try initBrowserListTestState(&state, &ctx, &text_measure_ctx);
+
+    const row = state.view.assets.row_handles.items[0];
+    const row_rect = ctx.tree.getConst(row).layout_rect;
+    const x = row_rect.x + row_rect.w * 0.5;
+    const y = row_rect.y + row_rect.h * 0.5;
+
+    try std.testing.expect(goop.hittest.hitTest(&ctx.tree, x, y).?.eql(row));
+    try ctx.pushEvent(.{ .mouse_move = .{ .x = x, .y = y } });
+    ctx.processEvents();
+    try std.testing.expect(ctx.tree.getConst(row).interaction.hovered);
+}
+
 test "file browser formats file sizes with correct units" {
     var buf: [24]u8 = undefined;
 

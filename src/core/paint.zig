@@ -2061,12 +2061,34 @@ fn tableRowFill(
     if (row.selected) return theme.selection_bg;
     if (row.header) return theme.bg_active;
     if (widget.tableRowSelectable(tree, handle) and node.interaction.hovered) {
-        return style.Color.rgba(theme.bg_hover.r, theme.bg_hover.g, theme.bg_hover.b, 160);
+        return theme.bg_hover;
     }
     if (tableStriped(tree, handle) and (tableRowIndex(tree, handle) % 2 == 1)) {
         return style.Color.rgba(theme.bg_hover.r, theme.bg_hover.g, theme.bg_hover.b, 96);
     }
     return style.Color.rgba(0, 0, 0, 0);
+}
+
+test "hovered selectable table row uses the full theme hover color" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const table = try tree.addRoot(.{ .table = .{
+        .columns = 1,
+        .selection_mode = .single,
+    } });
+    const row_handle = try tree.addChild(table, .{ .table_row = .{} });
+    const row_node = tree.get(row_handle);
+    row_node.interaction.hovered = true;
+
+    const theme = style.Theme{
+        .bg_hover = style.Color.rgb(231, 238, 248),
+    };
+    try std.testing.expectEqual(
+        theme.bg_hover,
+        tableRowFill(&tree, row_handle, row_node, row_node.kind.table_row, theme),
+    );
 }
 
 fn tableStriped(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
