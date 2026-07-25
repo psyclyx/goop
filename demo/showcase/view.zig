@@ -88,7 +88,18 @@ pub const Handles = struct {
 pub fn build(ctx: *goop.Context) !Handles {
     var handles = Handles{};
     const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
+    try buildMenus(ctx, &handles, root);
+    try buildToolbar(ctx, &handles, root);
+    try buildOutline(ctx, &handles, root);
+    try buildSelections(ctx, &handles, root);
+    try buildTable(ctx, &handles, root);
+    try buildEditors(ctx, &handles, root);
+    try buildSplitView(ctx, &handles, root);
+    try buildFooter(ctx, &handles, root);
+    return handles;
+}
 
+fn buildMenus(ctx: *goop.Context, handles: *Handles, root: goop.NodeHandle) !void {
     const menu_bar = try ctx.tree.addChild(root, .{ .menu_bar = .{} });
     handles.menus.file = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = "File" } });
     const file_popup = try ctx.tree.addChild(handles.menus.file.?, .{ .popup = .{
@@ -111,7 +122,9 @@ pub fn build(ctx: *goop.Context) !Handles {
     } });
     handles.menus.copy = try ctx.tree.addChild(edit_popup, .{ .menu_item = .{ .label = "Copy" } });
     handles.menus.paste = try ctx.tree.addChild(edit_popup, .{ .menu_item = .{ .label = "Paste" } });
+}
 
+fn buildToolbar(ctx: *goop.Context, handles: *Handles, root: goop.NodeHandle) !void {
     const toolbar = try ctx.tree.addChild(root, .{ .toolbar = .{} });
     _ = ctx.setStyle(toolbar, .{
         .bg = .rgb(36, 36, 36),
@@ -122,7 +135,9 @@ pub fn build(ctx: *goop.Context) !Handles {
     handles.toolbar.translate = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Translate" } });
     handles.toolbar.rotate = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Rotate" } });
     handles.toolbar.scale = try ctx.tree.addChild(toolbar, .{ .button = .{ .label = "Scale" } });
+}
 
+fn buildOutline(ctx: *goop.Context, handles: *Handles, root: goop.NodeHandle) !void {
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "goop demo - click the buttons" } });
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "Outline" } });
     handles.outline.parent = try ctx.tree.addChild(root, .{ .tree_item = .{
@@ -149,7 +164,9 @@ pub fn build(ctx: *goop.Context) !Handles {
         .y = 4,
     } });
     _ = try ctx.tree.addChild(outline_tooltip, .{ .text = .{ .content = "Click again while selected to rename." } });
+}
 
+fn buildSelections(ctx: *goop.Context, handles: *Handles, root: goop.NodeHandle) !void {
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "List Box" } });
     handles.selection.list_box = try ctx.tree.addChild(root, .{ .list_box = .{ .selection_mode = .multiple } });
     handles.selection.scene = try ctx.tree.addChild(handles.selection.list_box.?, .{ .selectable = .{
@@ -171,7 +188,9 @@ pub fn build(ctx: *goop.Context) !Handles {
     handles.selection.grid_b = try ctx.tree.addChild(handles.selection.grid_selector.?, .{ .grid_item = .{ .label = "Metal" } });
     handles.selection.grid_c = try ctx.tree.addChild(handles.selection.grid_selector.?, .{ .grid_item = .{ .label = "Leaves" } });
     handles.selection.grid_d = try ctx.tree.addChild(handles.selection.grid_selector.?, .{ .grid_item = .{ .label = "UI Icons" } });
+}
 
+fn buildTable(ctx: *goop.Context, handles: *Handles, root: goop.NodeHandle) !void {
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "Asset Table" } });
     handles.table.root = try ctx.tree.addChild(root, .{ .table = .{
         .columns = 3,
@@ -194,7 +213,9 @@ pub fn build(ctx: *goop.Context) !Handles {
     try addTableRow(ctx, handles.table.row_b.?, "CameraRig", "Object", "Yes");
     handles.table.row_c = try ctx.tree.addChild(handles.table.root.?, .{ .table_row = .{} });
     try addTableRow(ctx, handles.table.row_c.?, "KeyLight", "Light", "No");
+}
 
+fn buildEditors(ctx: *goop.Context, handles: *Handles, root: goop.NodeHandle) !void {
     handles.choices.dropdown = try ctx.tree.addChild(root, .{ .dropdown = .{ .placeholder = "Viewport mode" } });
     const dropdown_popup = try ctx.tree.addChild(handles.choices.dropdown.?, .{ .popup = .{ .placement = .below_start } });
     _ = try ctx.tree.addChild(dropdown_popup, .{ .menu_item = .{ .label = "Solid" } });
@@ -234,7 +255,9 @@ pub fn build(ctx: *goop.Context) !Handles {
     handles.choices.radio_c = try ctx.tree.addChild(root, .{ .radio_button = .{ .label = "Option C", .group = 1 } });
     _ = try ctx.tree.addChild(root, .{ .text_input = .{ .placeholder = "Type here..." } });
     _ = try ctx.tree.addChild(root, .{ .slider = .{ .value = 0.5, .min = 0, .max = 1 } });
+}
 
+fn buildSplitView(ctx: *goop.Context, handles: *Handles, root: goop.NodeHandle) !void {
     _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "Split View" } });
     handles.values.splitter = try ctx.tree.addChild(root, .{ .splitter = .{
         .direction = .row,
@@ -260,7 +283,9 @@ pub fn build(ctx: *goop.Context) !Handles {
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 6" } });
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 7" } });
     _ = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "Scroll area line 8" } });
+}
 
+fn buildFooter(ctx: *goop.Context, handles: *Handles, root: goop.NodeHandle) !void {
     const status_bar = try ctx.tree.addChild(root, .{ .status_bar = .{} });
     _ = ctx.setStyle(status_bar, .{
         .bg = .rgb(34, 34, 34),
@@ -275,7 +300,6 @@ pub fn build(ctx: *goop.Context) !Handles {
     handles.context.context_popup = try ctx.tree.addRoot(.{ .popup = .{ .placement = .absolute, .visible = false } });
     handles.context.context_action_a = try ctx.tree.addChild(handles.context.context_popup.?, .{ .menu_item = .{ .label = "Rename" } });
     handles.context.context_action_b = try ctx.tree.addChild(handles.context.context_popup.?, .{ .menu_item = .{ .label = "Delete" } });
-    return handles;
 }
 
 fn addTableRow(

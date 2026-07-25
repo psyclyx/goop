@@ -1019,14 +1019,6 @@ fn handleAssetWidgetDrop(state: *State, ctx: *const goop.Context, drop: goop.Wid
     return moveDropPathsToDirectory(state, source_path, target_dir);
 }
 
-fn maybeStartWaylandAssetDrag(state: *State, ctx: *goop.Context) !bool {
-    // Internal file moves remain driven by goop drop events. Exporting a drag
-    // to another client is a platform transfer-service concern.
-    _ = state;
-    _ = ctx;
-    return false;
-}
-
 fn selectedEntryIndex(state: *const State) ?usize {
     const selected_path = state.model.selected_path orelse return null;
     for (state.model.entries.items, 0..) |entry, index| {
@@ -1403,7 +1395,7 @@ fn runBrowserCommand(state: *State, command: BrowserCommand) !bool {
             return true;
         },
         .about => {
-            state.interaction.status_note = "goop files: a Wayland/EGL/snail file manager demo.";
+            state.interaction.status_note = "goop files: a retained file manager component demo.";
             return false;
         },
     }
@@ -1722,7 +1714,6 @@ fn beginBrowserFrame(state: *State, ctx: *goop.Context, text_measure_ctx: *const
     syncContextPopupVisibleFromWidget(state, ctx);
     syncAddressInputFromWidget(state, ctx);
     syncRenameInputFromWidget(state, ctx);
-    _ = try maybeStartWaylandAssetDrag(state, ctx);
 
     var rebuild_ui = false;
     if (state.interaction.rename_cancel_requested) {
