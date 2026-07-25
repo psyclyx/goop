@@ -202,16 +202,19 @@ pub fn isNumericEditorCodepoint(codepoint: u21) bool {
 }
 
 pub fn focusedTextEditor(tree: *widget.Tree, handle: widget.NodeHandle) ?*widget.WidgetKind.TextInput {
+    if (!tree.isAlive(handle)) return null;
     const node = tree.get(handle);
     return textKindOps(node.kind).editor(node);
 }
 
 pub fn treeItemEditing(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    if (!tree.isAlive(handle)) return false;
     const node = tree.getConst(handle);
     return node.kind == .tree_item and node.kind.tree_item.editing;
 }
 
 pub fn numericEditorEditing(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
+    if (!tree.isAlive(handle)) return false;
     const node = tree.getConst(handle);
     return textKindOps(node.kind).numeric_editing(node);
 }

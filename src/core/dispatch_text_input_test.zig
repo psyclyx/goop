@@ -62,6 +62,34 @@ test "text input receives character events" {
     try std.testing.expectEqualStrings("hi", tree.getConst(ti).kind.text_input.content());
 }
 
+test "key dispatch discards focus after the editor is rebuilt away" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const old_input = try tree.addChild(root, .{ .text_input = .{} });
+    var mouse = MouseState{ .focused = old_input };
+    tree.get(old_input).interaction.focused = true;
+
+    try tree.remove(old_input);
+    const replacement = try tree.addChild(root, .{ .button = .{ .label = "replacement" } });
+    try std.testing.expect(old_input.index == replacement.index);
+    try std.testing.expect(old_input.generation != replacement.generation);
+
+    process(&tree, &.{
+        .{ .key = .{
+            .scancode = 14,
+            .keycode = .backspace,
+            .state = .pressed,
+        } },
+        .{ .text = .{ .codepoint = 'x' } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(mouse.focused == null);
+    try std.testing.expect(!tree.getConst(replacement).interaction.focused);
+}
+
 test "text input backspace deletes characters" {
     const allocator = std.testing.allocator;
     var tree = widget.Tree.init(allocator);

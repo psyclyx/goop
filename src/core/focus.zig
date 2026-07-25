@@ -139,9 +139,9 @@ pub fn syncFocusFlags(tree: *widget.Tree, focused: ?widget.NodeHandle) void {
     for (tree.nodes.items) |*node| {
         node.interaction.focused = false;
     }
-    if (focused) |f| {
+    if (focused) |f| if (tree.isAlive(f)) {
         tree.get(f).interaction.focused = true;
-    }
+    };
 }
 
 fn canFocusNode(tree: *const widget.Tree, index: u32) bool {
