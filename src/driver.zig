@@ -117,7 +117,8 @@ pub const Scene = struct {
             }
 
             const previous = entry.value_ptr.*;
-            if (previous.fingerprint != paint_command.fingerprint or
+            if (self.force_full or
+                previous.fingerprint != paint_command.fingerprint or
                 previous.order != paint_command.order or
                 !optionalRectEqual(previous.bounds, new_bounds))
             {
@@ -525,6 +526,29 @@ test "unchanged semantic display produces no work" {
     const second = try scene.reconcile(&commands);
     try std.testing.expect(second.damage == .none);
     try std.testing.expectEqual(@as(usize, 0), second.operations.len);
+}
+
+test "full invalidation replays retained commands for a rebuilt renderer" {
+    const allocator = std.testing.allocator;
+    var scene = Scene.init(allocator);
+    defer scene.deinit();
+
+    const paint = display.PaintCommand{ .surface = .{
+        .bounds = .{ .x = 0, .y = 0, .w = 100, .h = 40 },
+        .color = .rgb(10, 20, 30),
+        .border_color = .rgb(0, 0, 0),
+        .border_width = 0,
+        .corner_radius = 0,
+    } };
+    const commands = [_]display.Command{command(.init(1), paint)};
+    _ = try scene.reconcile(&commands);
+    _ = try scene.reconcile(&commands);
+
+    scene.invalidateAll();
+    const replay = try scene.reconcile(&commands);
+    try std.testing.expect(replay.damage == .full);
+    try std.testing.expectEqual(@as(usize, 1), replay.operations.len);
+    try std.testing.expect(replay.operations[0] == .put);
 }
 
 test "moving and removing commands damage old and new bounds" {
