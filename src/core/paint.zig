@@ -2409,51 +2409,23 @@ fn emitTreeDisclosure(
     allocator: std.mem.Allocator,
 ) !void {
     const slot_width = geometry.treeDisclosureSlotWidth(resolved);
-    const size = @max(resolved.font_size * 0.7, 10);
-    const box_rect = Rect{
+    const size = @max(resolved.font_size * 0.8, 11);
+    const bounds = Rect{
         .x = disclosure_x + (slot_width - size) * 0.5,
         .y = row_rect.y + (row_rect.h - size) * 0.5,
         .w = size,
         .h = size,
     };
-
-    try commands.append(allocator, .{ .surface = .{
-        .bounds = box_rect,
-        .color = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-        .border_color = if (expanded) theme.accent else resolved.border,
-        .border_width = 1,
-        .corner_radius = 2,
-    } });
-
-    const bar_y = box_rect.y + @floor(box_rect.h * 0.5);
-    try commands.append(allocator, .{ .surface = .{
-        .bounds = .{
-            .x = box_rect.x + 2,
-            .y = bar_y,
-            .w = box_rect.w - 4,
-            .h = 1,
-        },
-        .color = resolved.fg,
-        .border_color = resolved.fg,
-        .border_width = 0,
-        .corner_radius = 0,
-    } });
-
-    if (!expanded) {
-        const bar_x = box_rect.x + @floor(box_rect.w * 0.5);
-        try commands.append(allocator, .{ .surface = .{
-            .bounds = .{
-                .x = bar_x,
-                .y = box_rect.y + 2,
-                .w = 1,
-                .h = box_rect.h - 4,
-            },
-            .color = resolved.fg,
-            .border_color = resolved.fg,
-            .border_width = 0,
-            .corner_radius = 0,
-        } });
-    }
+    try appendTextCommand(
+        commands,
+        allocator,
+        bounds,
+        if (expanded) "▾" else "▸",
+        if (expanded) theme.accent else resolved.fg,
+        size,
+        .center,
+        .visible,
+    );
 }
 
 fn hasNextTreeSibling(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
@@ -3196,33 +3168,45 @@ test "expanded tree item emits disclosure and child guides" {
     var dl = try generatePaint(&tree, theme, allocator, null, .{});
     defer freePaintList(&dl, allocator);
 
-    try std.testing.expectEqual(@as(usize, 13), dl.commands.len);
+    try std.testing.expectEqual(@as(usize, 12), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .surface); // root bg
     try std.testing.expect(dl.commands[1] == .surface); // parent downward guide
-    try std.testing.expect(dl.commands[2] == .surface); // disclosure box
-    try std.testing.expect(dl.commands[3] == .surface); // disclosure minus
-    try std.testing.expect(dl.commands[4] == .surface); // parent connector
-    try std.testing.expect(dl.commands[5] == .text); // parent label
-    try std.testing.expect(dl.commands[6] == .surface); // child vertical guide
-    try std.testing.expect(dl.commands[7] == .surface); // child sibling guide
-    try std.testing.expect(dl.commands[8] == .surface); // child connector
-    try std.testing.expect(dl.commands[9] == .text); // child label
-    try std.testing.expect(dl.commands[10] == .surface); // sibling vertical guide
-    try std.testing.expect(dl.commands[11] == .surface); // sibling connector
-    try std.testing.expect(dl.commands[12] == .text); // sibling label
+    try std.testing.expect(dl.commands[2] == .text); // disclosure chevron
+    try std.testing.expectEqualStrings("▾", dl.commands[2].text.text);
+    try std.testing.expect(dl.commands[3] == .surface); // parent connector
+    try std.testing.expect(dl.commands[4] == .text); // parent label
+    try std.testing.expect(dl.commands[5] == .surface); // child vertical guide
+    try std.testing.expect(dl.commands[6] == .surface); // child sibling guide
+    try std.testing.expect(dl.commands[7] == .surface); // child connector
+    try std.testing.expect(dl.commands[8] == .text); // child label
+    try std.testing.expect(dl.commands[9] == .surface); // sibling vertical guide
+    try std.testing.expect(dl.commands[10] == .surface); // sibling connector
+    try std.testing.expect(dl.commands[11] == .text); // sibling label
 
-    const child_guide = dl.commands[6].surface.bounds;
+    const child_guide = dl.commands[5].surface.bounds;
     try std.testing.expectApproxEqAbs(@as(f32, 25), child_guide.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 36), child_guide.y, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 27), child_guide.h, 0.01);
 
-    const sibling_guide = dl.commands[7].surface.bounds;
+    const sibling_guide = dl.commands[6].surface.bounds;
     try std.testing.expectApproxEqAbs(child_guide.x, sibling_guide.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 63), sibling_guide.y, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 40), sibling_guide.h, 0.01);
 
-    const child_connector = dl.commands[8].surface.bounds;
+    const child_connector = dl.commands[7].surface.bounds;
     try std.testing.expectApproxEqAbs(child_guide.x, child_connector.x, 0.01);
+
+    tree.get(parent).kind.tree_item.expanded = false;
+    var collapsed = try generatePaint(&tree, theme, allocator, null, .{});
+    defer freePaintList(&collapsed, allocator);
+    var found_collapsed_chevron = false;
+    for (collapsed.commands) |command| {
+        if (command == .text and std.mem.eql(u8, command.text.text, "▸")) {
+            found_collapsed_chevron = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_collapsed_chevron);
 }
 
 test "drag value emits bg and formatted text" {

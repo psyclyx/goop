@@ -36,7 +36,7 @@ pub fn fileManagerThemeForScale(ui_scale: f32) goop.Theme {
         .focus_ring = .rgba(58, 126, 219, 210),
         .placeholder_fg = .rgb(123, 133, 148),
         .selection_bg = .rgba(58, 126, 219, 84),
-        .tree_guide = .rgba(145, 152, 165, 180),
+        .tree_guide = .rgba(112, 122, 138, 210),
         .font_size = uiScaleValue(ui_scale, 14),
         .padding = goop.style.Edges.symmetric(uiScaleValue(ui_scale, 8), uiScaleValue(ui_scale, 6)),
         .border_radius = uiScaleValue(ui_scale, 6),
