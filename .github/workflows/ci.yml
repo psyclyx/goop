@@ -27,15 +27,7 @@ jobs:
             zig-${{ runner.os }}-
 
       - name: Run unit tests
-        run: nix-shell --run 'zig build test'
+        run: nix-shell -A shell --run 'zig build test'
 
       - name: Build all targets
-        run: nix-shell --run 'zig build build-demo build-file-manager-demo build-perf-round build-screenshot build-c-example build-lib build-shared-lib'
-
-      - name: Render screenshot
-        env:
-          GOOP_FORCE_SOFTWARE_GL: "1"
-        run: nix-shell --run 'zig build screenshot'
-
-      - name: Verify screenshot was produced
-        run: test -s docs/assets/goop-file-manager-demo.png
+        run: nix-shell -A shell --run 'zig build build-demo build-file-manager-demo build-c-example build-lib build-shared-lib'

@@ -1,8 +1,9 @@
 {
   "pins": {
-    "nixpkgs-unstable": {
+    "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
+      "artifact": "nixexprs.tar.xz",
       "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre991389.73c703c22422/nixexprs.tar.xz",
       "hash": "sha256-bA5oJv7j54PubdUbBlLCwdoK29G2+9sLnc8dDqLQ9YE="
     },
@@ -17,11 +18,11 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.11.1",
-      "revision": "b063478b1efe475d32570644d0c1462eb43fa4cb",
-      "url": "https://api.github.com/repos/psyclyx/snail/tarball/refs/tags/v0.11.1",
-      "hash": "sha256-LruG2093PHsV0v65miJE3H6ZR6a/H99fEz6k8hwO6Hc="
+      "version": "v0.13.0",
+      "revision": "050ebc3abf41158b71ba4ee9e4c05db7836a3c6c",
+      "url": "https://api.github.com/repos/psyclyx/snail/tarball/refs/tags/v0.13.0",
+      "hash": "sha256-XfoS8TcH1y5CIPW/g6kBKM+kkxGK+CHJKg2zHCw9VT4="
     }
   },
-  "version": 7
+  "version": 8
 }

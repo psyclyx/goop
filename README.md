@@ -2,40 +2,32 @@
 
 [![ci](https://github.com/psyclyx/goop/actions/workflows/ci.yml/badge.svg)](https://github.com/psyclyx/goop/actions/workflows/ci.yml)
 
-Retained-mode GUI library for Zig. `goop` owns widget state, layout, and paint
-command generation; the embedder owns the native window, input delivery, text
-measurement, and final rendering.
+Retained-mode GUI architecture for Zig with explicit component, driver,
+display, text, Vulkan, presentation, and Wayland modules.
 
 > [!WARNING]
 > `goop` is pre-1.0. Widgets land quickly and the API is still being shaped.
 > The shipped demos are reference embedders, not finished applications.
 
-![File-manager reference demo, rendered headlessly via the goop offscreen pipeline](docs/assets/goop-file-manager-demo.png)
-
-The screenshot above is the file-manager example, rendered through the same
-offscreen pipeline goop ships for CI. It exercises menus, toolbars,
-breadcrumbs, sortable tables, splitters, sidebars, and the editor-style chrome
-the library is being built around.
-
 ## What it is
 
-`goop` is a retained widget tree plus three runtime passes:
-
-- layout through vendored `clay`
-- input dispatch over platform-neutral events
-- paint-list generation for an embedder-owned renderer
-
-The core does not create windows, own the event loop, or touch the GPU. It
-tracks widget state, writes back layout rectangles, and emits semantic paint
-commands (`surface`, `text`, `clip`, `icon`, `custom`) the caller renders
-however it wants.
+Components are pure declarative values. The retained driver owns layout,
+interaction, stable display identities, and damage generation. Renderers
+consume backend-neutral display deltas; the Vulkan renderer, swapchain
+presenter, and Wayland platform are separate replaceable modules.
 
 In-tree:
 
-- retained widget tree with generational handles and subtree removal
-- Zig API in [src/goop.zig](src/goop.zig)
+- declarative UI and dumb components in `goop_ui` / `goop_components`
+- retained interaction and damage tracking in `goop_driver`
+- Snail 0.13 CPU text preparation in `goop_snail`
+- separated Vulkan graphics, rendering, and presentation modules
+- renderer-free Wayland platform module plus a thin Vulkan WSI bridge
+- model/controller/view/application split for the file browser
 - installable C API in [include/goop.h](include/goop.h)
-- reference Wayland/EGL/OpenGL demos in [demo/](demo/)
+
+See [docs/architecture.md](docs/architecture.md) for the enforced dependency
+graph and ownership rules.
 
 ## Widgets
 
@@ -50,23 +42,21 @@ For the engineering snapshot, priorities, and known rough edges, see
 
 ## Build
 
-Use `nix-shell` first. The shell pins Zig 0.16.0 and the demo's native
+Use `nix-shell -A shell` first. The shell pins Zig 0.16.0 and the demo's native
 dependencies (`harfbuzz`, `fontconfig`, Noto fonts).
 
 ```sh
-nix-shell
+nix-shell -A shell
 zig build test               # unit tests
 zig build                    # library + demo
 zig build demo               # build and run the Wayland demo
 zig build file-manager-demo  # build and run the file-browser Wayland demo
 zig build c-example          # build and run the headless C API example
-zig build perf-round         # run the headless retained-UI perf benchmark
-zig build screenshot         # re-render docs/assets/goop-file-manager-demo.png
-zig build install            # install libgoop (.a + .so), goop-demo, and goop.h to zig-out/
+zig build install            # install libraries, Vulkan browser, and goop.h
 ```
 
 The core library only needs libc and the vendored `clay` C source. The demos
-additionally need Wayland, EGL, OpenGL, `xkbcommon`, and a `.ttf` font. They
+additionally need Wayland, Vulkan, `xkbcommon`, and a `.ttf` font. They
 try `GOOP_DEMO_FONT_PATH` first, then `fontconfig`, then a few common system
 paths.
 
@@ -223,32 +213,13 @@ The core does not depend on `snail`. The bundled demos do, because they use
 
 ## Demos
 
-[demo/main.zig](demo/main.zig) is the reference Wayland embedder. It wires up
-Wayland input/event translation, EGL/OpenGL rendering, `snail`-backed text
-measurement, real Wayland clipboard selection handling, and exercises the full
-widget set.
+[demo/browser/app.zig](demo/browser/app.zig) is the composition root for the
+reference file browser. Its model, controller, and view live in separate
+modules; it wires the neutral Wayland event stream to the retained driver and
+damaged display deltas to the persistent Vulkan composition target.
 
 ```sh
-nix-shell --run 'zig build demo'
-```
-
-[demo/file_manager_main.zig](demo/file_manager_main.zig) is a Linux-style file
-browser backed by the real filesystem: places sidebar, clickable breadcrumbs,
-sortable details table, live details pane, all on the same Wayland/EGL/snail
-stack.
-
-```sh
-nix-shell --run 'zig build file-manager-demo'
-```
-
-The same scene can be rendered without a display via
-[tools/screenshot.zig](tools/screenshot.zig). It builds the file-manager
-demo's State, runs one frame against an offscreen EGL pbuffer, reads the
-framebuffer back, and pipes the pixels through ImageMagick to refresh the
-README screenshot. CI re-runs this on every push.
-
-```sh
-nix-shell --run 'zig build screenshot'
+nix-shell -A shell --run 'zig build file-manager-demo'
 ```
 
 ## Docs

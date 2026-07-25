@@ -10,8 +10,8 @@
     },
     .dependencies = .{
         .snail = .{
-            .url = "https://github.com/psyclyx/snail/archive/refs/tags/v0.11.1.tar.gz",
-            .hash = "snail-0.11.1-vw75SFfHfQC7KmN2XCWuGeiNiueZL34dAHOZeE2bzbxL",
+            .url = "https://github.com/psyclyx/snail/archive/refs/tags/v0.13.0.tar.gz",
+            .hash = "snail-0.13.0-vw75SOKx-gARol17iag4hXdT_xWvZGslUcGmmV9rUel4",
         },
     },
 }

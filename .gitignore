@@ -1,9 +1,15 @@
+# Zig
+.zig-cache/
 zig-out/
 zig-pkg/
-.zig-cache/
+
+# direnv
 .direnv/
-.envrc.local
+
+# Nix build symlinks
 result
+result-*
+
 prompt.md
 .codex
 DESIGN_HISTORY.md

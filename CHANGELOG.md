@@ -4,6 +4,21 @@ All notable changes to `goop` will be documented here. The project follows
 [Semantic Versioning](https://semver.org). Pre-1.0 releases may include
 breaking changes between minor versions.
 
+## Unreleased
+
+### Changed
+
+- Cut over to Snail 0.13 and its CPU-side font/Faces/PagePool/Atlas API.
+- Split declarative UI, dumb components, retained driving, display deltas,
+  Snail adaptation, Vulkan graphics, Vulkan rendering, Vulkan presentation,
+  Wayland platform handling, and Wayland/Vulkan WSI into named Zig modules.
+- Replaced the EGL/OpenGL demos with a Vulkan file browser whose model,
+  controller, view, GPU ownership, and composition root are separate modules.
+- Added stable command reconciliation, old/new-bound damage tracking, a
+  persistent Vulkan composition image, and no-damage frame elision.
+- Removed the retired GL renderer, EGL utilities, screenshot tool, and legacy
+  monolithic browser implementation.
+
 ## 0.1.1 — 2026-05-10
 
 ### Fixed

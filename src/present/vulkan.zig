@@ -1,0 +1,870 @@
+//! Swapchain and frame lifecycle.
+//!
+//! The presenter owns no UI or renderer state. A renderer receives a
+//! `FrameTarget` and records commands inside the active render pass.
+
+const std = @import("std");
+const graphics = @import("goop_graphics_vulkan");
+pub const vk = graphics.vk;
+
+pub const max_frames_in_flight = 2;
+
+pub const FrameTarget = struct {
+    command_buffer: vk.VkCommandBuffer,
+    render_pass: vk.VkRenderPass,
+    framebuffer: vk.VkFramebuffer,
+    extent: vk.VkExtent2D,
+    format: vk.VkFormat,
+    frame_index: u32,
+    image_index: u32,
+};
+
+const DeviceView = struct {
+    physical: vk.VkPhysicalDevice,
+    handle: vk.VkDevice,
+    graphics_queue: vk.VkQueue,
+    present_queue: vk.VkQueue,
+    graphics_family: u32,
+    present_family: u32,
+
+    fn init(device: *const graphics.Device) DeviceView {
+        return .{
+            .physical = device.physical,
+            .handle = device.handle,
+            .graphics_queue = device.graphics_queue,
+            .present_queue = device.present_queue,
+            .graphics_family = device.graphics_family,
+            .present_family = device.present_family,
+        };
+    }
+
+    fn waitIdle(self: DeviceView) void {
+        if (self.handle != null) _ = vk.vkDeviceWaitIdle(self.handle);
+    }
+};
+
+pub const Presenter = struct {
+    allocator: std.mem.Allocator,
+    device: DeviceView,
+    surface: vk.VkSurfaceKHR,
+    desired_width: u32,
+    desired_height: u32,
+
+    swapchain: vk.VkSwapchainKHR = null,
+    images: []vk.VkImage = &.{},
+    views: []vk.VkImageView = &.{},
+    format: vk.VkFormat = vk.VK_FORMAT_UNDEFINED,
+    color_space: vk.VkColorSpaceKHR = vk.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+    extent: vk.VkExtent2D = .{ .width = 0, .height = 0 },
+    render_pass: vk.VkRenderPass = null,
+    composition_image: vk.VkImage = null,
+    composition_memory: vk.VkDeviceMemory = null,
+    composition_view: vk.VkImageView = null,
+    composition_framebuffer: vk.VkFramebuffer = null,
+    composition_initialized: bool = false,
+
+    command_pool: vk.VkCommandPool = null,
+    command_buffers: [max_frames_in_flight]vk.VkCommandBuffer = .{null} ** max_frames_in_flight,
+    image_available: [max_frames_in_flight]vk.VkSemaphore = .{null} ** max_frames_in_flight,
+    render_finished: [max_frames_in_flight]vk.VkSemaphore = .{null} ** max_frames_in_flight,
+    in_flight: [max_frames_in_flight]vk.VkFence = .{null} ** max_frames_in_flight,
+
+    current_frame: u32 = 0,
+    current_image: u32 = 0,
+    active_frame: bool = false,
+    recreate_pending: bool = false,
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        device: *graphics.Device,
+        surface: vk.VkSurfaceKHR,
+        width: u32,
+        height: u32,
+    ) !Presenter {
+        var self = Presenter{
+            .allocator = allocator,
+            .device = .init(device),
+            .surface = surface,
+            .desired_width = width,
+            .desired_height = height,
+        };
+        errdefer self.deinit();
+
+        try self.createCommandPool();
+        try self.createSyncObjects();
+        try self.createSwapchain();
+        return self;
+    }
+
+    pub fn deinit(self: *Presenter) void {
+        self.device.waitIdle();
+        self.destroySwapchain();
+        for (0..max_frames_in_flight) |index| {
+            if (self.render_finished[index] != null) {
+                vk.vkDestroySemaphore(self.device.handle, self.render_finished[index], null);
+            }
+            if (self.image_available[index] != null) {
+                vk.vkDestroySemaphore(self.device.handle, self.image_available[index], null);
+            }
+            if (self.in_flight[index] != null) {
+                vk.vkDestroyFence(self.device.handle, self.in_flight[index], null);
+            }
+        }
+        if (self.command_pool != null) {
+            vk.vkDestroyCommandPool(self.device.handle, self.command_pool, null);
+        }
+        self.* = undefined;
+    }
+
+    pub fn setDesiredExtent(self: *Presenter, width: u32, height: u32) void {
+        if (self.desired_width == width and self.desired_height == height) return;
+        self.desired_width = width;
+        self.desired_height = height;
+        self.recreate_pending = true;
+    }
+
+    pub fn framebufferExtent(self: *const Presenter) vk.VkExtent2D {
+        return self.extent;
+    }
+
+    pub fn renderPass(self: *const Presenter) vk.VkRenderPass {
+        return self.render_pass;
+    }
+
+    /// Acquire an image and begin its render pass. `null` means the surface is
+    /// temporarily unrenderable (usually zero-sized or just recreated).
+    pub fn beginFrame(self: *Presenter, _: [4]f32) !?FrameTarget {
+        std.debug.assert(!self.active_frame);
+        if (self.desired_width == 0 or self.desired_height == 0) return null;
+        if (self.recreate_pending) {
+            try self.recreate();
+            return null;
+        }
+
+        const frame = self.current_frame;
+        try graphics.result(vk.vkWaitForFences(
+            self.device.handle,
+            1,
+            &self.in_flight[frame],
+            vk.VK_TRUE,
+            std.math.maxInt(u64),
+        ));
+
+        const acquired = vk.vkAcquireNextImageKHR(
+            self.device.handle,
+            self.swapchain,
+            std.math.maxInt(u64),
+            self.image_available[frame],
+            null,
+            &self.current_image,
+        );
+        if (acquired == vk.VK_ERROR_OUT_OF_DATE_KHR) {
+            self.recreate_pending = true;
+            return null;
+        }
+        if (acquired == vk.VK_SUBOPTIMAL_KHR) {
+            self.recreate_pending = true;
+        } else {
+            try graphics.result(acquired);
+        }
+
+        try graphics.result(vk.vkResetFences(
+            self.device.handle,
+            1,
+            &self.in_flight[frame],
+        ));
+        try graphics.result(vk.vkResetCommandBuffer(
+            self.command_buffers[frame],
+            0,
+        ));
+
+        const begin_info = std.mem.zeroInit(vk.VkCommandBufferBeginInfo, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO)),
+            .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        });
+        try graphics.result(vk.vkBeginCommandBuffer(
+            self.command_buffers[frame],
+            &begin_info,
+        ));
+
+        if (!self.composition_initialized) {
+            const initialize_barrier = imageBarrier(
+                self.composition_image,
+                vk.VK_IMAGE_LAYOUT_UNDEFINED,
+                vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                0,
+                vk.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            );
+            vk.vkCmdPipelineBarrier(
+                self.command_buffers[frame],
+                vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                0,
+                0,
+                null,
+                0,
+                null,
+                1,
+                &initialize_barrier,
+            );
+            self.composition_initialized = true;
+        }
+
+        const render_pass_info = std.mem.zeroInit(vk.VkRenderPassBeginInfo, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO)),
+            .renderPass = self.render_pass,
+            .framebuffer = self.composition_framebuffer,
+            .renderArea = .{
+                .offset = .{ .x = 0, .y = 0 },
+                .extent = self.extent,
+            },
+        });
+        vk.vkCmdBeginRenderPass(
+            self.command_buffers[frame],
+            &render_pass_info,
+            vk.VK_SUBPASS_CONTENTS_INLINE,
+        );
+        self.active_frame = true;
+
+        return .{
+            .command_buffer = self.command_buffers[frame],
+            .render_pass = self.render_pass,
+            .framebuffer = self.composition_framebuffer,
+            .extent = self.extent,
+            .format = self.format,
+            .frame_index = frame,
+            .image_index = self.current_image,
+        };
+    }
+
+    pub fn endFrame(self: *Presenter) !void {
+        std.debug.assert(self.active_frame);
+        defer self.active_frame = false;
+
+        const frame = self.current_frame;
+        const command_buffer = self.command_buffers[frame];
+        vk.vkCmdEndRenderPass(command_buffer);
+
+        const composition_to_copy = imageBarrier(
+            self.composition_image,
+            vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            vk.VK_ACCESS_TRANSFER_READ_BIT,
+        );
+        const swapchain_to_copy = imageBarrier(
+            self.images[self.current_image],
+            vk.VK_IMAGE_LAYOUT_UNDEFINED,
+            vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            0,
+            vk.VK_ACCESS_TRANSFER_WRITE_BIT,
+        );
+        const to_copy = [_]vk.VkImageMemoryBarrier{
+            composition_to_copy,
+            swapchain_to_copy,
+        };
+        vk.vkCmdPipelineBarrier(
+            command_buffer,
+            vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0,
+            0,
+            null,
+            0,
+            null,
+            to_copy.len,
+            &to_copy,
+        );
+
+        const copy_region = vk.VkImageCopy{
+            .srcSubresource = colorLayers(),
+            .srcOffset = .{ .x = 0, .y = 0, .z = 0 },
+            .dstSubresource = colorLayers(),
+            .dstOffset = .{ .x = 0, .y = 0, .z = 0 },
+            .extent = .{
+                .width = self.extent.width,
+                .height = self.extent.height,
+                .depth = 1,
+            },
+        };
+        vk.vkCmdCopyImage(
+            command_buffer,
+            self.composition_image,
+            vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            self.images[self.current_image],
+            vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1,
+            &copy_region,
+        );
+
+        const composition_to_render = imageBarrier(
+            self.composition_image,
+            vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            vk.VK_ACCESS_TRANSFER_READ_BIT,
+            vk.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        );
+        const swapchain_to_present = imageBarrier(
+            self.images[self.current_image],
+            vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            vk.VK_ACCESS_TRANSFER_WRITE_BIT,
+            0,
+        );
+        const from_copy = [_]vk.VkImageMemoryBarrier{
+            composition_to_render,
+            swapchain_to_present,
+        };
+        vk.vkCmdPipelineBarrier(
+            command_buffer,
+            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            0,
+            0,
+            null,
+            0,
+            null,
+            from_copy.len,
+            &from_copy,
+        );
+        try graphics.result(vk.vkEndCommandBuffer(command_buffer));
+
+        const wait_stage = [_]vk.VkPipelineStageFlags{
+            vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        };
+        const submit_info = std.mem.zeroInit(vk.VkSubmitInfo, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_SUBMIT_INFO)),
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &self.image_available[frame],
+            .pWaitDstStageMask = &wait_stage,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &command_buffer,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &self.render_finished[frame],
+        });
+        try graphics.result(vk.vkQueueSubmit(
+            self.device.graphics_queue,
+            1,
+            &submit_info,
+            self.in_flight[frame],
+        ));
+
+        const present_info = std.mem.zeroInit(vk.VkPresentInfoKHR, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR)),
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &self.render_finished[frame],
+            .swapchainCount = 1,
+            .pSwapchains = &self.swapchain,
+            .pImageIndices = &self.current_image,
+        });
+        const presented = vk.vkQueuePresentKHR(self.device.present_queue, &present_info);
+        if (presented == vk.VK_ERROR_OUT_OF_DATE_KHR or
+            presented == vk.VK_SUBOPTIMAL_KHR)
+        {
+            self.recreate_pending = true;
+        } else {
+            try graphics.result(presented);
+        }
+        self.current_frame = (frame + 1) % max_frames_in_flight;
+    }
+
+    fn recreate(self: *Presenter) !void {
+        if (self.desired_width == 0 or self.desired_height == 0) return;
+        self.device.waitIdle();
+        self.destroySwapchain();
+        try self.createSwapchain();
+        self.recreate_pending = false;
+    }
+
+    fn createCommandPool(self: *Presenter) !void {
+        const pool_info = std.mem.zeroInit(vk.VkCommandPoolCreateInfo, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO)),
+            .flags = vk.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .queueFamilyIndex = self.device.graphics_family,
+        });
+        try graphics.result(vk.vkCreateCommandPool(
+            self.device.handle,
+            &pool_info,
+            null,
+            &self.command_pool,
+        ));
+
+        const alloc_info = std.mem.zeroInit(vk.VkCommandBufferAllocateInfo, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO)),
+            .commandPool = self.command_pool,
+            .level = @as(vk.VkCommandBufferLevel, @intCast(vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY)),
+            .commandBufferCount = max_frames_in_flight,
+        });
+        try graphics.result(vk.vkAllocateCommandBuffers(
+            self.device.handle,
+            &alloc_info,
+            &self.command_buffers,
+        ));
+    }
+
+    fn createSyncObjects(self: *Presenter) !void {
+        const semaphore_info = std.mem.zeroInit(vk.VkSemaphoreCreateInfo, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO)),
+        });
+        const fence_info = std.mem.zeroInit(vk.VkFenceCreateInfo, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO)),
+            .flags = vk.VK_FENCE_CREATE_SIGNALED_BIT,
+        });
+        for (0..max_frames_in_flight) |index| {
+            try graphics.result(vk.vkCreateSemaphore(
+                self.device.handle,
+                &semaphore_info,
+                null,
+                &self.image_available[index],
+            ));
+            try graphics.result(vk.vkCreateSemaphore(
+                self.device.handle,
+                &semaphore_info,
+                null,
+                &self.render_finished[index],
+            ));
+            try graphics.result(vk.vkCreateFence(
+                self.device.handle,
+                &fence_info,
+                null,
+                &self.in_flight[index],
+            ));
+        }
+    }
+
+    fn createSwapchain(self: *Presenter) !void {
+        var capabilities: vk.VkSurfaceCapabilitiesKHR = undefined;
+        try graphics.result(vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+            self.device.physical,
+            self.surface,
+            &capabilities,
+        ));
+
+        const selected_format = try self.chooseSurfaceFormat();
+        const present_mode = try self.choosePresentMode();
+        const extent = chooseExtent(capabilities, self.desired_width, self.desired_height);
+        if (extent.width == 0 or extent.height == 0) return;
+
+        var image_count = capabilities.minImageCount + 1;
+        if (capabilities.maxImageCount > 0) {
+            image_count = @min(image_count, capabilities.maxImageCount);
+        }
+        const queue_families = [_]u32{
+            self.device.graphics_family,
+            self.device.present_family,
+        };
+        const separate_queues = self.device.graphics_family != self.device.present_family;
+        const create_info = std.mem.zeroInit(vk.VkSwapchainCreateInfoKHR, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR)),
+            .surface = self.surface,
+            .minImageCount = image_count,
+            .imageFormat = selected_format.format,
+            .imageColorSpace = selected_format.colorSpace,
+            .imageExtent = extent,
+            .imageArrayLayers = 1,
+            .imageUsage = @as(vk.VkImageUsageFlags, vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT),
+            .imageSharingMode = @as(vk.VkSharingMode, @intCast(if (separate_queues)
+                vk.VK_SHARING_MODE_CONCURRENT
+            else
+                vk.VK_SHARING_MODE_EXCLUSIVE)),
+            .queueFamilyIndexCount = if (separate_queues) @as(u32, 2) else 0,
+            .pQueueFamilyIndices = if (separate_queues) queue_families[0..].ptr else null,
+            .preTransform = capabilities.currentTransform,
+            .compositeAlpha = chooseCompositeAlpha(capabilities.supportedCompositeAlpha),
+            .presentMode = present_mode,
+            .clipped = @as(vk.VkBool32, @intCast(vk.VK_TRUE)),
+            .oldSwapchain = null,
+        });
+        try graphics.result(vk.vkCreateSwapchainKHR(
+            self.device.handle,
+            &create_info,
+            null,
+            &self.swapchain,
+        ));
+        errdefer self.destroySwapchain();
+
+        var actual_count: u32 = 0;
+        try graphics.result(vk.vkGetSwapchainImagesKHR(
+            self.device.handle,
+            self.swapchain,
+            &actual_count,
+            null,
+        ));
+        self.images = try self.allocator.alloc(vk.VkImage, actual_count);
+        try graphics.result(vk.vkGetSwapchainImagesKHR(
+            self.device.handle,
+            self.swapchain,
+            &actual_count,
+            self.images.ptr,
+        ));
+        self.views = try self.allocator.alloc(vk.VkImageView, actual_count);
+        @memset(self.views, null);
+
+        self.format = selected_format.format;
+        self.color_space = selected_format.colorSpace;
+        self.extent = extent;
+        try self.createRenderPass();
+        try self.createViewsAndFramebuffers();
+    }
+
+    fn createRenderPass(self: *Presenter) !void {
+        const attachment = vk.VkAttachmentDescription{
+            .flags = 0,
+            .format = self.format,
+            .samples = @as(vk.VkSampleCountFlagBits, @intCast(vk.VK_SAMPLE_COUNT_1_BIT)),
+            .loadOp = @as(vk.VkAttachmentLoadOp, @intCast(vk.VK_ATTACHMENT_LOAD_OP_LOAD)),
+            .storeOp = @as(vk.VkAttachmentStoreOp, @intCast(vk.VK_ATTACHMENT_STORE_OP_STORE)),
+            .stencilLoadOp = @as(vk.VkAttachmentLoadOp, @intCast(vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE)),
+            .stencilStoreOp = @as(vk.VkAttachmentStoreOp, @intCast(vk.VK_ATTACHMENT_STORE_OP_DONT_CARE)),
+            .initialLayout = @as(vk.VkImageLayout, @intCast(vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)),
+            .finalLayout = @as(vk.VkImageLayout, @intCast(vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)),
+        };
+        const color_reference = vk.VkAttachmentReference{
+            .attachment = 0,
+            .layout = @as(vk.VkImageLayout, @intCast(vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)),
+        };
+        const subpass = std.mem.zeroInit(vk.VkSubpassDescription, .{
+            .pipelineBindPoint = @as(vk.VkPipelineBindPoint, @intCast(vk.VK_PIPELINE_BIND_POINT_GRAPHICS)),
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &color_reference,
+        });
+        const dependency = vk.VkSubpassDependency{
+            .srcSubpass = vk.VK_SUBPASS_EXTERNAL,
+            .dstSubpass = 0,
+            .srcStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = 0,
+            .dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .dependencyFlags = 0,
+        };
+        const create_info = std.mem.zeroInit(vk.VkRenderPassCreateInfo, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO)),
+            .attachmentCount = 1,
+            .pAttachments = &attachment,
+            .subpassCount = 1,
+            .pSubpasses = &subpass,
+            .dependencyCount = 1,
+            .pDependencies = &dependency,
+        });
+        try graphics.result(vk.vkCreateRenderPass(
+            self.device.handle,
+            &create_info,
+            null,
+            &self.render_pass,
+        ));
+    }
+
+    fn createViewsAndFramebuffers(self: *Presenter) !void {
+        for (self.images, 0..) |image, index| {
+            const view_info = std.mem.zeroInit(vk.VkImageViewCreateInfo, .{
+                .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO)),
+                .image = image,
+                .viewType = @as(vk.VkImageViewType, @intCast(vk.VK_IMAGE_VIEW_TYPE_2D)),
+                .format = self.format,
+                .components = .{
+                    .r = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .g = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .b = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .a = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
+                },
+                .subresourceRange = .{
+                    .aspectMask = @as(vk.VkImageAspectFlags, @intCast(vk.VK_IMAGE_ASPECT_COLOR_BIT)),
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+            });
+            try graphics.result(vk.vkCreateImageView(
+                self.device.handle,
+                &view_info,
+                null,
+                &self.views[index],
+            ));
+        }
+        try self.createCompositionTarget();
+    }
+
+    fn destroySwapchain(self: *Presenter) void {
+        if (self.composition_framebuffer != null) {
+            vk.vkDestroyFramebuffer(self.device.handle, self.composition_framebuffer, null);
+        }
+        if (self.composition_view != null) {
+            vk.vkDestroyImageView(self.device.handle, self.composition_view, null);
+        }
+        if (self.composition_image != null) {
+            vk.vkDestroyImage(self.device.handle, self.composition_image, null);
+        }
+        if (self.composition_memory != null) {
+            vk.vkFreeMemory(self.device.handle, self.composition_memory, null);
+        }
+        for (self.views) |view| {
+            if (view != null) vk.vkDestroyImageView(self.device.handle, view, null);
+        }
+        if (self.render_pass != null) {
+            vk.vkDestroyRenderPass(self.device.handle, self.render_pass, null);
+        }
+        if (self.swapchain != null) {
+            vk.vkDestroySwapchainKHR(self.device.handle, self.swapchain, null);
+        }
+        if (self.views.len > 0) self.allocator.free(self.views);
+        if (self.images.len > 0) self.allocator.free(self.images);
+        self.views = &.{};
+        self.images = &.{};
+        self.render_pass = null;
+        self.composition_image = null;
+        self.composition_memory = null;
+        self.composition_view = null;
+        self.composition_framebuffer = null;
+        self.composition_initialized = false;
+        self.swapchain = null;
+        self.extent = .{ .width = 0, .height = 0 };
+    }
+
+    fn chooseSurfaceFormat(self: *Presenter) !vk.VkSurfaceFormatKHR {
+        var count: u32 = 0;
+        try graphics.result(vk.vkGetPhysicalDeviceSurfaceFormatsKHR(
+            self.device.physical,
+            self.surface,
+            &count,
+            null,
+        ));
+        if (count == 0) return error.NoSurfaceFormat;
+        const formats = try self.allocator.alloc(vk.VkSurfaceFormatKHR, count);
+        defer self.allocator.free(formats);
+        try graphics.result(vk.vkGetPhysicalDeviceSurfaceFormatsKHR(
+            self.device.physical,
+            self.surface,
+            &count,
+            formats.ptr,
+        ));
+        for (formats[0..count]) |format| {
+            if (format.format == vk.VK_FORMAT_B8G8R8A8_SRGB and
+                format.colorSpace == vk.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            {
+                return format;
+            }
+        }
+        return formats[0];
+    }
+
+    fn createCompositionTarget(self: *Presenter) !void {
+        const image_info = std.mem.zeroInit(vk.VkImageCreateInfo, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO)),
+            .imageType = @as(vk.VkImageType, @intCast(vk.VK_IMAGE_TYPE_2D)),
+            .format = self.format,
+            .extent = .{
+                .width = self.extent.width,
+                .height = self.extent.height,
+                .depth = 1,
+            },
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = @as(vk.VkSampleCountFlagBits, @intCast(vk.VK_SAMPLE_COUNT_1_BIT)),
+            .tiling = @as(vk.VkImageTiling, @intCast(vk.VK_IMAGE_TILING_OPTIMAL)),
+            .usage = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            .sharingMode = @as(vk.VkSharingMode, @intCast(vk.VK_SHARING_MODE_EXCLUSIVE)),
+            .initialLayout = @as(vk.VkImageLayout, @intCast(vk.VK_IMAGE_LAYOUT_UNDEFINED)),
+        });
+        try graphics.result(vk.vkCreateImage(
+            self.device.handle,
+            &image_info,
+            null,
+            &self.composition_image,
+        ));
+
+        var requirements: vk.VkMemoryRequirements = undefined;
+        vk.vkGetImageMemoryRequirements(
+            self.device.handle,
+            self.composition_image,
+            &requirements,
+        );
+        const allocate_info = std.mem.zeroInit(vk.VkMemoryAllocateInfo, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO)),
+            .allocationSize = requirements.size,
+            .memoryTypeIndex = try memoryTypeIndex(
+                self.device.physical,
+                requirements.memoryTypeBits,
+                vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            ),
+        });
+        try graphics.result(vk.vkAllocateMemory(
+            self.device.handle,
+            &allocate_info,
+            null,
+            &self.composition_memory,
+        ));
+        try graphics.result(vk.vkBindImageMemory(
+            self.device.handle,
+            self.composition_image,
+            self.composition_memory,
+            0,
+        ));
+
+        const view_info = std.mem.zeroInit(vk.VkImageViewCreateInfo, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO)),
+            .image = self.composition_image,
+            .viewType = @as(vk.VkImageViewType, @intCast(vk.VK_IMAGE_VIEW_TYPE_2D)),
+            .format = self.format,
+            .components = .{
+                .r = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
+                .g = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
+                .b = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
+                .a = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            .subresourceRange = colorRange(),
+        });
+        try graphics.result(vk.vkCreateImageView(
+            self.device.handle,
+            &view_info,
+            null,
+            &self.composition_view,
+        ));
+
+        const framebuffer_info = std.mem.zeroInit(vk.VkFramebufferCreateInfo, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO)),
+            .renderPass = self.render_pass,
+            .attachmentCount = 1,
+            .pAttachments = &self.composition_view,
+            .width = self.extent.width,
+            .height = self.extent.height,
+            .layers = 1,
+        });
+        try graphics.result(vk.vkCreateFramebuffer(
+            self.device.handle,
+            &framebuffer_info,
+            null,
+            &self.composition_framebuffer,
+        ));
+    }
+
+    fn choosePresentMode(self: *Presenter) !vk.VkPresentModeKHR {
+        var count: u32 = 0;
+        try graphics.result(vk.vkGetPhysicalDeviceSurfacePresentModesKHR(
+            self.device.physical,
+            self.surface,
+            &count,
+            null,
+        ));
+        if (count == 0) return vk.VK_PRESENT_MODE_FIFO_KHR;
+        const modes = try self.allocator.alloc(vk.VkPresentModeKHR, count);
+        defer self.allocator.free(modes);
+        try graphics.result(vk.vkGetPhysicalDeviceSurfacePresentModesKHR(
+            self.device.physical,
+            self.surface,
+            &count,
+            modes.ptr,
+        ));
+        for (modes[0..count]) |mode| {
+            if (mode == vk.VK_PRESENT_MODE_MAILBOX_KHR) return mode;
+        }
+        return vk.VK_PRESENT_MODE_FIFO_KHR;
+    }
+};
+
+fn chooseExtent(
+    capabilities: vk.VkSurfaceCapabilitiesKHR,
+    width: u32,
+    height: u32,
+) vk.VkExtent2D {
+    if (capabilities.currentExtent.width != std.math.maxInt(u32)) {
+        return capabilities.currentExtent;
+    }
+    return .{
+        .width = std.math.clamp(
+            width,
+            capabilities.minImageExtent.width,
+            capabilities.maxImageExtent.width,
+        ),
+        .height = std.math.clamp(
+            height,
+            capabilities.minImageExtent.height,
+            capabilities.maxImageExtent.height,
+        ),
+    };
+}
+
+fn chooseCompositeAlpha(flags: vk.VkCompositeAlphaFlagsKHR) vk.VkCompositeAlphaFlagBitsKHR {
+    const candidates = [_]vk.VkCompositeAlphaFlagBitsKHR{
+        vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        vk.VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+        vk.VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+        vk.VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+    };
+    for (candidates) |candidate| {
+        if (flags & @as(vk.VkCompositeAlphaFlagsKHR, @intCast(candidate)) != 0) {
+            return candidate;
+        }
+    }
+    return vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+}
+
+fn memoryTypeIndex(
+    physical: vk.VkPhysicalDevice,
+    supported_bits: u32,
+    required_flags: vk.VkMemoryPropertyFlags,
+) !u32 {
+    var properties: vk.VkPhysicalDeviceMemoryProperties = undefined;
+    vk.vkGetPhysicalDeviceMemoryProperties(physical, &properties);
+    for (0..properties.memoryTypeCount) |index| {
+        const bit = @as(u32, 1) << @as(u5, @intCast(index));
+        if (supported_bits & bit == 0) continue;
+        if (properties.memoryTypes[index].propertyFlags & required_flags == required_flags) {
+            return @intCast(index);
+        }
+    }
+    return error.NoCompatibleMemoryType;
+}
+
+fn colorRange() vk.VkImageSubresourceRange {
+    return .{
+        .aspectMask = @as(vk.VkImageAspectFlags, @intCast(vk.VK_IMAGE_ASPECT_COLOR_BIT)),
+        .baseMipLevel = 0,
+        .levelCount = 1,
+        .baseArrayLayer = 0,
+        .layerCount = 1,
+    };
+}
+
+fn colorLayers() vk.VkImageSubresourceLayers {
+    return .{
+        .aspectMask = @as(vk.VkImageAspectFlags, @intCast(vk.VK_IMAGE_ASPECT_COLOR_BIT)),
+        .mipLevel = 0,
+        .baseArrayLayer = 0,
+        .layerCount = 1,
+    };
+}
+
+fn imageBarrier(
+    image: vk.VkImage,
+    old_layout: vk.VkImageLayout,
+    new_layout: vk.VkImageLayout,
+    source_access: vk.VkAccessFlags,
+    destination_access: vk.VkAccessFlags,
+) vk.VkImageMemoryBarrier {
+    return std.mem.zeroInit(vk.VkImageMemoryBarrier, .{
+        .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)),
+        .srcAccessMask = source_access,
+        .dstAccessMask = destination_access,
+        .oldLayout = old_layout,
+        .newLayout = new_layout,
+        .srcQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
+        .image = image,
+        .subresourceRange = colorRange(),
+    });
+}
+
+test "frame targets carry rendering handles but no UI state" {
+    try std.testing.expect(@hasField(FrameTarget, "command_buffer"));
+    try std.testing.expect(@hasField(FrameTarget, "render_pass"));
+    try std.testing.expect(!@hasField(FrameTarget, "paint_list"));
+}
+
+test "presenter owns a persistent composition target but no UI state" {
+    try std.testing.expect(@hasField(Presenter, "composition_image"));
+    try std.testing.expect(@hasField(Presenter, "composition_framebuffer"));
+    try std.testing.expect(!@hasField(Presenter, "paint_commands"));
+}

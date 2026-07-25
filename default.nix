@@ -1,56 +1,48 @@
 let
-  sources = import ./npins;
-  pkgs = import sources.nixpkgs-unstable {};
-  zig = pkgs.zig_0_16;
-  deps = pkgs.linkFarm "zig-packages" [
+  npins = import ./npins;
+
+  mkPackages =
     {
-      name = "snail-0.11.1-vw75SFfHfQC7KmN2XCWuGeiNiueZL34dAHOZeE2bzbxL";
-      path = sources.snail;
-    }
-  ];
+      lib,
+      callPackage,
+    }:
+    if builtins.pathExists ./nix/packages then
+      lib.packagesFromDirectoryRecursive {
+        inherit callPackage;
+        directory = ./nix/packages;
+      }
+    else
+      { };
 
-  src = pkgs.lib.fileset.toSource {
-    root = ./.;
-    fileset = pkgs.lib.fileset.unions [
-      ./src
-      ./demo
-      ./include
-      ./vendor
-      ./build.zig
-      ./build.zig.zon
-    ];
+  # Package arguments are scoped against `final` so packages in nix/packages/
+  # can reference each other. Directory discovery uses `prev.lib`, avoiding
+  # forcing the overlay fixpoint merely to determine its attribute names.
+  overlay =
+    final: prev:
+    mkPackages {
+      inherit (prev) lib;
+      inherit (final) callPackage;
+    };
+in
+{
+  nixpkgs ? npins.nixpkgs,
+  pkgs ? import nixpkgs { },
+}:
+let
+  finalPkgs = pkgs.extend overlay;
+in
+rec {
+  packages = mkPackages {
+    inherit (pkgs) lib;
+    inherit (finalPkgs) callPackage;
   };
+  inherit overlay;
+  shell = finalPkgs.callPackage ./nix/shell.nix { };
 
-  goop = pkgs.stdenv.mkDerivation {
-    pname = "goop";
-    version = "0.0.1";
-    inherit src;
+  default = packages.goop;
 
-    strictDeps = true;
-
-    nativeBuildInputs = [
-      zig
-      pkgs.pkg-config
-    ];
-
-    buildInputs = with pkgs; [
-      harfbuzz
-      libGL
-      libglvnd
-      libxkbcommon
-      wayland
-      wayland-protocols
-    ];
-
-    zigBuildFlags = [
-      "--system"
-      "${deps}"
-    ];
-  };
-
-in {
-  inherit goop;
-  lib = goop;
-  demo = goop;
-  default = goop;
+  # Compatibility aliases retained from the previous top-level interface.
+  goop = packages.goop;
+  lib = packages.goop;
+  demo = packages.goop;
 }
