@@ -12,12 +12,15 @@ breaking changes between minor versions.
 - Split declarative UI, dumb components, retained driving, display deltas,
   Snail adaptation, Vulkan graphics, Vulkan rendering, Vulkan presentation,
   Wayland platform handling, and Wayland/Vulkan WSI into named Zig modules.
-- Replaced the EGL/OpenGL demos with a Vulkan file browser whose model,
-  controller, view, GPU ownership, and composition root are separate modules.
+- Migrated both established demos from EGL/OpenGL to Vulkan without replacing
+  their widget trees. The showcase now has separate view, controller, and
+  composition modules; the filesystem browser separates state, filesystem
+  operations, view construction, controller logic, platform translation, and
+  GPU ownership.
 - Added stable command reconciliation, old/new-bound damage tracking, a
   persistent Vulkan composition image, and no-damage frame elision.
-- Removed the retired GL renderer, EGL utilities, screenshot tool, and legacy
-  monolithic browser implementation.
+- Removed the retired GL renderer, EGL utilities, screenshot tool, and
+  application-owned Wayland renderer.
 
 ## 0.1.1 — 2026-05-10
 

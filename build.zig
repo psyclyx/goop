@@ -40,14 +40,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/driver.zig"),
         .target = target,
         .optimize = optimize,
-        .link_libc = true,
     });
     driver_mod.addImport("goop_display", display_mod);
     driver_mod.addImport("goop_ui", ui_mod);
-    driver_mod.addIncludePath(b.path("vendor/clay"));
-    driver_mod.addCSourceFile(.{
-        .file = b.path("vendor/clay/clay.c"),
-    });
 
     const snail_adapter_mod = b.addModule("goop_snail", .{
         .root_source_file = b.path("src/snail_adapter.zig"),
@@ -148,35 +143,6 @@ pub fn build(b: *std.Build) void {
     render_vulkan_mod.addImport("snail_vulkan_types", snail_vulkan_types_mod);
     render_vulkan_mod.linkSystemLibrary("vulkan", .{});
 
-    // ── File browser application layers ──
-    const browser_actions_mod = b.createModule(.{
-        .root_source_file = b.path("demo/browser/actions.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const browser_model_mod = b.addModule("file_browser_model", .{
-        .root_source_file = b.path("demo/browser/model.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const browser_controller_mod = b.addModule("file_browser_controller", .{
-        .root_source_file = b.path("demo/browser/controller.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    browser_controller_mod.addImport("browser_actions", browser_actions_mod);
-    browser_controller_mod.addImport("file_browser_model", browser_model_mod);
-
-    const browser_view_mod = b.addModule("file_browser_view", .{
-        .root_source_file = b.path("demo/browser/view.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    browser_view_mod.addImport("browser_actions", browser_actions_mod);
-    browser_view_mod.addImport("file_browser_model", browser_model_mod);
-    browser_view_mod.addImport("goop_components", components_mod);
-    browser_view_mod.addImport("goop_ui", ui_mod);
-
     // ── Core goop module ──
     const goop_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
@@ -236,24 +202,109 @@ pub fn build(b: *std.Build) void {
     const c_example_step = b.step("c-example", "Build and run the headless C API example");
     c_example_step.dependOn(&run_c_example.step);
 
-    const file_manager_demo_mod = b.addModule("file_browser_app", .{
-        .root_source_file = b.path("demo/browser/app.zig"),
+    // ── Shared demo boundaries ──
+    const demo_font_loader_mod = b.createModule(.{
+        .root_source_file = b.path("demo/support/font.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const demo_text_mod = b.createModule(.{
+        .root_source_file = b.path("demo/support/text.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    demo_text_mod.addImport("goop", goop_mod);
+    demo_text_mod.addImport("goop_snail", snail_adapter_mod);
+    demo_text_mod.addImport("demo_font_loader", demo_font_loader_mod);
+
+    const paint_bridge_mod = b.addModule("goop_paint_bridge", .{
+        .root_source_file = b.path("demo/support/paint_bridge.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    paint_bridge_mod.addImport("goop", goop_mod);
+    paint_bridge_mod.addImport("goop_display", display_mod);
+    paint_bridge_mod.addImport("goop_driver", driver_mod);
+
+    const demo_gpu_mod = b.createModule(.{
+        .root_source_file = b.path("demo/support/gpu.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    demo_gpu_mod.addImport("goop_platform_wayland", platform_wayland_mod);
+    demo_gpu_mod.addImport("goop_graphics_vulkan", graphics_vulkan_mod);
+    demo_gpu_mod.addImport("goop_wayland_vulkan", wayland_vulkan_mod);
+    demo_gpu_mod.addImport("goop_present_vulkan", present_vulkan_mod);
+    demo_gpu_mod.addImport("goop_render_vulkan", render_vulkan_mod);
+    demo_gpu_mod.addImport("goop_snail", snail_adapter_mod);
+
+    // ── Full widget showcase ──
+    const showcase_view_mod = b.addModule("showcase_view", .{
+        .root_source_file = b.path("demo/showcase/view.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    showcase_view_mod.addImport("goop", goop_mod);
+
+    const showcase_controller_mod = b.addModule("showcase_controller", .{
+        .root_source_file = b.path("demo/showcase/controller.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    showcase_controller_mod.addImport("goop", goop_mod);
+    showcase_controller_mod.addImport("showcase_view", showcase_view_mod);
+
+    const showcase_app_mod = b.addModule("showcase_app", .{
+        .root_source_file = b.path("demo/showcase/app.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    showcase_app_mod.addImport("goop", goop_mod);
+    showcase_app_mod.addImport("goop_display", display_mod);
+    showcase_app_mod.addImport("goop_platform_wayland", platform_wayland_mod);
+    showcase_app_mod.addImport("demo_text", demo_text_mod);
+    showcase_app_mod.addImport("goop_paint_bridge", paint_bridge_mod);
+    showcase_app_mod.addImport("demo_gpu", demo_gpu_mod);
+    showcase_app_mod.addImport("showcase_view", showcase_view_mod);
+    showcase_app_mod.addImport("showcase_controller", showcase_controller_mod);
+
+    const showcase_exe = b.addExecutable(.{
+        .name = "goop-demo",
+        .root_module = showcase_app_mod,
+    });
+    const install_showcase = b.addInstallArtifact(showcase_exe, .{});
+    b.getInstallStep().dependOn(&install_showcase.step);
+
+    const build_demo = b.step("build-demo", "Build the Vulkan widget showcase");
+    build_demo.dependOn(&install_showcase.step);
+    const run_demo = b.addRunArtifact(showcase_exe);
+    run_demo.step.dependOn(&install_showcase.step);
+    if (b.args) |args| run_demo.addArgs(args);
+    const demo_step = b.step("demo", "Build and run the Vulkan widget showcase");
+    demo_step.dependOn(&run_demo.step);
+
+    const file_manager_logic_mod = b.addModule("file_manager_logic", .{
+        .root_source_file = b.path("demo/file_manager/controller.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    file_manager_logic_mod.addImport("goop", goop_mod);
+
+    const file_manager_demo_mod = b.addModule("file_browser_app", .{
+        .root_source_file = b.path("demo/file_manager/app.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    file_manager_demo_mod.addImport("goop", goop_mod);
     file_manager_demo_mod.addImport("goop_display", display_mod);
-    file_manager_demo_mod.addImport("goop_ui", ui_mod);
-    file_manager_demo_mod.addImport("goop_driver", driver_mod);
     file_manager_demo_mod.addImport("goop_platform_wayland", platform_wayland_mod);
-    file_manager_demo_mod.addImport("goop_graphics_vulkan", graphics_vulkan_mod);
-    file_manager_demo_mod.addImport("goop_wayland_vulkan", wayland_vulkan_mod);
-    file_manager_demo_mod.addImport("goop_present_vulkan", present_vulkan_mod);
-    file_manager_demo_mod.addImport("goop_render_vulkan", render_vulkan_mod);
-    file_manager_demo_mod.addImport("goop_snail", snail_adapter_mod);
-    file_manager_demo_mod.addImport("file_browser_model", browser_model_mod);
-    file_manager_demo_mod.addImport("file_browser_controller", browser_controller_mod);
-    file_manager_demo_mod.addImport("file_browser_view", browser_view_mod);
+    file_manager_demo_mod.addImport("file_manager_logic", file_manager_logic_mod);
+    file_manager_demo_mod.addImport("demo_text", demo_text_mod);
+    file_manager_demo_mod.addImport("goop_paint_bridge", paint_bridge_mod);
+    file_manager_demo_mod.addImport("demo_gpu", demo_gpu_mod);
 
     const file_manager_demo_exe = b.addExecutable(.{
         .name = "goop-file-manager-demo",
@@ -271,13 +322,6 @@ pub fn build(b: *std.Build) void {
 
     const file_manager_demo_step = b.step("file-manager-demo", "Build and run the file manager demo");
     file_manager_demo_step.dependOn(&run_file_manager_demo.step);
-
-    // Keep the generic demo names as aliases for the canonical browser
-    // composition root. There is one supported windowed backend: Vulkan.
-    const build_demo = b.step("build-demo", "Build the Vulkan demo executable");
-    build_demo.dependOn(&install_file_manager_demo.step);
-    const demo_step = b.step("demo", "Build and run the Vulkan demo");
-    demo_step.dependOn(&run_file_manager_demo.step);
 
     // ── Tests ──
     const test_mod = b.createModule(.{
@@ -305,10 +349,9 @@ pub fn build(b: *std.Build) void {
     const wayland_vulkan_tests = b.addRunArtifact(b.addTest(.{ .root_module = wayland_vulkan_mod }));
     const present_vulkan_tests = b.addRunArtifact(b.addTest(.{ .root_module = present_vulkan_mod }));
     const render_vulkan_tests = b.addRunArtifact(b.addTest(.{ .root_module = render_vulkan_mod }));
-    const browser_actions_tests = b.addRunArtifact(b.addTest(.{ .root_module = browser_actions_mod }));
-    const browser_model_tests = b.addRunArtifact(b.addTest(.{ .root_module = browser_model_mod }));
-    const browser_controller_tests = b.addRunArtifact(b.addTest(.{ .root_module = browser_controller_mod }));
-    const browser_view_tests = b.addRunArtifact(b.addTest(.{ .root_module = browser_view_mod }));
+    const file_manager_logic_tests = b.addRunArtifact(b.addTest(.{
+        .root_module = file_manager_logic_mod,
+    }));
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
@@ -322,9 +365,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&wayland_vulkan_tests.step);
     test_step.dependOn(&present_vulkan_tests.step);
     test_step.dependOn(&render_vulkan_tests.step);
-    test_step.dependOn(&browser_actions_tests.step);
-    test_step.dependOn(&browser_model_tests.step);
-    test_step.dependOn(&browser_controller_tests.step);
-    test_step.dependOn(&browser_view_tests.step);
+    test_step.dependOn(&file_manager_logic_tests.step);
     test_step.dependOn(&run_c_example.step);
 }

@@ -1,4 +1,4 @@
-//! Font discovery for the browser composition root.
+//! Shared font discovery for the Vulkan demos.
 
 const std = @import("std");
 

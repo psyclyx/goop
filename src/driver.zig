@@ -5,16 +5,6 @@
 
 const std = @import("std");
 const display = @import("goop_display");
-const runtime = @import("core/runtime.zig");
-
-pub const Runtime = runtime.Runtime;
-pub const Context = runtime.Context;
-pub const Event = runtime.Event;
-pub const FrameSnapshot = runtime.FrameSnapshot;
-pub const Clipboard = runtime.Clipboard;
-pub const TextMeasureCtx = runtime.TextMeasureCtx;
-pub const TextDimensions = runtime.TextDimensions;
-pub const MeasureTextFn = runtime.MeasureTextFn;
 
 pub const InputEvent = union(enum) {
     pointer_motion: Point,

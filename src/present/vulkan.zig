@@ -331,7 +331,9 @@ pub const Presenter = struct {
         try graphics.result(vk.vkEndCommandBuffer(command_buffer));
 
         const wait_stage = [_]vk.VkPipelineStageFlags{
-            vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            // The acquired swapchain image is first touched by the transfer
+            // copy, not by the composition render pass.
+            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
         };
         const submit_info = std.mem.zeroInit(vk.VkSubmitInfo, .{
             .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_SUBMIT_INFO)),

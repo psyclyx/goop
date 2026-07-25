@@ -1,7 +1,4 @@
-//! Cohesive Vulkan subsystem ownership for the browser composition root.
-//!
-//! Window-system ownership remains in `goop_platform_wayland`; only its raw
-//! WSI handles cross into the bridge during initialization.
+//! Vulkan subsystem composition shared by both demos.
 
 const std = @import("std");
 const platform = @import("goop_platform_wayland");
@@ -18,6 +15,7 @@ pub const Gpu = struct {
     device: graphics.Device,
     presenter: present.Presenter,
     renderer: render.Renderer,
+    renderer_format: graphics.vk.VkFormat,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -25,9 +23,10 @@ pub const Gpu = struct {
         text: *const snail.TextEngine,
         width: u32,
         height: u32,
+        application_name: [*:0]const u8,
     ) !Gpu {
         const extensions = bridge.requiredInstanceExtensions();
-        var instance = try graphics.Instance.init("goop-file-browser", &extensions);
+        var instance = try graphics.Instance.init(application_name, &extensions);
         errdefer instance.deinit();
 
         const handles = window.wsiHandles();
@@ -65,6 +64,7 @@ pub const Gpu = struct {
             .device = device,
             .presenter = presenter,
             .renderer = renderer,
+            .renderer_format = presenter.format,
         };
     }
 
@@ -82,23 +82,19 @@ pub const Gpu = struct {
         self.presenter.setDesiredExtent(width, height);
     }
 
-    /// Returns null while a swapchain is being recreated. The caller must
-    /// preserve/repromote its damage for the next frame.
     pub fn beginFrame(self: *Gpu, text: *const snail.TextEngine) !?present.FrameTarget {
-        const target = try self.presenter.beginFrame(.{ 0, 0, 0, 1 });
-        if (target != null) return target;
-        if (self.renderer.context.render_pass != self.presenter.renderPass() and
-            self.presenter.renderPass() != null)
-        {
+        const target = try self.presenter.beginFrame(.{ 0, 0, 0, 1 }) orelse return null;
+        if (target.format != self.renderer_format) {
             self.renderer.deinit();
             self.renderer = try render.Renderer.init(
                 self.allocator,
                 self.device.context(),
-                self.presenter.renderPass(),
+                target.render_pass,
                 text,
                 .{},
             );
+            self.renderer_format = target.format;
         }
-        return null;
+        return target;
     }
 };

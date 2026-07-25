@@ -26,6 +26,7 @@ pub const Renderer = struct {
     binding: goop_snail.Binding,
     retained: std.AutoHashMapUnmanaged(display.CommandId, OwnedCommand) = .empty,
     ordered: std.ArrayListUnmanaged(*const OwnedCommand) = .empty,
+    clip_stack: std.ArrayListUnmanaged(display.Rect) = .empty,
 
     pub const Options = struct {
         max_instances: usize = 65_536,
@@ -102,6 +103,7 @@ pub const Renderer = struct {
         while (retained.next()) |paint_command| paint_command.deinit(self.allocator);
         self.retained.deinit(self.allocator);
         self.ordered.deinit(self.allocator);
+        self.clip_stack.deinit(self.allocator);
         self.caller.deinit();
         self.cache.deinit();
         reference.vk.vkDestroyCommandPool(
@@ -125,7 +127,7 @@ pub const Renderer = struct {
     ) !void {
         try self.updateAtlas(text);
         self.caller.beginFrame(target.frame_index);
-        try self.drawPrepared(target, text, prepared);
+        try self.drawPrepared(target, text, prepared, null);
     }
 
     /// Apply a semantic display delta and redraw only its damaged regions into
@@ -160,37 +162,69 @@ pub const Renderer = struct {
         self.caller.beginFrame(target.frame_index);
         for (regions) |region| {
             const clipped_damage = intersect(region, full) orelse continue;
-            clearRect(target.command_buffer, clipped_damage, clear_color, target.extent);
+            clearRect(
+                target.command_buffer,
+                clipped_damage,
+                clear_color,
+                target.extent,
+                target.format,
+            );
+            self.clip_stack.clearRetainingCapacity();
             for (self.ordered.items) |paint_command| {
+                if (paint_command.paint == .clip) {
+                    if (paint_command.paint.clip.bounds) |clip_bounds| {
+                        const effective = if (self.clip_stack.items.len > 0)
+                            intersect(
+                                self.clip_stack.items[self.clip_stack.items.len - 1],
+                                clip_bounds,
+                            ) orelse zero_rect
+                        else
+                            clip_bounds;
+                        try self.clip_stack.append(self.allocator, effective);
+                    } else if (self.clip_stack.items.len > 0) {
+                        _ = self.clip_stack.pop();
+                    }
+                    continue;
+                }
                 const bounds = display.commandBounds(paint_command.paint) orelse continue;
-                if (intersect(bounds, clipped_damage) == null) continue;
+                var visible = intersect(bounds, clipped_damage) orelse continue;
+                if (self.clip_stack.items.len > 0) {
+                    visible = intersect(
+                        visible,
+                        self.clip_stack.items[self.clip_stack.items.len - 1],
+                    ) orelse continue;
+                }
                 switch (paint_command.paint) {
-                    .surface => |surface| clearRect(
-                        target.command_buffer,
-                        intersect(surface.bounds, clipped_damage).?,
-                        surface.color,
-                        target.extent,
-                    ),
-                    .icon => |icon| clearRect(
-                        target.command_buffer,
-                        intersect(icon.bounds, clipped_damage).?,
-                        icon.color,
-                        target.extent,
-                    ),
+                    .surface => |surface| drawSurface(target, surface, visible),
+                    .icon => |icon| drawIcon(target, icon, visible),
                     .text => |text_command| {
+                        const metrics = try text.measure(
+                            text_command.text,
+                            text_command.font_size,
+                        );
+                        const x = switch (text_command.text_align) {
+                            .start => text_command.bounds.x,
+                            .center => text_command.bounds.x +
+                                @max(0, text_command.bounds.w - metrics.width) * 0.5,
+                            .end => text_command.bounds.x +
+                                @max(0, text_command.bounds.w - metrics.width),
+                        };
+                        const baseline = text_command.bounds.y +
+                            @max(0, text_command.bounds.h - metrics.height()) * 0.5 +
+                            metrics.ascent;
                         var prepared = try text.prepareText(
                             self.allocator,
                             text_command.text,
                             .{
-                                .x = text_command.bounds.x,
-                                .y = text_command.bounds.y + text_command.font_size,
+                                .x = x,
+                                .y = baseline,
                             },
                             text_command.font_size,
                             text_command.color,
                         );
                         defer prepared.deinit();
                         try self.updateAtlas(text);
-                        try self.drawPrepared(target, text, &prepared);
+                        try self.drawPrepared(target, text, &prepared, visible);
                     },
                     .clip, .custom => {},
                 }
@@ -248,6 +282,7 @@ pub const Renderer = struct {
         target: present.FrameTarget,
         text: *const goop_snail.TextEngine,
         prepared: *const goop_snail.PreparedText,
+        scissor: ?display.Rect,
     ) !void {
         var instance_len: usize = 0;
         var batch_len: usize = 0;
@@ -263,7 +298,7 @@ pub const Renderer = struct {
         try self.caller.render(
             target.command_buffer,
             &self.cache,
-            drawState(target),
+            drawState(target, scissor),
             self.instances[0..instance_len],
             self.batches[0..batch_len],
         );
@@ -311,6 +346,7 @@ fn clearRect(
     bounds: display.Rect,
     color: display.Color,
     extent: graphics.vk.VkExtent2D,
+    format: graphics.vk.VkFormat,
 ) void {
     const x: i32 = @intFromFloat(@max(0, @floor(bounds.x)));
     const y: i32 = @intFromFloat(@max(0, @floor(bounds.y)));
@@ -326,11 +362,11 @@ fn clearRect(
     const unsigned_y: u32 = @intCast(y);
     if (right <= unsigned_x or bottom <= unsigned_y) return;
 
-    const linear = goop_snail.linearColor(color);
+    const encoded = attachmentColor(color, format);
     const attachment = graphics.vk.VkClearAttachment{
         .aspectMask = graphics.vk.VK_IMAGE_ASPECT_COLOR_BIT,
         .colorAttachment = 0,
-        .clearValue = .{ .color = .{ .float32 = linear } },
+        .clearValue = .{ .color = .{ .float32 = encoded } },
     };
     const clear = graphics.vk.VkClearRect{
         .rect = .{
@@ -346,7 +382,7 @@ fn clearRect(
     graphics.vk.vkCmdClearAttachments(command_buffer, 1, &attachment, 1, &clear);
 }
 
-fn drawState(target: present.FrameTarget) render_state.DrawState {
+fn drawState(target: present.FrameTarget, scissor: ?display.Rect) render_state.DrawState {
     const width: f32 = @floatFromInt(target.extent.width);
     const height: f32 = @floatFromInt(target.extent.height);
     return .{
@@ -361,6 +397,135 @@ fn drawState(target: present.FrameTarget) render_state.DrawState {
             .format = .bgra8_unorm,
         },
         .raster = .{ .subpixel_order = .none },
+        .scissor_rect = if (scissor) |rect| pixelRect(rect, target.extent) else null,
+    };
+}
+
+fn drawSurface(
+    target: present.FrameTarget,
+    surface: display.PaintCommand.Surface,
+    visible: display.Rect,
+) void {
+    const border = @max(0, surface.border_width);
+    if (border > 0 and surface.border_color.a > 0) {
+        clearRect(
+            target.command_buffer,
+            visible,
+            surface.border_color,
+            target.extent,
+            target.format,
+        );
+        const inner = display.Rect{
+            .x = surface.bounds.x + border,
+            .y = surface.bounds.y + border,
+            .w = @max(0, surface.bounds.w - border * 2),
+            .h = @max(0, surface.bounds.h - border * 2),
+        };
+        if (intersect(inner, visible)) |fill| {
+            clearRect(
+                target.command_buffer,
+                fill,
+                surface.color,
+                target.extent,
+                target.format,
+            );
+        }
+        return;
+    }
+    clearRect(
+        target.command_buffer,
+        visible,
+        surface.color,
+        target.extent,
+        target.format,
+    );
+}
+
+/// Compact fallback icon vocabulary. Icons stay a renderer concern: the
+/// display protocol carries only opaque semantic IDs.
+fn drawIcon(
+    target: present.FrameTarget,
+    icon: display.PaintCommand.Icon,
+    visible: display.Rect,
+) void {
+    const b = icon.bounds;
+    const parts = switch (icon.kind) {
+        0 => [_]display.Rect{
+            .{ .x = b.x + b.w * 0.07, .y = b.y + b.h * 0.28, .w = b.w * 0.86, .h = b.h * 0.58 },
+            .{ .x = b.x + b.w * 0.12, .y = b.y + b.h * 0.18, .w = b.w * 0.34, .h = b.h * 0.2 },
+            zero_rect,
+            zero_rect,
+        },
+        1, 2 => [_]display.Rect{
+            .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.08, .w = b.w * 0.64, .h = b.h * 0.84 },
+            zero_rect,
+            zero_rect,
+            zero_rect,
+        },
+        7 => [_]display.Rect{
+            .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.22, .w = b.w * 0.64, .h = b.h * 0.1 },
+            .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.46, .w = b.w * 0.64, .h = b.h * 0.1 },
+            .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.70, .w = b.w * 0.64, .h = b.h * 0.1 },
+            zero_rect,
+        },
+        8 => [_]display.Rect{
+            .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.18, .w = b.w * 0.25, .h = b.h * 0.25 },
+            .{ .x = b.x + b.w * 0.57, .y = b.y + b.h * 0.18, .w = b.w * 0.25, .h = b.h * 0.25 },
+            .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.57, .w = b.w * 0.25, .h = b.h * 0.25 },
+            .{ .x = b.x + b.w * 0.57, .y = b.y + b.h * 0.57, .w = b.w * 0.25, .h = b.h * 0.25 },
+        },
+        else => [_]display.Rect{
+            .{ .x = b.x + b.w * 0.2, .y = b.y + b.h * 0.2, .w = b.w * 0.6, .h = b.h * 0.6 },
+            zero_rect,
+            zero_rect,
+            zero_rect,
+        },
+    };
+    for (parts) |part| {
+        if (part.w <= 0 or part.h <= 0) continue;
+        if (intersect(part, visible)) |clipped| {
+            clearRect(
+                target.command_buffer,
+                clipped,
+                icon.color,
+                target.extent,
+                target.format,
+            );
+        }
+    }
+}
+
+const zero_rect = display.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
+
+fn pixelRect(rect: display.Rect, extent: graphics.vk.VkExtent2D) render_state.PixelRect {
+    const x0: i32 = @intFromFloat(@max(0, @floor(rect.x)));
+    const y0: i32 = @intFromFloat(@max(0, @floor(rect.y)));
+    const x1: u32 = @intFromFloat(@min(
+        @as(f32, @floatFromInt(extent.width)),
+        @ceil(rect.x + rect.w),
+    ));
+    const y1: u32 = @intFromFloat(@min(
+        @as(f32, @floatFromInt(extent.height)),
+        @ceil(rect.y + rect.h),
+    ));
+    const ux0: u32 = @intCast(x0);
+    const uy0: u32 = @intCast(y0);
+    return .{
+        .x = x0,
+        .y = y0,
+        .w = x1 -| ux0,
+        .h = y1 -| uy0,
+    };
+}
+
+fn attachmentColor(color: display.Color, format: graphics.vk.VkFormat) [4]f32 {
+    if (isSrgbFormat(format)) return goop_snail.linearColor(color);
+    const scale: f32 = 1.0 / 255.0;
+    return .{
+        @as(f32, @floatFromInt(color.r)) * scale,
+        @as(f32, @floatFromInt(color.g)) * scale,
+        @as(f32, @floatFromInt(color.b)) * scale,
+        @as(f32, @floatFromInt(color.a)) * scale,
     };
 }
 

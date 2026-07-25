@@ -23,7 +23,8 @@ In-tree:
 - Snail 0.13 CPU text preparation in `goop_snail`
 - separated Vulkan graphics, rendering, and presentation modules
 - renderer-free Wayland platform module plus a thin Vulkan WSI bridge
-- model/controller/view/application split for the file browser
+- preserved widget showcase and filesystem browser, each split into
+  UI/controller/composition modules
 - installable C API in [include/goop.h](include/goop.h)
 
 See [docs/architecture.md](docs/architecture.md) for the enforced dependency
@@ -52,7 +53,7 @@ zig build                    # library + demo
 zig build demo               # build and run the Wayland demo
 zig build file-manager-demo  # build and run the file-browser Wayland demo
 zig build c-example          # build and run the headless C API example
-zig build install            # install libraries, Vulkan browser, and goop.h
+zig build install            # install libraries, both Vulkan demos, and goop.h
 ```
 
 The core library only needs libc and the vendored `clay` C source. The demos
@@ -213,12 +214,19 @@ The core does not depend on `snail`. The bundled demos do, because they use
 
 ## Demos
 
-[demo/browser/app.zig](demo/browser/app.zig) is the composition root for the
-reference file browser. Its model, controller, and view live in separate
-modules; it wires the neutral Wayland event stream to the retained driver and
-damaged display deltas to the persistent Vulkan composition target.
+[demo/showcase/app.zig](demo/showcase/app.zig) is the small composition root
+for the original widget showcase. Its tree construction and behavior live in
+separate view and controller modules.
+
+[demo/file_manager/app.zig](demo/file_manager/app.zig) is the corresponding
+composition root for the original filesystem browser. Browser state and
+logic do not own a window, Vulkan object, renderer, or swapchain. A shared
+paint bridge turns the established backend-neutral widget paint list into
+retained display deltas, and the application sends those deltas to the
+persistent Vulkan composition target.
 
 ```sh
+nix-shell -A shell --run 'zig build demo'
 nix-shell -A shell --run 'zig build file-manager-demo'
 ```
 
