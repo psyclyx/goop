@@ -755,7 +755,6 @@ fn emitTreeItem(
     const indent = @as(f32, @floatFromInt(depth)) * geometry.treeIndent(theme, resolved);
     const slot_width = geometry.treeDisclosureSlotWidth(resolved);
     const disclosure_x = rect.x + resolved.padding.left + indent;
-    const disclosure_center_x = disclosure_x + slot_width * 0.5;
     const label_x = disclosure_x + slot_width;
     const icon_size = treeItemIconSize(item, rect, resolved);
     const icon_gap = treeItemIconGap(item, theme);
@@ -764,8 +763,19 @@ fn emitTreeItem(
     const label = if (item.editing) node.kind.tree_item.internal.editor.content() else item.label;
     const has_parent = geometry.findTreeParent(tree, handle) != null;
     const has_children = treeItemHasChildren(tree, handle);
+    const disclosure_bounds = treeDisclosureBounds(disclosure_x, rect, resolved);
 
-    try emitTreeGuides(paint_ctx, tree, handle, rect, resolved, theme, disclosure_center_x, commands, allocator);
+    try emitTreeGuides(
+        paint_ctx,
+        tree,
+        handle,
+        rect,
+        resolved,
+        theme,
+        if (has_children) disclosure_bounds else null,
+        commands,
+        allocator,
+    );
 
     const chrome = treeItemChrome(node, item, resolved, theme);
     if (chrome.color.a > 0 or chrome.border_width > 0) {
@@ -780,25 +790,28 @@ fn emitTreeItem(
     try emitTreeItemDropIndicator(rect, item, resolved, theme, commands, allocator);
 
     if (has_children) {
-        try emitTreeDisclosure(disclosure_x, rect, resolved, theme, item.expanded, commands, allocator);
+        try emitTreeDisclosure(disclosure_bounds, resolved, theme, item.expanded, commands, allocator);
     }
-    if (has_children or has_parent) {
-        const connector_start_x = if (has_parent)
-            treeParentGuideCenterX(rect, resolved, theme, depth)
+    if (has_parent) {
+        const connector_start_x = treeParentGuideCenterX(rect, resolved, theme, depth);
+        const connector_end_x = if (has_children)
+            disclosure_bounds.x - 2
         else
-            disclosure_center_x;
-        try commands.append(allocator, .{ .surface = .{
-            .bounds = .{
-                .x = connector_start_x,
-                .y = rect.y + rect.h * 0.5,
-                .w = @max(label_x - connector_start_x - 3, 1),
-                .h = 1,
-            },
-            .color = theme.tree_guide,
-            .border_color = theme.tree_guide,
-            .border_width = 0,
-            .corner_radius = 0,
-        } });
+            label_x - 3;
+        if (connector_end_x > connector_start_x) {
+            try commands.append(allocator, .{ .surface = .{
+                .bounds = .{
+                    .x = connector_start_x,
+                    .y = rect.y + rect.h * 0.5,
+                    .w = connector_end_x - connector_start_x,
+                    .h = 1,
+                },
+                .color = theme.tree_guide,
+                .border_color = theme.tree_guide,
+                .border_width = 0,
+                .corner_radius = 0,
+            } });
+        }
     }
     if (item.icon) |icon| {
         try commands.append(allocator, .{ .icon = .{
@@ -2306,7 +2319,7 @@ fn emitTreeGuides(
     row_rect: Rect,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    disclosure_center_x: f32,
+    disclosure_bounds: ?Rect,
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
 ) !void {
@@ -2363,16 +2376,16 @@ fn emitTreeGuides(
     }
 
     const node = tree.getConst(handle);
-    if (node.kind.tree_item.expanded and treeItemHasChildren(tree, handle)) {
+    if (node.kind.tree_item.expanded) if (disclosure_bounds) |bounds| {
         try appendTreeGuideVertical(
             commands,
             allocator,
             theme,
-            disclosure_center_x,
-            row_rect.y + row_rect.h * 0.5,
+            bounds.x + bounds.w * 0.5,
+            bounds.y + bounds.h,
             row_rect.y + row_rect.h,
         );
-    }
+    };
 }
 
 fn appendTreeGuideVertical(
@@ -2399,30 +2412,36 @@ fn appendTreeGuideVertical(
     } });
 }
 
-fn emitTreeDisclosure(
+fn treeDisclosureBounds(
     disclosure_x: f32,
     row_rect: Rect,
+    resolved: style.ResolvedStyle,
+) Rect {
+    const slot_width = geometry.treeDisclosureSlotWidth(resolved);
+    const size = @max(resolved.font_size * 0.8, 11);
+    return .{
+        .x = disclosure_x + (slot_width - size) * 0.5,
+        .y = row_rect.y + (row_rect.h - size) * 0.5,
+        .w = size,
+        .h = size,
+    };
+}
+
+fn emitTreeDisclosure(
+    bounds: Rect,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
     expanded: bool,
     commands: *std.ArrayListUnmanaged(PaintCommand),
     allocator: std.mem.Allocator,
 ) !void {
-    const slot_width = geometry.treeDisclosureSlotWidth(resolved);
-    const size = @max(resolved.font_size * 0.8, 11);
-    const bounds = Rect{
-        .x = disclosure_x + (slot_width - size) * 0.5,
-        .y = row_rect.y + (row_rect.h - size) * 0.5,
-        .w = size,
-        .h = size,
-    };
     try appendTextCommand(
         commands,
         allocator,
         bounds,
         if (expanded) "▾" else "▸",
         if (expanded) theme.accent else resolved.fg,
-        size,
+        bounds.h,
         .center,
         .visible,
     );
@@ -3168,32 +3187,37 @@ test "expanded tree item emits disclosure and child guides" {
     var dl = try generatePaint(&tree, theme, allocator, null, .{});
     defer freePaintList(&dl, allocator);
 
-    try std.testing.expectEqual(@as(usize, 12), dl.commands.len);
+    try std.testing.expectEqual(@as(usize, 11), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .surface); // root bg
     try std.testing.expect(dl.commands[1] == .surface); // parent downward guide
     try std.testing.expect(dl.commands[2] == .text); // disclosure chevron
     try std.testing.expectEqualStrings("▾", dl.commands[2].text.text);
-    try std.testing.expect(dl.commands[3] == .surface); // parent connector
-    try std.testing.expect(dl.commands[4] == .text); // parent label
-    try std.testing.expect(dl.commands[5] == .surface); // child vertical guide
-    try std.testing.expect(dl.commands[6] == .surface); // child sibling guide
-    try std.testing.expect(dl.commands[7] == .surface); // child connector
-    try std.testing.expect(dl.commands[8] == .text); // child label
-    try std.testing.expect(dl.commands[9] == .surface); // sibling vertical guide
-    try std.testing.expect(dl.commands[10] == .surface); // sibling connector
-    try std.testing.expect(dl.commands[11] == .text); // sibling label
+    try std.testing.expect(dl.commands[3] == .text); // parent label
+    try std.testing.expect(dl.commands[4] == .surface); // child vertical guide
+    try std.testing.expect(dl.commands[5] == .surface); // child sibling guide
+    try std.testing.expect(dl.commands[6] == .surface); // child connector
+    try std.testing.expect(dl.commands[7] == .text); // child label
+    try std.testing.expect(dl.commands[8] == .surface); // sibling vertical guide
+    try std.testing.expect(dl.commands[9] == .surface); // sibling connector
+    try std.testing.expect(dl.commands[10] == .text); // sibling label
 
-    const child_guide = dl.commands[5].surface.bounds;
+    const disclosure = dl.commands[2].text.bounds;
+    const downward_guide = dl.commands[1].surface.bounds;
+    try std.testing.expect(
+        downward_guide.y >= disclosure.y + disclosure.h,
+    );
+
+    const child_guide = dl.commands[4].surface.bounds;
     try std.testing.expectApproxEqAbs(@as(f32, 25), child_guide.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 36), child_guide.y, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 27), child_guide.h, 0.01);
 
-    const sibling_guide = dl.commands[6].surface.bounds;
+    const sibling_guide = dl.commands[5].surface.bounds;
     try std.testing.expectApproxEqAbs(child_guide.x, sibling_guide.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 63), sibling_guide.y, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 40), sibling_guide.h, 0.01);
 
-    const child_connector = dl.commands[7].surface.bounds;
+    const child_connector = dl.commands[6].surface.bounds;
     try std.testing.expectApproxEqAbs(child_guide.x, child_connector.x, 0.01);
 
     tree.get(parent).kind.tree_item.expanded = false;
