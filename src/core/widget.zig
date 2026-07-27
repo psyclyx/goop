@@ -1771,6 +1771,21 @@ pub const Tree = struct {
         return self.getConst(handle).user_id;
     }
 
+    /// Find a live node carrying the given stable user id, if any. Used to
+    /// re-resolve a retained interaction target (e.g. the press target of an
+    /// in-progress click) after a full tree rebuild hands the same logical
+    /// widget a fresh handle. A zero user id is the "unset" sentinel and never
+    /// matches, so unidentified widgets can't alias one another.
+    pub fn findByUserId(self: *const Tree, user_id: u64) ?NodeHandle {
+        if (user_id == 0) return null;
+        for (self.nodes.items, 0..) |candidate, index| {
+            if (candidate.alive and candidate.user_id == user_id) {
+                return .{ .index = @intCast(index), .generation = candidate.generation };
+            }
+        }
+        return null;
+    }
+
     /// Mark a widget as a generic drop target for active drags. Pure
     /// field write; does not invalidate caches.
     pub fn setDropTarget(self: *Tree, handle: NodeHandle, accepts_drop: bool) void {

@@ -65,12 +65,22 @@ fn discardDeadHandles(tree: *const widget.Tree, mouse: *MouseState) void {
     }
     if (mouse.press_target) |handle| {
         if (!tree.isAlive(handle)) {
-            mouse.press_target = null;
-            mouse.press_can_defer_drag = false;
+            // A click spans press and release, often several frames apart. If
+            // the tree was rebuilt in between, re-resolve the press target by
+            // its stable user id so the release still registers as a click on
+            // the same logical widget instead of being dropped.
+            mouse.press_target = if (mouse.press_target_user_id) |uid| tree.findByUserId(uid) else null;
+            if (mouse.press_target == null) {
+                mouse.press_target_user_id = null;
+                mouse.press_can_defer_drag = false;
+            }
         }
     }
     if (mouse.right_press_target) |handle| {
-        if (!tree.isAlive(handle)) mouse.right_press_target = null;
+        if (!tree.isAlive(handle)) {
+            mouse.right_press_target = if (mouse.right_press_target_user_id) |uid| tree.findByUserId(uid) else null;
+            if (mouse.right_press_target == null) mouse.right_press_target_user_id = null;
+        }
     }
     if (mouse.drag_target) |handle| {
         if (!tree.isAlive(handle)) {

@@ -303,6 +303,7 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
     menu.closePopupsForPress(tree, target);
     setFocusFromPressTarget(tree, mouse, target);
     mouse.press_target = target;
+    mouse.press_target_user_id = if (target) |t| nonZero(tree.userId(t)) else null;
     if (target) |handle| handlePrimaryPressTarget(tree, mouse, theme, text_ctx, mb, handle);
 }
 
@@ -340,6 +341,7 @@ fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
         }
     }
     mouse.press_target = null;
+    mouse.press_target_user_id = null;
     mouse.press_can_defer_drag = false;
     _ = updateHover(tree, mouse);
 }
@@ -679,6 +681,7 @@ fn handleSecondaryPress(tree: *widget.Tree, mouse: *MouseState) void {
     const target = hittest.hitTest(tree, mouse.x, mouse.y);
     menu.closePopupsForPress(tree, target);
     mouse.right_press_target = target;
+    mouse.right_press_target_user_id = if (target) |t| nonZero(tree.userId(t)) else null;
 }
 
 fn handleSecondaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
@@ -690,6 +693,7 @@ fn handleSecondaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
         }
     }
     mouse.right_press_target = null;
+    mouse.right_press_target_user_id = null;
     _ = updateHover(tree, mouse);
 }
 
@@ -710,6 +714,10 @@ fn hoverChanged(mouse: *const MouseState, hovered: ?widget.NodeHandle) bool {
         return hovered == null or !hovered.?.eql(previous);
     }
     return hovered != null;
+}
+
+fn nonZero(user_id: u64) ?u64 {
+    return if (user_id == 0) null else user_id;
 }
 
 fn dragSuppressedClick(tree: *const widget.Tree, dragged_target: ?widget.NodeHandle, pressed_target: widget.NodeHandle) bool {

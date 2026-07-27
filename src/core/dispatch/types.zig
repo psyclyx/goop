@@ -70,6 +70,12 @@ pub const MouseState = struct {
     /// The widget that the left button went down on (for click detection).
     press_target: ?widget.NodeHandle = null,
     right_press_target: ?widget.NodeHandle = null,
+    /// Stable user ids of the press targets, captured at press time. A click
+    /// spans many frames; if the tree is rebuilt in between (a fresh handle for
+    /// the same logical widget), these let the press target be re-resolved by
+    /// identity instead of being lost. Null when the target had no user id.
+    press_target_user_id: ?u64 = null,
+    right_press_target_user_id: ?u64 = null,
     press_origin_x: f32 = 0,
     press_origin_y: f32 = 0,
     press_can_defer_drag: bool = false,

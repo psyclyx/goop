@@ -56,6 +56,69 @@ test "button click sets clicked flag" {
     try std.testing.expect(!tree.getConst(btn).interaction.pressed);
 }
 
+test "click across a tree rebuild still fires via stable user id" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    var btn = try tree.addChild(root, .{ .button = .{ .label = "Click me" } });
+    tree.setUserId(btn, 7);
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
+
+    var mouse = MouseState{};
+
+    // Press in one dispatch pass.
+    dispatch.process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+    try std.testing.expect(mouse.press_target != null);
+
+    // The whole tree is rebuilt before the release arrives (as immediate-mode
+    // UIs do every frame): the same logical button gets a brand-new handle.
+    try tree.remove(btn);
+    btn = try tree.addChild(root, .{ .button = .{ .label = "Click me" } });
+    tree.setUserId(btn, 7);
+    tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
+
+    // Release: the click must still land on the rebuilt button.
+    dispatch.process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(tree.getConst(btn).interaction.primary_clicked);
+}
+
+test "click across a tree rebuild is dropped without a stable user id" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    var btn = try tree.addChild(root, .{ .button = .{ .label = "Click me" } });
+    // No setUserId: the press target has no stable identity to re-resolve.
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
+
+    var mouse = MouseState{};
+
+    dispatch.process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    try tree.remove(btn);
+    btn = try tree.addChild(root, .{ .button = .{ .label = "Click me" } });
+    tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
+
+    dispatch.process(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
+    }, &mouse, style.Theme.default);
+
+    try std.testing.expect(!tree.getConst(btn).interaction.primary_clicked);
+    try std.testing.expect(mouse.press_target == null);
+}
+
 test "press and release on different widgets does not click" {
     const allocator = std.testing.allocator;
     var tree = widget.Tree.init(allocator);
