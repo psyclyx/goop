@@ -5,7 +5,7 @@ const goop = @import("goop");
 const display = @import("goop_display");
 const platform = @import("goop_platform_wayland");
 const text_module = @import("demo_text");
-const paint_bridge = @import("goop_paint_bridge");
+const paint_convert = @import("paint_convert");
 const gpu_module = @import("demo_gpu");
 const view = @import("showcase_view");
 const controller = @import("showcase_controller");
@@ -76,8 +76,6 @@ pub fn main(init: std.process.Init) !void {
 
     const handles = try view.build(&context);
     var model = controller.Model{};
-    var bridge = paint_bridge.Bridge.init(allocator);
-    defer bridge.deinit();
     var gpu = try gpu_module.Gpu.init(
         allocator,
         &window,
@@ -91,14 +89,13 @@ pub fn main(init: std.process.Init) !void {
     var loop = Loop{ .timeout_ns = parseTimeout(init.environ_map) };
     if (loop.timeout_ns != null) loop.started_ns = monotonicNs(init.io);
     while (loop.running and !loop.timedOut(init.io)) {
-        try drainEvents(&window, &gpu, &context, &bridge, &loop);
+        try drainEvents(&window, &gpu, &context, &loop);
         if (loop.configured and loop.dirty and !loop.frame_pending) {
             try draw(
                 &window,
                 &gpu,
                 &text,
                 &context,
-                &bridge,
                 &model,
                 handles,
                 &measure_context,
@@ -113,7 +110,6 @@ fn drainEvents(
     window: *platform.Window,
     gpu: *gpu_module.Gpu,
     context: *goop.Context,
-    bridge: *paint_bridge.Bridge,
     loop: *Loop,
 ) !void {
     while (window.pollEvent()) |event| {
@@ -130,7 +126,6 @@ fn drainEvents(
                     .height = size.height,
                 } });
                 gpu.resize(size.width, size.height);
-                bridge.invalidateAll();
                 loop.dirty = true;
             },
             .frame_ready => loop.frame_pending = false,
@@ -190,12 +185,13 @@ fn drainEvents(
     }
 }
 
+const clear_color = [4]f32{ 30.0 / 255.0, 30.0 / 255.0, 30.0 / 255.0, 1.0 };
+
 fn draw(
     window: *platform.Window,
     gpu: *gpu_module.Gpu,
     text: *text_module.Text,
     context: *goop.Context,
-    bridge: *paint_bridge.Bridge,
     model: *controller.Model,
     handles: view.Handles,
     measure_context: *const goop.TextMeasureCtx,
@@ -209,14 +205,14 @@ fn draw(
     context.doLayout(measure_context);
 
     const paint_list = try context.generatePaintList();
-    const delta = try bridge.frame(paint_list, 1);
-    if (delta.damage == .none) return;
-    const target = try gpu.beginFrame(&text.engine) orelse {
-        bridge.invalidateAll();
+    const commands = try paint_convert.convert(allocator, paint_list, 1);
+    defer allocator.free(commands);
+
+    const target = try gpu.beginFrame(&text.engine, clear_color) orelse {
         loop.dirty = true;
         return;
     };
-    _ = try gpu.renderer.drawDelta(target, &text.engine, delta, .rgb(30, 30, 30));
+    try gpu.renderer.drawPaintList(target, &text.engine, commands);
     window.requestFrame();
     try gpu.presenter.endFrame();
     loop.frame_pending = true;

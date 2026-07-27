@@ -7,6 +7,10 @@ const std = @import("std");
 const graphics = @import("goop_graphics_vulkan");
 pub const vk = graphics.vk;
 
+// Each frame renders straight into its acquired swapchain image (distinct
+// resources) with per-frame command buffers and sync objects, so frames in
+// flight never share a mutable target — no cross-frame hazard. Two lets the CPU
+// record the next frame while the GPU finishes the previous one.
 pub const max_frames_in_flight = 2;
 
 pub const FrameTarget = struct {
@@ -57,11 +61,8 @@ pub const Presenter = struct {
     color_space: vk.VkColorSpaceKHR = vk.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
     extent: vk.VkExtent2D = .{ .width = 0, .height = 0 },
     render_pass: vk.VkRenderPass = null,
-    composition_image: vk.VkImage = null,
-    composition_memory: vk.VkDeviceMemory = null,
-    composition_view: vk.VkImageView = null,
-    composition_framebuffer: vk.VkFramebuffer = null,
-    composition_initialized: bool = false,
+    framebuffers: []vk.VkFramebuffer = &.{},
+    clear_value: vk.VkClearValue = .{ .color = .{ .float32 = .{ 0, 0, 0, 1 } } },
 
     command_pool: vk.VkCommandPool = null,
     command_buffers: [max_frames_in_flight]vk.VkCommandBuffer = .{null} ** max_frames_in_flight,
@@ -133,7 +134,7 @@ pub const Presenter = struct {
 
     /// Acquire an image and begin its render pass. `null` means the surface is
     /// temporarily unrenderable (usually zero-sized or just recreated).
-    pub fn beginFrame(self: *Presenter, _: [4]f32) !?FrameTarget {
+    pub fn beginFrame(self: *Presenter, clear: [4]f32) !?FrameTarget {
         std.debug.assert(!self.active_frame);
         if (self.desired_width == 0 or self.desired_height == 0) return null;
         if (self.recreate_pending) {
@@ -187,37 +188,17 @@ pub const Presenter = struct {
             &begin_info,
         ));
 
-        if (!self.composition_initialized) {
-            const initialize_barrier = imageBarrier(
-                self.composition_image,
-                vk.VK_IMAGE_LAYOUT_UNDEFINED,
-                vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                0,
-                vk.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            );
-            vk.vkCmdPipelineBarrier(
-                self.command_buffers[frame],
-                vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                0,
-                0,
-                null,
-                0,
-                null,
-                1,
-                &initialize_barrier,
-            );
-            self.composition_initialized = true;
-        }
-
+        self.clear_value = .{ .color = .{ .float32 = clear } };
         const render_pass_info = std.mem.zeroInit(vk.VkRenderPassBeginInfo, .{
             .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO)),
             .renderPass = self.render_pass,
-            .framebuffer = self.composition_framebuffer,
+            .framebuffer = self.framebuffers[self.current_image],
             .renderArea = .{
                 .offset = .{ .x = 0, .y = 0 },
                 .extent = self.extent,
             },
+            .clearValueCount = 1,
+            .pClearValues = &self.clear_value,
         });
         vk.vkCmdBeginRenderPass(
             self.command_buffers[frame],
@@ -229,7 +210,7 @@ pub const Presenter = struct {
         return .{
             .command_buffer = self.command_buffers[frame],
             .render_pass = self.render_pass,
-            .framebuffer = self.composition_framebuffer,
+            .framebuffer = self.framebuffers[self.current_image],
             .extent = self.extent,
             .format = self.format,
             .frame_index = frame,
@@ -243,97 +224,14 @@ pub const Presenter = struct {
 
         const frame = self.current_frame;
         const command_buffer = self.command_buffers[frame];
+        // The render pass rendered straight into the acquired swapchain image
+        // and its finalLayout transitioned it to PRESENT_SRC — nothing else to
+        // do but submit and present.
         vk.vkCmdEndRenderPass(command_buffer);
-
-        const composition_to_copy = imageBarrier(
-            self.composition_image,
-            vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            vk.VK_ACCESS_TRANSFER_READ_BIT,
-        );
-        const swapchain_to_copy = imageBarrier(
-            self.images[self.current_image],
-            vk.VK_IMAGE_LAYOUT_UNDEFINED,
-            vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            0,
-            vk.VK_ACCESS_TRANSFER_WRITE_BIT,
-        );
-        const to_copy = [_]vk.VkImageMemoryBarrier{
-            composition_to_copy,
-            swapchain_to_copy,
-        };
-        vk.vkCmdPipelineBarrier(
-            command_buffer,
-            vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0,
-            0,
-            null,
-            0,
-            null,
-            to_copy.len,
-            &to_copy,
-        );
-
-        const copy_region = vk.VkImageCopy{
-            .srcSubresource = colorLayers(),
-            .srcOffset = .{ .x = 0, .y = 0, .z = 0 },
-            .dstSubresource = colorLayers(),
-            .dstOffset = .{ .x = 0, .y = 0, .z = 0 },
-            .extent = .{
-                .width = self.extent.width,
-                .height = self.extent.height,
-                .depth = 1,
-            },
-        };
-        vk.vkCmdCopyImage(
-            command_buffer,
-            self.composition_image,
-            vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            self.images[self.current_image],
-            vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1,
-            &copy_region,
-        );
-
-        const composition_to_render = imageBarrier(
-            self.composition_image,
-            vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            vk.VK_ACCESS_TRANSFER_READ_BIT,
-            vk.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-        );
-        const swapchain_to_present = imageBarrier(
-            self.images[self.current_image],
-            vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            vk.VK_ACCESS_TRANSFER_WRITE_BIT,
-            0,
-        );
-        const from_copy = [_]vk.VkImageMemoryBarrier{
-            composition_to_render,
-            swapchain_to_present,
-        };
-        vk.vkCmdPipelineBarrier(
-            command_buffer,
-            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
-            vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-            0,
-            0,
-            null,
-            0,
-            null,
-            from_copy.len,
-            &from_copy,
-        );
         try graphics.result(vk.vkEndCommandBuffer(command_buffer));
 
         const wait_stage = [_]vk.VkPipelineStageFlags{
-            // The acquired swapchain image is first touched by the transfer
-            // copy, not by the composition render pass.
-            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
         };
         const submit_info = std.mem.zeroInit(vk.VkSubmitInfo, .{
             .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_SUBMIT_INFO)),
@@ -465,7 +363,7 @@ pub const Presenter = struct {
             .imageColorSpace = selected_format.colorSpace,
             .imageExtent = extent,
             .imageArrayLayers = 1,
-            .imageUsage = @as(vk.VkImageUsageFlags, vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT),
+            .imageUsage = @as(vk.VkImageUsageFlags, vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT),
             .imageSharingMode = @as(vk.VkSharingMode, @intCast(if (separate_queues)
                 vk.VK_SHARING_MODE_CONCURRENT
             else
@@ -515,12 +413,12 @@ pub const Presenter = struct {
             .flags = 0,
             .format = self.format,
             .samples = @as(vk.VkSampleCountFlagBits, @intCast(vk.VK_SAMPLE_COUNT_1_BIT)),
-            .loadOp = @as(vk.VkAttachmentLoadOp, @intCast(vk.VK_ATTACHMENT_LOAD_OP_LOAD)),
+            .loadOp = @as(vk.VkAttachmentLoadOp, @intCast(vk.VK_ATTACHMENT_LOAD_OP_CLEAR)),
             .storeOp = @as(vk.VkAttachmentStoreOp, @intCast(vk.VK_ATTACHMENT_STORE_OP_STORE)),
             .stencilLoadOp = @as(vk.VkAttachmentLoadOp, @intCast(vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE)),
             .stencilStoreOp = @as(vk.VkAttachmentStoreOp, @intCast(vk.VK_ATTACHMENT_STORE_OP_DONT_CARE)),
-            .initialLayout = @as(vk.VkImageLayout, @intCast(vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)),
-            .finalLayout = @as(vk.VkImageLayout, @intCast(vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)),
+            .initialLayout = @as(vk.VkImageLayout, @intCast(vk.VK_IMAGE_LAYOUT_UNDEFINED)),
+            .finalLayout = @as(vk.VkImageLayout, @intCast(vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)),
         };
         const color_reference = vk.VkAttachmentReference{
             .attachment = 0,
@@ -585,21 +483,32 @@ pub const Presenter = struct {
                 &self.views[index],
             ));
         }
-        try self.createCompositionTarget();
+
+        self.framebuffers = try self.allocator.alloc(vk.VkFramebuffer, self.images.len);
+        @memset(self.framebuffers, null);
+        for (self.views, 0..) |view, index| {
+            const framebuffer_info = std.mem.zeroInit(vk.VkFramebufferCreateInfo, .{
+                .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO)),
+                .renderPass = self.render_pass,
+                .attachmentCount = 1,
+                .pAttachments = &self.views[index],
+                .width = self.extent.width,
+                .height = self.extent.height,
+                .layers = 1,
+            });
+            _ = view;
+            try graphics.result(vk.vkCreateFramebuffer(
+                self.device.handle,
+                &framebuffer_info,
+                null,
+                &self.framebuffers[index],
+            ));
+        }
     }
 
     fn destroySwapchain(self: *Presenter) void {
-        if (self.composition_framebuffer != null) {
-            vk.vkDestroyFramebuffer(self.device.handle, self.composition_framebuffer, null);
-        }
-        if (self.composition_view != null) {
-            vk.vkDestroyImageView(self.device.handle, self.composition_view, null);
-        }
-        if (self.composition_image != null) {
-            vk.vkDestroyImage(self.device.handle, self.composition_image, null);
-        }
-        if (self.composition_memory != null) {
-            vk.vkFreeMemory(self.device.handle, self.composition_memory, null);
+        for (self.framebuffers) |framebuffer| {
+            if (framebuffer != null) vk.vkDestroyFramebuffer(self.device.handle, framebuffer, null);
         }
         for (self.views) |view| {
             if (view != null) vk.vkDestroyImageView(self.device.handle, view, null);
@@ -610,16 +519,13 @@ pub const Presenter = struct {
         if (self.swapchain != null) {
             vk.vkDestroySwapchainKHR(self.device.handle, self.swapchain, null);
         }
+        if (self.framebuffers.len > 0) self.allocator.free(self.framebuffers);
         if (self.views.len > 0) self.allocator.free(self.views);
         if (self.images.len > 0) self.allocator.free(self.images);
+        self.framebuffers = &.{};
         self.views = &.{};
         self.images = &.{};
         self.render_pass = null;
-        self.composition_image = null;
-        self.composition_memory = null;
-        self.composition_view = null;
-        self.composition_framebuffer = null;
-        self.composition_initialized = false;
         self.swapchain = null;
         self.extent = .{ .width = 0, .height = 0 };
     }
@@ -651,96 +557,6 @@ pub const Presenter = struct {
         return formats[0];
     }
 
-    fn createCompositionTarget(self: *Presenter) !void {
-        const image_info = std.mem.zeroInit(vk.VkImageCreateInfo, .{
-            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO)),
-            .imageType = @as(vk.VkImageType, @intCast(vk.VK_IMAGE_TYPE_2D)),
-            .format = self.format,
-            .extent = .{
-                .width = self.extent.width,
-                .height = self.extent.height,
-                .depth = 1,
-            },
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .samples = @as(vk.VkSampleCountFlagBits, @intCast(vk.VK_SAMPLE_COUNT_1_BIT)),
-            .tiling = @as(vk.VkImageTiling, @intCast(vk.VK_IMAGE_TILING_OPTIMAL)),
-            .usage = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-            .sharingMode = @as(vk.VkSharingMode, @intCast(vk.VK_SHARING_MODE_EXCLUSIVE)),
-            .initialLayout = @as(vk.VkImageLayout, @intCast(vk.VK_IMAGE_LAYOUT_UNDEFINED)),
-        });
-        try graphics.result(vk.vkCreateImage(
-            self.device.handle,
-            &image_info,
-            null,
-            &self.composition_image,
-        ));
-
-        var requirements: vk.VkMemoryRequirements = undefined;
-        vk.vkGetImageMemoryRequirements(
-            self.device.handle,
-            self.composition_image,
-            &requirements,
-        );
-        const allocate_info = std.mem.zeroInit(vk.VkMemoryAllocateInfo, .{
-            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO)),
-            .allocationSize = requirements.size,
-            .memoryTypeIndex = try memoryTypeIndex(
-                self.device.physical,
-                requirements.memoryTypeBits,
-                vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            ),
-        });
-        try graphics.result(vk.vkAllocateMemory(
-            self.device.handle,
-            &allocate_info,
-            null,
-            &self.composition_memory,
-        ));
-        try graphics.result(vk.vkBindImageMemory(
-            self.device.handle,
-            self.composition_image,
-            self.composition_memory,
-            0,
-        ));
-
-        const view_info = std.mem.zeroInit(vk.VkImageViewCreateInfo, .{
-            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO)),
-            .image = self.composition_image,
-            .viewType = @as(vk.VkImageViewType, @intCast(vk.VK_IMAGE_VIEW_TYPE_2D)),
-            .format = self.format,
-            .components = .{
-                .r = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .g = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .b = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .a = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-            },
-            .subresourceRange = colorRange(),
-        });
-        try graphics.result(vk.vkCreateImageView(
-            self.device.handle,
-            &view_info,
-            null,
-            &self.composition_view,
-        ));
-
-        const framebuffer_info = std.mem.zeroInit(vk.VkFramebufferCreateInfo, .{
-            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO)),
-            .renderPass = self.render_pass,
-            .attachmentCount = 1,
-            .pAttachments = &self.composition_view,
-            .width = self.extent.width,
-            .height = self.extent.height,
-            .layers = 1,
-        });
-        try graphics.result(vk.vkCreateFramebuffer(
-            self.device.handle,
-            &framebuffer_info,
-            null,
-            &self.composition_framebuffer,
-        ));
-    }
 
     fn choosePresentMode(self: *Presenter) !vk.VkPresentModeKHR {
         var count: u32 = 0;
@@ -865,8 +681,8 @@ test "frame targets carry rendering handles but no UI state" {
     try std.testing.expect(!@hasField(FrameTarget, "paint_list"));
 }
 
-test "presenter owns a persistent composition target but no UI state" {
-    try std.testing.expect(@hasField(Presenter, "composition_image"));
-    try std.testing.expect(@hasField(Presenter, "composition_framebuffer"));
+test "presenter renders into per-image swapchain framebuffers, holds no UI state" {
+    try std.testing.expect(@hasField(Presenter, "framebuffers"));
+    try std.testing.expect(!@hasField(Presenter, "composition_image"));
     try std.testing.expect(!@hasField(Presenter, "paint_commands"));
 }

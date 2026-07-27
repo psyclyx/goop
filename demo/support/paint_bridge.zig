@@ -278,6 +278,8 @@ test "inserting transient chrome does not churn unchanged paint commands" {
         .bounds = .{ .x = 0, .y = 0, .w = 200, .h = 100 },
         .color = .rgb(255, 255, 255),
         .border_color = .rgb(255, 255, 255),
+        .border_width = 0,
+        .corner_radius = 0,
     } };
     const first_text = goop.PaintCommand{ .text = .{
         .bounds = .{ .x = 10, .y = 10, .w = 80, .h = 20 },
@@ -295,6 +297,8 @@ test "inserting transient chrome does not churn unchanged paint commands" {
         .bounds = .{ .x = 8, .y = 8, .w = 100, .h = 24 },
         .color = .rgb(230, 238, 248),
         .border_color = .rgb(230, 238, 248),
+        .border_width = 0,
+        .corner_radius = 0,
     } };
 
     const initial_commands = [_]goop.PaintCommand{ background, first_text, second_text };
@@ -327,16 +331,22 @@ test "moving row selection removes the old highlight and preserves row text" {
         .bounds = .{ .x = 0, .y = 0, .w = 200, .h = 100 },
         .color = .rgb(255, 255, 255),
         .border_color = .rgb(255, 255, 255),
+        .border_width = 0,
+        .corner_radius = 0,
     } };
     const first_highlight = goop.PaintCommand{ .surface = .{
         .bounds = .{ .x = 0, .y = 0, .w = 200, .h = 30 },
         .color = .rgba(58, 126, 219, 84),
         .border_color = .rgba(58, 126, 219, 84),
+        .border_width = 0,
+        .corner_radius = 0,
     } };
     const second_highlight = goop.PaintCommand{ .surface = .{
         .bounds = .{ .x = 0, .y = 30, .w = 200, .h = 30 },
         .color = .rgba(58, 126, 219, 84),
         .border_color = .rgba(58, 126, 219, 84),
+        .border_width = 0,
+        .corner_radius = 0,
     } };
     const first_text = goop.PaintCommand{ .text = .{
         .bounds = .{ .x = 10, .y = 0, .w = 180, .h = 30 },

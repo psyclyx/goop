@@ -194,55 +194,91 @@ pub const Renderer = struct {
                         self.clip_stack.items[self.clip_stack.items.len - 1],
                     ) orelse continue;
                 }
-                switch (paint_command.paint) {
-                    .surface => |surface| try drawSurface(
-                        self,
-                        target,
-                        text,
-                        surface,
-                        visible,
-                    ),
-                    .icon => |icon| try drawIcon(
-                        self,
-                        target,
-                        text,
-                        icon,
-                        visible,
-                    ),
-                    .text => |text_command| {
-                        const metrics = try text.measure(
-                            text_command.text,
-                            text_command.font_size,
-                        );
-                        const x = switch (text_command.text_align) {
-                            .start => text_command.bounds.x,
-                            .center => text_command.bounds.x +
-                                @max(0, text_command.bounds.w - metrics.width) * 0.5,
-                            .end => text_command.bounds.x +
-                                @max(0, text_command.bounds.w - metrics.width),
-                        };
-                        const baseline = text_command.bounds.y +
-                            @max(0, text_command.bounds.h - metrics.height()) * 0.5 +
-                            metrics.ascent;
-                        var prepared = try text.prepareText(
-                            self.allocator,
-                            text_command.text,
-                            .{
-                                .x = x,
-                                .y = baseline,
-                            },
-                            text_command.font_size,
-                            text_command.color,
-                        );
-                        defer prepared.deinit();
-                        try self.updateAtlas(text);
-                        try self.drawPrepared(target, text, &prepared, visible);
-                    },
-                    .clip, .custom => {},
-                }
+                try self.drawResolvedCommand(target, text, paint_command.paint, visible);
             }
         }
         return true;
+    }
+
+    /// Draw one resolved paint command clipped to `visible`. Shared by the
+    /// retained (`drawDelta`) and full-redraw (`drawPaintList`) paths.
+    fn drawResolvedCommand(
+        self: *Renderer,
+        target: present.FrameTarget,
+        text: *goop_snail.TextEngine,
+        paint: display.PaintCommand,
+        visible: display.Rect,
+    ) !void {
+        switch (paint) {
+            .surface => |surface| try drawSurface(self, target, text, surface, visible),
+            .icon => |icon| try drawIcon(self, target, text, icon, visible),
+            .text => |text_command| {
+                const metrics = try text.measure(text_command.text, text_command.font_size);
+                const x = switch (text_command.text_align) {
+                    .start => text_command.bounds.x,
+                    .center => text_command.bounds.x +
+                        @max(0, text_command.bounds.w - metrics.width) * 0.5,
+                    .end => text_command.bounds.x +
+                        @max(0, text_command.bounds.w - metrics.width),
+                };
+                const baseline = text_command.bounds.y +
+                    @max(0, text_command.bounds.h - metrics.height()) * 0.5 +
+                    metrics.ascent;
+                var prepared = try text.prepareText(
+                    self.allocator,
+                    text_command.text,
+                    .{ .x = x, .y = baseline },
+                    text_command.font_size,
+                    text_command.color,
+                );
+                defer prepared.deinit();
+                try self.updateAtlas(text);
+                try self.drawPrepared(target, text, &prepared, visible);
+            },
+            .clip, .custom => {},
+        }
+    }
+
+    /// Full-redraw path: draw every command in painter order into the whole
+    /// frame, clipped only by the active clip stack. No damage regions, no
+    /// retained composition — the render pass is expected to clear the target
+    /// (loadOp=CLEAR). This is the renderer for the swapchain-direct pipeline:
+    /// correct compositing by construction (no partial clears to leave stale
+    /// pixels), and cheap because the instance stream is retained upstream.
+    pub fn drawPaintList(
+        self: *Renderer,
+        target: present.FrameTarget,
+        text: *goop_snail.TextEngine,
+        commands: []const display.PaintCommand,
+    ) !void {
+        const full = display.Rect{
+            .x = 0,
+            .y = 0,
+            .w = @floatFromInt(target.extent.width),
+            .h = @floatFromInt(target.extent.height),
+        };
+        self.caller.beginFrame(target.frame_index);
+        self.clip_stack.clearRetainingCapacity();
+        for (commands) |paint| {
+            if (paint == .clip) {
+                if (paint.clip.bounds) |clip_bounds| {
+                    const effective = if (self.clip_stack.items.len > 0)
+                        intersect(self.clip_stack.items[self.clip_stack.items.len - 1], clip_bounds) orelse zero_rect
+                    else
+                        clip_bounds;
+                    try self.clip_stack.append(self.allocator, effective);
+                } else if (self.clip_stack.items.len > 0) {
+                    _ = self.clip_stack.pop();
+                }
+                continue;
+            }
+            const bounds = display.commandBounds(paint) orelse continue;
+            var visible = intersect(bounds, full) orelse continue;
+            if (self.clip_stack.items.len > 0) {
+                visible = intersect(visible, self.clip_stack.items[self.clip_stack.items.len - 1]) orelse continue;
+            }
+            try self.drawResolvedCommand(target, text, paint, visible);
+        }
     }
 
     pub fn retainedCommandCount(self: *const Renderer) usize {

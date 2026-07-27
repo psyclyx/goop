@@ -14,3 +14,7 @@ prompt.md
 .codex
 DESIGN_HISTORY.md
 docs/archive/
+
+# headless render artifacts
+shot.ppm
+*.ppm

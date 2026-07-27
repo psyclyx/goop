@@ -217,6 +217,14 @@ pub fn build(b: *std.Build) void {
     demo_text_mod.addImport("goop_snail", snail_adapter_mod);
     demo_text_mod.addImport("demo_font_loader", demo_font_loader_mod);
 
+    const paint_convert_mod = b.createModule(.{
+        .root_source_file = b.path("demo/support/paint_convert.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    paint_convert_mod.addImport("goop", goop_mod);
+    paint_convert_mod.addImport("goop_display", display_mod);
+
     const paint_bridge_mod = b.addModule("goop_paint_bridge", .{
         .root_source_file = b.path("demo/support/paint_bridge.zig"),
         .target = target,
@@ -265,7 +273,7 @@ pub fn build(b: *std.Build) void {
     showcase_app_mod.addImport("goop_display", display_mod);
     showcase_app_mod.addImport("goop_platform_wayland", platform_wayland_mod);
     showcase_app_mod.addImport("demo_text", demo_text_mod);
-    showcase_app_mod.addImport("goop_paint_bridge", paint_bridge_mod);
+    showcase_app_mod.addImport("paint_convert", paint_convert_mod);
     showcase_app_mod.addImport("demo_gpu", demo_gpu_mod);
     showcase_app_mod.addImport("showcase_view", showcase_view_mod);
     showcase_app_mod.addImport("showcase_controller", showcase_controller_mod);
@@ -303,7 +311,7 @@ pub fn build(b: *std.Build) void {
     file_manager_demo_mod.addImport("goop_platform_wayland", platform_wayland_mod);
     file_manager_demo_mod.addImport("file_manager_logic", file_manager_logic_mod);
     file_manager_demo_mod.addImport("demo_text", demo_text_mod);
-    file_manager_demo_mod.addImport("goop_paint_bridge", paint_bridge_mod);
+    file_manager_demo_mod.addImport("paint_convert", paint_convert_mod);
     file_manager_demo_mod.addImport("demo_gpu", demo_gpu_mod);
 
     const file_manager_demo_exe = b.addExecutable(.{
@@ -353,6 +361,56 @@ pub fn build(b: *std.Build) void {
         .root_module = file_manager_logic_mod,
     }));
 
+    const paint_bridge_tests = b.addRunArtifact(b.addTest(.{ .root_module = paint_bridge_mod }));
+
+    const headless_probe_mod = b.createModule(.{
+        .root_source_file = b.path("tools/headless_probe.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    headless_probe_mod.addImport("goop_graphics_vulkan", graphics_vulkan_mod);
+    const headless_probe_exe = b.addExecutable(.{
+        .name = "goop-headless-probe",
+        .root_module = headless_probe_mod,
+    });
+    const run_headless_probe = b.addRunArtifact(headless_probe_exe);
+    const headless_probe_step = b.step("headless-probe", "Validate offscreen Vulkan render + readback");
+    headless_probe_step.dependOn(&run_headless_probe.step);
+
+    const headless_mod = b.createModule(.{
+        .root_source_file = b.path("demo/support/headless.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    headless_mod.addImport("goop_graphics_vulkan", graphics_vulkan_mod);
+    headless_mod.addImport("goop_present_vulkan", present_vulkan_mod);
+    headless_mod.addImport("goop_render_vulkan", render_vulkan_mod);
+    headless_mod.addImport("goop_snail", snail_adapter_mod);
+    headless_mod.addImport("goop_display", display_mod);
+
+    const headless_shot_mod = b.createModule(.{
+        .root_source_file = b.path("tools/headless_shot.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    headless_shot_mod.addImport("goop", goop_mod);
+    headless_shot_mod.addImport("file_manager_logic", file_manager_logic_mod);
+    headless_shot_mod.addImport("goop_snail", snail_adapter_mod);
+    headless_shot_mod.addImport("demo_text", demo_text_mod);
+    headless_shot_mod.addImport("headless", headless_mod);
+    headless_shot_mod.addImport("paint_convert", paint_convert_mod);
+    const headless_shot_exe = b.addExecutable(.{
+        .name = "goop-headless-shot",
+        .root_module = headless_shot_mod,
+    });
+    const run_headless_shot = b.addRunArtifact(headless_shot_exe);
+    if (b.args) |args| run_headless_shot.addArgs(args);
+    const headless_shot_step = b.step("headless-shot", "Render a real file-manager frame offscreen to a PPM");
+    headless_shot_step.dependOn(&run_headless_shot.step);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&display_tests.step);
@@ -365,6 +423,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&wayland_vulkan_tests.step);
     test_step.dependOn(&present_vulkan_tests.step);
     test_step.dependOn(&render_vulkan_tests.step);
+    test_step.dependOn(&paint_bridge_tests.step);
     test_step.dependOn(&file_manager_logic_tests.step);
     test_step.dependOn(&run_c_example.step);
 }

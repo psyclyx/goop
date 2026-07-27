@@ -82,8 +82,8 @@ pub const Gpu = struct {
         self.presenter.setDesiredExtent(width, height);
     }
 
-    pub fn beginFrame(self: *Gpu, text: *const snail.TextEngine) !?present.FrameTarget {
-        const target = try self.presenter.beginFrame(.{ 0, 0, 0, 1 }) orelse return null;
+    pub fn beginFrame(self: *Gpu, text: *const snail.TextEngine, clear: [4]f32) !?present.FrameTarget {
+        const target = try self.presenter.beginFrame(clear) orelse return null;
         if (target.format != self.renderer_format) {
             self.renderer.deinit();
             self.renderer = try render.Renderer.init(
