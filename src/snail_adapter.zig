@@ -45,6 +45,12 @@ pub const PreparedText = struct {
 pub const TextEngine = struct {
     state: *State,
 
+    /// Cap on cached shaped runs. Distinct UI strings are bounded in practice
+    /// (chrome + the visible file listing); if a long session accumulates more
+    /// than this the whole cache is dropped and warms again, which is rare and
+    /// cheap relative to re-shaping every label every frame.
+    const max_cached_shapes = 4096;
+
     const State = struct {
         allocator: std.mem.Allocator,
         font: snail.Font,
@@ -52,6 +58,11 @@ pub const TextEngine = struct {
         pool: *snail.PagePool,
         atlas: snail.Atlas,
         unit_rect_design_to_source: snail.Transform2D,
+        /// Harfbuzz shaping is position- and size-independent, so a run can be
+        /// shaped once and re-placed cheaply every frame. Keyed by a content
+        /// hash of the text; serves both `measure` (layout) and `prepareText`
+        /// (paint) so a hover/scroll doesn't re-shape unchanged labels.
+        shape_cache: std.AutoHashMapUnmanaged(u64, snail.ShapedText) = .empty,
     };
 
     pub const Options = struct {
@@ -71,6 +82,7 @@ pub const TextEngine = struct {
         errdefer allocator.destroy(state);
         state.* = undefined;
         state.allocator = allocator;
+        state.shape_cache = .empty;
         state.font = try snail.Font.init(font_bytes);
 
         state.pool = try snail.PagePool.init(allocator, .{
@@ -94,11 +106,38 @@ pub const TextEngine = struct {
     pub fn deinit(self: *TextEngine) void {
         const state = self.state;
         const allocator = state.allocator;
+        self.clearShapeCache();
+        state.shape_cache.deinit(allocator);
         state.faces.deinit();
         state.atlas.deinit();
         state.pool.deinit();
         allocator.destroy(state);
         self.* = undefined;
+    }
+
+    fn clearShapeCache(self: *TextEngine) void {
+        var it = self.state.shape_cache.valueIterator();
+        while (it.next()) |shaped| shaped.deinit();
+        self.state.shape_cache.clearRetainingCapacity();
+    }
+
+    /// Shape `text` once and cache it. Missing glyphs are recorded into the
+    /// atlas at shape time so later placement of a cached run always finds
+    /// them. The returned pointer is valid until the next `shapedFor` call.
+    fn shapedFor(self: *TextEngine, text: []const u8) !*const snail.ShapedText {
+        const state = self.state;
+        var hasher = std.hash.Wyhash.init(0x676f_6f70_7368_6170);
+        hasher.update(text);
+        const key = hasher.final();
+        if (state.shape_cache.getPtr(key)) |existing| return existing;
+
+        if (state.shape_cache.count() >= max_cached_shapes) self.clearShapeCache();
+
+        var shaped = try snail.shape(state.allocator, &state.faces, text, .{});
+        errdefer shaped.deinit();
+        try snail.recordUnhintedRun(&state.atlas, state.allocator, &state.faces, &shaped, .{});
+        try state.shape_cache.put(state.allocator, key, shaped);
+        return state.shape_cache.getPtr(key).?;
     }
 
     pub fn atlas(self: *const TextEngine) *const snail.Atlas {
@@ -109,9 +148,14 @@ pub const TextEngine = struct {
         return self.state.pool;
     }
 
+    /// Number of distinct runs currently shaped-and-cached. Exposed for tests
+    /// and diagnostics that want to confirm repeated frames reuse shaping.
+    pub fn shapeCacheSize(self: *const TextEngine) usize {
+        return self.state.shape_cache.count();
+    }
+
     pub fn measure(self: *TextEngine, text: []const u8, font_size: f32) !Metrics {
-        var shaped = try snail.shape(self.state.allocator, &self.state.faces, text, .{});
-        defer shaped.deinit();
+        const shaped = try self.shapedFor(text);
 
         const units_per_em: f32 = @floatFromInt(self.state.font.unitsPerEm());
         const line = try self.state.font.lineMetrics();
@@ -133,20 +177,11 @@ pub const TextEngine = struct {
         font_size: f32,
         color: display.Color,
     ) !PreparedText {
-        var shaped = try snail.shape(self.state.allocator, &self.state.faces, text, .{});
-        defer shaped.deinit();
-
-        try snail.recordUnhintedRun(
-            &self.state.atlas,
-            self.state.allocator,
-            &self.state.faces,
-            &shaped,
-            .{},
-        );
+        const shaped = try self.shapedFor(text);
 
         return .{
             .allocator = allocator,
-            .shapes = try snail.placeRunAlloc(allocator, &shaped, null, .{
+            .shapes = try snail.placeRunAlloc(allocator, shaped, null, .{
                 .baseline = .{ .x = baseline.x, .y = baseline.y },
                 .em = font_size,
                 .color = linearColor(color),

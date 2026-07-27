@@ -43,6 +43,18 @@ pub fn main(init: std.process.Init) !void {
         defer allocator.free(commands);
         try shot.renderPaintList(&text.engine, commands, clear_rgb);
     }
+    const shaped_after_frame1 = text.engine.shapeCacheSize();
+
+    // Re-render the identical frame: with the shape cache warm, no run should
+    // need reshaping.
+    {
+        const paint_list = try fm.paint(&state, &ctx, &measure);
+        const commands = try paint_convert.convert(allocator, paint_list, 1);
+        defer allocator.free(commands);
+        try shot.renderPaintList(&text.engine, commands, clear_rgb);
+    }
+    const shaped_after_reframe = text.engine.shapeCacheSize();
+    std.debug.print("shape cache: {} after frame 1, {} after identical re-render (delta {})\n", .{ shaped_after_frame1, shaped_after_reframe, shaped_after_reframe - shaped_after_frame1 });
 
     // Click the first asset row so the frame we capture exercises selection.
     var clicked = false;
