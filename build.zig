@@ -36,13 +36,6 @@ pub fn build(b: *std.Build) void {
     });
     components_mod.addImport("goop_ui", ui_mod);
 
-    const driver_mod = b.addModule("goop_driver", .{
-        .root_source_file = b.path("src/driver.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    driver_mod.addImport("goop_display", display_mod);
-    driver_mod.addImport("goop_ui", ui_mod);
 
     const snail_adapter_mod = b.addModule("goop_snail", .{
         .root_source_file = b.path("src/snail_adapter.zig"),
@@ -225,14 +218,6 @@ pub fn build(b: *std.Build) void {
     paint_convert_mod.addImport("goop", goop_mod);
     paint_convert_mod.addImport("goop_display", display_mod);
 
-    const paint_bridge_mod = b.addModule("goop_paint_bridge", .{
-        .root_source_file = b.path("demo/support/paint_bridge.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    paint_bridge_mod.addImport("goop", goop_mod);
-    paint_bridge_mod.addImport("goop_display", display_mod);
-    paint_bridge_mod.addImport("goop_driver", driver_mod);
 
     const demo_gpu_mod = b.createModule(.{
         .root_source_file = b.path("demo/support/gpu.zig"),
@@ -350,7 +335,6 @@ pub fn build(b: *std.Build) void {
     const display_tests = b.addRunArtifact(b.addTest(.{ .root_module = display_mod }));
     const ui_tests = b.addRunArtifact(b.addTest(.{ .root_module = ui_mod }));
     const component_tests = b.addRunArtifact(b.addTest(.{ .root_module = components_mod }));
-    const driver_tests = b.addRunArtifact(b.addTest(.{ .root_module = driver_mod }));
     const snail_adapter_tests = b.addRunArtifact(b.addTest(.{ .root_module = snail_adapter_mod }));
     const graphics_vulkan_tests = b.addRunArtifact(b.addTest(.{ .root_module = graphics_vulkan_mod }));
     const platform_wayland_tests = b.addRunArtifact(b.addTest(.{ .root_module = platform_wayland_mod }));
@@ -361,7 +345,6 @@ pub fn build(b: *std.Build) void {
         .root_module = file_manager_logic_mod,
     }));
 
-    const paint_bridge_tests = b.addRunArtifact(b.addTest(.{ .root_module = paint_bridge_mod }));
 
     const headless_probe_mod = b.createModule(.{
         .root_source_file = b.path("tools/headless_probe.zig"),
@@ -416,14 +399,12 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&display_tests.step);
     test_step.dependOn(&ui_tests.step);
     test_step.dependOn(&component_tests.step);
-    test_step.dependOn(&driver_tests.step);
     test_step.dependOn(&snail_adapter_tests.step);
     test_step.dependOn(&graphics_vulkan_tests.step);
     test_step.dependOn(&platform_wayland_tests.step);
     test_step.dependOn(&wayland_vulkan_tests.step);
     test_step.dependOn(&present_vulkan_tests.step);
     test_step.dependOn(&render_vulkan_tests.step);
-    test_step.dependOn(&paint_bridge_tests.step);
     test_step.dependOn(&file_manager_logic_tests.step);
     test_step.dependOn(&run_c_example.step);
 }

@@ -24,8 +24,6 @@ pub const Renderer = struct {
     instances: []goop_snail.Instance,
     batches: []goop_snail.DrawBatch,
     binding: goop_snail.Binding,
-    retained: std.AutoHashMapUnmanaged(display.CommandId, OwnedCommand) = .empty,
-    ordered: std.ArrayListUnmanaged(*const OwnedCommand) = .empty,
     clip_stack: std.ArrayListUnmanaged(display.Rect) = .empty,
 
     pub const Options = struct {
@@ -99,10 +97,6 @@ pub const Renderer = struct {
     }
 
     pub fn deinit(self: *Renderer) void {
-        var retained = self.retained.valueIterator();
-        while (retained.next()) |paint_command| paint_command.deinit(self.allocator);
-        self.retained.deinit(self.allocator);
-        self.ordered.deinit(self.allocator);
         self.clip_stack.deinit(self.allocator);
         self.caller.deinit();
         self.cache.deinit();
@@ -117,91 +111,7 @@ pub const Renderer = struct {
         self.* = undefined;
     }
 
-    /// Upload only atlas changes and draw one prepared text/vector run into
-    /// the presenter's already-active render pass.
-    pub fn drawPreparedText(
-        self: *Renderer,
-        target: present.FrameTarget,
-        text: *const goop_snail.TextEngine,
-        prepared: *const goop_snail.PreparedText,
-    ) !void {
-        try self.updateAtlas(text);
-        self.caller.beginFrame(target.frame_index);
-        try self.drawPrepared(target, text, prepared, null);
-    }
-
-    /// Apply a semantic display delta and redraw only its damaged regions into
-    /// the presenter's persistent composition target.
-    pub fn drawDelta(
-        self: *Renderer,
-        target: present.FrameTarget,
-        text: *goop_snail.TextEngine,
-        delta: display.DisplayDelta,
-        clear_color: display.Color,
-    ) !bool {
-        try self.applyDelta(delta);
-        const full = display.Rect{
-            .x = 0,
-            .y = 0,
-            .w = @floatFromInt(target.extent.width),
-            .h = @floatFromInt(target.extent.height),
-        };
-        const regions: []const display.Rect = switch (delta.damage) {
-            .none => return false,
-            .full => &.{full},
-            .regions => |damage_regions| damage_regions,
-        };
-
-        self.ordered.clearRetainingCapacity();
-        var values = self.retained.valueIterator();
-        while (values.next()) |paint_command| {
-            try self.ordered.append(self.allocator, paint_command);
-        }
-        std.mem.sort(*const OwnedCommand, self.ordered.items, {}, orderLessThan);
-
-        self.caller.beginFrame(target.frame_index);
-        for (regions) |region| {
-            const clipped_damage = intersect(region, full) orelse continue;
-            clearRect(
-                target.command_buffer,
-                clipped_damage,
-                clear_color,
-                target.extent,
-                target.format,
-            );
-            self.clip_stack.clearRetainingCapacity();
-            for (self.ordered.items) |paint_command| {
-                if (paint_command.paint == .clip) {
-                    if (paint_command.paint.clip.bounds) |clip_bounds| {
-                        const effective = if (self.clip_stack.items.len > 0)
-                            intersect(
-                                self.clip_stack.items[self.clip_stack.items.len - 1],
-                                clip_bounds,
-                            ) orelse zero_rect
-                        else
-                            clip_bounds;
-                        try self.clip_stack.append(self.allocator, effective);
-                    } else if (self.clip_stack.items.len > 0) {
-                        _ = self.clip_stack.pop();
-                    }
-                    continue;
-                }
-                const bounds = display.commandBounds(paint_command.paint) orelse continue;
-                var visible = intersect(bounds, clipped_damage) orelse continue;
-                if (self.clip_stack.items.len > 0) {
-                    visible = intersect(
-                        visible,
-                        self.clip_stack.items[self.clip_stack.items.len - 1],
-                    ) orelse continue;
-                }
-                try self.drawResolvedCommand(target, text, paint_command.paint, visible);
-            }
-        }
-        return true;
-    }
-
-    /// Draw one resolved paint command clipped to `visible`. Shared by the
-    /// retained (`drawDelta`) and full-redraw (`drawPaintList`) paths.
+    /// Draw one resolved paint command clipped to `visible`.
     fn drawResolvedCommand(
         self: *Renderer,
         target: present.FrameTarget,
@@ -281,34 +191,6 @@ pub const Renderer = struct {
         }
     }
 
-    pub fn retainedCommandCount(self: *const Renderer) usize {
-        return self.retained.count();
-    }
-
-    fn applyDelta(self: *Renderer, delta: display.DisplayDelta) !void {
-        for (delta.operations) |operation| {
-            switch (operation) {
-                .put => |put| {
-                    if (self.retained.fetchRemove(put.id)) |previous| {
-                        var old = previous.value;
-                        old.deinit(self.allocator);
-                    }
-                    try self.retained.put(
-                        self.allocator,
-                        put.id,
-                        try OwnedCommand.clone(self.allocator, put),
-                    );
-                },
-                .remove => |remove| {
-                    if (self.retained.fetchRemove(remove.id)) |previous| {
-                        var old = previous.value;
-                        old.deinit(self.allocator);
-                    }
-                },
-            }
-        }
-    }
-
     fn updateAtlas(self: *Renderer, text: *const goop_snail.TextEngine) !void {
         self.binding = self.cache.uploadDelta(
             self.allocator,
@@ -352,33 +234,6 @@ pub const Renderer = struct {
         );
     }
 };
-
-const OwnedCommand = struct {
-    fingerprint: u64,
-    order: u32,
-    paint: display.PaintCommand,
-
-    fn clone(allocator: std.mem.Allocator, source: display.Command) !OwnedCommand {
-        var paint = source.paint;
-        if (paint == .text) {
-            paint.text.text = try allocator.dupe(u8, paint.text.text);
-        }
-        return .{
-            .fingerprint = source.fingerprint,
-            .order = source.order,
-            .paint = paint,
-        };
-    }
-
-    fn deinit(self: *OwnedCommand, allocator: std.mem.Allocator) void {
-        if (self.paint == .text) allocator.free(self.paint.text.text);
-        self.* = undefined;
-    }
-};
-
-fn orderLessThan(_: void, lhs: *const OwnedCommand, rhs: *const OwnedCommand) bool {
-    return lhs.order < rhs.order;
-}
 
 fn intersect(a: display.Rect, b: display.Rect) ?display.Rect {
     const left = @max(a.x, b.x);

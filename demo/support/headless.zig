@@ -266,44 +266,6 @@ pub const Offscreen = struct {
         };
     }
 
-    /// Render one display delta into the offscreen image and copy it to the
-    /// host-visible readback buffer. Blocks until the GPU is done.
-    pub fn renderDelta(
-        self: *Offscreen,
-        text: *snail.TextEngine,
-        delta: display.DisplayDelta,
-        clear_rgb: [3]u8,
-    ) !void {
-        const clear_color = display.Color{ .r = clear_rgb[0], .g = clear_rgb[1], .b = clear_rgb[2], .a = 255 };
-        try check(vk.vkResetCommandBuffer(self.cmd, 0));
-
-        const begin = std.mem.zeroInit(vk.VkCommandBufferBeginInfo, .{
-            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO)),
-            .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-        });
-        try check(vk.vkBeginCommandBuffer(self.cmd, &begin));
-
-        const clear = vk.VkClearValue{ .color = .{ .float32 = .{
-            @as(f32, @floatFromInt(clear_rgb[0])) / 255.0,
-            @as(f32, @floatFromInt(clear_rgb[1])) / 255.0,
-            @as(f32, @floatFromInt(clear_rgb[2])) / 255.0,
-            1.0,
-        } } };
-        const rp_begin = std.mem.zeroInit(vk.VkRenderPassBeginInfo, .{
-            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO)),
-            .renderPass = self.render_pass,
-            .framebuffer = self.framebuffer,
-            .renderArea = .{ .offset = .{ .x = 0, .y = 0 }, .extent = .{ .width = self.width, .height = self.height } },
-            .clearValueCount = 1,
-            .pClearValues = &clear,
-        });
-        vk.vkCmdBeginRenderPass(self.cmd, &rp_begin, vk.VK_SUBPASS_CONTENTS_INLINE);
-        _ = try self.renderer.drawDelta(self.frameTarget(), text, delta, clear_color);
-        vk.vkCmdEndRenderPass(self.cmd);
-
-        try self.copyAndSubmit();
-    }
-
     /// Full-redraw path: draw a flat display command stream into the offscreen
     /// image (render pass clears first) and copy to the readback buffer.
     pub fn renderPaintList(
