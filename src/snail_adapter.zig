@@ -217,12 +217,14 @@ fn recordUnitRect(state: *TextEngine.State) !snail.Transform2D {
     var curves = try prepared.fillCurves(state.allocator, scratch.allocator());
     defer curves.deinit();
 
+    // Register the unit rect as a coverage mask (no baked paint) so it renders
+    // in the atlas's `.regular` mode and is tinted by each instance's
+    // `local_color`. Baking a solid paint instead makes it a `.colr_solid`
+    // record whose color comes from the atlas, ignoring the per-instance color —
+    // which silently drops the tint on every translucent surface fill.
     try state.atlas.extendInPlace(state.allocator, &.{.{
         .key = unit_rect_key,
         .curves = curves,
-        .paint = try prepared.paintForDesign(.{
-            .solid = .{ 1, 1, 1, 1 },
-        }),
     }});
     return prepared.design_to_source;
 }

@@ -35,6 +35,10 @@ pub fn fileManagerThemeForScale(ui_scale: f32) goop.Theme {
         .bg_active = .rgb(220, 229, 243),
         .focus_ring = .rgba(58, 126, 219, 210),
         .placeholder_fg = .rgb(123, 133, 148),
+        // Translucent accent tint over the white row: a ~33% wash that reads
+        // clearly as selected while staying lighter than opaque chrome. Renders
+        // correctly now that surface fills honor their instance color (see
+        // recordUnitRect in snail_adapter).
         .selection_bg = .rgba(58, 126, 219, 84),
         .tree_guide = .rgba(112, 122, 138, 210),
         .font_size = uiScaleValue(ui_scale, 14),
