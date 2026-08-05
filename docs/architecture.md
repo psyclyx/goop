@@ -14,7 +14,8 @@ goop_components → goop_ui ──────────────→ goop_d
 goop_render_vulkan → goop_display
         ├──────────→ goop_snail
         ├──────────→ goop_graphics_vulkan
-        └──────────→ goop_present_vulkan → goop_graphics_vulkan
+        ├──────────→ goop_present_vulkan → goop_graphics_vulkan
+        └──────────→ goop_render_shaders (goop-compiled SPIR-V, pure data)
 
 goop_wayland_vulkan → goop_graphics_vulkan
 goop_platform_wayland             (imports no graphics module)
@@ -68,7 +69,7 @@ than component API.
 ### `goop_snail`
 
 The Snail adapter. It owns fonts, faces, page pools, CPU atlases, shaping,
-recording, placement, upload plans, and emitted draw records. It contains no
+recording, placement, and emitted draw records. It contains no
 Vulkan objects and performs no command submission.
 
 ### `goop_graphics_vulkan`
@@ -79,9 +80,20 @@ capability must be considered, but knows nothing about Wayland.
 
 ### `goop_render_vulkan`
 
-Vulkan UI pipelines, buffers, Snail device-atlas resources, display-delta
-application, and rendering into a caller-supplied frame target. It does not
-create windows, surfaces, or swapchains.
+Goop-owned Vulkan renderer: pipelines, buffers, and Snail device-atlas
+resources (`src/render/vulkan/device_atlas.zig` + `renderer.zig`), display
+command application, and rendering into a caller-supplied frame target. It
+does not create windows, surfaces, or swapchains. Snail supplies only the
+data contract (`render.records`, `render.target`) and the committed
+push-constant/descriptor reflection; the pipeline and atlas policy is goop's.
+
+### `goop_render_shaders`
+
+The renderer's SPIR-V artifacts plus the per-family pipeline recipe. Goop
+compiles the SPIR-V itself from snail's slang sources with `slangc` (flat
+atlas storage; see `compileSnailSlang` in build.zig), so goop-authored
+shader families can import snail's slang modules later. Pure data — no
+Vulkan imports.
 
 ### `goop_present_vulkan`
 

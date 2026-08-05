@@ -20,7 +20,7 @@ In-tree:
 
 - declarative UI and dumb components in `goop_ui` / `goop_components`
 - retained interaction and damage tracking in `goop_driver`
-- Snail 0.13 CPU text preparation in `goop_snail`
+- Snail 0.18 CPU text preparation in `goop_snail`
 - separated Vulkan graphics, rendering, and presentation modules
 - renderer-free Wayland platform module plus a thin Vulkan WSI bridge
 - preserved widget showcase and filesystem browser, each split into
@@ -44,7 +44,9 @@ For the engineering snapshot, priorities, and known rough edges, see
 ## Build
 
 Use `nix-shell -A shell` first. The shell pins Zig 0.16.0 and the demo's native
-dependencies (`harfbuzz`, `fontconfig`, Noto fonts).
+dependencies (`harfbuzz`, `fontconfig`, Noto fonts). Building the Vulkan
+renderer also runs `slangc` (shader-slang, in the shell) to compile goop's
+SPIR-V from snail's slang sources.
 
 ```sh
 nix-shell -A shell

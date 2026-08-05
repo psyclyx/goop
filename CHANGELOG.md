@@ -8,7 +8,16 @@ breaking changes between minor versions.
 
 ### Changed
 
-- Cut over to Snail 0.13 and its CPU-side font/Faces/PagePool/Atlas API.
+- Cut over to Snail 0.18 and its CPU-side font/Faces/PagePool/Atlas API,
+  including the plan/prepare/apply atlas population pipeline.
+- Replaced the Vulkan renderer's wrap of snail's demo reference renderer
+  (an unpublished snail path) with a goop-owned renderer: goop compiles its
+  SPIR-V from snail's slang sources with `slangc` (new `goop_render_shaders`
+  module), owns the device atlas and pipelines
+  (`src/render/vulkan/device_atlas.zig`, `src/render/vulkan/renderer.zig`),
+  and consumes only snail's public data contract and committed shader
+  reflection. Building the Vulkan renderer now requires `slangc`
+  (shader-slang) on PATH; the nix shell already provides it.
 - Split declarative UI, dumb components, retained driving, display deltas,
   Snail adaptation, Vulkan graphics, Vulkan rendering, Vulkan presentation,
   Wayland platform handling, and Wayland/Vulkan WSI into named Zig modules.
