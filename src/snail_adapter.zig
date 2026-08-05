@@ -54,6 +54,11 @@ pub const TextEngine = struct {
     const State = struct {
         allocator: std.mem.Allocator,
         font: snail.Font,
+        font_id: u32,
+        /// Stable prepared-record cache identity for this engine's font
+        /// (snail 0.18 `FontSource.cache_key`); derived from the font bytes
+        /// so two engines over different fonts never alias prepared records.
+        font_cache_key: snail.prepared.FontKey,
         faces: snail.Faces,
         pool: *snail.PagePool,
         atlas: snail.Atlas,
@@ -66,7 +71,7 @@ pub const TextEngine = struct {
     };
 
     pub const Options = struct {
-        max_layers: u16 = 32,
+        max_pages: u16 = 32,
         curve_words_per_page: u32 = 1 << 18,
         band_words_per_page: u32 = 1 << 16,
         font_id: u32 = 0,
@@ -84,9 +89,20 @@ pub const TextEngine = struct {
         state.allocator = allocator;
         state.shape_cache = .empty;
         state.font = try snail.Font.init(font_bytes);
+        state.font_id = options.font_id;
+        {
+            var hasher = std.hash.Wyhash.init(0x676f_6f70_666f_6e74);
+            hasher.update(font_bytes);
+            const lo = hasher.final();
+            hasher = std.hash.Wyhash.init(0x676f_6f70_6b65_7932);
+            hasher.update(font_bytes);
+            const hi = hasher.final();
+            std.mem.writeInt(u64, state.font_cache_key[0..8], lo, .little);
+            std.mem.writeInt(u64, state.font_cache_key[8..16], hi, .little);
+        }
 
         state.pool = try snail.PagePool.init(allocator, .{
-            .max_layers = options.max_layers,
+            .max_pages = options.max_pages,
             .curve_words_per_page = options.curve_words_per_page,
             .band_words_per_page = options.band_words_per_page,
         });
@@ -135,7 +151,7 @@ pub const TextEngine = struct {
 
         var shaped = try snail.shape(state.allocator, &state.faces, text, .{});
         errdefer shaped.deinit();
-        try snail.recordUnhintedRun(&state.atlas, state.allocator, &state.faces, &shaped, .{});
+        try recordUnhintedRun(state, &shaped);
         try state.shape_cache.put(state.allocator, key, shaped);
         return state.shape_cache.getPtr(key).?;
     }
@@ -257,11 +273,46 @@ fn recordUnitRect(state: *TextEngine.State) !snail.Transform2D {
     // `local_color`. Baking a solid paint instead makes it a `.colr_solid`
     // record whose color comes from the atlas, ignoring the per-instance color —
     // which silently drops the tint on every translucent surface fill.
-    try state.atlas.extendInPlace(state.allocator, &.{.{
-        .key = unit_rect_key,
-        .curves = curves,
-    }});
+    try state.atlas.extendInPlace(state.allocator, .{ .entries = &.{.{
+        .geometry = .{
+            .key = unit_rect_key,
+            .curves = curves.view(),
+        },
+    }} });
     return prepared.design_to_source;
+}
+
+/// Record every missing glyph of a shaped run into the atlas along the
+/// ppem-independent unhinted path. Snail 0.18 splits this into
+/// plan → per-request prepare → apply; goop shapes one font on one thread,
+/// so a synchronous outline-only executor covers it.
+fn recordUnhintedRun(state: *TextEngine.State, shaped: *const snail.ShapedText) !void {
+    const allocator = state.allocator;
+    const sources = [_]snail.FontSource{.{
+        .font_id = state.font_id,
+        .font = &state.font,
+        .cache_key = state.font_cache_key,
+    }};
+    var plan = try snail.planRuns(&state.atlas, allocator, &sources, &.{shaped}, .{ .unhinted = .{} });
+    defer plan.deinit();
+    const requests = plan.requests();
+
+    const owned = try allocator.alloc(?snail.prepared.OwnedRecord, requests.len);
+    defer allocator.free(owned);
+    @memset(owned, null);
+    defer for (owned) |*record| if (record.*) |*value| value.deinit();
+    const results = try allocator.alloc(?snail.prepared.RecordView, requests.len);
+    defer allocator.free(results);
+    @memset(results, null);
+
+    // Unhinted planning emits outline requests only.
+    var outlines = snail.OutlineContext.init(allocator, allocator);
+    defer outlines.deinit();
+    for (requests, 0..) |request, index| {
+        owned[index] = try outlines.prepare(request);
+        results[index] = owned[index].?.view();
+    }
+    try plan.applyInPlace(allocator, &state.atlas, results);
 }
 
 pub fn linearColor(color: display.Color) [4]f32 {

@@ -1,5 +1,68 @@
 const std = @import("std");
 
+/// slangc toolchain gate, mirroring snail's toolchainGates pattern: when
+/// slangc is missing from PATH, every shader Run step gets a Fail-step
+/// dependency so the build aborts with an actionable message instead of a
+/// raw exec error. Cached per build graph.
+var slangc_gate_cache: ?struct {
+    owner: *std.Build,
+    fail: ?*std.Build.Step,
+} = null;
+
+fn attachSlangcGate(b: *std.Build, step: *std.Build.Step) void {
+    if (slangc_gate_cache) |*g| {
+        if (g.owner == b) {
+            if (g.fail) |fail| step.dependOn(fail);
+            return;
+        }
+    }
+    const missing = if (b.findProgram(&.{"slangc"}, &.{})) |_| false else |_| true;
+    const fail: ?*std.Build.Step = if (missing)
+        &b.addFail("goop compiles its Vulkan SPIR-V from snail's slang sources; slangc (shader-slang) is missing from PATH — enter nix-shell or install shader-slang").step
+    else
+        null;
+    slangc_gate_cache = .{ .owner = b, .fail = fail };
+    if (fail) |f| step.dependOn(f);
+}
+
+/// Compile one entry point of one snail slang family to SPIR-V with the flat
+/// (uniform-texel-buffer) atlas storage. Flags mirror snail's own
+/// `slangcFamily`/`vulkanStageSpv` exactly. The dependency is hash-immutable,
+/// so recursive file-input registration (snail's addModuleInputs trick) is
+/// unnecessary.
+fn compileSnailSlang(
+    b: *std.Build,
+    snail_dep: *std.Build.Dependency,
+    name: []const u8,
+    comptime stage: enum { vertex, fragment },
+) std.Build.LazyPath {
+    const slang_dir = snail_dep.namedLazyPath("snail_slang");
+    const cmd = b.addSystemCommand(&.{"slangc"});
+    attachSlangcGate(b, &cmd.step);
+    cmd.addArgs(&.{
+        "-DSNAIL_TARGET_VULKAN",
+        "-DSNAIL_FLAT_STORAGE",
+        "-entry",
+        switch (stage) {
+            .vertex => "vertexMain",
+            .fragment => "fragmentMain",
+        },
+        "-stage",
+        switch (stage) {
+            .vertex => "vertex",
+            .fragment => "fragment",
+        },
+        "-default-image-format-unknown",
+        "-warnings-disable",
+        "39001",
+        "-I",
+    });
+    cmd.addDirectoryArg(slang_dir);
+    cmd.addFileArg(slang_dir.join(b.allocator, b.fmt("families/{s}.slang", .{name})) catch @panic("OOM"));
+    cmd.addArgs(&.{ "-target", "spirv", "-profile", "spirv_1_3", "-O2", "-o" });
+    return cmd.addOutputFileArg(b.fmt("{s}.{s}.spv", .{ name, @tagName(stage) }));
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -10,6 +73,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const snail_mod = snail_dep.module("snail");
+    // The committed, toolchain-free shader binding contract (PushConstants +
+    // descriptor binding numbers).
+    const snail_reflection_mod = snail_dep.module("snail-shaders-reflection");
 
     // ── Public architecture modules ──
     //
@@ -85,40 +151,28 @@ pub fn build(b: *std.Build) void {
     present_vulkan_mod.addImport("goop_graphics_vulkan", graphics_vulkan_mod);
     present_vulkan_mod.linkSystemLibrary("vulkan", .{});
 
-    const render_state_mod = b.createModule(.{
-        .root_source_file = snail_dep.path("src/render_state.zig"),
+    // ── Goop-owned Vulkan shader artifacts ──
+    //
+    // Goop compiles its SPIR-V itself from snail's slang sources (flat
+    // atlas storage), so future goop-authored animation families can import
+    // snail's slang modules the same way snail's game_material example does.
+    const render_shaders_mod = b.addModule("goop_render_shaders", .{
+        .root_source_file = b.path("src/render/vulkan/shaders.zig"),
         .target = target,
         .optimize = optimize,
     });
-    render_state_mod.addImport("snail", snail_mod);
-
-    const snail_shaders_mod = snail_dep.module("snail-shaders");
-    const snail_vulkan_types_mod = b.createModule(.{
-        .root_source_file = b.path("src/render/vulkan/snail_types.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    snail_vulkan_types_mod.addImport("goop_graphics_vulkan", graphics_vulkan_mod);
-
-    const snail_vulkan_shaders_mod = b.createModule(.{
-        .root_source_file = b.path("src/render/vulkan/snail_shaders.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    snail_vulkan_shaders_mod.addImport("snail_shaders", snail_shaders_mod);
-
-    const snail_reference_vulkan_mod = b.createModule(.{
-        .root_source_file = snail_dep.path("src/demo/render/vulkan/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    snail_reference_vulkan_mod.addImport("snail", snail_mod);
-    snail_reference_vulkan_mod.addImport("render-state", render_state_mod);
-    snail_reference_vulkan_mod.addImport("vulkan_types", snail_vulkan_types_mod);
-    snail_reference_vulkan_mod.addImport("vulkan_shaders", snail_vulkan_shaders_mod);
-    snail_reference_vulkan_mod.addImport("snail_shaders", snail_shaders_mod);
-    snail_reference_vulkan_mod.linkSystemLibrary("vulkan", .{});
+    render_shaders_mod.addAnonymousImport("text_vert_spv", .{ .root_source_file = compileSnailSlang(b, snail_dep, "text", .vertex) });
+    render_shaders_mod.addAnonymousImport("text_frag_spv", .{ .root_source_file = compileSnailSlang(b, snail_dep, "text", .fragment) });
+    render_shaders_mod.addAnonymousImport("colr_frag_spv", .{ .root_source_file = compileSnailSlang(b, snail_dep, "colr", .fragment) });
+    render_shaders_mod.addAnonymousImport("path_quadratic_frag_spv", .{ .root_source_file = compileSnailSlang(b, snail_dep, "path_quadratic", .fragment) });
+    render_shaders_mod.addAnonymousImport("path_conic_frag_spv", .{ .root_source_file = compileSnailSlang(b, snail_dep, "path_conic", .fragment) });
+    render_shaders_mod.addAnonymousImport("path_frag_spv", .{ .root_source_file = compileSnailSlang(b, snail_dep, "path", .fragment) });
+    render_shaders_mod.addAnonymousImport("tt_hinted_text_frag_spv", .{ .root_source_file = compileSnailSlang(b, snail_dep, "tt_hinted_text", .fragment) });
+    render_shaders_mod.addAnonymousImport("autohint_vert_spv", .{ .root_source_file = compileSnailSlang(b, snail_dep, "autohint", .vertex) });
+    render_shaders_mod.addAnonymousImport("autohint_frag_spv", .{ .root_source_file = compileSnailSlang(b, snail_dep, "autohint", .fragment) });
+    render_shaders_mod.addAnonymousImport("text_subpixel_frag_spv", .{ .root_source_file = compileSnailSlang(b, snail_dep, "text_subpixel", .fragment) });
+    render_shaders_mod.addAnonymousImport("tt_hinted_text_subpixel_frag_spv", .{ .root_source_file = compileSnailSlang(b, snail_dep, "tt_hinted_text_subpixel", .fragment) });
+    render_shaders_mod.addAnonymousImport("autohint_subpixel_frag_spv", .{ .root_source_file = compileSnailSlang(b, snail_dep, "autohint_subpixel", .fragment) });
 
     const render_vulkan_mod = b.addModule("goop_render_vulkan", .{
         .root_source_file = b.path("src/render/vulkan.zig"),
@@ -131,9 +185,8 @@ pub fn build(b: *std.Build) void {
     render_vulkan_mod.addImport("goop_present_vulkan", present_vulkan_mod);
     render_vulkan_mod.addImport("goop_snail", snail_adapter_mod);
     render_vulkan_mod.addImport("snail", snail_mod);
-    render_vulkan_mod.addImport("render-state", render_state_mod);
-    render_vulkan_mod.addImport("snail_reference_vulkan", snail_reference_vulkan_mod);
-    render_vulkan_mod.addImport("snail_vulkan_types", snail_vulkan_types_mod);
+    render_vulkan_mod.addImport("snail_reflection", snail_reflection_mod);
+    render_vulkan_mod.addImport("goop_render_shaders", render_shaders_mod);
     render_vulkan_mod.linkSystemLibrary("vulkan", .{});
 
     // ── Core goop module ──
@@ -341,6 +394,7 @@ pub fn build(b: *std.Build) void {
     const wayland_vulkan_tests = b.addRunArtifact(b.addTest(.{ .root_module = wayland_vulkan_mod }));
     const present_vulkan_tests = b.addRunArtifact(b.addTest(.{ .root_module = present_vulkan_mod }));
     const render_vulkan_tests = b.addRunArtifact(b.addTest(.{ .root_module = render_vulkan_mod }));
+    const render_shaders_tests = b.addRunArtifact(b.addTest(.{ .root_module = render_shaders_mod }));
     const file_manager_logic_tests = b.addRunArtifact(b.addTest(.{
         .root_module = file_manager_logic_mod,
     }));
@@ -405,6 +459,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&wayland_vulkan_tests.step);
     test_step.dependOn(&present_vulkan_tests.step);
     test_step.dependOn(&render_vulkan_tests.step);
+    test_step.dependOn(&render_shaders_tests.step);
     test_step.dependOn(&file_manager_logic_tests.step);
     test_step.dependOn(&run_c_example.step);
 }

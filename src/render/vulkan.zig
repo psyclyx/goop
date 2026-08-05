@@ -10,17 +10,14 @@ const display = @import("goop_display");
 const present = @import("goop_present_vulkan");
 const goop_snail = @import("goop_snail");
 const snail = @import("snail");
-const render_state = @import("render-state");
-const reference = @import("snail_reference_vulkan");
-const reference_types = @import("snail_vulkan_types");
+const DeviceAtlas = @import("vulkan/device_atlas.zig").DeviceAtlas;
+const PipelineRenderer = @import("vulkan/renderer.zig").PipelineRenderer;
+const target_mod = snail.render.target;
 
 pub const Renderer = struct {
     allocator: std.mem.Allocator,
-    context: reference.VulkanContext,
-    layout: reference.VulkanResourceLayout,
-    transfer_pool: reference.vk.VkCommandPool,
-    cache: reference.VulkanDeviceAtlas,
-    caller: reference.Renderer,
+    atlas: DeviceAtlas,
+    pipelines: PipelineRenderer,
     instances: []goop_snail.Instance,
     batches: []goop_snail.DrawBatch,
     binding: goop_snail.Binding,
@@ -43,40 +40,27 @@ pub const Renderer = struct {
         options: Options,
     ) !Renderer {
         if (options.max_instances == 0) return error.InvalidCapacity;
-        const context = reference_types.VulkanContext.init(device_context, render_pass);
 
-        var layout: reference.VulkanResourceLayout = undefined;
-        try layout.init(context);
-        errdefer layout.deinit();
-
-        const transfer_pool = try reference.createTransferPool(context);
-        errdefer reference.vk.vkDestroyCommandPool(context.device, transfer_pool, null);
-
-        var cache = try reference.VulkanDeviceAtlas.init(
-            allocator,
-            text.pool(),
-            reference.cachePipelineShape(context, &layout, transfer_pool),
-            .{
-                .max_bindings = options.max_bindings,
-                .layer_info_height = options.layer_info_height,
-                .max_images = options.max_images,
-                .max_image_width = options.max_image_width,
-                .max_image_height = options.max_image_height,
-            },
-        );
-        errdefer cache.deinit();
+        var atlas = try DeviceAtlas.init(allocator, device_context, text.pool(), .{
+            .max_bindings = options.max_bindings,
+            .layer_info_height = options.layer_info_height,
+            .max_images = options.max_images,
+            .max_image_width = options.max_image_width,
+            .max_image_height = options.max_image_height,
+        });
+        errdefer atlas.deinit();
 
         var bindings: [1]goop_snail.Binding = undefined;
-        try cache.upload(allocator, &.{text.atlas()}, &bindings);
+        try atlas.upload(allocator, &.{text.atlas()}, &bindings);
 
-        var caller = try reference.Renderer.init(
-            context,
-            cache.descriptorSetLayout(),
+        var pipelines = try PipelineRenderer.init(
+            device_context,
+            render_pass,
+            atlas.descriptorSetLayout(),
             options.max_instances * snail.render.records.BYTES_PER_INSTANCE,
             present.max_frames_in_flight,
-            .disabled,
         );
-        errdefer caller.deinit();
+        errdefer pipelines.deinit();
 
         const instances = try allocator.alloc(goop_snail.Instance, options.max_instances);
         errdefer allocator.free(instances);
@@ -85,11 +69,8 @@ pub const Renderer = struct {
 
         return .{
             .allocator = allocator,
-            .context = context,
-            .layout = layout,
-            .transfer_pool = transfer_pool,
-            .cache = cache,
-            .caller = caller,
+            .atlas = atlas,
+            .pipelines = pipelines,
             .instances = instances,
             .batches = batches,
             .binding = bindings[0],
@@ -98,14 +79,8 @@ pub const Renderer = struct {
 
     pub fn deinit(self: *Renderer) void {
         self.clip_stack.deinit(self.allocator);
-        self.caller.deinit();
-        self.cache.deinit();
-        reference.vk.vkDestroyCommandPool(
-            self.context.device,
-            self.transfer_pool,
-            null,
-        );
-        self.layout.deinit();
+        self.pipelines.deinit();
+        self.atlas.deinit();
         self.allocator.free(self.batches);
         self.allocator.free(self.instances);
         self.* = undefined;
@@ -167,7 +142,7 @@ pub const Renderer = struct {
             .w = @floatFromInt(target.extent.width),
             .h = @floatFromInt(target.extent.height),
         };
-        self.caller.beginFrame(target.frame_index);
+        self.pipelines.beginFrame(target.frame_index);
         self.clip_stack.clearRetainingCapacity();
         for (commands) |paint| {
             if (paint == .clip) {
@@ -192,15 +167,20 @@ pub const Renderer = struct {
     }
 
     fn updateAtlas(self: *Renderer, text: *const goop_snail.TextEngine) !void {
-        self.binding = self.cache.uploadDelta(
+        self.binding = self.atlas.uploadDelta(
             self.allocator,
             self.binding,
             text.atlas(),
         ) catch |upload_error| switch (upload_error) {
-            error.NoLayerInfoRoomToGrow, error.NoImageRoomToGrow => replacement: {
-                self.cache.release(self.binding);
+            // Snail 0.18's planner only deltas exact/direct-child snapshots:
+            // text measurement during layout extends the atlas ahead of the
+            // binding by several snapshots, so a frame's first draw after
+            // shaping is a skipped descendant and needs a fresh binding —
+            // the same fallback as an outgrown side-data reservation.
+            error.NoLayerInfoRoomToGrow, error.NoImageRoomToGrow, error.IncompatibleSnapshot => replacement: {
+                self.atlas.release(self.binding);
                 var bindings: [1]goop_snail.Binding = undefined;
-                try self.cache.upload(self.allocator, &.{text.atlas()}, &bindings);
+                try self.atlas.upload(self.allocator, &.{text.atlas()}, &bindings);
                 break :replacement bindings[0];
             },
             else => return upload_error,
@@ -225,10 +205,11 @@ pub const Renderer = struct {
             &batch_len,
         );
 
-        try self.caller.render(
+        try self.pipelines.render(
             target.command_buffer,
-            &self.cache,
+            self.atlas.descriptorSet(),
             drawState(target, scissor),
+            self.atlas.atlasPageTexels(),
             self.instances[0..instance_len],
             self.batches[0..batch_len],
         );
@@ -285,7 +266,7 @@ fn clearRect(
     graphics.vk.vkCmdClearAttachments(command_buffer, 1, &attachment, 1, &clear);
 }
 
-fn drawState(target: present.FrameTarget, scissor: ?display.Rect) render_state.DrawState {
+fn drawState(target: present.FrameTarget, scissor: ?display.Rect) target_mod.DrawState {
     const width: f32 = @floatFromInt(target.extent.width);
     const height: f32 = @floatFromInt(target.extent.height);
     return .{
@@ -445,7 +426,7 @@ fn drawIcon(
 
 const zero_rect = display.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
 
-fn pixelRect(rect: display.Rect, extent: graphics.vk.VkExtent2D) render_state.PixelRect {
+fn pixelRect(rect: display.Rect, extent: graphics.vk.VkExtent2D) target_mod.PixelRect {
     const x0: i32 = @intFromFloat(@max(0, @floor(rect.x)));
     const y0: i32 = @intFromFloat(@max(0, @floor(rect.y)));
     const x1: u32 = @intFromFloat(@min(
