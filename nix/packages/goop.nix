@@ -20,7 +20,7 @@ let
 
   deps = linkFarm "zig-packages" [
     {
-      name = "snail-0.13.0-vw75SOKx-gARol17iag4hXdT_xWvZGslUcGmmV9rUel4";
+      name = "snail-0.18.0-vw75SM3UBAGPYcgh5xd_lc_la4cJp8xNnAPyVLHAWpWv";
       path = npins.snail;
     }
   ];
