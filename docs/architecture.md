@@ -1,160 +1,157 @@
 # Architecture
 
-Goop is split into modules whose dependency direction is part of the public
-contract. A platform or renderer may be replaced without changing component
-code, and browser behavior may be tested without a window or GPU.
+Goop is a set of libraries, not an application framework. The caller owns the
+model, event loop, effects, frame scheduling, memory policy, and rendering
+pipeline. Each Goop layer is usable without importing the layers above it.
 
-## Module graph
+## Dependency graph
 
 ```text
-goop_components → goop_ui ──────────────→ goop_display
-                       ↘                ↗
-                         goop_driver
-
-goop_render_vulkan → goop_display
-        ├──────────→ goop_snail
-        ├──────────→ goop_graphics_vulkan
-        ├──────────→ goop_present_vulkan → goop_graphics_vulkan
-        └──────────→ goop_render_shaders (goop-compiled SPIR-V, pure data)
-
-goop_wayland_vulkan → goop_graphics_vulkan
-goop_platform_wayland             (imports no graphics module)
-
-showcase_view → established goop widget API ← showcase_controller
-                                     ↑
-showcase_app → paint_bridge ─────────┘
-       ├────→ goop_platform_wayland
-       └────→ demo_gpu → Vulkan renderer/presenter/WSI modules
-
-file_manager view/fs/state ← file_manager_logic
-                                  ↑
-file_manager_app → paint_bridge ──┘
-       ├────────→ goop_platform_wayland
-       └────────→ demo_gpu → Vulkan renderer/presenter/WSI modules
+application model and effects
+        |
+        +----> goop_desktop --------+
+        |       desktop semantics   |
+        |       and notifications   |
+        |                           v
+        +------------------------> goop
+                                    runtime, keyed reconciliation,
+                                    interaction, layout, resolved UI
+                                             |
+                  +--------------------------+--------------------------+
+                  |                                                     |
+                  v                                                     v
+             goop_chrome                                      caller-owned look
+             stock, read-only visuals                         custom visuals
+                  |                                                     |
+                  +-----------------------+-----------------------------+
+                                          v
+                                  visual encoder contract
+                                  /                       \
+                         caller renderer            optional recorder
+                                                        or Vulkan stack
 ```
 
-The two `app.zig` files are composition roots. They translate platform
-events and connect browser/showcase logic to rendering, but do not absorb
-the state owned by those subsystems.
+Platform input is an independent source of plain input values. Wayland is one
+such source. Presentation is an independent producer of render targets. Vulkan
+rendering consumes a minimal Vulkan render target; it does not import a
+presenter or a window-system module.
 
-## Responsibilities
-
-### `goop_display`
-
-Backend-neutral output: geometry, colors, semantic paint operations, stable
-command identities, display deltas, and damage regions. It has no UI,
-application, text-engine, graphics-API, or platform dependency.
+## Library responsibilities
 
 ### `goop_ui`
 
-Declarative element descriptions, styles, stable element identities, and
-semantic action identities. It describes what should be displayed and what
-semantic action an interactive element represents. It owns no retained
-interaction state.
+`goop_ui` owns immutable description values and semantic identity:
 
-### `goop_components`
+- `ElementId` and `ActionId`;
+- tree structure, content, layout inputs, and appearance selection;
+- no retained state, handles, callbacks, renderer objects, or platform types.
 
-An opinionated collection of pure component constructors. Components accept
-props and return `goop_ui.Element` values. They may compose other components,
-but must not mutate a model, read the filesystem or clock, dispatch events,
-or import a renderer or platform.
+There is one definition of each identity type in the repository. Other layers
+reuse or re-export these exact types.
 
-### `goop_driver`
+### `goop`
 
-The retained implementation: tree reconciliation, layout, hit testing,
-focus, scrolling, generic widget interaction, semantic action emission, and
-display-delta generation. The retained tree is private driver state rather
-than component API.
+The core library owns mechanism:
 
-### `goop_snail`
+- reconciliation by `ElementId`;
+- retained interaction state;
+- normalized input processing, hit testing, focus, and gestures;
+- layout and resolved geometry;
+- an ordered semantic event journal keyed by `ElementId`/`ActionId`.
 
-The Snail adapter. It owns fonts, faces, page pools, CPU atlases, shaping,
-recording, placement, and emitted draw records. It contains no
-Vulkan objects and performs no command submission.
+Core never executes application behavior. Interaction results are returned as
+data. `NodeHandle` is an internal storage address and is not application
+identity. Core does not import Vulkan, Wayland, Snail, a desktop look, or an
+application event loop.
 
-### `goop_graphics_vulkan`
+Output lifetime is explicit. A borrowed event or snapshot slice states which
+operation invalidates it. Frame clearing is part of processing; consumers do
+not clear transient flags on individual nodes.
 
-Vulkan instance, physical/logical device, queues, memory helpers, and command
-infrastructure. It accepts an opaque `VkSurfaceKHR` where presentation
-capability must be considered, but knows nothing about Wayland.
+### `goop_desktop`
 
-### `goop_render_vulkan`
+The desktop library owns reusable desktop semantics:
 
-Goop-owned Vulkan renderer: pipelines, buffers, and Snail device-atlas
-resources (`src/render/vulkan/device_atlas.zig` + `renderer.zig`), display
-command application, and rendering into a caller-supplied frame target. It
-does not create windows, surfaces, or swapchains. Snail supplies only the
-data contract (`render.records`, `render.target`) and the committed
-push-constant/descriptor reflection; the pipeline and atlas policy is goop's.
+- commands and shortcuts;
+- buttons, menus, toolbars, text editing, selection, tables, outlines,
+  disclosure, split views, popups, and drag/drop notifications;
+- typed desktop events that contain semantic IDs and values.
 
-### `goop_render_shaders`
+Desktop owns no visuals, renderer, filesystem behavior, or application
+callbacks. It depends only on value contracts and core mechanism. A command
+activation is emitted as data; the application decides what that command
+means.
 
-The renderer's SPIR-V artifacts plus the per-family pipeline recipe. Goop
-compiles the SPIR-V itself from snail's slang sources with `slangc` (flat
-atlas storage; see `compileSnailSlang` in build.zig), so goop-authored
-shader families can import snail's slang modules later. Pure data — no
-Vulkan imports.
+### `goop_chrome`
 
-### `goop_present_vulkan`
+Chrome is an optional stock look. It reads resolved content, geometry, style,
+and visual state and emits drawing operations. It may provide intrinsic
+measurement and default metrics. It cannot mutate interaction or application
+state.
 
-Swapchain, frame synchronization, persistent composition target, acquisition,
-and presentation. It does not know about UI elements or browser state.
+Custom looks can replace Chrome entirely or delegate individual roles to it.
+Look composition is caller-owned and explicit; there is no global component
+registry or type-erased lifecycle convention.
 
-### `goop_platform_wayland`
+### Visual encoding
 
-Wayland connection, windows and surfaces, input, and frame pacing. It emits
-backend-neutral input and window events and imports no graphics renderer.
-Clipboard, drag-and-drop, outputs, cursors, and popup surfaces belong here
-when those capabilities are added.
+The mandatory rendering boundary is a small capability for clips, surfaces,
+text, icons/images, and explicit custom visuals. It is not a mandatory retained
+scene or Goop-owned GPU abstraction.
 
-### `goop_wayland_vulkan`
+A game renderer may implement that capability directly and record into its own
+frame queues without allocating or translating an intermediate Goop scene. An
+optional recorder may store the same operations for tests, deferred rendering,
+or the bundled Vulkan stack. Unsupported operations are errors or declared
+capability failures; they are never silently discarded.
 
-The intentionally small WSI bridge. It supplies required instance extensions
-and creates/destroys a `VkSurfaceKHR` from Wayland handles.
+Text measurement, shaping, icon resolution, image lookup, scale, and resource
+upload are explicit caller-supplied capabilities or explicit preparation
+steps. Recording does not hide allocation or queue-wide synchronization.
 
-## Browser boundaries
+### Optional integrations
 
-- `file_manager/state.zig` divides runtime references, browser model, view
-  handles, interaction state, and transfer buffers into cohesive owners.
-- `file_manager/fs.zig` owns directory operations, navigation, sorting, copy,
-  move, and delete behavior.
-- `file_manager/view.zig` builds the original browser widget tree and semantic
-  icon paint without importing Snail, Vulkan, or Wayland.
-- `file_manager/controller.zig` drives widget state and browser commands without
-  owning platform or GPU resources.
-- `file_manager/app.zig` translates platform events and connects paint deltas
-  to shared GPU ownership and presentation.
-- `showcase/view.zig` and `showcase/controller.zig` preserve the original
-  component showcase while keeping its construction and behavior apart.
+- `goop_snail`: Snail text/vector preparation.
+- `goop_graphics_vulkan`: generic Vulkan mechanism from explicit device
+  requirements.
+- `goop_render_vulkan`: Vulkan recording against a minimal render target.
+- `goop_present_vulkan`: swapchain and frame scheduling; produces targets.
+- `goop_platform_wayland`: connection, surface, input, and frame-clock pieces.
+- `goop_wayland_vulkan`: the sole Wayland/Vulkan WSI join.
 
-Wayland callbacks must never import the browser composition root. They write
-platform events into a sink. Demo view and controller code must never import
-Snail, Vulkan, or Wayland.
+None is a dependency of core, desktop, or Chrome.
 
-## Damage and retained rendering
+## Application boundary
 
-Every display operation has a stable identity and content fingerprint.
-Updating or removing an operation damages its old bounds; inserting or
-updating damages its new bounds. The driver emits a `DisplayDelta` instead of
-requiring the renderer to rediscover changes.
+Applications own domain meaning. For the file browser this includes paths,
+directory history, filesystem operations, preview loading, conflict policy,
+and mapping UI item IDs to files. The file-browser controller consumes typed
+desktop events; it does not inspect a Goop tree, retain `NodeHandle`s, read
+layout rectangles, or import rendering/platform modules.
 
-The Vulkan presenter keeps a canonical persistent composition image. The
-renderer redraws only damaged scissors into that image. Presentation may copy
-the complete composition image to an acquired swapchain image for
-correctness; expensive UI shading and Snail evaluation remain restricted to
-damage. With no damage, the application does not acquire, render, or present.
+The showcase and file browser are acceptance tests for composition. Neither
+contains a legacy handle-polling path or paint-protocol adapter.
 
-Resize, scale, target-format changes, and uncertain invalidation explicitly
-promote damage to a full redraw.
+## Supported compositions
 
-## Ownership rules
+- File browser: domain + desktop + core + stock Chrome + Snail/Vulkan +
+  presenter + Wayland.
+- Game tools: selected desktop controls + core + stock/custom look + the
+  game's input and renderer.
+- Game HUD: core interaction/layout + custom look + the game's renderer.
+- Headless tests: core and optionally the recording encoder; no GPU/window.
 
-- Components own no runtime state.
-- The driver owns no application model.
-- Snail CPU state owns no GPU object.
-- The renderer owns no window or swapchain.
-- The presenter owns no UI state.
-- The platform owns no renderer.
-- Small composition structs may aggregate cohesive subsystem owners; they
-  must not flatten all subsystem fields into one application-wide state
-  object.
+## Hard rules
+
+1. Input and output cross library boundaries as values.
+2. Stable semantic IDs replace cross-layer storage handles.
+3. Behavior, visual projection, rendering, presentation, and platform input
+   are separate dependencies.
+4. A lower layer never imports an optional higher layer.
+5. No hidden application callbacks, global registries, service locators, or
+   ownership-by-convention `anyopaque` state.
+6. No duplicate paint/scene protocols or ordinal/bit-cast bridges.
+7. Allocation, preparation, upload, and synchronization costs are visible in
+   operation names and API boundaries.
+8. Convenience composition is optional and remains a thin, inspectable call
+   sequence; it never owns the caller's loop.
