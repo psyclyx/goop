@@ -1,13 +1,7 @@
 const std = @import("std");
 const goop = @import("goop");
 
-const fm = @import("controller.zig");
-const State = fm.State;
-
-// Local aliases for callbacks back into the main module:
-const detailTitleFontSizePx = fm.detailTitleFontSizePx;
-const detailCaptionFontSizePx = fm.detailCaptionFontSizePx;
-const previewBodyFontSizePx = fm.previewBodyFontSizePx;
+const State = @import("state.zig").State;
 
 pub fn uiScaleValue(scale: f32, value: f32) f32 {
     return value * scale;
@@ -23,6 +17,18 @@ pub fn uiEdgesAll(state: *const State, value: f32) goop.style.Edges {
 
 pub fn uiEdgesSymmetric(state: *const State, h: f32, v: f32) goop.style.Edges {
     return goop.style.Edges.symmetric(uiPx(state, h), uiPx(state, v));
+}
+
+pub fn detailTitleFontSizePx(state: *const State) f32 {
+    return uiPx(state, 16);
+}
+
+pub fn detailCaptionFontSizePx(state: *const State) f32 {
+    return uiPx(state, 13);
+}
+
+pub fn previewBodyFontSizePx(state: *const State) f32 {
+    return uiPx(state, 13);
 }
 
 pub fn fileManagerThemeForScale(ui_scale: f32) goop.Theme {

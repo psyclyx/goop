@@ -360,17 +360,9 @@ pub fn addNameCell(state: *State, ctx: *goop.Context, row: goop.NodeHandle, entr
 
 // ── Detail-pane sizing & wrapping ──
 
-pub fn detailTitleFontSizePx(state: *const State) f32 {
-    return uiPx(state, 16);
-}
-
-pub fn detailCaptionFontSizePx(state: *const State) f32 {
-    return uiPx(state, 13);
-}
-
-pub fn previewBodyFontSizePx(state: *const State) f32 {
-    return uiPx(state, 13);
-}
+pub const detailTitleFontSizePx = style.detailTitleFontSizePx;
+pub const detailCaptionFontSizePx = style.detailCaptionFontSizePx;
+pub const previewBodyFontSizePx = style.previewBodyFontSizePx;
 
 pub fn clampDetailSplitterRatio(raw: f32, available: f32, min_first: f32, min_second: f32) f32 {
     const clamped = std.math.clamp(raw, 0, 1);
