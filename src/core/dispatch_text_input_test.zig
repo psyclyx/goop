@@ -1,12 +1,37 @@
 const std = @import("std");
 const widget = @import("widget.zig");
-const event = @import("event.zig");
+const input_types = @import("goop_input");
 const style = @import("style.zig");
 const dispatch = @import("dispatch.zig");
+const control_event = @import("control_event.zig");
 const MouseState = dispatch.MouseState;
 const Clipboard = dispatch.Clipboard;
-const process = dispatch.process;
-const processWithClipboard = dispatch.processWithClipboard;
+
+fn process(tree: *widget.Tree, events: []const input_types.Event, mouse: *MouseState, theme: style.Theme) void {
+    processWithClipboard(tree, events, mouse, theme, null, null);
+}
+
+fn processWithClipboard(
+    tree: *widget.Tree,
+    events: []const input_types.Event,
+    mouse: *MouseState,
+    theme: style.Theme,
+    clipboard: ?Clipboard,
+    text_ctx: ?*const @import("layout.zig").TextMeasureCtx,
+) void {
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(std.testing.allocator);
+    journal.prepareBatch(std.testing.allocator, tree.count(), events.len) catch unreachable;
+    dispatch.process(
+        tree,
+        events,
+        mouse,
+        theme,
+        clipboard,
+        text_ctx,
+        &journal,
+    );
+}
 
 /// Test clipboard that stores text in a static buffer.
 const TestClipboard = struct {
@@ -311,7 +336,7 @@ test "text input is focusable via tab" {
     tree.get(ti).layout_rect = .{ .x = 10, .y = 50, .w = 300, .h = 30 };
 
     var mouse = MouseState{};
-    const tab = event.Event{ .key = .{ .scancode = 15, .keycode = .tab, .state = .pressed } };
+    const tab = input_types.Event{ .key = .{ .scancode = 15, .keycode = .tab, .state = .pressed } };
 
     // First tab: focus button
     process(&tree, &.{tab}, &mouse, style.Theme.default);

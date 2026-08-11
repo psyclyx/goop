@@ -1,7 +1,7 @@
 const std = @import("std");
 const widget = @import("../../widget.zig");
 const hittest = @import("../../hittest.zig");
-const paint = @import("../../paint.zig");
+const visual_types = @import("../../visual_types.zig");
 const types = @import("../types.zig");
 const selection = @import("../selection.zig");
 const tree_util = @import("../tree.zig");
@@ -66,10 +66,7 @@ pub fn finalizeTreeDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse: *M
         clearDragState(&tree.get(source).kind.tree_item.internal.drag);
     }
     if (mouse.tree_drop_preview) |preview| {
-        mouse.last_drop = .{ .tree = preview };
-        if (tree.isAlive(preview.target) and tree.getConst(preview.target).kind == .tree_item) {
-            tree.get(preview.target).interaction.drop_received = true;
-        }
+        mouse.commitDrop(tree, .{ .tree = preview });
     }
     clearTreeDragPreview(tree);
     mouse.tree_drop_preview = null;
@@ -132,7 +129,7 @@ pub fn finalizeSelectableDrag(tree: *widget.Tree, source: widget.NodeHandle, mou
         clearDragState(&tree.get(source).kind.selectable.internal.drag);
     }
     if (mouse.list_drop_preview) |preview| {
-        mouse.last_drop = .{ .list = preview };
+        mouse.commitDrop(tree, .{ .list = preview });
     }
     clearListDragPreview(tree);
     mouse.list_drop_preview = null;
@@ -194,7 +191,7 @@ pub fn finalizeGridItemDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse
         clearDragState(&tree.get(source).kind.grid_item.internal.drag);
     }
     if (mouse.grid_drop_preview) |preview| {
-        mouse.last_drop = .{ .grid = preview };
+        mouse.commitDrop(tree, .{ .grid = preview });
     }
     clearGridDragPreview(tree);
     mouse.grid_drop_preview = null;
@@ -256,7 +253,7 @@ pub fn finalizeTableRowDrag(tree: *widget.Tree, source: widget.NodeHandle, mouse
         clearDragState(&tree.get(source).kind.table_row.internal.drag);
     }
     if (mouse.table_drop_preview) |preview| {
-        mouse.last_drop = .{ .table = preview };
+        mouse.commitDrop(tree, .{ .table = preview });
     }
     clearTableDragPreview(tree);
     mouse.table_drop_preview = null;
@@ -356,7 +353,7 @@ fn tableRowDropTarget(
     return target_parent.eql(table_handle);
 }
 
-pub fn treeDropPositionAtY(rect: paint.Rect, y: f32) widget.WidgetKind.TreeItem.DropPosition {
+pub fn treeDropPositionAtY(rect: visual_types.Rect, y: f32) widget.WidgetKind.TreeItem.DropPosition {
     if (rect.h <= 0) return .into;
     const rel = (y - rect.y) / rect.h;
     if (rel <= 0.25) return .before;

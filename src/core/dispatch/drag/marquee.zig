@@ -11,7 +11,6 @@ const ContainerRectSetter = *const fn (*widget.Node, Rect) void;
 const ItemPredicate = *const fn (*const widget.Node) bool;
 const ItemBoolGetter = *const fn (*const widget.Node) bool;
 const ItemBoolSetter = *const fn (*widget.Node, bool) void;
-const MarkChangedFn = *const fn (*widget.Tree, widget.NodeHandle) void;
 
 const MarqueeOps = struct {
     is_container: ContainerPredicate,
@@ -24,7 +23,6 @@ const MarqueeOps = struct {
     set_selected: ItemBoolSetter,
     base_selected: ItemBoolGetter,
     set_base_selected: ItemBoolSetter,
-    mark_changed: MarkChangedFn,
 };
 
 const listMarqueeOps = MarqueeOps{
@@ -38,7 +36,6 @@ const listMarqueeOps = MarqueeOps{
     .set_selected = setSelectableSelected,
     .base_selected = selectableBaseSelected,
     .set_base_selected = setSelectableBaseSelected,
-    .mark_changed = markInteractionChanged,
 };
 
 const gridMarqueeOps = MarqueeOps{
@@ -52,7 +49,6 @@ const gridMarqueeOps = MarqueeOps{
     .set_selected = setGridItemSelected,
     .base_selected = gridItemBaseSelected,
     .set_base_selected = setGridItemBaseSelected,
-    .mark_changed = markInteractionChanged,
 };
 
 const tableMarqueeOps = MarqueeOps{
@@ -66,19 +62,22 @@ const tableMarqueeOps = MarqueeOps{
     .set_selected = setTableRowSelected,
     .base_selected = tableRowBaseSelected,
     .set_base_selected = setTableRowBaseSelected,
-    .mark_changed = markTableSelectionChanged,
 };
 
 pub fn beginListBoxMarquee(tree: *widget.Tree, list_box: widget.NodeHandle, mouse: *MouseState) void {
     beginMarquee(tree, list_box, mouse, listMarqueeOps);
 }
 
-pub fn updateListBoxMarquee(tree: *widget.Tree, list_box: widget.NodeHandle, mouse: *const MouseState) void {
+pub fn updateListBoxMarquee(tree: *widget.Tree, list_box: widget.NodeHandle, mouse: *MouseState) void {
     updateMarquee(tree, list_box, mouse, listMarqueeOps);
 }
 
-pub fn finalizeListBoxMarquee(tree: *widget.Tree, list_box: widget.NodeHandle) void {
-    finalizeMarquee(tree, list_box, listMarqueeOps);
+pub fn cancelListBoxMarquee(tree: *widget.Tree, list_box: widget.NodeHandle) void {
+    cancelMarquee(tree, list_box, listMarqueeOps);
+}
+
+pub fn finalizeListBoxMarquee(tree: *widget.Tree, list_box: widget.NodeHandle, mouse: *MouseState) void {
+    finalizeMarquee(tree, list_box, mouse, listMarqueeOps);
 }
 
 pub fn snapshotListBoxSelection(tree: *widget.Tree, list_box: widget.NodeHandle) void {
@@ -89,12 +88,16 @@ pub fn beginGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle,
     beginMarquee(tree, selector, mouse, gridMarqueeOps);
 }
 
-pub fn updateGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle, mouse: *const MouseState) void {
+pub fn updateGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle, mouse: *MouseState) void {
     updateMarquee(tree, selector, mouse, gridMarqueeOps);
 }
 
-pub fn finalizeGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle) void {
-    finalizeMarquee(tree, selector, gridMarqueeOps);
+pub fn cancelGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle) void {
+    cancelMarquee(tree, selector, gridMarqueeOps);
+}
+
+pub fn finalizeGridSelectorMarquee(tree: *widget.Tree, selector: widget.NodeHandle, mouse: *MouseState) void {
+    finalizeMarquee(tree, selector, mouse, gridMarqueeOps);
 }
 
 pub fn snapshotGridSelectorSelection(tree: *widget.Tree, selector: widget.NodeHandle) void {
@@ -105,12 +108,16 @@ pub fn beginTableMarquee(tree: *widget.Tree, table: widget.NodeHandle, mouse: *M
     beginMarquee(tree, table, mouse, tableMarqueeOps);
 }
 
-pub fn updateTableMarquee(tree: *widget.Tree, table: widget.NodeHandle, mouse: *const MouseState) void {
+pub fn updateTableMarquee(tree: *widget.Tree, table: widget.NodeHandle, mouse: *MouseState) void {
     updateMarquee(tree, table, mouse, tableMarqueeOps);
 }
 
-pub fn finalizeTableMarquee(tree: *widget.Tree, table: widget.NodeHandle) void {
-    finalizeMarquee(tree, table, tableMarqueeOps);
+pub fn cancelTableMarquee(tree: *widget.Tree, table: widget.NodeHandle) void {
+    cancelMarquee(tree, table, tableMarqueeOps);
+}
+
+pub fn finalizeTableMarquee(tree: *widget.Tree, table: widget.NodeHandle, mouse: *MouseState) void {
+    finalizeMarquee(tree, table, mouse, tableMarqueeOps);
 }
 
 pub fn snapshotTableSelection(tree: *widget.Tree, table: widget.NodeHandle) void {
@@ -130,7 +137,7 @@ fn beginMarquee(tree: *widget.Tree, container: widget.NodeHandle, mouse: *MouseS
     updateMarquee(tree, container, mouse, ops);
 }
 
-fn updateMarquee(tree: *widget.Tree, container: widget.NodeHandle, mouse: *const MouseState, ops: MarqueeOps) void {
+fn updateMarquee(tree: *widget.Tree, container: widget.NodeHandle, mouse: *MouseState, ops: MarqueeOps) void {
     if (!tree.isAlive(container)) return;
 
     const container_node = tree.getConst(container);
@@ -142,7 +149,10 @@ fn updateMarquee(tree: *widget.Tree, container: widget.NodeHandle, mouse: *const
     );
     ops.set_rect(tree.get(container), marquee_rect);
 
-    var changed = false;
+    // Selection is provisional for the lifetime of the pointer gesture. The
+    // completed semantic value is published by finalizeMarquee: publishing on
+    // every crossed child invites a consumer to rebuild the declarative tree
+    // mid-gesture and discard the container that owns the drag.
     var iter = tree.children(container);
     while (iter.next()) |child| {
         const child_node = tree.getConst(child);
@@ -151,15 +161,14 @@ fn updateMarquee(tree: *widget.Tree, container: widget.NodeHandle, mouse: *const
             (mouse.ctrl_down and ops.base_selected(child_node));
         if (ops.selected(child_node) != should_select) {
             ops.set_selected(tree.get(child), should_select);
-            changed = true;
         }
     }
-    if (changed) ops.mark_changed(tree, container);
 }
 
-fn finalizeMarquee(tree: *widget.Tree, container: widget.NodeHandle, ops: MarqueeOps) void {
+fn cancelMarquee(tree: *widget.Tree, container: widget.NodeHandle, ops: MarqueeOps) void {
     if (!tree.isAlive(container)) return;
-    if (!ops.is_container(tree.getConst(container))) return;
+    const container_node = tree.getConst(container);
+    if (!ops.is_container(container_node) or !ops.active(container_node)) return;
 
     ops.set_active(tree.get(container), false);
     ops.set_rect(tree.get(container), .{ .x = 0, .y = 0, .w = 0, .h = 0 });
@@ -168,8 +177,27 @@ fn finalizeMarquee(tree: *widget.Tree, container: widget.NodeHandle, ops: Marque
     while (iter.next()) |child| {
         const child_node = tree.getConst(child);
         if (!ops.item_eligible(child_node)) continue;
+        ops.set_selected(tree.get(child), ops.base_selected(child_node));
         ops.set_base_selected(tree.get(child), false);
     }
+}
+
+fn finalizeMarquee(tree: *widget.Tree, container: widget.NodeHandle, mouse: *MouseState, ops: MarqueeOps) void {
+    if (!tree.isAlive(container)) return;
+    if (!ops.is_container(tree.getConst(container))) return;
+
+    ops.set_active(tree.get(container), false);
+    ops.set_rect(tree.get(container), .{ .x = 0, .y = 0, .w = 0, .h = 0 });
+
+    var selection_changed = false;
+    var iter = tree.children(container);
+    while (iter.next()) |child| {
+        const child_node = tree.getConst(child);
+        if (!ops.item_eligible(child_node)) continue;
+        selection_changed = selection_changed or ops.selected(child_node) != ops.base_selected(child_node);
+        ops.set_base_selected(tree.get(child), false);
+    }
+    if (selection_changed) mouse.emitSelection(tree, container);
 }
 
 fn snapshotMarqueeSelection(tree: *widget.Tree, container: widget.NodeHandle, ops: MarqueeOps) void {
@@ -298,12 +326,4 @@ fn tableRowBaseSelected(node: *const widget.Node) bool {
 
 fn setTableRowBaseSelected(node: *widget.Node, selected: bool) void {
     node.kind.table_row.internal.marquee_base_selected = selected;
-}
-
-fn markInteractionChanged(tree: *widget.Tree, container: widget.NodeHandle) void {
-    tree.get(container).interaction.changed = true;
-}
-
-fn markTableSelectionChanged(tree: *widget.Tree, table: widget.NodeHandle) void {
-    tree.get(table).kind.table.selection_changed = true;
 }

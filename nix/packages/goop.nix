@@ -1,10 +1,15 @@
 {
+  callPackage,
   lib,
   stdenv,
   linkFarm,
   makeWrapper,
   zig_0_16,
   pkg-config,
+  fontconfig,
+  libspng,
+  libjpeg_turbo,
+  libwebp,
   harfbuzz,
   libxkbcommon,
   wayland,
@@ -14,13 +19,17 @@
   shader-slang,
   wgpu-utils,
   dejavu_fonts,
+  noto-fonts,
+  noto-fonts-cjk-sans,
+  noto-fonts-color-emoji,
 }:
 let
   npins = import ../../npins;
+  fontconfigBundle = callPackage ../fontconfig.nix { };
 
   deps = linkFarm "zig-packages" [
     {
-      name = "snail-0.18.0-vw75SM3UBAGPYcgh5xd_lc_la4cJp8xNnAPyVLHAWpWv";
+      name = "snail-0.19.0-vw75SJ_2BAEaJX7P0tjMgAKYdyhkURJdS7oJUuKjZlHE";
       path = npins.snail;
     }
   ];
@@ -30,6 +39,7 @@ let
     fileset = lib.fileset.unions [
       ../../src
       ../../demo
+      ../../examples
       ../../include
       ../../vendor
       ../../build.zig
@@ -53,11 +63,31 @@ stdenv.mkDerivation {
   ];
 
   buildInputs = [
+    fontconfig
+    libspng
+    libjpeg_turbo
+    libwebp
     harfbuzz
     libxkbcommon
     wayland
     wayland-protocols
     vulkan-headers
+    vulkan-loader
+    dejavu_fonts
+    noto-fonts
+    noto-fonts-cjk-sans
+    noto-fonts-color-emoji
+  ];
+
+  FONTCONFIG_FILE = "${fontconfigBundle}/fonts.conf";
+  LD_LIBRARY_PATH = lib.makeLibraryPath [
+    fontconfig
+    libspng
+    libjpeg_turbo
+    libwebp
+    harfbuzz
+    libxkbcommon
+    wayland
     vulkan-loader
   ];
 
@@ -66,8 +96,18 @@ stdenv.mkDerivation {
     "${deps}"
   ];
 
+  doCheck = true;
+  checkPhase = ''
+    runHook preCheck
+    export XDG_CACHE_HOME="$TMPDIR/xdg-cache"
+    zig build test --system ${deps} -Dcpu=baseline --release=safe
+    runHook postCheck
+  '';
+
   postFixup = ''
-    wrapProgram "$out/bin/goop-file-manager-demo" \
-      --set-default GOOP_DEMO_FONT_PATH "${dejavu_fonts}/share/fonts/truetype/DejaVuSans.ttf"
+    for executable in goop-demo goop-file-manager-demo; do
+      wrapProgram "$out/bin/$executable" \
+        --set-default FONTCONFIG_FILE "${fontconfigBundle}/fonts.conf"
+    done
   '';
 }

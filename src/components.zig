@@ -1,97 +1,257 @@
-//! Opinionated, declarative display components.
+//! Allocation-free visual components.
 //!
-//! Constructors in this module are pure: props in, `goop_ui.Element` out.
+//! Components consume fully resolved geometry and appearance and emit
+//! backend-neutral visual operations into a caller-owned structural encoder.
+//! They own no application behavior, retained state, renderer resources, or
+//! allocation. A game renderer can implement the encoder methods directly.
 
-const ui = @import("goop_ui");
+const visual = @import("goop_visual");
 
-pub const Common = struct {
-    id: ui.ElementId,
-    style: ui.Style = .{},
-    action: ?ui.ActionId = null,
-    children: []const ui.Element = &.{},
-};
+pub const Surface = struct {
+    bounds: visual.Rect,
+    color: visual.Color,
+    border_color: visual.Color = .rgba(0, 0, 0, 0),
+    border_width: f32 = 0,
+    corner_radius: f32 = 0,
 
-pub const Button = struct {
-    common: Common,
-    label: []const u8,
-
-    pub fn element(self: Button) ui.Element {
-        return .{
-            .id = self.common.id,
-            .widget = .{ .button = .{ .label = self.label } },
-            .style = self.common.style,
-            .action = self.common.action,
-            .children = self.common.children,
-        };
+    pub fn emit(self: Surface, encoder: anytype) !void {
+        try encoder.surface(.{
+            .bounds = self.bounds,
+            .color = self.color,
+            .border_color = self.border_color,
+            .border_width = self.border_width,
+            .corner_radius = self.corner_radius,
+        });
     }
 };
 
 pub const Text = struct {
-    common: Common,
+    bounds: visual.Rect,
     content: []const u8,
-    overflow: ui.TextOverflow = .visible,
+    color: visual.Color,
+    font_size: f32,
+    text_align: visual.TextAlign = .start,
+    overflow: visual.TextOverflow = .visible,
 
-    pub fn element(self: Text) ui.Element {
-        return .{
-            .id = self.common.id,
-            .widget = .{ .text = .{
-                .content = self.content,
-                .overflow = self.overflow,
-            } },
-            .style = self.common.style,
-            .children = self.common.children,
-        };
+    pub fn emit(self: Text, encoder: anytype) !void {
+        try encoder.text(.{
+            .bounds = self.bounds,
+            .text = self.content,
+            .color = self.color,
+            .font_size = self.font_size,
+            .text_align = self.text_align,
+            .overflow = self.overflow,
+        });
     }
 };
 
-pub const Container = struct {
-    common: Common,
-    direction: ui.WidgetKind.Container.Direction = .column,
-
-    pub fn element(self: Container) ui.Element {
-        return .{
-            .id = self.common.id,
-            .widget = .{ .container = .{ .direction = self.direction } },
-            .style = self.common.style,
-            .children = self.common.children,
-        };
-    }
-};
-
+/// A resolved passive icon. `kind` remains opaque to the component and is
+/// interpreted only by the consuming renderer.
 pub const Icon = struct {
-    common: Common,
-    kind: ui.IconId,
+    bounds: visual.Rect,
+    kind: visual.IconId,
+    color: visual.Color,
 
-    pub fn element(self: Icon) ui.Element {
-        return .{
-            .id = self.common.id,
-            .widget = .{ .icon = .{ .kind = self.kind } },
-            .style = self.common.style,
-            .action = self.common.action,
-            .children = self.common.children,
-        };
+    pub fn emit(self: Icon, encoder: anytype) !void {
+        try encoder.icon(.{
+            .bounds = self.bounds,
+            .kind = self.kind,
+            .color = self.color,
+        });
     }
 };
 
-pub const Spacer = struct {
-    common: Common,
+/// A passive decoded image. Fit is appearance data; decoding, identity, and
+/// resource lifetime remain caller-owned.
+pub const Image = struct {
+    bounds: visual.Rect,
+    source: visual.ImageSource,
+    fit: visual.ImageFit = .contain,
 
-    pub fn element(self: Spacer) ui.Element {
-        return .{
-            .id = self.common.id,
-            .widget = .spacer,
-            .style = self.common.style,
-        };
+    pub fn emit(self: Image, encoder: anytype) !void {
+        try encoder.image(.{ .bounds = self.bounds, .source = self.source, .fit = self.fit });
     }
 };
 
-test "button is a pure declarative value" {
-    const action = ui.ActionId.init(4);
-    const element = (Button{
-        .common = .{ .id = .init(3), .action = action },
-        .label = "Refresh",
-    }).element();
+pub const FocusRing = struct {
+    bounds: visual.Rect,
+    color: visual.Color,
+    corner_radius: f32,
+    visible: bool,
+    width: f32 = 2,
+    outset: f32 = 2,
 
-    try @import("std").testing.expectEqual(action, element.action.?);
-    try @import("std").testing.expectEqualStrings("Refresh", element.widget.button.label);
+    pub fn emit(self: FocusRing, encoder: anytype) !void {
+        if (!self.visible) return;
+        try (Surface{
+            .bounds = .{
+                .x = self.bounds.x - self.outset,
+                .y = self.bounds.y - self.outset,
+                .w = self.bounds.w + self.outset * 2,
+                .h = self.bounds.h + self.outset * 2,
+            },
+            .color = .rgba(0, 0, 0, 0),
+            .border_color = self.color,
+            .border_width = self.width,
+            .corner_radius = self.corner_radius + self.outset,
+        }).emit(encoder);
+    }
+};
+
+/// A resolved button look. Field order is also emission order.
+pub const Button = struct {
+    background: Surface,
+    label: Text,
+    focus: FocusRing,
+
+    pub fn emit(self: Button, encoder: anytype) !void {
+        try self.background.emit(encoder);
+        try self.label.emit(encoder);
+        try self.focus.emit(encoder);
+    }
+};
+
+/// A resolved checkbox look. `indicator = null` draws an unchecked box.
+pub const Checkbox = struct {
+    box: Surface,
+    indicator: ?Surface,
+    label: Text,
+    focus: FocusRing,
+
+    pub fn emit(self: Checkbox, encoder: anytype) !void {
+        try self.box.emit(encoder);
+        if (self.indicator) |indicator| try indicator.emit(encoder);
+        try self.label.emit(encoder);
+        try self.focus.emit(encoder);
+    }
+};
+
+/// A resolved radio-button look. Geometry is supplied by the caller.
+pub const RadioButton = struct {
+    outer: Surface,
+    indicator: ?Surface,
+    label: Text,
+    focus: FocusRing,
+
+    pub fn emit(self: RadioButton, encoder: anytype) !void {
+        try self.outer.emit(encoder);
+        if (self.indicator) |indicator| try indicator.emit(encoder);
+        try self.label.emit(encoder);
+        try self.focus.emit(encoder);
+    }
+};
+
+test "components emit resolved visuals in structural order" {
+    const std = @import("std");
+    const Capture = struct {
+        operations: [8]visual.Operation = undefined,
+        len: usize = 0,
+
+        fn append(self: *@This(), operation: visual.Operation) error{Overflow}!void {
+            if (self.len == self.operations.len) return error.Overflow;
+            self.operations[self.len] = operation;
+            self.len += 1;
+        }
+
+        pub fn surface(self: *@This(), value: visual.Surface) !void {
+            try self.append(.{ .surface = value });
+        }
+
+        pub fn text(self: *@This(), value: visual.Text) !void {
+            try self.append(.{ .text = value });
+        }
+    };
+
+    const bounds = visual.Rect{ .x = 4, .y = 8, .w = 80, .h = 24 };
+    var capture = Capture{};
+    try (Button{
+        .background = .{ .bounds = bounds, .color = .rgb(20, 30, 40) },
+        .label = .{
+            .bounds = bounds,
+            .content = "Open",
+            .color = .rgb(220, 220, 220),
+            .font_size = 14,
+        },
+        .focus = .{
+            .bounds = bounds,
+            .color = .rgb(80, 140, 220),
+            .corner_radius = 4,
+            .visible = true,
+        },
+    }).emit(&capture);
+
+    try std.testing.expectEqual(@as(usize, 3), capture.len);
+    try std.testing.expect(capture.operations[0] == .surface);
+    try std.testing.expect(capture.operations[1] == .text);
+    try std.testing.expect(capture.operations[2] == .surface);
+    try std.testing.expectEqual(@as(f32, 2), capture.operations[2].surface.border_width);
+    try std.testing.expectEqual(@as(f32, 2), bounds.x - capture.operations[2].surface.bounds.x);
+}
+
+test "unchecked and unfocused controls emit no hidden operations" {
+    const std = @import("std");
+    const CountingEncoder = struct {
+        surfaces: usize = 0,
+        texts: usize = 0,
+
+        pub fn surface(self: *@This(), _: visual.Surface) !void {
+            self.surfaces += 1;
+        }
+
+        pub fn text(self: *@This(), _: visual.Text) !void {
+            self.texts += 1;
+        }
+    };
+
+    const bounds = visual.Rect{ .x = 0, .y = 0, .w = 16, .h = 16 };
+    const label = Text{
+        .bounds = bounds,
+        .content = "Choice",
+        .color = .rgb(255, 255, 255),
+        .font_size = 14,
+    };
+    const focus = FocusRing{
+        .bounds = bounds,
+        .color = .rgb(0, 120, 255),
+        .corner_radius = 4,
+        .visible = false,
+    };
+    var counter = CountingEncoder{};
+    try (Checkbox{
+        .box = .{ .bounds = bounds, .color = .rgb(30, 30, 30) },
+        .indicator = null,
+        .label = label,
+        .focus = focus,
+    }).emit(&counter);
+
+    try std.testing.expectEqual(@as(usize, 1), counter.surfaces);
+    try std.testing.expectEqual(@as(usize, 1), counter.texts);
+}
+
+test "source boundary excludes core, behavior, and backend concerns" {
+    const std = @import("std");
+    const source = @embedFile("components.zig");
+    const forbidden = [_][]const u8{
+        "@im" ++ "port(\"goop\")",
+        "goop_" ++ "ui",
+        "Node" ++ "Handle",
+        "Widget" ++ "Kind",
+        "Tr" ++ "ee",
+        "Beha" ++ "vior",
+        "Element" ++ "Id",
+        "Action" ++ "Id",
+        "any" ++ "opaque",
+        "std.mem." ++ "Allocator",
+        "call" ++ "back",
+        "Vul" ++ "kan",
+        "Way" ++ "land",
+        "Render" ++ "er",
+    };
+    inline for (forbidden) |name| {
+        try std.testing.expect(std.mem.indexOf(u8, source, name) == null);
+    }
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        std.mem.count(u8, source, "@im" ++ "port(\"goop_"),
+    );
 }

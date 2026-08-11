@@ -7,10 +7,8 @@
 
 const std = @import("std");
 const graphics = @import("goop_graphics_vulkan");
-const present = @import("goop_present_vulkan");
 const render = @import("goop_render_vulkan");
 const snail = @import("goop_snail");
-const display = @import("goop_display");
 
 const vk = graphics.vk;
 
@@ -211,7 +209,10 @@ pub const Offscreen = struct {
         try check(vk.vkCreateFence(dev, &fence_info, null, &fence));
         errdefer vk.vkDestroyFence(dev, fence, null);
 
-        var renderer = try render.Renderer.init(allocator, device.context(), render_pass, text, .{});
+        var renderer = try render.Renderer.init(allocator, device.context(), render_pass, text, .{
+            .frame_slot_count = 1,
+            .attachment_format = format,
+        });
         errdefer renderer.deinit();
 
         return .{
@@ -254,24 +255,20 @@ pub const Offscreen = struct {
         self.* = undefined;
     }
 
-    fn frameTarget(self: *Offscreen) present.FrameTarget {
+    fn renderTarget(self: *Offscreen) graphics.RenderTarget {
         return .{
             .command_buffer = self.cmd,
-            .render_pass = self.render_pass,
-            .framebuffer = self.framebuffer,
             .extent = .{ .width = self.width, .height = self.height },
-            .format = self.format,
-            .frame_index = 0,
-            .image_index = 0,
+            .frame_slot = 0,
         };
     }
 
-    /// Full-redraw path: draw a flat display command stream into the offscreen
+    /// Full-redraw path: draw canonical visual operations into the offscreen
     /// image (render pass clears first) and copy to the readback buffer.
-    pub fn renderPaintList(
+    pub fn renderPreparedVisuals(
         self: *Offscreen,
         text: *snail.TextEngine,
-        commands: []const display.PaintCommand,
+        prepared: *const render.PreparedVisuals,
         clear_rgb: [3]u8,
     ) !void {
         try check(vk.vkResetCommandBuffer(self.cmd, 0));
@@ -297,7 +294,7 @@ pub const Offscreen = struct {
             .pClearValues = &clear,
         });
         vk.vkCmdBeginRenderPass(self.cmd, &rp_begin, vk.VK_SUBPASS_CONTENTS_INLINE);
-        try self.renderer.drawPaintList(self.frameTarget(), text, commands);
+        try self.renderer.drawPreparedVisuals(self.renderTarget(), text, prepared);
         vk.vkCmdEndRenderPass(self.cmd);
 
         try self.copyAndSubmit();

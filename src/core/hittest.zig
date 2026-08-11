@@ -1,13 +1,13 @@
 const std = @import("std");
 const widget = @import("widget.zig");
-const paint = @import("paint.zig");
+const visual_types = @import("visual_types.zig");
 const style = @import("style.zig");
 const geometry = @import("geometry.zig");
 
 const HitState = struct {
     offset_x: f32 = 0,
     offset_y: f32 = 0,
-    clip: ?paint.Rect = null,
+    clip: ?visual_types.Rect = null,
 };
 
 /// Find the topmost interactive widget at (x, y), giving floating popup
@@ -69,6 +69,7 @@ const interactive_kinds = blk: {
     var kinds: [std.meta.fields(Tag).len]InteractiveKind = undefined;
     kinds[@intFromEnum(Tag.container)] = trueInteractive;
     kinds[@intFromEnum(Tag.text)] = falseInteractive;
+    kinds[@intFromEnum(Tag.icon)] = falseInteractive;
     kinds[@intFromEnum(Tag.button)] = trueInteractive;
     kinds[@intFromEnum(Tag.checkbox)] = trueInteractive;
     kinds[@intFromEnum(Tag.radio_button)] = trueInteractive;
@@ -109,7 +110,7 @@ fn falseInteractive(_: widget.WidgetKind) bool {
     return false;
 }
 
-pub fn pointInRect(x: f32, y: f32, rect: paint.Rect) bool {
+pub fn pointInRect(x: f32, y: f32, rect: visual_types.Rect) bool {
     return geometry.pointInRect(x, y, rect);
 }
 
@@ -190,6 +191,7 @@ const visibility_testers = blk: {
     var testers: [std.meta.fields(Tag).len]VisibilityTester = undefined;
     testers[@intFromEnum(Tag.container)] = rectVisible;
     testers[@intFromEnum(Tag.text)] = rectVisible;
+    testers[@intFromEnum(Tag.icon)] = rectVisible;
     testers[@intFromEnum(Tag.button)] = rectVisible;
     testers[@intFromEnum(Tag.checkbox)] = rectVisible;
     testers[@intFromEnum(Tag.radio_button)] = rectVisible;
@@ -248,20 +250,6 @@ fn pointHitsWidget(tree: *const widget.Tree, handle: widget.NodeHandle, x: f32, 
     const node = tree.getConst(handle);
     const local_x = x - state.offset_x;
     const local_y = y - state.offset_y;
-    if (node.widget_type) |widget_type| {
-        return widget_type.hitTest(.{
-            .widget = .{
-                .tree = @constCast(tree),
-                .handle = handle,
-                .node = @constCast(node),
-                .state = node.widget_state,
-                .theme = .{},
-            },
-            .rect = node.layout_rect,
-            .x = local_x,
-            .y = local_y,
-        });
-    }
     return pointHitTester(node.kind)(tree, handle, node, local_x, local_y);
 }
 
@@ -277,6 +265,7 @@ const point_hit_testers = blk: {
     var testers: [std.meta.fields(Tag).len]PointHitTester = undefined;
     testers[@intFromEnum(Tag.container)] = rectPointHit;
     testers[@intFromEnum(Tag.text)] = rectPointHit;
+    testers[@intFromEnum(Tag.icon)] = rectPointHit;
     testers[@intFromEnum(Tag.button)] = rectPointHit;
     testers[@intFromEnum(Tag.checkbox)] = rectPointHit;
     testers[@intFromEnum(Tag.radio_button)] = rectPointHit;
@@ -335,7 +324,7 @@ fn childHitState(node: *const widget.Node, state: HitState) HitState {
     };
 }
 
-fn translatedRect(rect: paint.Rect, state: HitState) paint.Rect {
+fn translatedRect(rect: visual_types.Rect, state: HitState) visual_types.Rect {
     return .{
         .x = rect.x + state.offset_x,
         .y = rect.y + state.offset_y,

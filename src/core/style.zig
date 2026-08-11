@@ -1,20 +1,8 @@
 const std = @import("std");
+const visual = @import("goop_visual");
 
 /// RGBA color, 0–255 per channel.
-pub const Color = struct {
-    r: u8 = 0,
-    g: u8 = 0,
-    b: u8 = 0,
-    a: u8 = 255,
-
-    pub fn rgb(r: u8, g: u8, b: u8) Color {
-        return .{ .r = r, .g = g, .b = b };
-    }
-
-    pub fn rgba(r: u8, g: u8, b: u8, a: u8) Color {
-        return .{ .r = r, .g = g, .b = b, .a = a };
-    }
-};
+pub const Color = visual.Color;
 
 /// Spacing for padding/margin (top, right, bottom, left).
 pub const Edges = struct {
@@ -91,7 +79,7 @@ pub const Style = struct {
     }
 };
 
-/// Fully resolved style — no optional fields, ready for layout/paint.
+/// Fully resolved style — no optional fields, ready for layout and a look.
 /// Structurally identical to `Theme`.
 pub const ResolvedStyle = Theme;
 

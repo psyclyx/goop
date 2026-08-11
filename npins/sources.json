@@ -4,8 +4,8 @@
       "type": "Channel",
       "name": "nixpkgs-unstable",
       "artifact": "nixexprs.tar.xz",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre991389.73c703c22422/nixexprs.tar.xz",
-      "hash": "sha256-bA5oJv7j54PubdUbBlLCwdoK29G2+9sLnc8dDqLQ9YE="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1049336.afb4584a80bb/nixexprs.tar.xz",
+      "hash": "sha256-yZKt042Ab4UNEUq1/VXqSOa1uBT5aAVnub98ekbG5Jw="
     },
     "snail": {
       "type": "GitRelease",
@@ -18,10 +18,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.18.0",
-      "revision": "d9c6096407e367ca08aa85ed8136355060484f58",
-      "url": "https://api.github.com/repos/psyclyx/snail/tarball/refs/tags/v0.18.0",
-      "hash": "sha256-Fz2bO85eY7seuEUkPCwRyEnCHPSD1VGuWfxUU0jjNIU="
+      "version": "v0.19.0",
+      "revision": "34861bf852b7129efaddf65ccdc9f8085149bc7d",
+      "url": "https://api.github.com/repos/psyclyx/snail/tarball/refs/tags/v0.19.0",
+      "hash": "sha256-OK2sLEqZRhio1b5g5sOfGYvtMMkHiZbg/mIvxmQFsBM="
     }
   },
   "version": 8

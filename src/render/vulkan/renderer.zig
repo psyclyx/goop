@@ -3,7 +3,7 @@
 //! recording. Consumes snail's public render contract (`render.records`
 //! instances/batches, `render.target.DrawState`) and the committed
 //! `snail_reflection` push-constant ABI. Modeled on escarghost's vk renderer,
-//! ported to snail 0.18 (its `textPushConstants` from contract.zig).
+//! ported to Snail's public contract (`textPushConstants` in contract.zig).
 
 const std = @import("std");
 const snail = @import("snail");
@@ -31,57 +31,35 @@ const BYTES_PER_INSTANCE: usize = records.BYTES_PER_INSTANCE;
 const QUAD_INDICES = [_]u32{ 0, 1, 2, 0, 2, 3 };
 const INDICES_PER_GLYPH: u32 = QUAD_INDICES.len;
 
-// ── ShapeKind → Family mapping (mirrors snail 0.18 contract.zig) ──
+// ── ShapeKind → Family mapping (mirrors Snail contract.zig) ──
 
 const ShapeKind = records.ShapeKind;
 const target = snail.render.target;
 
-/// The subpixel decision for a text run: `.grayscale` unless subpixel is
-/// requested (`draw_state`'s subpixel order) and dual-source blending is
-/// available.
-pub const TextRenderMode = enum { grayscale, subpixel_dual_source };
-
-pub fn textRenderMode(draw_state: target.DrawState, supports_dual_src: bool) TextRenderMode {
-    if (draw_state.raster.subpixel_order != .none and supports_dual_src) {
-        return .subpixel_dual_source;
-    }
-    return .grayscale;
-}
-
-pub fn familyForKind(kind: ShapeKind, mode: TextRenderMode) Family {
+pub fn familyForKind(kind: ShapeKind) Family {
     return switch (kind) {
-        .regular => switch (mode) {
-            .grayscale => .text,
-            .subpixel_dual_source => .subpixel,
-        },
+        .regular => .text,
         .colr => .colr,
         .path_quadratic => .path_quadratic,
         .path_conic => .path_conic,
         .path => .path,
-        .tt_hinted_text => switch (mode) {
-            .grayscale => .tt_hinted_text,
-            .subpixel_dual_source => .tt_hinted_subpixel,
-        },
-        .autohint => switch (mode) {
-            .grayscale => .autohint,
-            .subpixel_dual_source => .autohint_subpixel,
-        },
+        .tt_hinted_text => .tt_hinted_text,
+        .autohint => .autohint,
     };
 }
 
-/// Build the per-draw push constants for a batch, mirroring snail 0.18
+/// Build the per-draw push constants for a batch, mirroring Snail
 /// contract.zig `textPushConstants`. `atlas_page_texels` is the curve/band
 /// pair returned by the device atlas's `atlasPageTexels()`.
 pub fn pushConstants(
     draw_state: target.DrawState,
     page_base: u32,
     atlas_page_texels: [2]i32,
-    mode: TextRenderMode,
 ) PushConstants {
     return .{
         .mvp = draw_state.mvp.data,
         .viewport = .{ @floatFromInt(draw_state.surface.pixel_width), @floatFromInt(draw_state.surface.pixel_height) },
-        .subpixel_order = @intFromEnum(if (mode == .grayscale) target.SubpixelOrder.none else draw_state.raster.subpixel_order),
+        .subpixel_order = @intFromEnum(target.SubpixelOrder.none),
         .output_srgb = if (draw_state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
         .page_base = @intCast(page_base),
         .coverage_exponent = draw_state.raster.coverage_transfer.shaderExponent(),
@@ -165,7 +143,6 @@ pub const PipelineRenderer = struct {
     device: vk.VkDevice,
     pipeline_layout: vk.VkPipelineLayout,
     pipelines: [FAMILY_COUNT]vk.VkPipeline,
-    supports_dual_src: bool,
     ibo: HostBuffer,
     vbo: HostBuffer,
     slot_bytes: usize,
@@ -180,6 +157,13 @@ pub const PipelineRenderer = struct {
         slot_bytes: usize,
         num_slots: u32,
     ) !PipelineRenderer {
+        if (slot_bytes == 0 or num_slots == 0) return error.InvalidCapacity;
+        const vbo_size = std.math.mul(
+            usize,
+            slot_bytes,
+            num_slots,
+        ) catch return error.InvalidCapacity;
+
         // ── Pipeline layout ──
         const pc_range = vk.VkPushConstantRange{
             .stageFlags = PUSH_CONSTANT_STAGES,
@@ -208,7 +192,6 @@ pub const PipelineRenderer = struct {
         @memcpy(ibo.bytes()[0..ibo_size], std.mem.asBytes(&QUAD_INDICES));
 
         // ── Vertex ring buffer ──
-        const vbo_size = slot_bytes * num_slots;
         var vbo = try HostBuffer.init(ctx, vbo_size, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         errdefer vbo.deinit(ctx.device);
 
@@ -216,10 +199,6 @@ pub const PipelineRenderer = struct {
         var pipelines: [FAMILY_COUNT]vk.VkPipeline = [_]vk.VkPipeline{null} ** FAMILY_COUNT;
         for (std.enums.values(Family)) |family| {
             const r = shaders.recipe(family);
-            if (r.requires_dual_src and !ctx.supports_dual_source_blend) {
-                // Skip subpixel families if the device lacks dual-source blend.
-                continue;
-            }
             pipelines[@intFromEnum(family)] = try buildPipeline(ctx, render_pass, pipeline_layout, r);
         }
         errdefer {
@@ -230,7 +209,6 @@ pub const PipelineRenderer = struct {
             .device = ctx.device,
             .pipeline_layout = pipeline_layout,
             .pipelines = pipelines,
-            .supports_dual_src = ctx.supports_dual_source_blend,
             .ibo = ibo,
             .vbo = vbo,
             .slot_bytes = slot_bytes,
@@ -245,8 +223,8 @@ pub const PipelineRenderer = struct {
         self.vbo.deinit(self.device);
     }
 
-    pub fn beginFrame(self: *PipelineRenderer, frame_slot: u32) void {
-        self.cur_slot_base = (frame_slot % self.num_slots) * self.slot_bytes;
+    pub fn beginFrame(self: *PipelineRenderer, frame_slot: u32) !void {
+        self.cur_slot_base = try frameSlotBase(frame_slot, self.num_slots, self.slot_bytes);
         self.cursor = 0;
     }
 
@@ -304,15 +282,14 @@ pub const PipelineRenderer = struct {
         vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, &desc_set, 0, null);
 
         // Per batch: bind pipeline, push constants, bind vertex buffer, draw.
-        const text_mode = textRenderMode(draw_state, self.supports_dual_src);
         for (batches) |batch| {
-            const family = familyForKind(batch.kind, text_mode);
+            const family = familyForKind(batch.kind);
             const pipeline = self.pipelines[@intFromEnum(family)];
             if (pipeline == null) continue;
 
             vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
-            const pc = pushConstants(draw_state, batch.page_base, atlas_page_texels, text_mode);
+            const pc = pushConstants(draw_state, batch.page_base, atlas_page_texels);
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, PUSH_CONSTANT_STAGES, 0, PUSH_CONSTANT_SIZE, &pc);
 
             const vbo_offset: vk.VkDeviceSize = base + batch.first_instance * BYTES_PER_INSTANCE;
@@ -322,6 +299,33 @@ pub const PipelineRenderer = struct {
         }
     }
 };
+
+fn frameSlotBase(frame_slot: u32, frame_slot_count: u32, slot_bytes: usize) !usize {
+    if (frame_slot >= frame_slot_count) return error.InvalidFrameSlot;
+    return @as(usize, frame_slot) * slot_bytes;
+}
+
+test "frame slots outside the configured ring are rejected" {
+    try std.testing.expectEqual(@as(usize, 4096), try frameSlotBase(1, 2, 4096));
+    try std.testing.expectError(error.InvalidFrameSlot, frameSlotBase(2, 2, 4096));
+}
+
+test "renderer forces grayscale even when a caller requests LCD order" {
+    const draw_state = target.DrawState{
+        .mvp = snail.Mat4.identity,
+        .surface = .{
+            .pixel_width = 640,
+            .pixel_height = 480,
+            .encoding = .srgb,
+        },
+        .raster = .{ .subpixel_order = .rgb },
+    };
+    const constants = pushConstants(draw_state, 0, .{ 1, 1 });
+    try std.testing.expectEqual(@as(i32, @intFromEnum(target.SubpixelOrder.none)), constants.subpixel_order);
+    try std.testing.expectEqual(Family.text, familyForKind(.regular));
+    try std.testing.expectEqual(Family.tt_hinted_text, familyForKind(.tt_hinted_text));
+    try std.testing.expectEqual(Family.autohint, familyForKind(.autohint));
+}
 
 fn buildPipeline(ctx: graphics.Context, render_pass: vk.VkRenderPass, layout: vk.VkPipelineLayout, r: shaders.PipelineRecipe) !vk.VkPipeline {
     if (r.vert_spv.len == 0 or r.frag_spv.len == 0) return error.EmptyShader;
@@ -348,7 +352,7 @@ fn buildPipeline(ctx: graphics.Context, render_pass: vk.VkRenderPass, layout: vk
     };
 
     // Vertex input (instance-rate, binding 0, 72-byte stride): the 7
-    // attributes of snail 0.18 contract.zig `vertexInputAttributes`.
+    // attributes of Snail contract.zig `vertexInputAttributes`.
     const binding_desc = vk.VkVertexInputBindingDescription{
         .binding = 0,
         .stride = @intCast(BYTES_PER_INSTANCE),
@@ -396,12 +400,11 @@ fn buildPipeline(ctx: graphics.Context, render_pass: vk.VkRenderPass, layout: vk
         .rasterizationSamples = vk.VK_SAMPLE_COUNT_1_BIT,
     };
 
-    // Blend: shader outputs are premultiplied by coverage, so the src factor
-    // stays ONE; subpixel families blend dual-source.
+    // Grayscale shader outputs are premultiplied by coverage.
     const blend_attachment = vk.VkPipelineColorBlendAttachmentState{
         .blendEnable = vk.VK_TRUE,
         .srcColorBlendFactor = vk.VK_BLEND_FACTOR_ONE,
-        .dstColorBlendFactor = if (r.blend == .dual_source) vk.VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR else vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .dstColorBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
         .colorBlendOp = vk.VK_BLEND_OP_ADD,
         .srcAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE,
         .dstAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,

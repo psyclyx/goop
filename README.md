@@ -2,190 +2,250 @@
 
 [![ci](https://github.com/psyclyx/goop/actions/workflows/ci.yml/badge.svg)](https://github.com/psyclyx/goop/actions/workflows/ci.yml)
 
-Retained-mode GUI architecture for Zig with explicit component, driver,
-display, text, Vulkan, presentation, and Wayland modules.
+Goop is a set of composable retained-UI libraries for Zig. It does not own the
+application model, event loop, window, frame lifecycle, or rendering pipeline.
 
 > [!WARNING]
-> `goop` is pre-1.0. Widgets land quickly and the API is still being shaped.
-> The shipped demos are reference embedders, not finished applications.
+> Goop is pre-1.0. The seams described here are implemented, but the widget and
+> C APIs can still change.
 
-## What it is
+## Pick the layers you need
 
-Components are pure declarative values. The retained driver owns layout,
-interaction, stable display identities, and damage generation. Renderers
-consume backend-neutral display deltas; the Vulkan renderer, swapchain
-presenter, and Wayland platform are separate replaceable modules.
+- A game HUD can use `goop` for interaction and layout, visit resolved
+  elements with a custom look, and write straight into the game's renderer.
+- A game tool can add `goop_components`, a small set of allocation-free visual
+  building blocks, while retaining its own look and renderer.
+- A desktop-style tool can add `goop_desktop` for commands and shortcuts, and
+  optionally `goop_chrome` for the stock look.
+- The shipped demos compose the full optional stack: desktop semantics, core,
+  Chrome, Snail text preparation, Vulkan rendering and presentation, and
+  Wayland.
 
-In-tree:
-
-- declarative UI and dumb components in `goop_ui` / `goop_components`
-- retained interaction and damage tracking in `goop_driver`
-- Snail 0.18 CPU text preparation in `goop_snail`
-- separated Vulkan graphics, rendering, and presentation modules
-- renderer-free Wayland platform module plus a thin Vulkan WSI bridge
-- preserved widget showcase and filesystem browser, each split into
-  UI/controller/composition modules
-- installable C API in [include/goop.h](include/goop.h)
-
-See [docs/architecture.md](docs/architecture.md) for the enforced dependency
+There is no required rendering adapter or application framework between these
+choices. See [the architecture guide](docs/architecture.md) for the dependency
 graph and ownership rules.
 
-## Widgets
+## Core data flow
 
-container, spacer, text, button, checkbox, radio button, tree item, dropdown,
-popup, tooltip, menu bar, menu, menu item, list box, selectable, grid
-selector, grid item, table, table row, table cell, drag value, spinbox,
-slider, text input, tab bar, tab item, splitter, scroll area, toolbar, status
-bar.
-
-For the engineering snapshot, priorities, and known rough edges, see
-[STATUS.md](STATUS.md).
-
-## Build
-
-Use `nix-shell -A shell` first. The shell pins Zig 0.16.0 and the demo's native
-dependencies (`harfbuzz`, `fontconfig`, Noto fonts). Building the Vulkan
-renderer also runs `slangc` (shader-slang, in the shell) to compile goop's
-SPIR-V from snail's slang sources.
-
-```sh
-nix-shell -A shell
-zig build test               # unit tests
-zig build                    # library + demo
-zig build demo               # build and run the Wayland demo
-zig build file-manager-demo  # build and run the file-browser Wayland demo
-zig build c-example          # build and run the headless C API example
-zig build install            # install libraries, both Vulkan demos, and goop.h
-```
-
-The core library only needs libc and the vendored `clay` C source. The demos
-additionally need Wayland, Vulkan, `xkbcommon`, and a `.ttf` font. They
-try `GOOP_DEMO_FONT_PATH` first, then `fontconfig`, then a few common system
-paths.
-
-## Zig usage
+The caller builds a tree, supplies normalized `goop_input.Event` values, runs
+layout, and receives an ordered borrowed `ControlEvents` batch:
 
 ```zig
 const goop = @import("goop");
 
-var ctx = try goop.Context.init(allocator, .{ .width = 1280, .height = 720 });
-defer ctx.deinit();
-
-const root = try ctx.tree.addRoot(.{ .container = .{ .direction = .column } });
-const button = try ctx.tree.addChild(root, .{ .button = .{ .label = "Run" } });
-
-// One frame: clear last-frame flags, queue input, layout, dispatch, paint.
-ctx.clearClickedFlags();
-try ctx.pushEvent(.{ .mouse_move = .{ .x = 96, .y = 48 } });
-ctx.doLayout(null);
-ctx.processEvents();
-const paint_list = try ctx.generatePaintList();
-_ = paint_list; // Hand this to your renderer.
-
-// Read interaction state through the per-node snapshot.
-if (ctx.tree.node(button)) |view| {
-    if (view.clicked) {
-        // Handle the click.
-    }
-    switch (view.kind) {
-        .button => |b| std.debug.print("label={s}\n", .{b.label}),
-        else => {},
-    }
-}
-```
-
-`Context` is the single-tree convenience layer over `Runtime`: every method
-is a thin forward to `Runtime` with the bundled `Tree`/`Theme`/`Clipboard`
-supplied implicitly. Embedders that drive several trees from one runtime
-(e.g. main window plus detached popup surfaces) wire up `Runtime` directly
-with caller-owned `Tree`s.
-
-Runtime contract:
-
-- Build the tree through `ctx.tree.addRoot` / `ctx.tree.addChild` with a
-  `WidgetDesc` payload. `WidgetDesc` exposes only the embedder-supplied
-  fields; per-frame internal state (drag rects, marquee, editor buffers)
-  lives behind each kind's `internal` substruct and is owned by
-  dispatch/paint.
-- Mutate widgets after construction through `ctx.setStyle(handle, ...)`,
-  `ctx.updateWidget(handle, desc)`, `ctx.mutateKind(handle)`, or
-  `ctx.setCustomPaint(handle, ...)`. These invalidate the layout/paint
-  caches; reaching into `ctx.tree.get(handle)` directly does not.
-- Add embedder-defined controls with `WidgetType` via
-  `ctx.addRootWidget` / `ctx.addChildWidget`. Hooks cover layout,
-  paint, hit testing, focus, pointer/key/text input, activation,
-  per-frame reset, and teardown; `WidgetRegistry` can own dynamic
-  widget types with stable addresses.
-- Use `WidgetDesc.custom` for simple custom paint commands at resolved
-  widget bounds.
-- Read state through `ctx.tree.node(handle)`, which returns a `NodeView`
-  snapshot bundling the layout rect, cross-kind per-frame flags
-  (`clicked`, `changed`, `toggled`, `drop_received`, `secondary_clicked`),
-  and the kind-specific `WidgetView`. `clearClickedFlags()` resets the
-  per-frame flags at the start of each frame.
-- For whole-tree reads, `ctx.tree.snapshot(allocator)` returns live
-  `{ handle, node }` snapshots in storage order. The array is caller-owned;
-  string slices inside each `NodeView` still borrow from the tree.
-- Snapshot per-frame pointer/focus/drop state with `ctx.frame()`.
-- Pass a `goop.TextMeasureCtx` into `doLayout()` for accurate text
-  sizing; pass `null` for a rough character-width estimate.
-- `pushEvent` coalesces consecutive `mouse_move` and `mouse_scroll`
-  events into the latest position / summed delta. Push a non-mouse event
-  between samples if your gesture math depends on every move.
-- Returned `PaintList` values borrow from the runtime; they stay valid
-  until the next paint regeneration or context destruction.
-
-## C API
-
-`#include "goop.h"` for the C surface. The C layer mirrors the retained
-runtime — same `Context` flow, same widget descriptors, same tagged read
-view.
-
-```c
-#include "goop.h"
-
-goop_context_t *ctx = goop_context_create(&(goop_context_options_t){
+var context = try goop.Context.init(allocator, .{
     .width = 1280,
     .height = 720,
 });
+defer context.deinit();
 
-goop_node_handle_t root;
-goop_context_add_root(ctx, &(goop_widget_t){
-    .kind = GOOP_WIDGET_CONTAINER,
-    .data.container = { .direction = GOOP_DIRECTION_COLUMN },
-}, &root);
+const root = try context.tree.addRoot(.{ .container = .{} });
+_ = try context.tree.addChildControl(root, .{
+    .identity = .{
+        .element_id = .init(1),
+        .action_id = .init(10),
+    },
+    .widget = .{ .button = .{ .label = "Open" } },
+});
 
-goop_node_handle_t button;
-goop_context_add_child(ctx, root, &(goop_widget_t){
-    .kind = GOOP_WIDGET_BUTTON,
-    .data.button = { .label = goop_string_from_cstr("Run") },
-}, &button);
+context.doLayout(text_measure); // null selects the rough fallback
+try context.pushEvent(.{ .mouse_move = .{ .x = 96, .y = 48 } });
+const events = try context.processEvents();
 
-goop_context_do_layout(ctx, NULL);
-goop_context_process_events(ctx);
-
-goop_node_view_t view;
-if (goop_context_node(ctx, button, &view) && view.kind.kind == GOOP_WIDGET_BUTTON) {
-    /* view.clicked, view.kind.data.button.label */
-}
-
-goop_paint_list_t paint_list;
-goop_context_generate_paint_list(ctx, &paint_list);
-
-goop_context_destroy(ctx);
+for (events.items) |event| switch (event) {
+    .activated => |activation| {
+        if (activation.action) |action| {
+            if (action == goop.ActionId.init(10)) openProject();
+        }
+    },
+    .text_changed => |change| updateName(events.text(change)),
+    .selection_changed => |change| updateSelection(events.selection(change)),
+    else => {},
+};
 ```
 
-The installed header covers context lifecycle, descriptor-based widget
-add/update/style/remove, platform-neutral event push (with a `mods` bitmask
-on key/mouse events), layout and paint-list generation, the tagged read view,
-per-frame snapshots, and optional clipboard and text-measure callbacks.
+`ElementId` is stable application identity; `ActionId` is stable command
+identity. `NodeHandle` is only a generation-checked structural locator used
+while constructing or projecting a tree. Application models and controllers
+should retain semantic IDs, not handles.
 
-For a complete headless example, see [examples/c/basic.c](examples/c/basic.c)
-and run it with `zig build c-example`.
+Input is one exact, platform-neutral union: mouse movement and buttons,
+scrolling, logical keys plus raw scancodes and modifier snapshots, Unicode
+text, focus, and resize. Consecutive queued mouse movements coalesce to the
+latest sample; consecutive scroll samples coalesce by summing their deltas.
+
+Semantic output preserves occurrence order and includes activation, secondary
+activation, scalar/index/column values, toggles, UTF-8 text, sorting,
+selection, scrolling, and drag/drop. The batch and its text/selection payloads
+borrow runtime storage until the next processing call or runtime destruction;
+copy values that must survive that boundary. Capacity grows explicitly when
+needed and is retained for later batches.
+
+One `Runtime` is one interaction/layout domain. `Context` owns one `Tree` and
+provides the usual composition. Separate windows or independently focused UI
+domains use separate contexts.
+
+## Custom game look and renderer
+
+`visitResolved` is generic, statically dispatched, allocation-free, and
+depth-first in logical sibling order. Its exact `enter(ResolvedElement)` and
+`leave(ResolvedElement)` calls preserve hierarchy so a look can emit balanced
+clips without reconstructing a tree. Each element contains semantic IDs,
+parent ID, bounds, resolved style, widget content/state, and interaction state,
+but no retained storage handle. The visitor must not mutate the traversed tree;
+borrowed widget strings and structural position are valid for the duration of
+the call.
+
+The visitor can emit directly into the game's render queue. This example uses
+one of Goop's dumb visual components; a custom look can call the encoder
+methods directly instead. The complete executable version is
+[examples/game_embed.zig](examples/game_embed.zig).
+
+```zig
+const goop = @import("goop");
+const components = @import("goop_components");
+const visual = @import("goop_visual");
+
+const GameEncoder = struct {
+    queue: *GameUiQueue,
+
+    pub fn pushClip(self: *@This(), rect: visual.Rect) !void {
+        try self.queue.pushClip(rect);
+    }
+    pub fn popClip(self: *@This()) !void {
+        try self.queue.popClip();
+    }
+    pub fn surface(self: *@This(), value: visual.Surface) !void {
+        try self.queue.addSurface(value);
+    }
+    pub fn text(self: *@This(), value: visual.Text) !void {
+        try self.queue.addText(value);
+    }
+    pub fn icon(self: *@This(), value: visual.Icon) !void {
+        try self.queue.addIcon(value);
+    }
+    pub fn image(self: *@This(), value: visual.Image) !void {
+        try self.queue.addImage(value);
+    }
+    pub fn custom(self: *@This(), value: visual.Custom) !void {
+        try self.queue.addGameVisual(value);
+    }
+};
+
+const GameLook = struct {
+    encoder: *GameEncoder,
+
+    pub fn enter(self: *@This(), element: goop.ResolvedElement) !void {
+        switch (element.widget) {
+            .button => |button| try (components.Button{
+                .background = .{
+                    .bounds = element.bounds,
+                    .color = if (element.pressed)
+                        element.style.bg_active
+                    else if (element.hovered)
+                        element.style.bg_hover
+                    else
+                        element.style.bg,
+                    .border_color = element.style.border,
+                    .border_width = element.style.border_width,
+                    .corner_radius = element.style.border_radius,
+                },
+                .label = .{
+                    .bounds = element.bounds,
+                    .content = button.label,
+                    .color = element.style.fg,
+                    .font_size = element.style.font_size,
+                    .text_align = .center,
+                },
+                .focus = .{
+                    .bounds = element.bounds,
+                    .color = element.style.focus_ring,
+                    .corner_radius = element.style.border_radius,
+                    .visible = element.focused,
+                },
+            }).emit(self.encoder),
+            else => {},
+        }
+    }
+
+    pub fn leave(_: *@This(), _: goop.ResolvedElement) void {}
+};
+
+var encoder = GameEncoder{ .queue = &game.ui_queue };
+var look = GameLook{ .encoder = &encoder };
+try context.visitResolved(&look);
+```
+
+The structural visual contract is precisely seven generic methods:
+`pushClip`, `popClip`, `surface`, `text`, `icon`, `image`, and `custom`. Image
+operations borrow straight-alpha sRGBA8 pixels identified by an application
+resource ID and revision; decoding and lifetime remain caller-owned. The seam owns no
+allocator, GPU objects, resource lookup, or frame lifecycle. The optional
+`goop_visual.Recorder` stores the same operations when retained recording is
+useful; direct encoding does not require it.
+
+## Optional stock Chrome
+
+Chrome is a caller-owned stock look. It is separate from core behavior and
+emits the same backend-neutral visual vocabulary:
+
+```zig
+const chrome_module = @import("goop_chrome");
+
+var chrome = chrome_module.Chrome.init(allocator);
+defer chrome.deinit();
+
+// A changed core revision, text-measure capability, or scope may allocate.
+_ = try chrome.prepare(context.chromeState(), .{});
+
+// The matching cached preparation is replayed into the game encoder without
+// allocation or a second scene/protocol conversion.
+try chrome.emit(context.chromeState(), .{}, &encoder);
+```
+
+`prepare` returns a borrowed `goop_visual.List`. A matching cache hit reuses
+the stored operations without allocating. Dirty preparation may allocate and
+invalidates an older borrowed list. `invalidate` and `deinit` explicitly
+discard Chrome-owned storage. Core owns neither the cache nor the stock look.
+
+## Optional native stack
+
+The bundled backend is split at native ownership boundaries:
+
+- `goop_snail` prepares text/vector data without owning a window.
+- `goop_graphics_vulkan` owns Vulkan instance/device mechanism and defines the
+  minimal `RenderTarget` (`command_buffer`, `extent`, `frame_slot`).
+- `goop_render_vulkan` owns UI rendering resources and exposes explicit
+  `prepareVisuals`, `updateVisualResources`, and `drawPreparedVisuals` phases.
+- `goop_present_vulkan` owns the swapchain, render pass, synchronization, and
+  frame lifecycle, and produces a `RenderTarget`.
+- `goop_platform_wayland` owns a Wayland window and platform events but knows
+  nothing about Vulkan or Goop core.
+- `goop_wayland_vulkan` is the sole Wayland/Vulkan WSI join.
+
+The demos' composition roots show all of these calls explicitly; none is
+required by a game that already has a window and renderer.
+
+Font and image decoding are likewise composition policy. The desktop demos ask
+native Fontconfig for a primary face, explicit emoji face, and priority-ordered
+script fallback chain, then pass the
+borrowed font bytes to `goop_snail`. Games can pass packaged faces instead and
+never link Fontconfig. Text placement supplies an explicit world-to-device
+transform so Snail can choose ppem-specific TrueType records and snap glyph
+origins to the device grid. Layout's native-em shapes are cached separately
+from TT render shapes, whose keys include the exact device ppem; TT misses use
+Snail's prepare-advances/reshape/prepare-geometry sequence. The bundled Vulkan
+path renders grayscale coverage only; it neither compiles LCD shader families
+nor enables dual-source blending. Snail color-bitmap strikes and ordinary
+visual images share the renderer-neutral `goop_image.Decoder` contract but use
+independent caches/atlases. The native demo composition supplies PNG, JPEG,
+and WebP decoding with libspng, libjpeg-turbo, and libwebp; games may supply
+their existing asset decoder.
 
 ## Using as a Zig dependency
 
-Add `goop` to your `build.zig.zon`:
+Add Goop to `build.zig.zon`, then request only the package modules that the
+application uses:
 
 ```zig
 .dependencies = .{
@@ -193,47 +253,53 @@ Add `goop` to your `build.zig.zon`:
 },
 ```
 
-Build a module rooted at `src/root.zig` and pull in the vendored C source:
-
 ```zig
-const goop_dep = b.dependency("goop", .{});
-
-const goop_mod = b.createModule(.{
-    .root_source_file = goop_dep.path("src/root.zig"),
+const goop_dep = b.dependency("goop", .{
     .target = target,
     .optimize = optimize,
-    .link_libc = true,
 });
-goop_mod.addIncludePath(goop_dep.path("include"));
-goop_mod.addIncludePath(goop_dep.path("vendor/clay"));
-goop_mod.addCSourceFile(.{ .file = goop_dep.path("vendor/clay/clay.c") });
 
-exe.root_module.addImport("goop", goop_mod);
+exe.root_module.addImport("goop", goop_dep.module("goop"));
+exe.root_module.addImport("goop_visual", goop_dep.module("goop_visual"));
+exe.root_module.addImport("goop_image", goop_dep.module("goop_image"));
+exe.root_module.addImport(
+    "goop_components",
+    goop_dep.module("goop_components"),
+);
+
+// Add these only when the application chooses their policy.
+exe.root_module.addImport("goop_desktop", goop_dep.module("goop_desktop"));
+exe.root_module.addImport("goop_chrome", goop_dep.module("goop_chrome"));
 ```
 
-The core does not depend on `snail`. The bundled demos do, because they use
-`snail` for text measurement and rendering.
+Other exported optional modules are `goop_input`, `goop_ui`, `goop_snail`,
+`goop_graphics_vulkan`, `goop_render_vulkan`, `goop_present_vulkan`,
+`goop_platform_wayland`, and `goop_wayland_vulkan`.
 
-## Demos
+## Build and examples
 
-[demo/showcase/app.zig](demo/showcase/app.zig) is the small composition root
-for the original widget showcase. Its tree construction and behavior live in
-separate view and controller modules.
-
-[demo/file_manager/app.zig](demo/file_manager/app.zig) is the corresponding
-composition root for the original filesystem browser. Browser state and
-logic do not own a window, Vulkan object, renderer, or swapchain. A shared
-paint bridge turns the established backend-neutral widget paint list into
-retained display deltas, and the application sends those deltas to the
-persistent Vulkan composition target.
+Use `nix-shell -A shell` first. The shell pins Zig 0.16.0 and provides the
+native dependencies used by the optional demos and Vulkan backend. Native image
+decoding is demo composition, not a Goop library dependency; pass
+`-Ddemo-image-codecs=false` to typecheck/build the demos without those codecs.
 
 ```sh
-nix-shell -A shell --run 'zig build demo'
-nix-shell -A shell --run 'zig build file-manager-demo'
+zig build test                    # all unit, contract, and C example tests
+zig build test-core               # renderer-free core
+zig build test-visual             # structural visual contract
+zig build test-fonts              # Fontconfig fallback + hinted placement
+zig build test-image-codecs       # native PNG/JPEG/WebP decoder contract
+zig build test-chrome             # optional stock look
+zig build test-file-manager       # browser model/projection seams
+zig build build-demo              # build the Vulkan widget showcase
+zig build build-file-manager-demo # build the full file-browser demo
+zig build demo                    # run the showcase on Wayland/Vulkan
+zig build file-manager-demo       # run the file browser on Wayland/Vulkan
+zig build c-example               # core-only C example
+zig build c-chrome-example        # caller-owned Chrome C example
+zig build game-embed-example      # core/components into a game-owned queue
 ```
 
-## Docs
-
-- [STATUS.md](STATUS.md) — current snapshot, priorities, known issues
-- [docs/DESIGN.md](docs/DESIGN.md) — architecture and constraints
-- [docs/C_API.md](docs/C_API.md) — C embedding flow, lifetimes, example notes
+See [docs/C_API.md](docs/C_API.md) for C ownership and lifetime details,
+[docs/DESIGN.md](docs/DESIGN.md) for the core contracts, and
+[STATUS.md](STATUS.md) for the current verified snapshot.

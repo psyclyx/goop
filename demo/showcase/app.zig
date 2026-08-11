@@ -2,13 +2,13 @@
 
 const std = @import("std");
 const goop = @import("goop");
-const display = @import("goop_display");
+const chrome_module = @import("goop_chrome");
 const platform = @import("goop_platform_wayland");
 const text_module = @import("demo_text");
-const paint_convert = @import("paint_convert");
 const gpu_module = @import("demo_gpu");
 const view = @import("showcase_view");
 const controller = @import("showcase_controller");
+const ids = @import("showcase_ids");
 
 const allocator = std.heap.smp_allocator;
 
@@ -70,12 +70,15 @@ pub fn main(init: std.process.Init) !void {
 
     var context = try goop.Context.init(allocator, .{ .width = 800, .height = 600 });
     defer context.deinit();
+    var chrome = chrome_module.Chrome.init(allocator);
+    defer chrome.deinit();
     var clipboard = Clipboard{};
     defer clipboard.deinit();
     context.setClipboard(clipboard.api());
 
-    const handles = try view.build(&context);
+    try view.build(&context);
     var model = controller.Model{};
+    defer model.deinit(allocator);
     var gpu = try gpu_module.Gpu.init(
         allocator,
         &window,
@@ -96,8 +99,8 @@ pub fn main(init: std.process.Init) !void {
                 &gpu,
                 &text,
                 &context,
+                &chrome,
                 &model,
-                handles,
                 &measure_context,
                 &loop,
             );
@@ -192,27 +195,41 @@ fn draw(
     gpu: *gpu_module.Gpu,
     text: *text_module.Text,
     context: *goop.Context,
+    chrome: *chrome_module.Chrome,
     model: *controller.Model,
-    handles: view.Handles,
     measure_context: *const goop.TextMeasureCtx,
     loop: *Loop,
 ) !void {
     loop.dirty = false;
-    context.clearClickedFlags();
     context.doLayout(measure_context);
-    context.processEvents();
-    controller.update(model, context, handles);
+    const events = try context.processEvents();
+    try controller.update(model, allocator, events);
+    const popup = model.context_popup;
+    view.applyPopupProjection(
+        context,
+        ids.element.context_popup,
+        popup.visible,
+        popup.x,
+        popup.y,
+    );
     context.doLayout(measure_context);
 
-    const paint_list = try context.generatePaintList();
-    const commands = try paint_convert.convert(allocator, paint_list, 1);
-    defer allocator.free(commands);
+    const paint_list = try chrome.prepare(context.chromeState(), .{});
+    const logical_to_physical_scale: f32 = 1;
+    var prepared = try gpu.renderer.prepareVisuals(
+        allocator,
+        &text.engine,
+        paint_list.commands,
+        logical_to_physical_scale,
+    );
+    defer prepared.deinit();
+    try gpu.renderer.updateVisualResources(&text.engine);
 
     const target = try gpu.beginFrame(&text.engine, clear_color) orelse {
         loop.dirty = true;
         return;
     };
-    try gpu.renderer.drawPaintList(target, &text.engine, commands);
+    try gpu.renderer.drawPreparedVisuals(target, &text.engine, &prepared);
     window.requestFrame();
     try gpu.presenter.endFrame();
     loop.frame_pending = true;
@@ -268,5 +285,4 @@ fn monotonicNs(io: std.Io) u64 {
 test "the showcase composition root does not flatten subsystem owners" {
     try std.testing.expect(!@hasField(Loop, "renderer"));
     try std.testing.expect(!@hasField(Loop, "window"));
-    _ = display;
 }

@@ -18,6 +18,7 @@ const focusable_kinds = blk: {
     var kinds: [std.meta.fields(Tag).len]FocusableKind = undefined;
     kinds[@intFromEnum(Tag.container)] = neverFocusable;
     kinds[@intFromEnum(Tag.text)] = neverFocusable;
+    kinds[@intFromEnum(Tag.icon)] = neverFocusable;
     kinds[@intFromEnum(Tag.button)] = alwaysFocusable;
     kinds[@intFromEnum(Tag.checkbox)] = alwaysFocusable;
     kinds[@intFromEnum(Tag.radio_button)] = alwaysFocusable;
@@ -63,17 +64,7 @@ fn customFocusable(kind: widget.WidgetKind) bool {
 }
 
 pub fn nodeIsFocusable(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
-    const node = tree.getConst(handle);
-    if (node.widget_type) |widget_type| {
-        return widget_type.focusable(.{
-            .tree = @constCast(tree),
-            .handle = handle,
-            .node = @constCast(node),
-            .state = node.widget_state,
-            .theme = .{},
-        });
-    }
-    return isFocusable(node.kind);
+    return isFocusable(tree.getConst(handle).kind);
 }
 
 /// Find the next focusable widget in tree order after `current`.

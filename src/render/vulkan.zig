@@ -6,8 +6,7 @@
 
 const std = @import("std");
 const graphics = @import("goop_graphics_vulkan");
-const display = @import("goop_display");
-const present = @import("goop_present_vulkan");
+const visual = @import("goop_visual");
 const goop_snail = @import("goop_snail");
 const snail = @import("snail");
 const DeviceAtlas = @import("vulkan/device_atlas.zig").DeviceAtlas;
@@ -17,13 +16,24 @@ const target_mod = snail.render.target;
 pub const Renderer = struct {
     allocator: std.mem.Allocator,
     atlas: DeviceAtlas,
+    images: goop_snail.ImageEngine,
     pipelines: PipelineRenderer,
     instances: []goop_snail.Instance,
     batches: []goop_snail.DrawBatch,
     binding: goop_snail.Binding,
-    clip_stack: std.ArrayListUnmanaged(display.Rect) = .empty,
+    image_binding: goop_snail.Binding,
+    uploaded_atlas_identity: goop_snail.AtlasIdentity,
+    uploaded_image_atlas_identity: goop_snail.AtlasIdentity,
+    attachment_format: graphics.vk.VkFormat,
+    max_images: usize,
+    max_image_width: u32,
+    max_image_height: u32,
+    clip_stack: [64]visual.Rect = undefined,
+    clip_depth: usize = 0,
 
     pub const Options = struct {
+        frame_slot_count: u32,
+        attachment_format: graphics.vk.VkFormat,
         max_instances: usize = 65_536,
         max_bindings: u32 = 8,
         layer_info_height: u32 = 256,
@@ -39,7 +49,20 @@ pub const Renderer = struct {
         text: *const goop_snail.TextEngine,
         options: Options,
     ) !Renderer {
-        if (options.max_instances == 0) return error.InvalidCapacity;
+        if (options.frame_slot_count == 0 or options.max_instances == 0 or
+            options.max_images == 0 or options.max_image_width == 0 or
+            options.max_image_height == 0)
+        {
+            return error.InvalidCapacity;
+        }
+        const frame_slot_bytes = std.math.mul(
+            usize,
+            options.max_instances,
+            snail.render.records.BYTES_PER_INSTANCE,
+        ) catch return error.InvalidCapacity;
+
+        var images = try goop_snail.ImageEngine.init(allocator, text.pool());
+        errdefer images.deinit();
 
         var atlas = try DeviceAtlas.init(allocator, device_context, text.pool(), .{
             .max_bindings = options.max_bindings,
@@ -50,15 +73,15 @@ pub const Renderer = struct {
         });
         errdefer atlas.deinit();
 
-        var bindings: [1]goop_snail.Binding = undefined;
-        try atlas.upload(allocator, &.{text.atlas()}, &bindings);
+        var bindings: [2]goop_snail.Binding = undefined;
+        try atlas.upload(allocator, &.{ text.atlas(), images.atlas() }, &bindings);
 
         var pipelines = try PipelineRenderer.init(
             device_context,
             render_pass,
             atlas.descriptorSetLayout(),
-            options.max_instances * snail.render.records.BYTES_PER_INSTANCE,
-            present.max_frames_in_flight,
+            frame_slot_bytes,
+            options.frame_slot_count,
         );
         errdefer pipelines.deinit();
 
@@ -70,117 +93,133 @@ pub const Renderer = struct {
         return .{
             .allocator = allocator,
             .atlas = atlas,
+            .images = images,
             .pipelines = pipelines,
             .instances = instances,
             .batches = batches,
             .binding = bindings[0],
+            .image_binding = bindings[1],
+            .uploaded_atlas_identity = text.atlasIdentity(),
+            .uploaded_image_atlas_identity = images.atlasIdentity(),
+            .attachment_format = options.attachment_format,
+            .max_images = options.max_images,
+            .max_image_width = options.max_image_width,
+            .max_image_height = options.max_image_height,
         };
     }
 
     pub fn deinit(self: *Renderer) void {
-        self.clip_stack.deinit(self.allocator);
         self.pipelines.deinit();
         self.atlas.deinit();
+        self.images.deinit();
         self.allocator.free(self.batches);
         self.allocator.free(self.instances);
         self.* = undefined;
     }
 
-    /// Draw one resolved paint command clipped to `visible`.
-    fn drawResolvedCommand(
+    /// Begin replay of a stream prepared by `prepareVisuals`. This is private:
+    /// prepared text is tied to the exact retained operation stream and must
+    /// not be paired by convention with arbitrary direct-look output.
+    fn beginPreparedReplay(
         self: *Renderer,
-        target: present.FrameTarget,
+        target: graphics.RenderTarget,
         text: *goop_snail.TextEngine,
-        paint: display.PaintCommand,
-        visible: display.Rect,
-    ) !void {
-        switch (paint) {
-            .surface => |surface| try drawSurface(self, target, text, surface, visible),
-            .icon => |icon| try drawIcon(self, target, text, icon, visible),
-            .text => |text_command| {
-                const metrics = try text.measure(text_command.text, text_command.font_size);
-                const x = switch (text_command.text_align) {
-                    .start => text_command.bounds.x,
-                    .center => text_command.bounds.x +
-                        @max(0, text_command.bounds.w - metrics.width) * 0.5,
-                    .end => text_command.bounds.x +
-                        @max(0, text_command.bounds.w - metrics.width),
-                };
-                const baseline = text_command.bounds.y +
-                    @max(0, text_command.bounds.h - metrics.height()) * 0.5 +
-                    metrics.ascent;
-                var prepared = try text.prepareText(
-                    self.allocator,
-                    text_command.text,
-                    .{ .x = x, .y = baseline },
-                    text_command.font_size,
-                    text_command.color,
-                );
-                defer prepared.deinit();
-                try self.updateAtlas(text);
-                try self.drawPrepared(target, text, &prepared, visible);
+        prepared: *const PreparedVisuals,
+    ) !Encoder {
+        try self.pipelines.beginFrame(target.frame_slot);
+        self.clip_depth = 0;
+        return .{
+            .renderer = self,
+            .target = target,
+            .text_engine = text,
+            .prepared = prepared,
+            .scale = prepared.logical_to_physical_scale,
+            .frame_bounds = .{
+                .x = 0,
+                .y = 0,
+                .w = @floatFromInt(target.extent.width),
+                .h = @floatFromInt(target.extent.height),
             },
-            .clip, .custom => {},
-        }
-    }
-
-    /// Full-redraw path: draw every command in painter order into the whole
-    /// frame, clipped only by the active clip stack. No damage regions, no
-    /// retained composition — the render pass is expected to clear the target
-    /// (loadOp=CLEAR). This is the renderer for the swapchain-direct pipeline:
-    /// correct compositing by construction (no partial clears to leave stale
-    /// pixels), and cheap because the instance stream is retained upstream.
-    pub fn drawPaintList(
-        self: *Renderer,
-        target: present.FrameTarget,
-        text: *goop_snail.TextEngine,
-        commands: []const display.PaintCommand,
-    ) !void {
-        const full = display.Rect{
-            .x = 0,
-            .y = 0,
-            .w = @floatFromInt(target.extent.width),
-            .h = @floatFromInt(target.extent.height),
         };
-        self.pipelines.beginFrame(target.frame_index);
-        self.clip_stack.clearRetainingCapacity();
-        for (commands) |paint| {
-            if (paint == .clip) {
-                if (paint.clip.bounds) |clip_bounds| {
-                    const effective = if (self.clip_stack.items.len > 0)
-                        intersect(self.clip_stack.items[self.clip_stack.items.len - 1], clip_bounds) orelse zero_rect
-                    else
-                        clip_bounds;
-                    try self.clip_stack.append(self.allocator, effective);
-                } else if (self.clip_stack.items.len > 0) {
-                    _ = self.clip_stack.pop();
-                }
-                continue;
-            }
-            const bounds = display.commandBounds(paint) orelse continue;
-            var visible = intersect(bounds, full) orelse continue;
-            if (self.clip_stack.items.len > 0) {
-                visible = intersect(visible, self.clip_stack.items[self.clip_stack.items.len - 1]) orelse continue;
-            }
-            try self.drawResolvedCommand(target, text, paint, visible);
+    }
+
+    /// Allocation-free Vulkan replay of the exact retained stream captured by
+    /// `prepareVisuals`. Game renderers can implement `goop_visual`'s generic
+    /// structural capability directly; this Snail backend requires its named
+    /// preparation and upload phases first.
+    pub fn drawPreparedVisuals(
+        self: *Renderer,
+        target: graphics.RenderTarget,
+        text: *goop_snail.TextEngine,
+        prepared: *const PreparedVisuals,
+    ) !void {
+        if (!std.meta.eql(text.atlasIdentity(), prepared.atlas_identity) or
+            !std.meta.eql(self.images.atlasIdentity(), prepared.image_atlas_identity))
+        {
+            return error.PreparedVisualsStale;
+        }
+        if (!std.meta.eql(self.uploaded_atlas_identity, prepared.atlas_identity)) {
+            return error.VisualResourcesNotUpdated;
+        }
+        if (!std.meta.eql(self.uploaded_image_atlas_identity, prepared.image_atlas_identity)) {
+            return error.VisualResourcesNotUpdated;
+        }
+        var encoder = try self.beginPreparedReplay(target, text, prepared);
+        try visual.emitAll(&encoder, prepared.commands);
+        try encoder.finish();
+    }
+
+    pub fn prepareVisuals(
+        self: *Renderer,
+        allocator: std.mem.Allocator,
+        text_engine: *goop_snail.TextEngine,
+        commands: []const visual.Operation,
+        logical_to_physical_scale: f32,
+    ) !PreparedVisuals {
+        return prepareVisualOperations(
+            self,
+            allocator,
+            text_engine,
+            commands,
+            logical_to_physical_scale,
+        );
+    }
+
+    /// Explicit GPU resource update phase. The current Snail Vulkan upload is
+    /// synchronous, so callers should invoke this before acquiring/beginning a
+    /// frame rather than discovering a queue wait while encoding text.
+    pub fn updateVisualResources(self: *Renderer, text: *const goop_snail.TextEngine) !void {
+        const identity = text.atlasIdentity();
+        if (!std.meta.eql(identity, self.uploaded_atlas_identity)) {
+            self.binding = try self.updateAtlasBinding(self.binding, text.atlas());
+            self.uploaded_atlas_identity = identity;
+        }
+        const image_identity = self.images.atlasIdentity();
+        if (!std.meta.eql(image_identity, self.uploaded_image_atlas_identity)) {
+            self.image_binding = try self.updateAtlasBinding(self.image_binding, self.images.atlas());
+            self.uploaded_image_atlas_identity = image_identity;
         }
     }
 
-    fn updateAtlas(self: *Renderer, text: *const goop_snail.TextEngine) !void {
-        self.binding = self.atlas.uploadDelta(
+    fn updateAtlasBinding(
+        self: *Renderer,
+        previous: goop_snail.Binding,
+        atlas: *const goop_snail.Atlas,
+    ) !goop_snail.Binding {
+        return self.atlas.uploadDelta(
             self.allocator,
-            self.binding,
-            text.atlas(),
+            previous,
+            atlas,
         ) catch |upload_error| switch (upload_error) {
-            // Snail 0.18's planner only deltas exact/direct-child snapshots:
+            // Snail's planner only deltas exact/direct-child snapshots:
             // text measurement during layout extends the atlas ahead of the
             // binding by several snapshots, so a frame's first draw after
             // shaping is a skipped descendant and needs a fresh binding —
             // the same fallback as an outgrown side-data reservation.
             error.NoLayerInfoRoomToGrow, error.NoImageRoomToGrow, error.IncompatibleSnapshot => replacement: {
-                self.atlas.release(self.binding);
+                self.atlas.release(previous);
                 var bindings: [1]goop_snail.Binding = undefined;
-                try self.atlas.upload(self.allocator, &.{text.atlas()}, &bindings);
+                try self.atlas.upload(self.allocator, &.{atlas}, &bindings);
                 break :replacement bindings[0];
             },
             else => return upload_error,
@@ -189,16 +228,46 @@ pub const Renderer = struct {
 
     fn drawPrepared(
         self: *Renderer,
-        target: present.FrameTarget,
+        target: graphics.RenderTarget,
         text: *const goop_snail.TextEngine,
         prepared: *const goop_snail.PreparedText,
-        scissor: ?display.Rect,
+        scissor: ?visual.Rect,
+    ) !void {
+        try self.drawShapes(target, text, prepared.shapes, scissor);
+    }
+
+    fn drawImage(
+        self: *Renderer,
+        target: graphics.RenderTarget,
+        prepared: *const goop_snail.PreparedText,
+        scissor: ?visual.Rect,
+    ) !void {
+        try self.drawShapesWith(target, &self.images, self.image_binding, prepared.shapes, scissor);
+    }
+
+    fn drawShapes(
+        self: *Renderer,
+        target: graphics.RenderTarget,
+        text: *const goop_snail.TextEngine,
+        shapes: []const snail.Shape,
+        scissor: ?visual.Rect,
+    ) !void {
+        try self.drawShapesWith(target, text, self.binding, shapes, scissor);
+    }
+
+    fn drawShapesWith(
+        self: *Renderer,
+        target: graphics.RenderTarget,
+        source: anytype,
+        binding: goop_snail.Binding,
+        shapes: []const snail.Shape,
+        scissor: ?visual.Rect,
     ) !void {
         var instance_len: usize = 0;
         var batch_len: usize = 0;
-        _ = try text.emit(
-            self.binding,
-            prepared,
+        _ = try source.emitShapes(
+            binding,
+            shapes,
             self.instances,
             self.batches,
             &instance_len,
@@ -208,7 +277,7 @@ pub const Renderer = struct {
         try self.pipelines.render(
             target.command_buffer,
             self.atlas.descriptorSet(),
-            drawState(target, scissor),
+            drawState(target, self.attachment_format, scissor),
             self.atlas.atlasPageTexels(),
             self.instances[0..instance_len],
             self.batches[0..batch_len],
@@ -216,7 +285,263 @@ pub const Renderer = struct {
     }
 };
 
-fn intersect(a: display.Rect, b: display.Rect) ?display.Rect {
+/// Explicitly allocated/shaped CPU resources for one visual stream. Preparing
+/// may extend the Snail atlas but performs no Vulkan work; upload is a separate
+/// `Renderer.updateVisualResources` call.
+pub const PreparedVisuals = struct {
+    allocator: std.mem.Allocator,
+    /// Borrowed exact stream. It and all borrowed text bytes must outlive this
+    /// preparation and its draw call.
+    commands: []const visual.Operation,
+    text_runs: []goop_snail.PreparedText,
+    image_runs: []goop_snail.PreparedText,
+    logical_to_physical_scale: f32,
+    atlas_identity: goop_snail.AtlasIdentity,
+    image_atlas_identity: goop_snail.AtlasIdentity,
+
+    pub fn deinit(self: *PreparedVisuals) void {
+        for (self.text_runs) |*run| run.deinit();
+        for (self.image_runs) |*run| run.deinit();
+        self.allocator.free(self.text_runs);
+        self.allocator.free(self.image_runs);
+        self.* = undefined;
+    }
+};
+
+/// Shape and place every text operation. Allocation and shaping are explicit
+/// in this API and complete before Vulkan command encoding starts.
+fn prepareVisualOperations(
+    renderer: *Renderer,
+    allocator: std.mem.Allocator,
+    text_engine: *goop_snail.TextEngine,
+    commands: []const visual.Operation,
+    logical_to_physical_scale: f32,
+) !PreparedVisuals {
+    if (!std.math.isFinite(logical_to_physical_scale) or logical_to_physical_scale <= 0) {
+        return error.InvalidVisualScale;
+    }
+
+    var text_count: usize = 0;
+    var image_count: usize = 0;
+    for (commands) |command| switch (command) {
+        .text => text_count += 1,
+        .image => image_count += 1,
+        .custom => return error.UnsupportedCustomVisual,
+        else => {},
+    };
+
+    const image_sources = try allocator.alloc(visual.ImageSource, image_count);
+    defer allocator.free(image_sources);
+    var image_source_len: usize = 0;
+    var unique_image_count: usize = 0;
+    for (commands) |command| switch (command) {
+        .image => |value| {
+            try value.source.validate();
+            if (value.source.width > renderer.max_image_width or
+                value.source.height > renderer.max_image_height)
+            {
+                return error.ImageDimensionsExceedRendererCapacity;
+            }
+            var seen = false;
+            for (image_sources[0..image_source_len]) |existing| {
+                if (!std.meta.eql(existing.id, value.source.id)) continue;
+                if (existing.width != value.source.width or existing.height != value.source.height) {
+                    return error.ResourceIdentityCollision;
+                }
+                seen = true;
+                break;
+            }
+            if (!seen) unique_image_count += 1;
+            image_sources[image_source_len] = value.source;
+            image_source_len += 1;
+        },
+        else => {},
+    };
+    if (unique_image_count > renderer.max_images) return error.ImageCountExceedsRendererCapacity;
+
+    const runs = try allocator.alloc(goop_snail.PreparedText, text_count);
+    var initialized: usize = 0;
+    errdefer {
+        for (runs[0..initialized]) |*run| run.deinit();
+        allocator.free(runs);
+    }
+
+    const image_runs = try allocator.alloc(goop_snail.PreparedText, image_count);
+    var initialized_images: usize = 0;
+    errdefer {
+        for (image_runs[0..initialized_images]) |*run| run.deinit();
+        allocator.free(image_runs);
+    }
+
+    try renderer.images.syncResources(image_sources);
+
+    for (commands) |command| switch (command) {
+        .text => |logical| {
+            const value = visual.Text{
+                .bounds = scaleRect(logical.bounds, logical_to_physical_scale),
+                .text = logical.text,
+                .color = logical.color,
+                .font_size = logical.font_size * logical_to_physical_scale,
+                .text_align = logical.text_align,
+                .overflow = logical.overflow,
+            };
+            // Alignment is a paint-time device fact: hinted advances can
+            // differ from renderer-independent layout metrics at this ppem.
+            const metrics = try text_engine.prepareMetrics(
+                value.text,
+                value.font_size,
+                .identity,
+            );
+            const x = switch (value.text_align) {
+                .start => value.bounds.x,
+                .center => value.bounds.x + @max(0, value.bounds.w - metrics.width) * 0.5,
+                .end => value.bounds.x + @max(0, value.bounds.w - metrics.width),
+            };
+            const baseline = value.bounds.y +
+                @max(0, value.bounds.h - metrics.height()) * 0.5 + metrics.ascent;
+            runs[initialized] = try text_engine.prepareText(
+                allocator,
+                value.text,
+                .{
+                    .baseline = .{ .x = x, .y = baseline },
+                    // Visual commands were converted to physical pixels
+                    // above, so scene coordinates already are device pixels.
+                    .world_to_pixel = .identity,
+                },
+                value.font_size,
+                value.color,
+            );
+            initialized += 1;
+        },
+        .image => |logical| {
+            var physical = logical;
+            physical.bounds = scaleRect(logical.bounds, logical_to_physical_scale);
+            image_runs[initialized_images] = try renderer.images.prepareImage(allocator, physical);
+            initialized_images += 1;
+        },
+        else => {},
+    };
+
+    return .{
+        .allocator = allocator,
+        .commands = commands,
+        .text_runs = runs,
+        .image_runs = image_runs,
+        .logical_to_physical_scale = logical_to_physical_scale,
+        .atlas_identity = text_engine.atlasIdentity(),
+        .image_atlas_identity = renderer.images.atlasIdentity(),
+    };
+}
+
+/// Internal allocation-free replay encoder. Its text cursor is intentionally
+/// coupled to `PreparedVisuals`; it is not the generic direct-look seam.
+const Encoder = struct {
+    renderer: *Renderer,
+    target: graphics.RenderTarget,
+    text_engine: *goop_snail.TextEngine,
+    prepared: *const PreparedVisuals,
+    scale: f32,
+    frame_bounds: visual.Rect,
+    text_index: usize = 0,
+    image_index: usize = 0,
+
+    pub fn finish(self: *Encoder) !void {
+        if (self.renderer.clip_depth != 0) return error.UnbalancedClipStack;
+        if (self.text_index != self.prepared.text_runs.len) {
+            return error.PreparedVisualTextMismatch;
+        }
+        if (self.image_index != self.prepared.image_runs.len) {
+            return error.PreparedVisualImageMismatch;
+        }
+    }
+
+    pub fn pushClip(self: *Encoder, logical_bounds: visual.Rect) !void {
+        if (self.renderer.clip_depth == self.renderer.clip_stack.len) {
+            return error.ClipStackOverflow;
+        }
+        const bounds = scaleRect(logical_bounds, self.scale);
+        const effective = if (self.renderer.clip_depth > 0)
+            intersect(self.renderer.clip_stack[self.renderer.clip_depth - 1], bounds) orelse zero_rect
+        else
+            bounds;
+        self.renderer.clip_stack[self.renderer.clip_depth] = effective;
+        self.renderer.clip_depth += 1;
+    }
+
+    pub fn popClip(self: *Encoder) !void {
+        if (self.renderer.clip_depth == 0) return error.UnbalancedClipStack;
+        self.renderer.clip_depth -= 1;
+    }
+
+    pub fn surface(self: *Encoder, logical: visual.Surface) !void {
+        const value = visual.Surface{
+            .bounds = scaleRect(logical.bounds, self.scale),
+            .color = logical.color,
+            .border_color = logical.border_color,
+            .border_width = logical.border_width * self.scale,
+            .corner_radius = logical.corner_radius * self.scale,
+        };
+        const clipped = self.visible(value.bounds) orelse return;
+        try drawSurface(self.renderer, self.target, self.text_engine, value, clipped);
+    }
+
+    pub fn text(self: *Encoder, logical: visual.Text) !void {
+        if (self.text_index >= self.prepared.text_runs.len) {
+            return error.PreparedVisualTextMismatch;
+        }
+        const bounds = scaleRect(logical.bounds, self.scale);
+        const prepared = &self.prepared.text_runs[self.text_index];
+        self.text_index += 1;
+        const clipped = self.visible(bounds) orelse return;
+        try self.renderer.drawPrepared(self.target, self.text_engine, prepared, clipped);
+    }
+
+    pub fn icon(self: *Encoder, logical: visual.Icon) !void {
+        const value = visual.Icon{
+            .bounds = scaleRect(logical.bounds, self.scale),
+            .kind = logical.kind,
+            .color = logical.color,
+        };
+        const clipped = self.visible(value.bounds) orelse return;
+        try drawIcon(self.renderer, self.target, self.text_engine, value, clipped);
+    }
+
+    pub fn image(self: *Encoder, logical: visual.Image) !void {
+        if (self.image_index >= self.prepared.image_runs.len) {
+            return error.PreparedVisualImageMismatch;
+        }
+        const prepared = &self.prepared.image_runs[self.image_index];
+        self.image_index += 1;
+        const clipped = self.visible(scaleRect(logical.bounds, self.scale)) orelse return;
+        try self.renderer.drawImage(self.target, prepared, clipped);
+    }
+
+    pub fn custom(_: *Encoder, _: visual.Custom) !void {
+        return error.UnsupportedCustomVisual;
+    }
+
+    fn visible(self: *const Encoder, bounds: visual.Rect) ?visual.Rect {
+        var result = intersect(bounds, self.frame_bounds) orelse return null;
+        if (self.renderer.clip_depth > 0) {
+            result = intersect(
+                result,
+                self.renderer.clip_stack[self.renderer.clip_depth - 1],
+            ) orelse return null;
+        }
+        return result;
+    }
+};
+
+fn scaleRect(rect: visual.Rect, scale: f32) visual.Rect {
+    return .{
+        .x = rect.x * scale,
+        .y = rect.y * scale,
+        .w = rect.w * scale,
+        .h = rect.h * scale,
+    };
+}
+
+fn intersect(a: visual.Rect, b: visual.Rect) ?visual.Rect {
     const left = @max(a.x, b.x);
     const top = @max(a.y, b.y);
     const right = @min(a.x + a.w, b.x + b.w);
@@ -227,8 +552,8 @@ fn intersect(a: display.Rect, b: display.Rect) ?display.Rect {
 
 fn clearRect(
     command_buffer: graphics.vk.VkCommandBuffer,
-    bounds: display.Rect,
-    color: display.Color,
+    bounds: visual.Rect,
+    color: visual.Color,
     extent: graphics.vk.VkExtent2D,
     format: graphics.vk.VkFormat,
 ) void {
@@ -266,7 +591,11 @@ fn clearRect(
     graphics.vk.vkCmdClearAttachments(command_buffer, 1, &attachment, 1, &clear);
 }
 
-fn drawState(target: present.FrameTarget, scissor: ?display.Rect) target_mod.DrawState {
+fn drawState(
+    target: graphics.RenderTarget,
+    attachment_format: graphics.vk.VkFormat,
+    scissor: ?visual.Rect,
+) target_mod.DrawState {
     const width: f32 = @floatFromInt(target.extent.width);
     const height: f32 = @floatFromInt(target.extent.height);
     return .{
@@ -274,7 +603,7 @@ fn drawState(target: present.FrameTarget, scissor: ?display.Rect) target_mod.Dra
         .surface = .{
             .pixel_width = target.extent.width,
             .pixel_height = target.extent.height,
-            .encoding = if (isSrgbFormat(target.format))
+            .encoding = if (isSrgbFormat(attachment_format))
                 .srgb
             else
                 .srgb_pixels_on_linear_attachment,
@@ -287,10 +616,10 @@ fn drawState(target: present.FrameTarget, scissor: ?display.Rect) target_mod.Dra
 
 fn drawSurface(
     self: *Renderer,
-    target: present.FrameTarget,
+    target: graphics.RenderTarget,
     text: *goop_snail.TextEngine,
-    surface: display.PaintCommand.Surface,
-    visible: display.Rect,
+    surface: visual.Surface,
+    visible: visual.Rect,
 ) !void {
     try drawColorRect(
         self,
@@ -307,7 +636,7 @@ fn drawSurface(
     );
     if (border > 0 and surface.border_color.a > 0) {
         const b = surface.bounds;
-        const edges = [_]display.Rect{
+        const edges = [_]visual.Rect{
             .{ .x = b.x, .y = b.y, .w = b.w, .h = border },
             .{ .x = b.x, .y = b.y + b.h - border, .w = b.w, .h = border },
             .{ .x = b.x, .y = b.y + border, .w = border, .h = @max(0, b.h - border * 2) },
@@ -330,7 +659,7 @@ fn drawSurface(
 
 const ColorRectMode = enum { skip, replace, blend };
 
-fn colorRectMode(color: display.Color) ColorRectMode {
+fn colorRectMode(color: visual.Color) ColorRectMode {
     return if (color.a == 0)
         .skip
     else if (color.a == 255)
@@ -341,11 +670,11 @@ fn colorRectMode(color: display.Color) ColorRectMode {
 
 fn drawColorRect(
     self: *Renderer,
-    target: present.FrameTarget,
+    target: graphics.RenderTarget,
     text: *goop_snail.TextEngine,
-    bounds: display.Rect,
-    color: display.Color,
-    visible: display.Rect,
+    bounds: visual.Rect,
+    color: visual.Color,
+    visible: visual.Rect,
 ) !void {
     switch (colorRectMode(color)) {
         .skip => return,
@@ -355,54 +684,53 @@ fn drawColorRect(
                 visible,
                 color,
                 target.extent,
-                target.format,
+                self.attachment_format,
             );
             return;
         },
         .blend => {
-            var prepared = try text.prepareRect(self.allocator, bounds, color);
-            defer prepared.deinit();
-            try self.drawPrepared(target, text, &prepared, visible);
+            const shapes = [1]snail.Shape{text.rectShape(bounds, color)};
+            try self.drawShapes(target, text, &shapes, visible);
         },
     }
 }
 
 /// Compact fallback icon vocabulary. Icons stay a renderer concern: the
-/// display protocol carries only opaque semantic IDs.
+/// visual protocol carries only opaque semantic IDs.
 fn drawIcon(
     self: *Renderer,
-    target: present.FrameTarget,
+    target: graphics.RenderTarget,
     text: *goop_snail.TextEngine,
-    icon: display.PaintCommand.Icon,
-    visible: display.Rect,
+    icon: visual.Icon,
+    visible: visual.Rect,
 ) !void {
     const b = icon.bounds;
     const parts = switch (icon.kind) {
-        0 => [_]display.Rect{
+        0 => [_]visual.Rect{
             .{ .x = b.x + b.w * 0.07, .y = b.y + b.h * 0.28, .w = b.w * 0.86, .h = b.h * 0.58 },
             .{ .x = b.x + b.w * 0.12, .y = b.y + b.h * 0.18, .w = b.w * 0.34, .h = b.h * 0.2 },
             zero_rect,
             zero_rect,
         },
-        1, 2 => [_]display.Rect{
+        1, 2 => [_]visual.Rect{
             .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.08, .w = b.w * 0.64, .h = b.h * 0.84 },
             zero_rect,
             zero_rect,
             zero_rect,
         },
-        7 => [_]display.Rect{
+        7 => [_]visual.Rect{
             .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.22, .w = b.w * 0.64, .h = b.h * 0.1 },
             .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.46, .w = b.w * 0.64, .h = b.h * 0.1 },
             .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.70, .w = b.w * 0.64, .h = b.h * 0.1 },
             zero_rect,
         },
-        8 => [_]display.Rect{
+        8 => [_]visual.Rect{
             .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.18, .w = b.w * 0.25, .h = b.h * 0.25 },
             .{ .x = b.x + b.w * 0.57, .y = b.y + b.h * 0.18, .w = b.w * 0.25, .h = b.h * 0.25 },
             .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.57, .w = b.w * 0.25, .h = b.h * 0.25 },
             .{ .x = b.x + b.w * 0.57, .y = b.y + b.h * 0.57, .w = b.w * 0.25, .h = b.h * 0.25 },
         },
-        else => [_]display.Rect{
+        else => [_]visual.Rect{
             .{ .x = b.x + b.w * 0.2, .y = b.y + b.h * 0.2, .w = b.w * 0.6, .h = b.h * 0.6 },
             zero_rect,
             zero_rect,
@@ -424,9 +752,9 @@ fn drawIcon(
     }
 }
 
-const zero_rect = display.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
+const zero_rect = visual.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
 
-fn pixelRect(rect: display.Rect, extent: graphics.vk.VkExtent2D) target_mod.PixelRect {
+fn pixelRect(rect: visual.Rect, extent: graphics.vk.VkExtent2D) target_mod.PixelRect {
     const x0: i32 = @intFromFloat(@max(0, @floor(rect.x)));
     const y0: i32 = @intFromFloat(@max(0, @floor(rect.y)));
     const x1: u32 = @intFromFloat(@min(
@@ -447,7 +775,7 @@ fn pixelRect(rect: display.Rect, extent: graphics.vk.VkExtent2D) target_mod.Pixe
     };
 }
 
-fn attachmentColor(color: display.Color, format: graphics.vk.VkFormat) [4]f32 {
+fn attachmentColor(color: visual.Color, format: graphics.vk.VkFormat) [4]f32 {
     if (isSrgbFormat(format)) return goop_snail.linearColor(color);
     const scale: f32 = 1.0 / 255.0;
     return .{
@@ -494,4 +822,12 @@ test "surface alpha selects skip, replacement, or blended drawing" {
         ColorRectMode.replace,
         colorRectMode(.rgba(20, 30, 40, 255)),
     );
+}
+
+test "logical-to-physical scaling is explicit and complete" {
+    const scaled = scaleRect(.{ .x = 2, .y = 3, .w = 5, .h = 7 }, 1.5);
+    try std.testing.expectEqual(@as(f32, 3), scaled.x);
+    try std.testing.expectEqual(@as(f32, 4.5), scaled.y);
+    try std.testing.expectEqual(@as(f32, 7.5), scaled.w);
+    try std.testing.expectEqual(@as(f32, 10.5), scaled.h);
 }

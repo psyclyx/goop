@@ -9,7 +9,7 @@ pub fn setFocusedWidget(tree: *widget.Tree, mouse: *MouseState, target: ?widget.
     if (mouse.focused) |previous_focus| {
         if (target == null or !target.?.eql(previous_focus)) {
             if (tree.isAlive(previous_focus)) {
-                text.commitOrCancelNumericEditorOnBlur(tree, previous_focus);
+                text.commitOrCancelNumericEditorOnBlur(tree, previous_focus, mouse);
             }
         }
     }

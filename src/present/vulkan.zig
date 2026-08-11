@@ -1,7 +1,7 @@
 //! Swapchain and frame lifecycle.
 //!
 //! The presenter owns no UI or renderer state. A renderer receives a
-//! `FrameTarget` and records commands inside the active render pass.
+//! `graphics.RenderTarget` and records commands inside the active render pass.
 
 const std = @import("std");
 const graphics = @import("goop_graphics_vulkan");
@@ -11,17 +11,7 @@ pub const vk = graphics.vk;
 // resources) with per-frame command buffers and sync objects, so frames in
 // flight never share a mutable target — no cross-frame hazard. Two lets the CPU
 // record the next frame while the GPU finishes the previous one.
-pub const max_frames_in_flight = 2;
-
-pub const FrameTarget = struct {
-    command_buffer: vk.VkCommandBuffer,
-    render_pass: vk.VkRenderPass,
-    framebuffer: vk.VkFramebuffer,
-    extent: vk.VkExtent2D,
-    format: vk.VkFormat,
-    frame_index: u32,
-    image_index: u32,
-};
+pub const frame_slot_count: u32 = 2;
 
 const DeviceView = struct {
     physical: vk.VkPhysicalDevice,
@@ -65,10 +55,10 @@ pub const Presenter = struct {
     clear_value: vk.VkClearValue = .{ .color = .{ .float32 = .{ 0, 0, 0, 1 } } },
 
     command_pool: vk.VkCommandPool = null,
-    command_buffers: [max_frames_in_flight]vk.VkCommandBuffer = .{null} ** max_frames_in_flight,
-    image_available: [max_frames_in_flight]vk.VkSemaphore = .{null} ** max_frames_in_flight,
-    render_finished: [max_frames_in_flight]vk.VkSemaphore = .{null} ** max_frames_in_flight,
-    in_flight: [max_frames_in_flight]vk.VkFence = .{null} ** max_frames_in_flight,
+    command_buffers: [frame_slot_count]vk.VkCommandBuffer = .{null} ** frame_slot_count,
+    image_available: [frame_slot_count]vk.VkSemaphore = .{null} ** frame_slot_count,
+    render_finished: [frame_slot_count]vk.VkSemaphore = .{null} ** frame_slot_count,
+    in_flight: [frame_slot_count]vk.VkFence = .{null} ** frame_slot_count,
 
     current_frame: u32 = 0,
     current_image: u32 = 0,
@@ -100,7 +90,7 @@ pub const Presenter = struct {
     pub fn deinit(self: *Presenter) void {
         self.device.waitIdle();
         self.destroySwapchain();
-        for (0..max_frames_in_flight) |index| {
+        for (0..frame_slot_count) |index| {
             if (self.render_finished[index] != null) {
                 vk.vkDestroySemaphore(self.device.handle, self.render_finished[index], null);
             }
@@ -134,7 +124,7 @@ pub const Presenter = struct {
 
     /// Acquire an image and begin its render pass. `null` means the surface is
     /// temporarily unrenderable (usually zero-sized or just recreated).
-    pub fn beginFrame(self: *Presenter, clear: [4]f32) !?FrameTarget {
+    pub fn beginFrame(self: *Presenter, clear: [4]f32) !?graphics.RenderTarget {
         std.debug.assert(!self.active_frame);
         if (self.desired_width == 0 or self.desired_height == 0) return null;
         if (self.recreate_pending) {
@@ -209,12 +199,8 @@ pub const Presenter = struct {
 
         return .{
             .command_buffer = self.command_buffers[frame],
-            .render_pass = self.render_pass,
-            .framebuffer = self.framebuffers[self.current_image],
             .extent = self.extent,
-            .format = self.format,
-            .frame_index = frame,
-            .image_index = self.current_image,
+            .frame_slot = frame,
         };
     }
 
@@ -266,7 +252,7 @@ pub const Presenter = struct {
         } else {
             try graphics.result(presented);
         }
-        self.current_frame = (frame + 1) % max_frames_in_flight;
+        self.current_frame = (frame + 1) % frame_slot_count;
     }
 
     fn recreate(self: *Presenter) !void {
@@ -294,7 +280,7 @@ pub const Presenter = struct {
             .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO)),
             .commandPool = self.command_pool,
             .level = @as(vk.VkCommandBufferLevel, @intCast(vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY)),
-            .commandBufferCount = max_frames_in_flight,
+            .commandBufferCount = frame_slot_count,
         });
         try graphics.result(vk.vkAllocateCommandBuffers(
             self.device.handle,
@@ -311,7 +297,7 @@ pub const Presenter = struct {
             .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO)),
             .flags = vk.VK_FENCE_CREATE_SIGNALED_BIT,
         });
-        for (0..max_frames_in_flight) |index| {
+        for (0..frame_slot_count) |index| {
             try graphics.result(vk.vkCreateSemaphore(
                 self.device.handle,
                 &semaphore_info,
@@ -557,7 +543,6 @@ pub const Presenter = struct {
         return formats[0];
     }
 
-
     fn choosePresentMode(self: *Presenter) !vk.VkPresentModeKHR {
         var count: u32 = 0;
         try graphics.result(vk.vkGetPhysicalDeviceSurfacePresentModesKHR(
@@ -673,12 +658,6 @@ fn imageBarrier(
         .image = image,
         .subresourceRange = colorRange(),
     });
-}
-
-test "frame targets carry rendering handles but no UI state" {
-    try std.testing.expect(@hasField(FrameTarget, "command_buffer"));
-    try std.testing.expect(@hasField(FrameTarget, "render_pass"));
-    try std.testing.expect(!@hasField(FrameTarget, "paint_list"));
 }
 
 test "presenter renders into per-image swapchain framebuffers, holds no UI state" {

@@ -1,34 +1,32 @@
 const std = @import("std");
 const goop = @import("goop");
 
-const State = @import("state.zig").State;
-
 pub fn uiScaleValue(scale: f32, value: f32) f32 {
     return value * scale;
 }
 
-pub fn uiPx(state: *const State, value: f32) f32 {
-    return uiScaleValue(state.runtime.ui_scale, value);
+pub fn uiPx(ui_scale: f32, value: f32) f32 {
+    return uiScaleValue(ui_scale, value);
 }
 
-pub fn uiEdgesAll(state: *const State, value: f32) goop.style.Edges {
-    return goop.style.Edges.all(uiPx(state, value));
+pub fn uiEdgesAll(ui_scale: f32, value: f32) goop.style.Edges {
+    return goop.style.Edges.all(uiPx(ui_scale, value));
 }
 
-pub fn uiEdgesSymmetric(state: *const State, h: f32, v: f32) goop.style.Edges {
-    return goop.style.Edges.symmetric(uiPx(state, h), uiPx(state, v));
+pub fn uiEdgesSymmetric(ui_scale: f32, h: f32, v: f32) goop.style.Edges {
+    return goop.style.Edges.symmetric(uiPx(ui_scale, h), uiPx(ui_scale, v));
 }
 
-pub fn detailTitleFontSizePx(state: *const State) f32 {
-    return uiPx(state, 16);
+pub fn detailTitleFontSizePx(ui_scale: f32) f32 {
+    return uiPx(ui_scale, 16);
 }
 
-pub fn detailCaptionFontSizePx(state: *const State) f32 {
-    return uiPx(state, 13);
+pub fn detailCaptionFontSizePx(ui_scale: f32) f32 {
+    return uiPx(ui_scale, 13);
 }
 
-pub fn previewBodyFontSizePx(state: *const State) f32 {
-    return uiPx(state, 13);
+pub fn previewBodyFontSizePx(ui_scale: f32) f32 {
+    return uiPx(ui_scale, 13);
 }
 
 pub fn fileManagerThemeForScale(ui_scale: f32) goop.Theme {
@@ -56,8 +54,8 @@ pub fn fileManagerThemeForScale(ui_scale: f32) goop.Theme {
     };
 }
 
-pub fn fileManagerTheme(state: *const State) goop.Theme {
-    return fileManagerThemeForScale(state.runtime.ui_scale);
+pub fn fileManagerTheme(ui_scale: f32) goop.Theme {
+    return fileManagerThemeForScale(ui_scale);
 }
 
 pub fn fileManagerShellColor() goop.Color {
@@ -84,7 +82,7 @@ pub fn fileManagerMutedTextColor() goop.Color {
     return .rgb(100, 109, 123);
 }
 
-pub fn fileManagerToolbarButtonStyle(state: *const State, active: bool, enabled: bool) goop.Style {
+pub fn fileManagerToolbarButtonStyle(ui_scale: f32, active: bool, enabled: bool) goop.Style {
     return .{
         .bg = if (active)
             .rgb(222, 233, 249)
@@ -92,229 +90,229 @@ pub fn fileManagerToolbarButtonStyle(state: *const State, active: bool, enabled:
             .rgb(247, 249, 252)
         else
             .rgb(240, 243, 247),
-        .fg = if (enabled) fileManagerTheme(state).fg else fileManagerMutedTextColor(),
+        .fg = if (enabled) fileManagerThemeForScale(ui_scale).fg else fileManagerMutedTextColor(),
         .border = if (active)
-            fileManagerTheme(state).accent
+            fileManagerThemeForScale(ui_scale).accent
         else
             .rgb(209, 216, 226),
-        .border_width = uiPx(state, 1),
-        .padding = uiEdgesSymmetric(state, 10, 6),
-        .border_radius = uiPx(state, 5),
+        .border_width = uiPx(ui_scale, 1),
+        .padding = uiEdgesSymmetric(ui_scale, 10, 6),
+        .border_radius = uiPx(ui_scale, 5),
     };
 }
 
-pub fn fileManagerTextInputStyle(state: *const State) goop.Style {
+pub fn fileManagerTextInputStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = .rgb(255, 255, 255),
         .border = .rgb(203, 210, 223),
-        .border_width = uiPx(state, 1),
-        .padding = uiEdgesSymmetric(state, 10, 6),
-        .border_radius = uiPx(state, 5),
+        .border_width = uiPx(ui_scale, 1),
+        .padding = uiEdgesSymmetric(ui_scale, 10, 6),
+        .border_radius = uiPx(ui_scale, 5),
     };
 }
 
-pub fn fileManagerRenameInputStyle(state: *const State) goop.Style {
+pub fn fileManagerRenameInputStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = .rgb(255, 255, 255),
-        .fg = fileManagerTheme(state).fg,
-        .border = fileManagerTheme(state).accent,
-        .border_width = uiPx(state, 1),
-        .padding = uiEdgesSymmetric(state, 4, 1),
-        .border_radius = uiPx(state, 3),
+        .fg = fileManagerThemeForScale(ui_scale).fg,
+        .border = fileManagerThemeForScale(ui_scale).accent,
+        .border_width = uiPx(ui_scale, 1),
+        .padding = uiEdgesSymmetric(ui_scale, 4, 1),
+        .border_radius = uiPx(ui_scale, 3),
     };
 }
 
-pub fn fileManagerMenuBarStyle(state: *const State) goop.Style {
+pub fn fileManagerMenuBarStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = fileManagerChromeColor(),
         .border_width = 0,
-        .padding = uiEdgesSymmetric(state, 6, 2),
-        .spacing = uiPx(state, 0),
+        .padding = uiEdgesSymmetric(ui_scale, 6, 2),
+        .spacing = uiPx(ui_scale, 0),
         .border_radius = 0,
     };
 }
 
-pub fn fileManagerMenuStyle(state: *const State) goop.Style {
+pub fn fileManagerMenuStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = .rgba(0, 0, 0, 0),
         .border_width = 0,
-        .padding = uiEdgesSymmetric(state, 6, 2),
-        .border_radius = uiPx(state, 2),
+        .padding = uiEdgesSymmetric(ui_scale, 6, 2),
+        .border_radius = uiPx(ui_scale, 2),
     };
 }
 
-pub fn fileManagerMenuRootButtonStyle(state: *const State) goop.Style {
+pub fn fileManagerMenuRootButtonStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = .rgba(0, 0, 0, 0),
         .border_width = 0,
-        .padding = uiEdgesSymmetric(state, 6, 2),
-        .border_radius = uiPx(state, 2),
+        .padding = uiEdgesSymmetric(ui_scale, 6, 2),
+        .border_radius = uiPx(ui_scale, 2),
     };
 }
 
-pub fn fileManagerMenuPopupStyle(state: *const State) goop.Style {
+pub fn fileManagerMenuPopupStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = .rgb(255, 255, 255),
         .border = .rgb(203, 210, 223),
-        .border_width = uiPx(state, 1),
-        .padding = uiEdgesSymmetric(state, 6, 6),
+        .border_width = uiPx(ui_scale, 1),
+        .padding = uiEdgesSymmetric(ui_scale, 6, 6),
         .spacing = 0,
-        .border_radius = uiPx(state, 8),
+        .border_radius = uiPx(ui_scale, 8),
     };
 }
 
-pub fn fileManagerMenuItemStyle(state: *const State) goop.Style {
+pub fn fileManagerMenuItemStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = .rgba(0, 0, 0, 0),
         .border_width = 0,
-        .padding = uiEdgesSymmetric(state, 10, 6),
-        .border_radius = uiPx(state, 4),
+        .padding = uiEdgesSymmetric(ui_scale, 10, 6),
+        .border_radius = uiPx(ui_scale, 4),
     };
 }
 
-pub fn fileManagerSectionLabelStyle(state: *const State) goop.Style {
+pub fn fileManagerSectionLabelStyle(ui_scale: f32) goop.Style {
     return .{
         .fg = fileManagerMutedTextColor(),
-        .font_size = uiPx(state, 13),
+        .font_size = uiPx(ui_scale, 13),
     };
 }
 
-pub fn fileManagerFolderTreeStyle(state: *const State) goop.Style {
+pub fn fileManagerFolderTreeStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = .rgba(0, 0, 0, 0),
         .border_width = 0,
-        .padding = uiEdgesAll(state, 0),
+        .padding = uiEdgesAll(ui_scale, 0),
         .spacing = 0,
         .border_radius = 0,
     };
 }
 
-pub fn fileManagerFolderTreeItemStyle(state: *const State) goop.Style {
+pub fn fileManagerFolderTreeItemStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = .rgba(0, 0, 0, 0),
         .border_width = 0,
-        .font_size = uiPx(state, 14.5),
+        .font_size = uiPx(ui_scale, 14.5),
         .padding = .{
-            .top = uiPx(state, 3),
-            .right = uiPx(state, 6),
-            .bottom = uiPx(state, 3),
+            .top = uiPx(ui_scale, 3),
+            .right = uiPx(ui_scale, 6),
+            .bottom = uiPx(ui_scale, 3),
             .left = 0,
         },
-        .border_radius = uiPx(state, 3),
+        .border_radius = uiPx(ui_scale, 3),
     };
 }
 
-pub fn fileManagerPlaceItemStyle(state: *const State) goop.Style {
+pub fn fileManagerPlaceItemStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = .rgba(0, 0, 0, 0),
         .border_width = 0,
-        .font_size = uiPx(state, 14.5),
-        .padding = uiEdgesSymmetric(state, 6, 4),
-        .border_radius = uiPx(state, 3),
+        .font_size = uiPx(ui_scale, 14.5),
+        .padding = uiEdgesSymmetric(ui_scale, 6, 4),
+        .border_radius = uiPx(ui_scale, 3),
     };
 }
 
-pub fn fileManagerStatusTextStyle(state: *const State) goop.Style {
+pub fn fileManagerStatusTextStyle(ui_scale: f32) goop.Style {
     return .{
         .fg = fileManagerMutedTextColor(),
-        .font_size = uiPx(state, 12.5),
+        .font_size = uiPx(ui_scale, 12.5),
     };
 }
 
-pub fn fileManagerShellStyle(state: *const State) goop.Style {
+pub fn fileManagerShellStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = fileManagerShellColor(),
         .border_width = 0,
-        .padding = uiEdgesAll(state, 0),
+        .padding = uiEdgesAll(ui_scale, 0),
         .spacing = 0,
         .border_radius = 0,
     };
 }
 
-pub fn fileManagerToolbarStyle(state: *const State) goop.Style {
+pub fn fileManagerToolbarStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = fileManagerChromeColor(),
         .border_width = 0,
-        .padding = uiEdgesSymmetric(state, 10, 9),
-        .spacing = uiPx(state, 8),
+        .padding = uiEdgesSymmetric(ui_scale, 10, 9),
+        .spacing = uiPx(ui_scale, 8),
         .border_radius = 0,
     };
 }
 
-pub fn fileManagerPaneStyle(state: *const State, bg: goop.Color) goop.Style {
+pub fn fileManagerPaneStyle(ui_scale: f32, bg: goop.Color) goop.Style {
     return .{
         .bg = bg,
         .border_width = 0,
-        .padding = uiEdgesAll(state, 0),
+        .padding = uiEdgesAll(ui_scale, 0),
         .spacing = 0,
         .border_radius = 0,
     };
 }
 
-pub fn fileManagerPaneHeaderStyle(state: *const State) goop.Style {
+pub fn fileManagerPaneHeaderStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = fileManagerPanelHeaderColor(),
         .border_width = 0,
-        .padding = uiEdgesSymmetric(state, 12, 8),
-        .spacing = uiPx(state, 6),
+        .padding = uiEdgesSymmetric(ui_scale, 12, 8),
+        .spacing = uiPx(ui_scale, 6),
         .border_radius = 0,
     };
 }
 
-pub fn fileManagerDetailContentStyle(state: *const State) goop.Style {
+pub fn fileManagerDetailContentStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = .rgba(0, 0, 0, 0),
         .border_width = 0,
-        .padding = uiEdgesAll(state, 0),
-        .spacing = uiPx(state, 8),
+        .padding = uiEdgesAll(ui_scale, 0),
+        .spacing = uiPx(ui_scale, 8),
         .border_radius = 0,
     };
 }
 
-pub fn fileManagerPreviewFrameStyle(state: *const State) goop.Style {
+pub fn fileManagerPreviewFrameStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = .rgb(255, 255, 255),
         .border = .rgb(214, 220, 228),
         .border_width = 1,
-        .padding = uiEdgesSymmetric(state, 12, 10),
+        .padding = uiEdgesSymmetric(ui_scale, 12, 10),
         .spacing = 0,
-        .border_radius = uiPx(state, 6),
+        .border_radius = uiPx(ui_scale, 6),
     };
 }
 
-pub fn fileManagerDetailTitleStyle(state: *const State) goop.Style {
+pub fn fileManagerDetailTitleStyle(ui_scale: f32) goop.Style {
     return .{
         .fg = .rgb(20, 25, 33),
-        .font_size = detailTitleFontSizePx(state),
+        .font_size = detailTitleFontSizePx(ui_scale),
     };
 }
 
-pub fn fileManagerDetailMetaStyle(state: *const State) goop.Style {
+pub fn fileManagerDetailMetaStyle(ui_scale: f32) goop.Style {
     return .{
         .fg = fileManagerMutedTextColor(),
-        .font_size = detailCaptionFontSizePx(state),
+        .font_size = detailCaptionFontSizePx(ui_scale),
     };
 }
 
-pub fn fileManagerDetailHintStyle(state: *const State) goop.Style {
+pub fn fileManagerDetailHintStyle(ui_scale: f32) goop.Style {
     return .{
         .fg = fileManagerMutedTextColor(),
-        .font_size = detailCaptionFontSizePx(state),
+        .font_size = detailCaptionFontSizePx(ui_scale),
     };
 }
 
-pub fn fileManagerPreviewBodyStyle(state: *const State) goop.Style {
+pub fn fileManagerPreviewBodyStyle(ui_scale: f32) goop.Style {
     return .{
         .fg = .rgb(34, 40, 48),
-        .font_size = previewBodyFontSizePx(state),
+        .font_size = previewBodyFontSizePx(ui_scale),
     };
 }
 
-pub fn fileManagerGutterStyle(state: *const State) goop.Style {
+pub fn fileManagerGutterStyle(ui_scale: f32) goop.Style {
     return .{
         .bg = fileManagerShellColor(),
         .border_width = 0,
-        .padding = uiEdgesAll(state, 0),
+        .padding = uiEdgesAll(ui_scale, 0),
         .spacing = 0,
         .border_radius = 0,
     };

@@ -1,84 +1,79 @@
 # Status
 
-## Snapshot
+Goop is pre-1.0 and targets Zig 0.16.0. This file is a short description of the
+current tree; architecture contracts and examples live in
+[docs/architecture.md](docs/architecture.md) and [docs/DESIGN.md](docs/DESIGN.md).
 
-`goop` is an embeddable retained-mode GUI library for Zig 0.16.0. The core owns
-the widget tree, layout, event dispatch, and draw command generation. The demo
-is a Wayland embedder with EGL/OpenGL rendering and `snail` text support.
+## Implemented
 
-Current baseline: `zig build test` is clean. Use `nix-shell` before
-`zig build`; the shell provides `harfbuzz` and the other demo dependencies.
-Set `GOOP_DEMO_FONT_PATH` if the demo font is not in one of the built-in
-fallback locations.
+- Separate exported modules for identity, normalized input, geometry, visual
+  operations, core, desktop semantics, dumb visual components, stock Chrome,
+  Snail preparation, Vulkan device/render/presentation, Wayland, and the single
+  Wayland/Vulkan WSI bridge.
+- Stable `ElementId`/`ActionId` control descriptions and an ordered borrowed
+  semantic output journal covering activation, values, toggles, text, sort,
+  selection, scroll, and drag/drop.
+- Allocation-free, generic `visitResolved` traversal for custom looks, yielding
+  balanced structural entry/exit and handle-free `ResolvedElement` values.
+- Allocation-free structural visual encoding through clip, surface, text,
+  icon, decoded image, and custom operations; an explicitly allocating
+  optional recorder.
+- Allocation-free visual components with no behavior or backend dependencies.
+- Passive icon values for standalone, tree, and grid content, with stock
+  Chrome and C ABI parity but no interaction behavior in the icon component.
+- Caller-owned stock Chrome with explicit dirty preparation and no-allocation
+  cache hits/replay.
+- A Vulkan renderer that consumes a minimal caller-supplied render target and
+  exposes CPU preparation, GPU resource update, and draw phases separately.
+- Native Fontconfig fallback composition in the desktop demos and explicit
+  Snail device-grid placement with ppem-specific TrueType hinting and
+  grayscale-only Vulkan coverage.
+- Snail 0.19 bitmap-glyph preparation plus renderer-neutral application image
+  resources. Native PNG/JPEG/WebP decoding is supplied by libspng,
+  libjpeg-turbo, and libwebp at the demo composition root; the file manager
+  previews supported image files without coupling its model/view to a codec or
+  renderer.
+- Scroll areas derive overflow from logical content extent, hide bars when no
+  scrolling is possible, and expose neutral/hovered/active thumb state without
+  application styling.
+- Core-only and stock-Chrome C libraries/examples; see
+  [docs/C_API.md](docs/C_API.md).
+- A showcase and file manager migrated to semantic output and explicit
+  composition. The file-manager controller is separated from tree, graphics,
+  and platform ownership; its view receives focused input/output capabilities.
+- An executable game-embedding acceptance example that imports only core,
+  visuals, and components and writes directly into a game-owned command queue.
 
-## Recent Progress
+## Verification commands
 
-- `Context` forwards every per-handle `Runtime` method (`mutateKind`,
-  `setStyle`, `setCustomDraw`, `updateWidget`, `frame`, `invalidate`,
-  `focusWidget`, `clearFocus`, `cancelPointerGesture`) plus
-  `setTheme`/`setClipboard`. Demo and C wrapper drop ~120 sites of
-  `ctx.runtime.X(&ctx.tree, …)` boilerplate
-- `WidgetKind` arms separate genuinely-internal per-frame state into
-  per-kind `Internal` substructs (`drag`, `marquee_*`, `drop_preview*`,
-  `anchor_*`, `column_weights`, editor buffers). `WidgetDesc` already
-  prevented construction-time seeding; the `Internal` boundary now
-  documents the dispatch/draw-owned region structurally
-- `GridDrop`/`ListDrop`/`TableDrop` collapsed into one `ContainerDrop`
-  (shape was already identical; `TableDrop.Position.row` aliased to
-  `.item`). C ABI matched. Drop union arms (`.grid`, `.list`, `.table`)
-  still distinguish container kind
-- Embedder-facing tree helpers (`tableHeaderRow`, `tableCellAt`,
-  `tableResizeHandleIndexAtPoint`, `gridItemAt`, …) re-exported on
-  `goop` so callers don't need to reach into `widget.*`
-- Tagged read-only `WidgetView` replaces ~30 per-widget query methods on
-  `Runtime`/`Context` and the matching C exports
-- `Tree` mutations route through `setStyle`/`updateWidget`/`mutateKind`/
-  `setCustomDraw` so the runtime always invalidates layout/draw caches
-- `freeDrawList` / `freePaintList` no-ops removed; cached draw lists
-  are owned by `Runtime` and freed automatically on invalidation
-- C/Zig bool field names synced (no more `disable_*` vs `allow_*` skew)
-- `Event.Keycode` expanded to a comprehensive named-key table; new
-  `Event.Modifiers` packed bitmask carried on key/mouse events
-- `dispatch` is now an internal-only namespace; not re-exported
+```sh
+zig build test
+zig build test-core
+zig build test-desktop
+zig build test-visual
+zig build test-fonts
+zig build test-image-codecs
+zig build test-chrome
+zig build test-render-vulkan
+zig build test-file-manager
+zig build build-demo
+zig build build-file-manager-demo
+zig build game-embed-example
+```
 
+The full suite and native demos require the dependencies supplied by
+`nix-shell -A shell`. `GOOP_DEMO_FONT_PATH` can select the demo font explicitly.
+`-Ddemo-image-codecs=false` replaces the native codec composition with an
+explicit unsupported-codec capability for renderer-neutral build checks.
 
+## Known limitations
 
-- HiDPI-aware Wayland demo sizing with logical-vs-buffer dimensions
-- UTF-8-safe text input editing, cursor movement, deletion, and clipboard paste
-- Demo-side UTF-8 text event delivery and on-demand font atlas growth
-- Explicit text draw baselines/content bounds plus better line-height handling
-- Generational widget handles with subtree removal
-- Draw-list caching behind `draw_dirty`
-- Pixel-snapped text positioning in the demo renderer
-- `xkbcommon`-driven keyboard input in the demo
-- Tree items for outline-style editors
-- Dropdown/popup/menu-item composition for menus and selectors
-- Drag values, spinboxes, and structural tab bars/tab items
-- Menu bars, menus, submenu popups, and splitters
-- List boxes and selectable rows for denser editor selections
-- Structural tables with aligned columns, header rows, and striping
-- Resizable table columns with retained width fractions
-- Sortable table headers with retained sort state
-- Multi-select list boxes with Ctrl-toggle and Shift-range behavior
-- Table row selection policies with single/multi-select behavior
-- Keyboard navigation for selectable lists and table rows
-- Toolbar and status-bar structural widgets for editor chrome
-- Hover/focus-driven tooltips built on the floating layout path
-- Secondary-click reporting plus caller-managed context menu positioning
-- Demo font loading no longer shells out through `fc-match`
-- Installable C API header plus retained-tree/event/draw wrappers for C
-- Headless C API example built and exercised from `zig build test`
-- Shared `libgoop` install output alongside the static archive
-- Real Wayland clipboard selection in the demo via `wl_data_device_manager`
-
-## Next Priorities
-
-1. Demo/runtime portability polish around the new C surface
-2. Broader C API docs/reference coverage
-3. Richer text input behavior beyond codepoint-level editing
-
-## Known Issues
-
-- MSAA sample count is hardcoded to `4` with no capability fallback
-- Text editing is still codepoint-based; grapheme clusters and IME composition are not implemented
-- `widget.zig` grew significantly with removal logic and should be watched
+- The API remains unstable before 1.0.
+- Text editing is Unicode-codepoint-aware but not grapheme-cluster-aware; IME
+  composition is incomplete.
+- The bundled Vulkan renderer uses fixed assumptions, including 4x MSAA,
+  rather than a complete capability/fallback matrix.
+- `visitResolved` intentionally leaves multiple-root order unspecified and
+  leaves floating-layer policy to the custom look.
+- The shipped visual component set is small; custom looks commonly combine it
+  with application-owned visuals.

@@ -1,31 +1,58 @@
 const std = @import("std");
-const style = @import("style.zig");
-const widget = @import("widget.zig");
-const layout = @import("layout.zig");
-const paint_types = @import("paint_types.zig");
-const primitive_draw = @import("primitive_draw.zig");
-const geometry = @import("geometry.zig");
-const scrollbar = @import("scrollbar.zig");
+const goop = @import("goop");
+const components = @import("goop_components");
+const visual = @import("goop_visual");
+const style = goop.style;
+const widget = goop.widget;
+const layout = goop.layout;
+const geometry = goop.geometry;
+const scrollbar = goop.scrollbar;
 
-pub const Rect = paint_types.Rect;
-pub const TextAlign = paint_types.TextAlign;
-pub const TextOverflow = paint_types.TextOverflow;
-pub const IconId = paint_types.IconId;
-pub const PaintCommand = paint_types.PaintCommand;
-pub const PaintList = paint_types.PaintList;
-pub const PaintScope = paint_types.PaintScope;
-pub const PaintOptions = paint_types.PaintOptions;
+pub const Rect = visual.Rect;
+pub const TextAlign = visual.TextAlign;
+pub const TextOverflow = visual.TextOverflow;
+pub const IconId = visual.IconId;
+pub const CustomId = visual.CustomId;
+pub const VisualOperation = visual.Operation;
+pub const VisualList = visual.List;
+pub const VisualScope = union(enum) {
+    full: Full,
+    popup: goop.ElementId,
 
-const PaintOffset = struct {
+    pub const Full = struct {
+        include_floating: bool = true,
+    };
+};
+pub const VisualOptions = struct {
+    scope: VisualScope = .{ .full = .{} },
+    /// Optional caller-owned resolution of stock `custom` leaves into one
+    /// canonical visual operation. Returning null preserves `.custom`.
+    custom_visual: ?CustomVisualResolver = null,
+};
+pub const CustomVisualResolver = struct {
+    context: *anyopaque,
+    resolve_fn: *const fn (*anyopaque, visual.Custom) ?visual.Operation,
+
+    pub fn resolve(self: CustomVisualResolver, value: visual.Custom) ?visual.Operation {
+        return self.resolve_fn(self.context, value);
+    }
+};
+pub const VisualError = std.mem.Allocator.Error || error{
+    MissingCustomVisualId,
+    UnknownPopupElement,
+};
+
+const VisualOffset = struct {
     x: f32 = 0,
     y: f32 = 0,
 };
 
-const PaintCtx = struct {
+const VisualContext = struct {
     cull_rect: ?Rect = null,
-    offset: PaintOffset = .{},
+    offset: VisualOffset = .{},
+    custom_visual: ?CustomVisualResolver = null,
 
-    fn paintRect(self: *const PaintCtx, rect: Rect) Rect {
+    fn visualRect(self: *const VisualContext, rect: Rect) Rect {
         return .{
             .x = rect.x + self.offset.x,
             .y = rect.y + self.offset.y,
@@ -35,25 +62,55 @@ const PaintCtx = struct {
     }
 };
 
-/// Generate semantic paint commands from a laid-out widget tree.
-pub fn generatePaint(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, options: PaintOptions) !PaintList {
+/// Private bridge from stock Chrome's caller-owned operation storage to the
+/// generic structural encoder consumed by visual components.
+const ComponentEncoder = struct {
+    commands: *std.ArrayListUnmanaged(VisualOperation),
+    allocator: std.mem.Allocator,
+
+    pub fn surface(self: *ComponentEncoder, value: visual.Surface) !void {
+        try self.commands.append(self.allocator, .{ .surface = value });
+    }
+
+    pub fn text(self: *ComponentEncoder, value: visual.Text) !void {
+        try self.commands.append(self.allocator, .{ .text = value });
+    }
+
+    pub fn icon(self: *ComponentEncoder, value: visual.Icon) !void {
+        try self.commands.append(self.allocator, .{ .icon = value });
+    }
+
+    pub fn image(self: *ComponentEncoder, value: visual.Image) !void {
+        try self.commands.append(self.allocator, .{ .image = value });
+    }
+};
+
+/// Prepare semantic visual operations from a laid-out widget tree.
+pub fn prepareVisuals(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, options: VisualOptions) !VisualList {
     return switch (options.scope) {
-        .full => |full| paintFull(tree, theme, allocator, text_ctx, full.include_floating),
-        .popup => |handle| paintPopupSubtree(tree, handle, theme, allocator, text_ctx),
+        .full => |full| prepareFullVisuals(tree, theme, allocator, text_ctx, full.include_floating, options.custom_visual),
+        .popup => |element_id| preparePopupVisuals(
+            tree,
+            tree.findByElementId(element_id) orelse return error.UnknownPopupElement,
+            theme,
+            allocator,
+            text_ctx,
+            options.custom_visual,
+        ),
     };
 }
 
-fn paintFull(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, include_floating: bool) !PaintList {
-    var commands: std.ArrayListUnmanaged(PaintCommand) = .empty;
+fn prepareFullVisuals(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, include_floating: bool, custom_visual: ?CustomVisualResolver) !VisualList {
+    var commands: std.ArrayListUnmanaged(VisualOperation) = .empty;
     errdefer commands.deinit(allocator);
-    var paint_ctx = PaintCtx{};
+    var visual_ctx = VisualContext{ .custom_visual = custom_visual };
 
     for (tree.nodes.items, 0..) |node, i| {
         if (!node.alive) continue;
         if (node.parent == null) {
             const handle = tree.handleFromIndex(@intCast(i));
             if (node.kind != .popup and node.kind != .tooltip) {
-                try emitRootNode(&paint_ctx, tree, handle, theme, &commands, allocator, text_ctx);
+                try emitRootNode(&visual_ctx, tree, handle, theme, &commands, allocator, text_ctx);
             }
         }
     }
@@ -62,340 +119,313 @@ fn paintFull(tree: *const widget.Tree, theme: style.Theme, allocator: std.mem.Al
         for (tree.nodes.items, 0..) |node, i| {
             if (!node.alive) continue;
             if (node.parent == null) {
-                try emitFloatingSubtrees(&paint_ctx, tree, tree.handleFromIndex(@intCast(i)), theme, &commands, allocator, text_ctx);
+                try emitFloatingSubtrees(&visual_ctx, tree, tree.handleFromIndex(@intCast(i)), theme, &commands, allocator, text_ctx);
             }
         }
     }
 
-    try emitDragGhosts(&paint_ctx, tree, theme, &commands, allocator, text_ctx);
+    try emitDragGhosts(&visual_ctx, tree, theme, &commands, allocator, text_ctx);
 
     return .{ .commands = try commands.toOwnedSlice(allocator) };
 }
 
-fn paintPopupSubtree(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx) !PaintList {
-    var commands: std.ArrayListUnmanaged(PaintCommand) = .empty;
+fn preparePopupVisuals(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style.Theme, allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, custom_visual: ?CustomVisualResolver) !VisualList {
+    var commands: std.ArrayListUnmanaged(VisualOperation) = .empty;
     errdefer commands.deinit(allocator);
 
     const rect = tree.getConst(handle).layout_rect;
-    var paint_ctx = PaintCtx{
+    var visual_ctx = VisualContext{
         .cull_rect = null,
         .offset = .{ .x = -rect.x, .y = -rect.y },
+        .custom_visual = custom_visual,
     };
 
-    try emitNode(&paint_ctx, tree, handle, theme, &commands, allocator, text_ctx, true);
+    try emitNode(&visual_ctx, tree, handle, theme, &commands, allocator, text_ctx, true);
 
     return .{ .commands = try commands.toOwnedSlice(allocator) };
 }
 
 fn emitRootNode(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
-) std.mem.Allocator.Error!void {
-    const previous_cull_rect = paint_ctx.cull_rect;
-    paint_ctx.cull_rect = if (previous_cull_rect) |cull_rect|
-        geometry.intersectRects(cull_rect, paint_ctx.paintRect(tree.getConst(handle).layout_rect))
+) VisualError!void {
+    const previous_cull_rect = visual_ctx.cull_rect;
+    visual_ctx.cull_rect = if (previous_cull_rect) |cull_rect|
+        geometry.intersectRects(cull_rect, visual_ctx.visualRect(tree.getConst(handle).layout_rect))
     else
-        paint_ctx.paintRect(tree.getConst(handle).layout_rect);
-    defer paint_ctx.cull_rect = previous_cull_rect;
+        visual_ctx.visualRect(tree.getConst(handle).layout_rect);
+    defer visual_ctx.cull_rect = previous_cull_rect;
 
-    try emitNode(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, false);
+    try emitNode(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, false);
 }
 
-pub fn freePaintList(paint_list: *PaintList, allocator: std.mem.Allocator) void {
-    allocator.free(paint_list.commands);
-    paint_list.commands = &.{};
+pub fn freeVisuals(visuals: *VisualList, allocator: std.mem.Allocator) void {
+    allocator.free(visuals.commands);
+    visuals.commands = &.{};
 }
 
 fn emitNode(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
-) std.mem.Allocator.Error!void {
+) VisualError!void {
     const node = tree.getConst(handle);
-    const node_rect = paint_ctx.paintRect(node.layout_rect);
+    const node_rect = visual_ctx.visualRect(node.layout_rect);
     if (!shouldDrawNode(tree, handle)) return;
     if (!in_floating_subtree and (node.kind == .popup or node.kind == .tooltip)) return;
     if (!in_floating_subtree) {
-        if (paint_ctx.cull_rect) |cull_rect| {
+        if (visual_ctx.cull_rect) |cull_rect| {
             if (node_rect.w > 0 and node_rect.h > 0 and !geometry.rectsIntersect(node_rect, cull_rect) and !shouldTraverseCulledNode(tree, handle)) return;
         }
     }
     const resolved = node.style_override.resolve(theme);
+    try visualEmitter(node.kind)(visual_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 
-    if (node.widget_type) |_| {
-        try emitBehaviorNode(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
-        return;
-    }
-
-    try paintEmitter(node.kind)(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
-
-    try emitDropTargetOverlay(paint_ctx, node, resolved, theme, commands, allocator);
-
-    if (node.custom_paint and node.kind != .table_cell and node.kind != .custom) {
-        try appendCustomPaint(commands, allocator, handle, node_rect);
-    }
+    try emitDropTargetOverlay(visual_ctx, node, resolved, theme, commands, allocator);
 }
 
-const PaintEmitter = *const fn (
-    *PaintCtx,
+const VisualEmitter = *const fn (
+    *VisualContext,
     *const widget.Tree,
     widget.NodeHandle,
     *const widget.Node,
     style.ResolvedStyle,
     style.Theme,
-    *std.ArrayListUnmanaged(PaintCommand),
+    *std.ArrayListUnmanaged(VisualOperation),
     std.mem.Allocator,
     ?*const layout.TextMeasureCtx,
     bool,
-) std.mem.Allocator.Error!void;
+) VisualError!void;
 
-fn paintEmitter(kind: widget.WidgetKind) PaintEmitter {
+fn visualEmitter(kind: widget.WidgetKind) VisualEmitter {
     const tag: std.meta.Tag(widget.WidgetKind) = kind;
-    return paint_emitters[@intFromEnum(tag)];
+    return visual_emitters[@intFromEnum(tag)];
 }
 
-const paint_emitters = blk: {
+const visual_emitters = blk: {
     const Tag = std.meta.Tag(widget.WidgetKind);
-    var emitters: [std.meta.fields(Tag).len]PaintEmitter = undefined;
-    emitters[@intFromEnum(Tag.container)] = paintContainerNode;
-    emitters[@intFromEnum(Tag.text)] = paintTextNode;
-    emitters[@intFromEnum(Tag.button)] = paintButtonNode;
-    emitters[@intFromEnum(Tag.checkbox)] = paintCheckboxNode;
-    emitters[@intFromEnum(Tag.radio_button)] = paintRadioButtonNode;
-    emitters[@intFromEnum(Tag.tree_item)] = paintTreeItemNode;
-    emitters[@intFromEnum(Tag.dropdown)] = paintDropdownNode;
-    emitters[@intFromEnum(Tag.list_box)] = paintListBoxNode;
-    emitters[@intFromEnum(Tag.selectable)] = paintSelectableNode;
-    emitters[@intFromEnum(Tag.grid_selector)] = paintGridSelectorNode;
-    emitters[@intFromEnum(Tag.grid_item)] = paintGridItemNode;
-    emitters[@intFromEnum(Tag.table)] = paintTableNode;
-    emitters[@intFromEnum(Tag.table_row)] = paintTableRowNode;
-    emitters[@intFromEnum(Tag.table_cell)] = paintTableCellNode;
-    emitters[@intFromEnum(Tag.toolbar)] = paintToolbarNode;
-    emitters[@intFromEnum(Tag.status_bar)] = paintStatusBarNode;
-    emitters[@intFromEnum(Tag.menu_bar)] = paintMenuBarNode;
-    emitters[@intFromEnum(Tag.menu)] = paintMenuNode;
-    emitters[@intFromEnum(Tag.popup)] = paintPopupNode;
-    emitters[@intFromEnum(Tag.tooltip)] = paintTooltipNode;
-    emitters[@intFromEnum(Tag.menu_item)] = paintMenuItemNode;
-    emitters[@intFromEnum(Tag.drag_value)] = paintDragValueNode;
-    emitters[@intFromEnum(Tag.spinbox)] = paintSpinBoxNode;
-    emitters[@intFromEnum(Tag.tab_bar)] = paintTabBarNode;
-    emitters[@intFromEnum(Tag.tab_item)] = paintTabItemNode;
-    emitters[@intFromEnum(Tag.splitter)] = paintSplitterNode;
-    emitters[@intFromEnum(Tag.slider)] = paintSliderNode;
-    emitters[@intFromEnum(Tag.spacer)] = paintSpacerNode;
-    emitters[@intFromEnum(Tag.scroll_area)] = paintScrollAreaNode;
-    emitters[@intFromEnum(Tag.text_input)] = paintTextInputNode;
-    emitters[@intFromEnum(Tag.custom)] = paintCustomNode;
+    var emitters: [std.meta.fields(Tag).len]VisualEmitter = undefined;
+    emitters[@intFromEnum(Tag.container)] = visualContainerNode;
+    emitters[@intFromEnum(Tag.text)] = visualTextNode;
+    emitters[@intFromEnum(Tag.icon)] = visualIconNode;
+    emitters[@intFromEnum(Tag.button)] = visualButtonNode;
+    emitters[@intFromEnum(Tag.checkbox)] = visualCheckboxNode;
+    emitters[@intFromEnum(Tag.radio_button)] = visualRadioButtonNode;
+    emitters[@intFromEnum(Tag.tree_item)] = visualTreeItemNode;
+    emitters[@intFromEnum(Tag.dropdown)] = visualDropdownNode;
+    emitters[@intFromEnum(Tag.list_box)] = visualListBoxNode;
+    emitters[@intFromEnum(Tag.selectable)] = visualSelectableNode;
+    emitters[@intFromEnum(Tag.grid_selector)] = visualGridSelectorNode;
+    emitters[@intFromEnum(Tag.grid_item)] = visualGridItemNode;
+    emitters[@intFromEnum(Tag.table)] = visualTableNode;
+    emitters[@intFromEnum(Tag.table_row)] = visualTableRowNode;
+    emitters[@intFromEnum(Tag.table_cell)] = visualTableCellNode;
+    emitters[@intFromEnum(Tag.toolbar)] = visualToolbarNode;
+    emitters[@intFromEnum(Tag.status_bar)] = visualStatusBarNode;
+    emitters[@intFromEnum(Tag.menu_bar)] = visualMenuBarNode;
+    emitters[@intFromEnum(Tag.menu)] = visualMenuNode;
+    emitters[@intFromEnum(Tag.popup)] = visualPopupNode;
+    emitters[@intFromEnum(Tag.tooltip)] = visualTooltipNode;
+    emitters[@intFromEnum(Tag.menu_item)] = visualMenuItemNode;
+    emitters[@intFromEnum(Tag.drag_value)] = visualDragValueNode;
+    emitters[@intFromEnum(Tag.spinbox)] = visualSpinBoxNode;
+    emitters[@intFromEnum(Tag.tab_bar)] = visualTabBarNode;
+    emitters[@intFromEnum(Tag.tab_item)] = visualTabItemNode;
+    emitters[@intFromEnum(Tag.splitter)] = visualSplitterNode;
+    emitters[@intFromEnum(Tag.slider)] = visualSliderNode;
+    emitters[@intFromEnum(Tag.spacer)] = visualSpacerNode;
+    emitters[@intFromEnum(Tag.scroll_area)] = visualScrollAreaNode;
+    emitters[@intFromEnum(Tag.text_input)] = visualTextInputNode;
+    emitters[@intFromEnum(Tag.custom)] = visualCustomNode;
     break :blk emitters;
 };
 
-fn paintContainerNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitContainer(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualContainerNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitContainer(visual_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintTextNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, _: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
-    try emitText(paint_ctx, node, node.kind.text, resolved, commands, allocator, text_ctx);
+fn visualTextNode(visual_ctx: *VisualContext, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, _: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {
+    try emitText(visual_ctx, node, node.kind.text, resolved, commands, allocator, text_ctx);
 }
 
-fn paintButtonNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitButton(paint_ctx, tree, handle, node, node.kind.button, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualIconNode(visual_ctx: *VisualContext, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, _: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, _: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {
+    try emitIcon(visual_ctx, node, node.kind.icon, resolved, commands, allocator);
 }
 
-fn paintCheckboxNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
-    try emitCheckbox(paint_ctx, node, node.kind.checkbox, resolved, theme, commands, allocator, text_ctx);
+fn visualButtonNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitButton(visual_ctx, tree, handle, node, node.kind.button, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintRadioButtonNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
-    try emitRadioButton(paint_ctx, node, node.kind.radio_button, resolved, theme, commands, allocator, text_ctx);
+fn visualCheckboxNode(visual_ctx: *VisualContext, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {
+    try emitCheckbox(visual_ctx, node, node.kind.checkbox, resolved, theme, commands, allocator, text_ctx);
 }
 
-fn paintTreeItemNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitTreeItem(paint_ctx, tree, handle, node, node.kind.tree_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualRadioButtonNode(visual_ctx: *VisualContext, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {
+    try emitRadioButton(visual_ctx, node, node.kind.radio_button, resolved, theme, commands, allocator, text_ctx);
 }
 
-fn paintDropdownNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitDropdown(paint_ctx, tree, handle, node, node.kind.dropdown, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualTreeItemNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitTreeItem(visual_ctx, tree, handle, node, node.kind.tree_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintListBoxNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitListBox(paint_ctx, tree, handle, node, node.kind.list_box, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualDropdownNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitDropdown(visual_ctx, tree, handle, node, node.kind.dropdown, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintSelectableNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
-    try emitSelectable(paint_ctx, node, node.kind.selectable, resolved, theme, commands, allocator, text_ctx);
+fn visualListBoxNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitListBox(visual_ctx, tree, handle, node, node.kind.list_box, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintGridSelectorNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitGridSelector(paint_ctx, tree, handle, node, node.kind.grid_selector, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualSelectableNode(visual_ctx: *VisualContext, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {
+    try emitSelectable(visual_ctx, node, node.kind.selectable, resolved, theme, commands, allocator, text_ctx);
 }
 
-fn paintGridItemNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
-    try emitGridItem(paint_ctx, node, node.kind.grid_item, resolved, theme, commands, allocator, text_ctx);
+fn visualGridSelectorNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitGridSelector(visual_ctx, tree, handle, node, node.kind.grid_selector, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintTableNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitTable(paint_ctx, tree, handle, node, node.kind.table, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualGridItemNode(visual_ctx: *VisualContext, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {
+    try emitGridItem(visual_ctx, node, node.kind.grid_item, resolved, theme, commands, allocator, text_ctx);
 }
 
-fn paintTableRowNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitTableRow(paint_ctx, tree, handle, node, node.kind.table_row, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualTableNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitTable(visual_ctx, tree, handle, node, node.kind.table, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintTableCellNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitTableCell(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualTableRowNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitTableRow(visual_ctx, tree, handle, node, node.kind.table_row, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintToolbarNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitToolbar(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualTableCellNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitTableCell(visual_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintStatusBarNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitStatusBar(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualToolbarNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitToolbar(visual_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintMenuBarNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitMenuBar(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualStatusBarNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitStatusBar(visual_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintMenuNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitMenu(paint_ctx, tree, handle, node, node.kind.menu, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualMenuBarNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitMenuBar(visual_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintPopupNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
-    try emitPopup(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx);
+fn visualMenuNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitMenu(visual_ctx, tree, handle, node, node.kind.menu, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintTooltipNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
-    try emitTooltip(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx);
+fn visualPopupNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {
+    try emitPopup(visual_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx);
 }
 
-fn paintMenuItemNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
-    try emitMenuItem(paint_ctx, tree, handle, node, node.kind.menu_item, resolved, theme, commands, allocator, text_ctx);
+fn visualTooltipNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {
+    try emitTooltip(visual_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx);
 }
 
-fn paintDragValueNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
-    try emitDragValue(paint_ctx, node, &node.kind.drag_value, resolved, theme, commands, allocator, text_ctx);
+fn visualMenuItemNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {
+    try emitMenuItem(visual_ctx, tree, handle, node, node.kind.menu_item, resolved, theme, commands, allocator, text_ctx);
 }
 
-fn paintSpinBoxNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
-    try emitSpinBox(paint_ctx, node, &node.kind.spinbox, resolved, theme, commands, allocator, text_ctx);
+fn visualDragValueNode(visual_ctx: *VisualContext, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {
+    try emitDragValue(visual_ctx, node, &node.kind.drag_value, resolved, theme, commands, allocator, text_ctx);
 }
 
-fn paintTabBarNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitTabBar(paint_ctx, tree, handle, node, node.kind.tab_bar, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualSpinBoxNode(visual_ctx: *VisualContext, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {
+    try emitSpinBox(visual_ctx, node, &node.kind.spinbox, resolved, theme, commands, allocator, text_ctx);
 }
 
-fn paintTabItemNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitTabItem(paint_ctx, tree, handle, node, node.kind.tab_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualTabBarNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitTabBar(visual_ctx, tree, handle, node, node.kind.tab_bar, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintSplitterNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitSplitter(paint_ctx, tree, handle, node, node.kind.splitter, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualTabItemNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitTabItem(visual_ctx, tree, handle, node, node.kind.tab_item, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintSliderNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, _: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
-    try emitSlider(paint_ctx, node, node.kind.slider, resolved, theme, commands, allocator);
+fn visualSplitterNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitSplitter(visual_ctx, tree, handle, node, node.kind.splitter, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintSpacerNode(_: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, _: *const widget.Node, _: style.ResolvedStyle, _: style.Theme, _: *std.ArrayListUnmanaged(PaintCommand), _: std.mem.Allocator, _: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {}
-
-fn paintScrollAreaNode(paint_ctx: *PaintCtx, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) std.mem.Allocator.Error!void {
-    try emitScrollArea(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+fn visualSliderNode(visual_ctx: *VisualContext, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, _: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {
+    try emitSlider(visual_ctx, node, node.kind.slider, resolved, theme, commands, allocator);
 }
 
-fn paintTextInputNode(paint_ctx: *PaintCtx, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
-    try emitTextInput(paint_ctx, node, resolved, theme, commands, allocator, text_ctx);
+fn visualSpacerNode(_: *VisualContext, _: *const widget.Tree, _: widget.NodeHandle, _: *const widget.Node, _: style.ResolvedStyle, _: style.Theme, _: *std.ArrayListUnmanaged(VisualOperation), _: std.mem.Allocator, _: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {}
+
+fn visualScrollAreaNode(visual_ctx: *VisualContext, tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, in_floating_subtree: bool) VisualError!void {
+    try emitScrollArea(visual_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
-fn paintCustomNode(paint_ctx: *PaintCtx, _: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, _: style.ResolvedStyle, _: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator, _: ?*const layout.TextMeasureCtx, _: bool) std.mem.Allocator.Error!void {
-    try appendCustomPaint(commands, allocator, handle, paint_ctx.paintRect(node.layout_rect));
+fn visualTextInputNode(visual_ctx: *VisualContext, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, text_ctx: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {
+    try emitTextInput(visual_ctx, node, resolved, theme, commands, allocator, text_ctx);
 }
 
-fn emitBehaviorNode(
-    paint_ctx: *PaintCtx,
-    tree: *const widget.Tree,
-    handle: widget.NodeHandle,
-    node: *const widget.Node,
-    resolved: style.ResolvedStyle,
-    theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
-    allocator: std.mem.Allocator,
-    text_ctx: ?*const layout.TextMeasureCtx,
-    in_floating_subtree: bool,
-) std.mem.Allocator.Error!void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
-    const widget_type = node.widget_type orelse return;
-    if (widget_type.paint) |paint_fn| {
-        const ctx = widget.PaintCtx{
-            .widget = .{
-                .tree = @constCast(tree),
-                .handle = handle,
-                .node = @constCast(node),
-                .state = node.widget_state,
-                .theme = theme,
-            },
-            .rect = rect,
-            .resolved = resolved,
-            .commands = commands,
-            .allocator = allocator,
-        };
-        paint_fn(ctx) catch return error.OutOfMemory;
-    } else {
-        try appendCustomPaint(commands, allocator, handle, rect);
-    }
-
-    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
-    try emitDropTargetOverlay(paint_ctx, node, resolved, theme, commands, allocator);
+fn visualCustomNode(visual_ctx: *VisualContext, _: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, _: style.ResolvedStyle, _: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator, _: ?*const layout.TextMeasureCtx, _: bool) VisualError!void {
+    try appendCustomPaint(visual_ctx, commands, allocator, node, visual_ctx.visualRect(node.layout_rect));
 }
 
 fn appendCustomPaint(
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    visual_ctx: *const VisualContext,
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
-    handle: widget.NodeHandle,
+    node: *const widget.Node,
     bounds: Rect,
-) std.mem.Allocator.Error!void {
+) VisualError!void {
     if (bounds.w <= 0 or bounds.h <= 0) return;
-    try commands.append(allocator, .{ .custom = .{
-        .handle = handle,
+    const id = if (node.element_id) |element_id|
+        visual.CustomId.fromElementId(element_id.value())
+    else if (node.kind == .custom and node.kind.custom.type_id != 0)
+        visual.CustomId.init(node.kind.custom.type_id)
+    else
+        return error.MissingCustomVisualId;
+    const custom = visual.Custom{
+        .id = id,
         .bounds = bounds,
-    } });
+    };
+    if (visual_ctx.custom_visual) |resolver| {
+        if (resolver.resolve(custom)) |operation| {
+            try commands.append(allocator, operation);
+            return;
+        }
+    }
+    try commands.append(allocator, .{ .custom = custom });
 }
 
 fn emitContainer(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
-    // Background rect
-    try commands.append(allocator, .{ .surface = .{
+    const rect = visual_ctx.visualRect(node.layout_rect);
+    var encoder = ComponentEncoder{ .commands = commands, .allocator = allocator };
+    try (components.Surface{
         .bounds = rect,
         .color = resolved.bg,
         .border_color = resolved.border,
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
-    } });
+    }).emit(&encoder);
 
-    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
 fn defaultTextBounds(rect: Rect, resolved: style.ResolvedStyle) Rect {
@@ -421,7 +451,7 @@ fn rectRight(rect: Rect) f32 {
 }
 
 fn appendTextCommand(
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     bounds: Rect,
     text: []const u8,
@@ -430,36 +460,69 @@ fn appendTextCommand(
     text_align: TextAlign,
     overflow: TextOverflow,
 ) !void {
-    try commands.append(allocator, .{ .text = .{
+    var encoder = ComponentEncoder{ .commands = commands, .allocator = allocator };
+    try (components.Text{
         .bounds = bounds,
-        .text = text,
+        .content = text,
         .color = color,
         .font_size = font_size,
         .text_align = text_align,
         .overflow = overflow,
-    } });
+    }).emit(&encoder);
+}
+
+fn appendIconCommand(
+    commands: *std.ArrayListUnmanaged(VisualOperation),
+    allocator: std.mem.Allocator,
+    bounds: Rect,
+    kind: visual.IconId,
+    color: style.Color,
+) !void {
+    var encoder = ComponentEncoder{ .commands = commands, .allocator = allocator };
+    try (components.Icon{
+        .bounds = bounds,
+        .kind = kind,
+        .color = color,
+    }).emit(&encoder);
 }
 
 fn emitText(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     node: *const widget.Node,
     txt: widget.WidgetKind.Text,
     resolved: style.ResolvedStyle,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    const bounds = paint_ctx.paintRect(node.layout_rect);
+    const bounds = visual_ctx.visualRect(node.layout_rect);
     if (txt.overflow == .wrap) {
-        try appendWrappedTextCommands(paint_ctx, commands, allocator, bounds, txt.content, resolved.fg, resolved.font_size, text_ctx);
+        try appendWrappedTextCommands(visual_ctx, commands, allocator, bounds, txt.content, resolved.fg, resolved.font_size, text_ctx);
     } else {
         try appendTextCommand(commands, allocator, bounds, txt.content, resolved.fg, resolved.font_size, .start, txt.overflow);
     }
 }
 
+fn emitIcon(
+    visual_ctx: *const VisualContext,
+    node: *const widget.Node,
+    icon: widget.WidgetKind.Icon,
+    resolved: style.ResolvedStyle,
+    commands: *std.ArrayListUnmanaged(VisualOperation),
+    allocator: std.mem.Allocator,
+) !void {
+    try appendIconCommand(
+        commands,
+        allocator,
+        visual_ctx.visualRect(node.layout_rect),
+        icon.kind,
+        icon.color orelse resolved.fg,
+    );
+}
+
 fn appendWrappedTextCommands(
-    paint_ctx: *const PaintCtx,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    visual_ctx: *const VisualContext,
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     bounds: Rect,
     text: []const u8,
@@ -478,9 +541,9 @@ fn appendWrappedTextCommands(
     var y = bounds.y;
     var start: usize = 0;
     while (start <= text.len) {
-        if (wrappedTextPastCull(paint_ctx, y)) return;
+        if (wrappedTextPastCull(visual_ctx, y)) return;
         const end = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
-        y = try appendWrappedParagraph(paint_ctx, commands, allocator, bounds, y, line_h, text[start..end], color, font_size, text_ctx);
+        y = try appendWrappedParagraph(visual_ctx, commands, allocator, bounds, y, line_h, text[start..end], color, font_size, text_ctx);
         if (end == text.len) break;
         if (end == start) y += line_h;
         start = end + 1;
@@ -488,8 +551,8 @@ fn appendWrappedTextCommands(
 }
 
 fn appendWrappedParagraph(
-    paint_ctx: *const PaintCtx,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    visual_ctx: *const VisualContext,
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     bounds: Rect,
     start_y: f32,
@@ -509,13 +572,13 @@ fn appendWrappedParagraph(
     if (full_width <= wrap_width) {
         const trimmed_end = trimTrailingWhitespace(text);
         if (trimmed_end > 0) {
-            try appendWrappedLineCommand(paint_ctx, commands, allocator, bounds, y, line_h, text[0..trimmed_end], color, font_size);
+            try appendWrappedLineCommand(visual_ctx, commands, allocator, bounds, y, line_h, text[0..trimmed_end], color, font_size);
         }
         return y + line_h;
     }
 
     var view = std.unicode.Utf8View.init(text) catch {
-        try appendWrappedLineCommand(paint_ctx, commands, allocator, bounds, y, line_h, text, color, font_size);
+        try appendWrappedLineCommand(visual_ctx, commands, allocator, bounds, y, line_h, text, color, font_size);
         return y + line_h;
     };
     var it = view.iterator();
@@ -538,9 +601,9 @@ fn appendWrappedParagraph(
         const trimmed_end = trimTrailingWhitespace(text[line_start..chosen_end]) + line_start;
         const emitted_visible_line = trimmed_end > line_start;
         if (trimmed_end > line_start) {
-            try appendWrappedLineCommand(paint_ctx, commands, allocator, bounds, y, line_h, text[line_start..trimmed_end], color, font_size);
+            try appendWrappedLineCommand(visual_ctx, commands, allocator, bounds, y, line_h, text[line_start..trimmed_end], color, font_size);
             y += line_h;
-            if (wrappedTextPastCull(paint_ctx, y)) return y;
+            if (wrappedTextPastCull(visual_ctx, y)) return y;
         }
 
         line_start = if (emitted_visible_line) skipSoftWrapWhitespace(text, chosen_end) else chosen_end;
@@ -556,15 +619,15 @@ fn appendWrappedParagraph(
 
     const trimmed_end = trimTrailingWhitespace(text[line_start..line_end]) + line_start;
     if (trimmed_end > line_start) {
-        try appendWrappedLineCommand(paint_ctx, commands, allocator, bounds, y, line_h, text[line_start..trimmed_end], color, font_size);
+        try appendWrappedLineCommand(visual_ctx, commands, allocator, bounds, y, line_h, text[line_start..trimmed_end], color, font_size);
         y += line_h;
     }
     return y;
 }
 
 fn appendWrappedLineCommand(
-    paint_ctx: *const PaintCtx,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    visual_ctx: *const VisualContext,
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     bounds: Rect,
     y: f32,
@@ -574,14 +637,14 @@ fn appendWrappedLineCommand(
     font_size: f32,
 ) !void {
     const line_bounds = Rect{ .x = bounds.x, .y = y, .w = bounds.w, .h = line_h };
-    if (paint_ctx.cull_rect) |cull_rect| {
+    if (visual_ctx.cull_rect) |cull_rect| {
         if (!geometry.rectsIntersect(line_bounds, cull_rect)) return;
     }
     try appendTextCommand(commands, allocator, line_bounds, text, color, font_size, .start, .clip);
 }
 
-fn wrappedTextPastCull(paint_ctx: *const PaintCtx, y: f32) bool {
-    const cull_rect = paint_ctx.cull_rect orelse return false;
+fn wrappedTextPastCull(visual_ctx: *const VisualContext, y: f32) bool {
+    const cull_rect = visual_ctx.cull_rect orelse return false;
     return y >= cull_rect.y + cull_rect.h;
 }
 
@@ -605,66 +668,55 @@ fn skipSoftWrapWhitespace(text: []const u8, start: usize) usize {
 }
 
 fn emitButton(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     btn: widget.WidgetKind.Button,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
-    // Background rect
-    try commands.append(allocator, .{ .surface = .{
-        .bounds = rect,
-        .color = interactionBg(node, resolved, theme),
-        .border_color = resolved.border,
-        .border_width = resolved.border_width,
-        .corner_radius = resolved.border_radius,
-    } });
-
+    const rect = visual_ctx.visualRect(node.layout_rect);
     const label_bounds = defaultTextBounds(rect, resolved);
-    try appendTextCommand(commands, allocator, label_bounds, btn.label, resolved.fg, resolved.font_size, .start, .visible);
-
-    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
-    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    var encoder = ComponentEncoder{ .commands = commands, .allocator = allocator };
+    try (components.Button{
+        .background = .{
+            .bounds = rect,
+            .color = interactionBg(node, resolved, theme),
+            .border_color = resolved.border,
+            .border_width = resolved.border_width,
+            .corner_radius = resolved.border_radius,
+        },
+        .label = .{
+            .bounds = label_bounds,
+            .content = btn.label,
+            .color = resolved.fg,
+            .font_size = resolved.font_size,
+        },
+        .focus = focusRing(rect, theme, resolved.border_radius, node.interaction.focused),
+    }).emit(&encoder);
+    try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
 fn emitCheckbox(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     node: *const widget.Node,
     cb: widget.WidgetKind.Checkbox,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     const box_size = resolved.font_size;
-
-    // Checkbox box
-    try commands.append(allocator, .{ .surface = .{
-        .bounds = .{
-            .x = rect.x + resolved.padding.left,
-            .y = rect.y + resolved.padding.top,
-            .w = box_size,
-            .h = box_size,
-        },
-        .color = interactionBg(node, resolved, theme),
-        .border_color = resolved.border,
-        .border_width = resolved.border_width,
-        .corner_radius = resolved.border_radius,
-    } });
-
-    // Check indicator (filled inner rect when checked)
-    if (cb.checked) {
-        const inset: f32 = 3;
-        try commands.append(allocator, .{ .surface = .{
+    const inset: f32 = 3;
+    const indicator: ?components.Surface = if (cb.checked)
+        .{
             .bounds = .{
                 .x = rect.x + resolved.padding.left + inset,
                 .y = rect.y + resolved.padding.top + inset,
@@ -675,48 +727,53 @@ fn emitCheckbox(
             .border_color = theme.accent,
             .border_width = 0,
             .corner_radius = @max(resolved.border_radius - inset, 0),
-        } });
-    }
+        }
+    else
+        null;
 
     const label_x = rect.x + resolved.padding.left + box_size + resolved.padding.left;
     const label_bounds = customTextBounds(rect, resolved, label_x, rect.x + rect.w - resolved.padding.right - label_x);
-    try appendTextCommand(commands, allocator, label_bounds, cb.label, resolved.fg, resolved.font_size, .start, .visible);
-
-    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
+    var encoder = ComponentEncoder{ .commands = commands, .allocator = allocator };
+    try (components.Checkbox{
+        .box = .{
+            .bounds = .{
+                .x = rect.x + resolved.padding.left,
+                .y = rect.y + resolved.padding.top,
+                .w = box_size,
+                .h = box_size,
+            },
+            .color = interactionBg(node, resolved, theme),
+            .border_color = resolved.border,
+            .border_width = resolved.border_width,
+            .corner_radius = resolved.border_radius,
+        },
+        .indicator = indicator,
+        .label = .{
+            .bounds = label_bounds,
+            .content = cb.label,
+            .color = resolved.fg,
+            .font_size = resolved.font_size,
+        },
+        .focus = focusRing(rect, theme, resolved.border_radius, node.interaction.focused),
+    }).emit(&encoder);
 }
 
 fn emitRadioButton(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     node: *const widget.Node,
     rb: widget.WidgetKind.RadioButton,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     const box_size = resolved.font_size;
     const circle_radius = box_size / 2;
-
-    // Outer circle
-    try commands.append(allocator, .{ .surface = .{
-        .bounds = .{
-            .x = rect.x + resolved.padding.left,
-            .y = rect.y + resolved.padding.top,
-            .w = box_size,
-            .h = box_size,
-        },
-        .color = interactionBg(node, resolved, theme),
-        .border_color = resolved.border,
-        .border_width = resolved.border_width,
-        .corner_radius = circle_radius,
-    } });
-
-    // Inner dot when selected
-    if (rb.selected) {
-        const inset: f32 = 3;
-        try commands.append(allocator, .{ .surface = .{
+    const inset: f32 = 3;
+    const indicator: ?components.Surface = if (rb.selected)
+        .{
             .bounds = .{
                 .x = rect.x + resolved.padding.left + inset,
                 .y = rect.y + resolved.padding.top + inset,
@@ -727,30 +784,51 @@ fn emitRadioButton(
             .border_color = theme.accent,
             .border_width = 0,
             .corner_radius = circle_radius - inset,
-        } });
-    }
+        }
+    else
+        null;
 
     const label_x = rect.x + resolved.padding.left + box_size + resolved.padding.left;
     const label_bounds = customTextBounds(rect, resolved, label_x, rect.x + rect.w - resolved.padding.right - label_x);
-    try appendTextCommand(commands, allocator, label_bounds, rb.label, resolved.fg, resolved.font_size, .start, .visible);
-
-    try emitFocusRing(paint_ctx, node, theme, circle_radius, commands, allocator);
+    var encoder = ComponentEncoder{ .commands = commands, .allocator = allocator };
+    try (components.RadioButton{
+        .outer = .{
+            .bounds = .{
+                .x = rect.x + resolved.padding.left,
+                .y = rect.y + resolved.padding.top,
+                .w = box_size,
+                .h = box_size,
+            },
+            .color = interactionBg(node, resolved, theme),
+            .border_color = resolved.border,
+            .border_width = resolved.border_width,
+            .corner_radius = circle_radius,
+        },
+        .indicator = indicator,
+        .label = .{
+            .bounds = label_bounds,
+            .content = rb.label,
+            .color = resolved.fg,
+            .font_size = resolved.font_size,
+        },
+        .focus = focusRing(rect, theme, circle_radius, node.interaction.focused),
+    }).emit(&encoder);
 }
 
 fn emitTreeItem(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     item: widget.WidgetKind.TreeItem,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     const depth = geometry.treeDepth(tree, handle);
     const indent = @as(f32, @floatFromInt(depth)) * geometry.treeIndent(theme, resolved);
     const slot_width = geometry.treeDisclosureSlotWidth(resolved);
@@ -766,7 +844,7 @@ fn emitTreeItem(
     const disclosure_bounds = treeDisclosureBounds(disclosure_x, rect, resolved);
 
     try emitTreeGuides(
-        paint_ctx,
+        visual_ctx,
         tree,
         handle,
         rect,
@@ -814,16 +892,18 @@ fn emitTreeItem(
         }
     }
     if (item.icon) |icon| {
-        try commands.append(allocator, .{ .icon = .{
-            .bounds = .{
+        try appendIconCommand(
+            commands,
+            allocator,
+            .{
                 .x = label_x,
                 .y = rect.y + (rect.h - icon_size) * 0.5,
                 .w = icon_size,
                 .h = icon_size,
             },
-            .kind = icon,
-            .color = if (item.selected) theme.accent else item.icon_color orelse resolved.fg,
-        } });
+            icon,
+            if (item.selected) theme.accent else item.icon_color orelse resolved.fg,
+        );
     }
 
     if (item.editing) {
@@ -858,23 +938,23 @@ fn emitTreeItem(
         try appendTextCommand(commands, allocator, label_bounds, label, resolved.fg, resolved.font_size, .start, .visible);
     }
 
-    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(visual_ctx, node, theme, resolved.border_radius, commands, allocator);
     if (item.expanded) {
-        try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+        try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
     } else {
-        try emitPopupChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx);
+        try emitPopupChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx);
     }
 }
 
 fn emitDropdown(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     dropdown: widget.WidgetKind.Dropdown,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
@@ -884,7 +964,7 @@ fn emitDropdown(
         dropdown.selected_text
     else
         dropdown.placeholder;
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     const chevron = if (dropdown.open) dropdownChevronUp() else dropdownChevronDown();
     const chevron_x = rect.x + rect.w - resolved.padding.right - resolved.font_size * 0.6;
     const label_bounds = customTextBounds(rect, resolved, rect.x + resolved.padding.left, chevron_x - theme.spacing - (rect.x + resolved.padding.left));
@@ -900,26 +980,26 @@ fn emitDropdown(
     try appendTextCommand(commands, allocator, label_bounds, label, if (dropdown.selected_text.len > 0) resolved.fg else theme.placeholder_fg, resolved.font_size, .start, .clip);
     try appendTextCommand(commands, allocator, chevron_bounds, chevron, resolved.fg, resolved.font_size, .center, .visible);
 
-    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(visual_ctx, node, theme, resolved.border_radius, commands, allocator);
     if (dropdown.open) {
-        try emitPopupChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx);
+        try emitPopupChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx);
     }
 }
 
 fn emitListBox(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     list_box: widget.WidgetKind.ListBox,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = if (list_box.internal.drop_preview_background)
@@ -930,7 +1010,7 @@ fn emitListBox(
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
-    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     if (list_box.internal.marquee_active and list_box.internal.marquee_rect.w > 0 and list_box.internal.marquee_rect.h > 0) {
         const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
@@ -945,17 +1025,17 @@ fn emitListBox(
 }
 
 fn emitSelectable(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     node: *const widget.Node,
     selectable: widget.WidgetKind.Selectable,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
 ) !void {
     const fill = selectableBg(node, selectable.selected, theme);
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = if (selectable.internal.drag.active)
@@ -968,23 +1048,23 @@ fn emitSelectable(
     } });
     const selectable_bounds = defaultTextBounds(rect, resolved);
     try appendTextCommand(commands, allocator, selectable_bounds, selectable.label, resolved.fg, resolved.font_size, .start, .clip);
-    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(visual_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitGridSelector(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     grid_selector: widget.WidgetKind.GridSelector,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = if (grid_selector.internal.drop_preview_background)
@@ -995,7 +1075,7 @@ fn emitGridSelector(
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
-    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     if (grid_selector.internal.marquee_active and grid_selector.internal.marquee_rect.w > 0 and grid_selector.internal.marquee_rect.h > 0) {
         const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
@@ -1010,16 +1090,16 @@ fn emitGridSelector(
 }
 
 fn emitGridItem(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     node: *const widget.Node,
     grid_item: widget.WidgetKind.GridItem,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     const fill = if (grid_item.internal.drag.active)
         style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
     else
@@ -1053,9 +1133,14 @@ fn emitGridItem(
             .corner_radius = @min(resolved.border_radius, 8),
         } });
 
-        if (grid_item.icon.len > 0) {
-            const icon_font_size = @min(icon_rect.h * 0.46, icon_rect.w * 0.46);
-            try appendTextCommand(commands, allocator, icon_rect, grid_item.icon, if (grid_item.selected) theme.accent else resolved.fg, icon_font_size, .center, .visible);
+        if (grid_item.icon) |icon| {
+            try appendIconCommand(
+                commands,
+                allocator,
+                icon_rect,
+                icon,
+                if (grid_item.selected) theme.accent else grid_item.icon_color orelse resolved.fg,
+            );
         }
     }
 
@@ -1066,23 +1151,23 @@ fn emitGridItem(
         .h = resolved.font_size * 1.4,
     };
     try appendTextCommand(commands, allocator, label_bounds, grid_item.label, resolved.fg, resolved.font_size, .center, .ellipsis);
-    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(visual_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitTable(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     table: widget.WidgetKind.Table,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = snappedRect(paint_ctx.paintRect(node.layout_rect));
+    const rect = snappedRect(visual_ctx.visualRect(node.layout_rect));
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = if (table.internal.drop_preview_background)
@@ -1094,7 +1179,7 @@ fn emitTable(
         .corner_radius = resolved.border_radius,
     } });
 
-    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     if (table.internal.marquee_active and table.internal.marquee_rect.w > 0 and table.internal.marquee_rect.h > 0) {
         const fill = style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, 96);
@@ -1130,19 +1215,19 @@ fn emitTable(
 }
 
 fn emitTableRow(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     row: widget.WidgetKind.TableRow,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     const row_fill_rect = tableRowFillRect(tree, handle, rect);
     const fill = tableRowFill(tree, handle, node, row, theme);
     if (fill.a > 0 and row_fill_rect.w > 0 and row_fill_rect.h > 0) {
@@ -1189,9 +1274,9 @@ fn emitTableRow(
         const child_node = tree.getConst(child);
         if (child_node.kind == .table_cell) {
             const child_resolved = child_node.style_override.resolve(theme);
-            try emitTableCellContents(paint_ctx, tree, child, child_node, child_resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+            try emitTableCellContents(visual_ctx, tree, child, child_node, child_resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
         } else {
-            try emitNode(paint_ctx, tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
+            try emitNode(visual_ctx, tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
         }
     }
 
@@ -1200,39 +1285,39 @@ fn emitTableRow(
         const child_node = tree.getConst(child);
         if (child_node.kind != .table_cell) continue;
         const child_resolved = child_node.style_override.resolve(theme);
-        try emitTableCellDivider(paint_ctx, tree, child, child_node, child_resolved, commands, allocator);
+        try emitTableCellDivider(visual_ctx, tree, child, child_node, child_resolved, commands, allocator);
     }
 }
 
 fn emitTableCell(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    try emitTableCellContents(paint_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
-    try emitTableCellDivider(paint_ctx, tree, handle, node, resolved, commands, allocator);
+    try emitTableCellContents(visual_ctx, tree, handle, node, resolved, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitTableCellDivider(visual_ctx, tree, handle, node, resolved, commands, allocator);
 }
 
 fn emitTableCellContents(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     const sort_direction = tableSortIndicator(tree, handle);
     const chevron_x = if (sort_direction != null)
         rect.x + rect.w - resolved.padding.right - resolved.font_size * 0.8
@@ -1244,12 +1329,19 @@ fn emitTableCellContents(
         const child_node = tree.getConst(child);
         if (child_node.kind == .text) {
             const child_resolved = child_node.style_override.resolve(theme);
-            const text_x = rect.x + resolved.padding.left;
+            const child_rect = visual_ctx.visualRect(child_node.layout_rect);
+            const text_x = child_rect.x;
+            const child_right = rectRight(child_rect);
             const text_w = if (sort_direction != null)
                 chevron_x - text_x - resolved.font_size * 0.4
             else
-                rectRight(rect) - resolved.padding.right - text_x;
-            const text_bounds = customTextBounds(rect, resolved, text_x, text_w);
+                child_right - text_x;
+            const text_bounds = Rect{
+                .x = text_x,
+                .y = child_rect.y,
+                .w = @max(@min(text_w, child_rect.w), 0),
+                .h = child_rect.h,
+            };
             try appendTextCommand(
                 commands,
                 allocator,
@@ -1263,30 +1355,28 @@ fn emitTableCellContents(
             continue;
         }
 
-        try emitNode(paint_ctx, tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
+        try emitNode(visual_ctx, tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
     }
 
     if (sort_direction) |direction| {
         const chevron_bounds = customTextBounds(rect, resolved, chevron_x, rectRight(rect) - resolved.padding.right - chevron_x);
         try appendTextCommand(commands, allocator, chevron_bounds, tableSortChevron(direction), theme.accent, resolved.font_size, .center, .visible);
     }
-
-    if (node.custom_paint) try appendCustomPaint(commands, allocator, handle, rect);
 }
 
 fn emitTableCellDivider(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     resolved: style.ResolvedStyle,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
 ) !void {
     if (tableCellIndex(tree, handle) > 0) {
         const row_handle = tree.getConst(handle).parent orelse handle;
-        const row_rect = paint_ctx.paintRect(tree.getConst(row_handle).layout_rect);
-        const rect = paint_ctx.paintRect(node.layout_rect);
+        const row_rect = visual_ctx.visualRect(tree.getConst(row_handle).layout_rect);
+        const rect = visual_ctx.visualRect(node.layout_rect);
         const divider_thickness = tableDividerThickness(resolved.border_width);
         if (divider_thickness > 0) {
             const divider = snappedRect(.{
@@ -1307,18 +1397,18 @@ fn emitTableCellDivider(
 }
 
 fn emitMenuBar(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
@@ -1326,22 +1416,22 @@ fn emitMenuBar(
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
-    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
 fn emitToolbar(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
@@ -1349,22 +1439,22 @@ fn emitToolbar(
         .border_width = resolved.border_width,
         .corner_radius = 0,
     } });
-    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
 fn emitStatusBar(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
@@ -1372,24 +1462,24 @@ fn emitStatusBar(
         .border_width = resolved.border_width,
         .corner_radius = 0,
     } });
-    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
 fn emitMenu(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     menu: widget.WidgetKind.Menu,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
     _ = in_floating_subtree;
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = if (menuHasActiveFill(tree, handle, node))
@@ -1402,21 +1492,21 @@ fn emitMenu(
     } });
     const menu_bounds = defaultTextBounds(rect, resolved);
     try appendTextCommand(commands, allocator, menu_bounds, menu.label, resolved.fg, resolved.font_size, .start, .visible);
-    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(visual_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitPopup(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
@@ -1424,21 +1514,21 @@ fn emitPopup(
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
-    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, true);
+    try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, true);
 }
 
 fn emitTooltip(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
@@ -1446,18 +1536,18 @@ fn emitTooltip(
         .border_width = resolved.border_width,
         .corner_radius = resolved.border_radius,
     } });
-    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, true);
+    try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, true);
 }
 
 fn emitMenuItem(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     item: widget.WidgetKind.MenuItem,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
@@ -1468,7 +1558,7 @@ fn emitMenuItem(
         resolved.fg;
     const reserve_width = @max(resolved.font_size, 12);
     const gap = @max(resolved.padding.left * 0.75, 6);
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = if (menuPopupVisible(tree, handle))
@@ -1531,20 +1621,20 @@ fn emitMenuItem(
         try appendTextCommand(commands, allocator, arrow_bounds, "›", text_color, resolved.font_size, .end, .visible);
     }
 
-    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(visual_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitDragValue(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     node: *const widget.Node,
     drag_value: *const widget.WidgetKind.DragValue,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
 
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
@@ -1560,20 +1650,20 @@ fn emitDragValue(
         try appendTextCommand(commands, allocator, value_bounds, drag_value.displayValue(), resolved.fg, resolved.font_size, .start, .clip);
     }
 
-    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(visual_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitSpinBox(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     node: *const widget.Node,
     spinbox: *const widget.WidgetKind.SpinBox,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     const buttons = geometry.spinBoxButtons(rect);
     const field_rect = Rect{
         .x = buttons.dec.x + buttons.dec.w,
@@ -1613,23 +1703,23 @@ fn emitSpinBox(
         try appendTextCommand(commands, allocator, field_text_bounds, spinbox.displayValue(), resolved.fg, resolved.font_size, .start, .clip);
     }
 
-    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(visual_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitTabBar(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     _: widget.WidgetKind.TabBar,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
@@ -1642,47 +1732,47 @@ fn emitTabBar(
     while (iter.next()) |child| {
         const child_node = tree.getConst(child);
         if (child_node.kind != .tab_item) continue;
-        try emitTabItemHeader(paint_ctx, child_node, child_node.kind.tab_item, child_node.style_override.resolve(theme), theme, commands, allocator, text_ctx);
+        try emitTabItemHeader(visual_ctx, child_node, child_node.kind.tab_item, child_node.style_override.resolve(theme), theme, commands, allocator, text_ctx);
     }
 
     if (geometry.selectedTabItem(tree, handle)) |selected| {
-        try emitChildren(paint_ctx, tree, selected, theme, commands, allocator, text_ctx, in_floating_subtree);
+        try emitChildren(visual_ctx, tree, selected, theme, commands, allocator, text_ctx, in_floating_subtree);
     }
 }
 
 fn emitTabItem(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     item: widget.WidgetKind.TabItem,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    try emitTabItemHeader(paint_ctx, node, item, resolved, theme, commands, allocator, text_ctx);
+    try emitTabItemHeader(visual_ctx, node, item, resolved, theme, commands, allocator, text_ctx);
     if (item.selected) {
-        try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+        try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
     } else {
-        try emitPopupChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx);
+        try emitPopupChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx);
     }
 }
 
 fn emitTabItemHeader(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     node: *const widget.Node,
     item: widget.WidgetKind.TabItem,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
 ) !void {
     const chrome = tabItemChrome(node, item, resolved, theme);
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = chrome.color,
@@ -1707,23 +1797,23 @@ fn emitTabItemHeader(
     const tab_bounds = defaultTextBounds(rect, resolved);
     try appendTextCommand(commands, allocator, tab_bounds, item.label, resolved.fg, resolved.font_size, .start, .clip);
 
-    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(visual_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitSplitter(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     splitter: widget.WidgetKind.Splitter,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
         .color = resolved.bg,
@@ -1732,7 +1822,7 @@ fn emitSplitter(
         .corner_radius = resolved.border_radius,
     } });
 
-    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     const divider = geometry.splitterDividerRect(rect, splitter, resolved);
     const handle_rect = snappedRect(geometry.splitterHandleRect(divider, splitter));
@@ -1779,15 +1869,15 @@ fn emitSplitter(
 }
 
 fn emitSlider(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     node: *const widget.Node,
     sl: widget.WidgetKind.Slider,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
 
     // Track
     try commands.append(allocator, .{ .surface = .{
@@ -1813,20 +1903,20 @@ fn emitSlider(
         .corner_radius = resolved.border_radius,
     } });
 
-    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(visual_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitTextInput(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     node: *const widget.Node,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     const ti = &node.kind.text_input;
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
 
     // Background
     try commands.append(allocator, .{ .surface = .{
@@ -1846,7 +1936,7 @@ fn emitTextInput(
         try appendTextCommand(commands, allocator, text_bounds, ti.placeholder, theme.placeholder_fg, resolved.font_size, .start, .clip);
     }
 
-    try emitFocusRing(paint_ctx, node, theme, resolved.border_radius, commands, allocator);
+    try emitFocusRing(visual_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
 fn emitInlineEditorContents(
@@ -1854,7 +1944,7 @@ fn emitInlineEditorContents(
     ti: *const widget.WidgetKind.TextInput,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     show_cursor: bool,
@@ -1890,24 +1980,24 @@ fn emitInlineEditorContents(
 }
 
 fn emitScrollArea(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     node: *const widget.Node,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
-    const rect = paint_ctx.paintRect(node.layout_rect);
-    const previous_cull_rect = paint_ctx.cull_rect;
-    paint_ctx.cull_rect = if (previous_cull_rect) |cull_rect|
+    const rect = visual_ctx.visualRect(node.layout_rect);
+    const previous_cull_rect = visual_ctx.cull_rect;
+    visual_ctx.cull_rect = if (previous_cull_rect) |cull_rect|
         geometry.intersectRects(cull_rect, rect)
     else
         rect;
-    defer paint_ctx.cull_rect = previous_cull_rect;
+    defer visual_ctx.cull_rect = previous_cull_rect;
 
     // Background
     try commands.append(allocator, .{ .surface = .{
@@ -1919,32 +2009,32 @@ fn emitScrollArea(
     } });
 
     // Push clip
-    try commands.append(allocator, .{ .clip = .{ .bounds = paint_ctx.cull_rect orelse rect } });
+    try commands.append(allocator, .{ .push_clip = visual_ctx.cull_rect orelse rect });
 
-    try emitChildren(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
+    try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     // Pop clip
-    try commands.append(allocator, .{ .clip = .{ .bounds = null } });
+    try commands.append(allocator, .pop_clip);
 
     if (scrollbar.verticalMetrics(tree, handle, theme)) |metrics| {
-        try emitScrollbar(paintScrollbarMetrics(paint_ctx, metrics), theme, commands, allocator);
+        try emitScrollbar(visualScrollbarMetrics(visual_ctx, metrics), theme, commands, allocator);
     }
     if (scrollbar.horizontalMetrics(tree, handle, theme)) |metrics| {
-        try emitScrollbar(paintScrollbarMetrics(paint_ctx, metrics), theme, commands, allocator);
+        try emitScrollbar(visualScrollbarMetrics(visual_ctx, metrics), theme, commands, allocator);
     }
 }
 
-fn paintScrollbarMetrics(paint_ctx: *const PaintCtx, metrics: scrollbar.Metrics) scrollbar.Metrics {
+fn visualScrollbarMetrics(visual_ctx: *const VisualContext, metrics: scrollbar.Metrics) scrollbar.Metrics {
     var painted = metrics;
-    painted.track = paint_ctx.paintRect(metrics.track);
-    painted.thumb = paint_ctx.paintRect(metrics.thumb);
+    painted.track = visual_ctx.visualRect(metrics.track);
+    painted.thumb = visual_ctx.visualRect(metrics.thumb);
     return painted;
 }
 
 fn emitScrollbar(
     metrics: scrollbar.Metrics,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
 ) !void {
     const radius = switch (metrics.axis) {
@@ -1953,14 +2043,18 @@ fn emitScrollbar(
     };
     try commands.append(allocator, .{ .surface = .{
         .bounds = metrics.track,
-        .color = style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 64),
+        .color = style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 32),
         .border_color = style.Color.rgba(0, 0, 0, 0),
         .border_width = 0,
         .corner_radius = radius,
     } });
     try commands.append(allocator, .{ .surface = .{
         .bounds = metrics.thumb,
-        .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 180),
+        .color = switch (metrics.interaction) {
+            .idle => style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 150),
+            .hovered => style.Color.rgba(theme.fg.r, theme.fg.g, theme.fg.b, 128),
+            .active => style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 180),
+        },
         .border_color = style.Color.rgba(0, 0, 0, 0),
         .border_width = 0,
         .corner_radius = radius,
@@ -1969,39 +2063,35 @@ fn emitScrollbar(
 
 /// Emit a focus ring around a widget's layout rect if it has focus.
 fn emitFocusRing(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     node: *const widget.Node,
     theme: style.Theme,
     corner_radius: f32,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
 ) !void {
-    try emitFocusRingRect(paint_ctx.paintRect(node.layout_rect), theme, corner_radius, commands, allocator, node.interaction.focused);
+    try emitFocusRingRect(visual_ctx.visualRect(node.layout_rect), theme, corner_radius, commands, allocator, node.interaction.focused);
 }
 
 fn emitFocusRingRect(
     rect: Rect,
     theme: style.Theme,
     corner_radius: f32,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     focused: bool,
 ) !void {
-    if (!focused) return;
-    const r = rect;
-    const inset: f32 = -2;
-    try commands.append(allocator, .{ .surface = .{
-        .bounds = .{
-            .x = r.x + inset,
-            .y = r.y + inset,
-            .w = r.w - inset * 2,
-            .h = r.h - inset * 2,
-        },
-        .color = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-        .border_color = theme.focus_ring,
-        .border_width = 2,
-        .corner_radius = corner_radius + 2,
-    } });
+    var encoder = ComponentEncoder{ .commands = commands, .allocator = allocator };
+    try focusRing(rect, theme, corner_radius, focused).emit(&encoder);
+}
+
+fn focusRing(rect: Rect, theme: style.Theme, corner_radius: f32, focused: bool) components.FocusRing {
+    return .{
+        .bounds = rect,
+        .color = theme.focus_ring,
+        .corner_radius = corner_radius,
+        .visible = focused,
+    };
 }
 
 /// Resolve the background color for an interactive widget, accounting for
@@ -2031,15 +2121,15 @@ fn selectableBg(node: *const widget.Node, selected: bool, theme: style.Theme) st
 }
 
 fn emitDropTargetOverlay(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     node: *const widget.Node,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
 ) !void {
     if (!node.interaction.drop_hovered) return;
-    const rect = paint_ctx.paintRect(node.layout_rect);
+    const rect = visual_ctx.visualRect(node.layout_rect);
     if (rect.w <= 0 or rect.h <= 0) return;
     try commands.append(allocator, .{ .surface = .{
         .bounds = rect,
@@ -2166,7 +2256,7 @@ fn menuHasActiveFill(tree: *const widget.Tree, handle: widget.NodeHandle, node: 
 fn emitMenuArrow(
     rect: Rect,
     resolved: style.ResolvedStyle,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     color: style.Color,
 ) !void {
@@ -2306,7 +2396,7 @@ fn emitTreeItemDropIndicator(
     item: widget.WidgetKind.TreeItem,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
 ) !void {
     const preview = item.internal.drop_preview orelse return;
@@ -2335,14 +2425,14 @@ fn emitTreeItemDropIndicator(
 }
 
 fn emitTreeGuides(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     row_rect: Rect,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
     disclosure_bounds: ?Rect,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
 ) !void {
     var ancestor = tree.getConst(handle).parent;
@@ -2367,7 +2457,7 @@ fn emitTreeGuides(
     }
 
     if (geometry.findTreeParent(tree, handle)) |parent_handle| {
-        const parent_rect = paint_ctx.paintRect(tree.getConst(parent_handle).layout_rect);
+        const parent_rect = visual_ctx.visualRect(tree.getConst(parent_handle).layout_rect);
         const parent_bottom_y = parent_rect.y + parent_rect.h;
         const row_center_y = row_rect.y + row_rect.h * 0.5;
         const parent_guide_x = treeParentGuideCenterX(row_rect, resolved, theme, geometry.treeDepth(tree, handle));
@@ -2385,7 +2475,7 @@ fn emitTreeGuides(
         );
 
         if (nextTreeSibling(tree, handle)) |next_handle| {
-            const next_rect = paint_ctx.paintRect(tree.getConst(next_handle).layout_rect);
+            const next_rect = visual_ctx.visualRect(tree.getConst(next_handle).layout_rect);
             try appendTreeGuideVertical(
                 commands,
                 allocator,
@@ -2411,7 +2501,7 @@ fn emitTreeGuides(
 }
 
 fn appendTreeGuideVertical(
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     theme: style.Theme,
     x: f32,
@@ -2454,7 +2544,7 @@ fn emitTreeDisclosure(
     resolved: style.ResolvedStyle,
     theme: style.Theme,
     expanded: bool,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
 ) !void {
     try appendTextCommand(
@@ -2513,11 +2603,11 @@ fn treeParentGuideCenterX(
 }
 
 fn emitChildren(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     parent: widget.NodeHandle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
@@ -2525,39 +2615,39 @@ fn emitChildren(
     var iter = tree.children(parent);
     while (iter.next()) |child| {
         if (!in_floating_subtree and (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip)) continue;
-        try emitNode(paint_ctx, tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
+        try emitNode(visual_ctx, tree, child, theme, commands, allocator, text_ctx, in_floating_subtree);
     }
 }
 
 fn emitPopupChildren(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     parent: widget.NodeHandle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     var iter = tree.children(parent);
     while (iter.next()) |child| {
         if (tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) continue;
-        try emitNode(paint_ctx, tree, child, theme, commands, allocator, text_ctx, true);
+        try emitNode(visual_ctx, tree, child, theme, commands, allocator, text_ctx, true);
     }
 }
 
 fn emitFloatingSubtrees(
-    paint_ctx: *PaintCtx,
+    visual_ctx: *VisualContext,
     tree: *const widget.Tree,
     handle: widget.NodeHandle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) !void {
     if (!shouldDrawNode(tree, handle)) return;
     const node = tree.getConst(handle);
     if (node.kind == .popup or node.kind == .tooltip) {
-        try emitNode(paint_ctx, tree, handle, theme, commands, allocator, text_ctx, true);
+        try emitNode(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, true);
         return;
     }
 
@@ -2565,7 +2655,7 @@ fn emitFloatingSubtrees(
     while (iter.next()) |child| {
         if (node.kind == .tree_item and !node.kind.tree_item.expanded and tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) continue;
         if (node.kind == .tab_item and !node.kind.tab_item.selected) continue;
-        try emitFloatingSubtrees(paint_ctx, tree, child, theme, commands, allocator, text_ctx);
+        try emitFloatingSubtrees(visual_ctx, tree, child, theme, commands, allocator, text_ctx);
     }
 }
 
@@ -2612,21 +2702,21 @@ fn hasNonFloatingChild(tree: *const widget.Tree, handle: widget.NodeHandle) bool
 }
 
 fn emitDragGhosts(
-    paint_ctx: *const PaintCtx,
+    visual_ctx: *const VisualContext,
     tree: *const widget.Tree,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
     _: ?*const layout.TextMeasureCtx,
 ) !void {
-    _ = paint_ctx;
+    _ = visual_ctx;
     for (tree.nodes.items) |node| {
         if (!node.alive) continue;
         try dragGhostEmitter(node.kind)(&node, theme, commands, allocator);
     }
 }
 
-const DragGhostEmitter = *const fn (*const widget.Node, style.Theme, *std.ArrayListUnmanaged(PaintCommand), std.mem.Allocator) std.mem.Allocator.Error!void;
+const DragGhostEmitter = *const fn (*const widget.Node, style.Theme, *std.ArrayListUnmanaged(VisualOperation), std.mem.Allocator) VisualError!void;
 
 fn dragGhostEmitter(kind: widget.WidgetKind) DragGhostEmitter {
     const tag: std.meta.Tag(widget.WidgetKind) = kind;
@@ -2644,9 +2734,9 @@ const drag_ghost_emitters = blk: {
     break :blk emitters;
 };
 
-fn emitNoDragGhost(_: *const widget.Node, _: style.Theme, _: *std.ArrayListUnmanaged(PaintCommand), _: std.mem.Allocator) std.mem.Allocator.Error!void {}
+fn emitNoDragGhost(_: *const widget.Node, _: style.Theme, _: *std.ArrayListUnmanaged(VisualOperation), _: std.mem.Allocator) VisualError!void {}
 
-fn emitTreeItemDragGhost(node: *const widget.Node, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator) std.mem.Allocator.Error!void {
+fn emitTreeItemDragGhost(node: *const widget.Node, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator) VisualError!void {
     const item = node.kind.tree_item;
     if (!item.internal.drag.active or item.internal.drag.rect.w <= 0 or item.internal.drag.rect.h <= 0) return;
     const resolved = node.style_override.resolve(theme);
@@ -2656,7 +2746,7 @@ fn emitTreeItemDragGhost(node: *const widget.Node, theme: style.Theme, commands:
     try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .start, .clip);
 }
 
-fn emitSelectableDragGhost(node: *const widget.Node, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator) std.mem.Allocator.Error!void {
+fn emitSelectableDragGhost(node: *const widget.Node, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator) VisualError!void {
     const item = node.kind.selectable;
     if (!item.internal.drag.active or item.internal.drag.rect.w <= 0 or item.internal.drag.rect.h <= 0) return;
     const resolved = node.style_override.resolve(theme);
@@ -2665,7 +2755,7 @@ fn emitSelectableDragGhost(node: *const widget.Node, theme: style.Theme, command
     try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .start, .clip);
 }
 
-fn emitGridItemDragGhost(node: *const widget.Node, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator) std.mem.Allocator.Error!void {
+fn emitGridItemDragGhost(node: *const widget.Node, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator) VisualError!void {
     const item = node.kind.grid_item;
     if (!item.internal.drag.active or item.internal.drag.rect.w <= 0 or item.internal.drag.rect.h <= 0) return;
     const resolved = node.style_override.resolve(theme);
@@ -2696,7 +2786,7 @@ fn emitGridItemDragGhost(node: *const widget.Node, theme: style.Theme, commands:
     try appendTextCommand(commands, allocator, label_bounds, item.label, dragGhostColor(resolved.fg, 210), resolved.font_size, .center, .ellipsis);
 }
 
-fn emitTableRowDragGhost(node: *const widget.Node, theme: style.Theme, commands: *std.ArrayListUnmanaged(PaintCommand), allocator: std.mem.Allocator) std.mem.Allocator.Error!void {
+fn emitTableRowDragGhost(node: *const widget.Node, theme: style.Theme, commands: *std.ArrayListUnmanaged(VisualOperation), allocator: std.mem.Allocator) VisualError!void {
     const row = node.kind.table_row;
     if (!row.internal.drag.active or row.internal.drag.rect.w <= 0 or row.internal.drag.rect.h <= 0) return;
     const resolved = node.style_override.resolve(theme);
@@ -2711,7 +2801,7 @@ fn emitDragGhostRect(
     rect: Rect,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    commands: *std.ArrayListUnmanaged(PaintCommand),
+    commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
 ) !void {
     try commands.append(allocator, .{ .surface = .{
@@ -2825,7 +2915,7 @@ fn testMeasureTextWithStringBounds(text: []const u8, font_size: f32, _: ?*anyopa
     };
 }
 
-test "generate paint commands from tree" {
+test "prepare visual operations from tree" {
     const allocator = std.testing.allocator;
 
     var tree = widget.Tree.init(allocator);
@@ -2839,8 +2929,8 @@ test "generate paint commands from tree" {
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     // Container bg + button bg + button text + text label = 4 commands
     try std.testing.expectEqual(@as(usize, 4), dl.commands.len);
@@ -2850,7 +2940,50 @@ test "generate paint commands from tree" {
     try std.testing.expect(dl.commands[3] == .text); // text widget
 }
 
-test "primitive text lowering carries bounds and baseline" {
+test "stock chrome preserves opaque ids for passive and grid icons" {
+    const allocator = std.testing.allocator;
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const passive_color = style.Color.rgb(11, 22, 33);
+    const grid_color = style.Color.rgb(44, 55, 66);
+    const passive = try tree.addRoot(.{ .icon = .{ .kind = 101, .color = passive_color } });
+    const grid_item = try tree.addRoot(.{ .grid_item = .{
+        .label = "Folder",
+        .icon = 202,
+        .icon_color = grid_color,
+    } });
+    tree.get(passive).layout_rect = .{ .x = 4, .y = 8, .w = 18, .h = 18 };
+    tree.get(grid_item).layout_rect = .{ .x = 40, .y = 8, .w = 96, .h = 96 };
+
+    var visuals = try prepareVisuals(&tree, style.Theme.default, allocator, null, .{});
+    defer freeVisuals(&visuals, allocator);
+
+    var found_passive = false;
+    var found_grid = false;
+    for (visuals.commands) |command| {
+        if (command != .icon) continue;
+        switch (command.icon.kind) {
+            101 => {
+                found_passive = true;
+                try std.testing.expectEqual(passive_color, command.icon.color);
+                try std.testing.expectEqual(tree.getConst(passive).layout_rect, command.icon.bounds);
+            },
+            202 => {
+                found_grid = true;
+                try std.testing.expectEqual(grid_color, command.icon.color);
+                try std.testing.expect(command.icon.bounds.w > 8);
+                try std.testing.expect(command.icon.bounds.h > 8);
+            },
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    try std.testing.expect(found_passive);
+    try std.testing.expect(found_grid);
+}
+
+test "canonical visual text carries resolved bounds" {
     const allocator = std.testing.allocator;
 
     var tree = widget.Tree.init(allocator);
@@ -2863,56 +2996,19 @@ test "primitive text lowering carries bounds and baseline" {
         .measureFn = &testMeasureText,
     };
 
-    var paint = try generatePaint(&tree, style.Theme.default, allocator, &text_ctx, .{});
-    defer freePaintList(&paint, allocator);
+    var visuals = try prepareVisuals(&tree, style.Theme.default, allocator, &text_ctx, .{});
+    defer freeVisuals(&visuals, allocator);
 
-    var dl = try primitive_draw.lowerPaintList(paint, allocator, &text_ctx);
-    defer primitive_draw.freeDrawList(&dl, allocator);
-
-    try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
-    try std.testing.expect(dl.commands[1] == .text);
-    const text = dl.commands[1].text;
+    try std.testing.expectEqual(@as(usize, 2), visuals.commands.len);
+    try std.testing.expect(visuals.commands[1] == .text);
+    const text = visuals.commands[1].text;
     try std.testing.expectApproxEqAbs(@as(f32, 16), text.bounds.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 26), text.bounds.y, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 108), text.bounds.w, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 28), text.bounds.h, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 44), text.baseline_y, 0.01);
 }
 
-test "custom paint commands are emitted before floating popups" {
-    const allocator = std.testing.allocator;
-
-    var tree = widget.Tree.init(allocator);
-    defer tree.deinit();
-
-    const root = try tree.addRoot(.{ .container = .{} });
-    const button = try tree.addChild(root, .{ .button = .{ .label = "Preview" } });
-    const menu = try tree.addChild(root, .{ .menu = .{ .label = "File" } });
-    const popup = try tree.addChild(menu, .{ .popup = .{
-        .placement = .below_start,
-        .visible = true,
-    } });
-    _ = try tree.addChild(popup, .{ .menu_item = .{ .label = "Open" } });
-
-    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
-    tree.get(button).layout_rect = .{ .x = 10, .y = 10, .w = 96, .h = 32 };
-    tree.get(button).custom_paint = true;
-    tree.get(menu).layout_rect = .{ .x = 118, .y = 10, .w = 64, .h = 32 };
-    tree.get(popup).layout_rect = .{ .x = 118, .y = 42, .w = 140, .h = 28 };
-    const item = tree.getConst(popup).first_child.?;
-    tree.get(item).layout_rect = .{ .x = 118, .y = 42, .w = 140, .h = 28 };
-
-    var dl = try generatePaint(&tree, style.Theme.default, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
-
-    try std.testing.expectEqual(@as(usize, 9), dl.commands.len);
-    try std.testing.expect(dl.commands[3] == .custom);
-    try std.testing.expect(dl.commands[6] == .surface);
-    try std.testing.expect(dl.commands[6].surface.bounds.x == tree.getConst(popup).layout_rect.x);
-    try std.testing.expect(dl.commands[6].surface.bounds.y == tree.getConst(popup).layout_rect.y);
-}
-
-test "popup paint can be split from main paint" {
+test "popup visuals can be split from main visuals" {
     const allocator = std.testing.allocator;
 
     var tree = widget.Tree.init(allocator);
@@ -2924,6 +3020,7 @@ test "popup paint can be split from main paint" {
         .placement = .below_start,
         .visible = true,
     } });
+    try tree.setElementId(popup, .init(501));
     const item = try tree.addChild(popup, .{ .menu_item = .{ .label = "Open" } });
 
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
@@ -2931,20 +3028,20 @@ test "popup paint can be split from main paint" {
     tree.get(popup).layout_rect = .{ .x = 10, .y = 32, .w = 144, .h = 30 };
     tree.get(item).layout_rect = .{ .x = 10, .y = 32, .w = 144, .h = 30 };
 
-    var main_paint = try generatePaint(&tree, style.Theme.default, allocator, null, .{ .scope = .{ .full = .{ .include_floating = false } } });
-    defer freePaintList(&main_paint, allocator);
-    for (main_paint.commands) |command| {
+    var main_visuals = try prepareVisuals(&tree, style.Theme.default, allocator, null, .{ .scope = .{ .full = .{ .include_floating = false } } });
+    defer freeVisuals(&main_visuals, allocator);
+    for (main_visuals.commands) |command| {
         if (command == .surface) {
             try std.testing.expect(command.surface.bounds.y < tree.getConst(popup).layout_rect.y);
         }
     }
 
-    var popup_paint = try generatePaint(&tree, style.Theme.default, allocator, null, .{ .scope = .{ .popup = popup } });
-    defer freePaintList(&popup_paint, allocator);
-    try std.testing.expect(popup_paint.commands.len >= 3);
-    try std.testing.expect(popup_paint.commands[0] == .surface);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), popup_paint.commands[0].surface.bounds.x, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), popup_paint.commands[0].surface.bounds.y, 0.01);
+    var popup_visuals = try prepareVisuals(&tree, style.Theme.default, allocator, null, .{ .scope = .{ .popup = .init(501) } });
+    defer freeVisuals(&popup_visuals, allocator);
+    try std.testing.expect(popup_visuals.commands.len >= 3);
+    try std.testing.expect(popup_visuals.commands[0] == .surface);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), popup_visuals.commands[0].surface.bounds.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), popup_visuals.commands[0].surface.bounds.y, 0.01);
 }
 
 test "checked menu item emits checked indicator" {
@@ -2963,11 +3060,11 @@ test "checked menu item emits checked indicator" {
     tree.get(item).layout_rect = .{ .x = 0, .y = 0, .w = 140, .h = 28 };
 
     const theme = style.Theme.default;
-    var paint = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&paint, allocator);
+    var visuals = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&visuals, allocator);
 
     var found_indicator = false;
-    for (paint.commands) |command| {
+    for (visuals.commands) |command| {
         if (command != .surface) continue;
         const box = command.surface;
         if (box.bounds.w > 0 and box.bounds.w < 10 and box.bounds.h > 0 and box.bounds.h < 10) {
@@ -3006,11 +3103,11 @@ test "hovered top-level menu uses active fill while menu bar is open" {
     tree.get(edit).interaction.hovered = true;
 
     const theme = style.Theme.default;
-    var paint = try generatePaint(&tree, theme, allocator, null, .{ .scope = .{ .full = .{ .include_floating = false } } });
-    defer freePaintList(&paint, allocator);
+    var visuals = try prepareVisuals(&tree, theme, allocator, null, .{ .scope = .{ .full = .{ .include_floating = false } } });
+    defer freeVisuals(&visuals, allocator);
 
     var found_edit_box = false;
-    for (paint.commands) |command| {
+    for (visuals.commands) |command| {
         if (command != .surface) continue;
         const box = command.surface;
         if (box.bounds.x == tree.getConst(edit).layout_rect.x and
@@ -3023,26 +3120,6 @@ test "hovered top-level menu uses active fill while menu bar is open" {
         }
     }
     try std.testing.expect(found_edit_box);
-}
-
-test "table cells emit custom paint commands after text contents" {
-    const allocator = std.testing.allocator;
-
-    var tree = widget.Tree.init(allocator);
-    defer tree.deinit();
-
-    const cell = try tree.addRoot(.{ .table_cell = .{} });
-    _ = try tree.addChild(cell, .{ .text = .{ .content = "Name", .overflow = .ellipsis } });
-    tree.get(cell).layout_rect = .{ .x = 10, .y = 20, .w = 160, .h = 28 };
-    tree.get(cell).custom_paint = true;
-
-    var dl = try generatePaint(&tree, style.Theme.default, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
-
-    try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
-    try std.testing.expect(dl.commands[0] == .text);
-    try std.testing.expect(dl.commands[1] == .custom);
-    try std.testing.expect(dl.commands[1].custom.handle.eql(cell));
 }
 
 test "toolbar and status bar emit chrome and children" {
@@ -3062,8 +3139,8 @@ test "toolbar and status bar emit chrome and children" {
     tree.get(status_text).layout_rect = .{ .x = 8, .y = 45, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 5), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .surface); // toolbar chrome
@@ -3083,8 +3160,8 @@ test "checkbox emits box and label" {
     tree.get(cb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     // Unchecked: box rect + label text = 2 commands
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
@@ -3102,8 +3179,8 @@ test "checked checkbox emits indicator" {
     tree.get(cb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     // Checked: box rect + indicator rect + label text = 3 commands
     try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
@@ -3122,8 +3199,8 @@ test "radio button emits circle and label" {
     tree.get(rb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     // Unselected: circle rect + label text = 2 commands
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
@@ -3145,8 +3222,8 @@ test "selected radio button emits indicator dot" {
     tree.get(rb).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     // Selected: circle rect + indicator dot + label text = 3 commands
     try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
@@ -3169,8 +3246,8 @@ test "selected tree item uses fill without button border" {
     tree.get(item).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .surface);
@@ -3206,8 +3283,8 @@ test "expanded tree item emits disclosure and child guides" {
     tree.get(sibling).layout_rect = .{ .x = 10, .y = 90, .w = 220, .h = 26 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 11), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .surface); // root bg
@@ -3243,8 +3320,8 @@ test "expanded tree item emits disclosure and child guides" {
     try std.testing.expectApproxEqAbs(child_guide.x, child_connector.x, 0.01);
 
     tree.get(parent).kind.tree_item.expanded = false;
-    var collapsed = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&collapsed, allocator);
+    var collapsed = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&collapsed, allocator);
     var found_collapsed_chevron = false;
     for (collapsed.commands) |command| {
         if (command == .text and std.mem.eql(u8, command.text.text, "▸")) {
@@ -3268,8 +3345,8 @@ test "drag value emits bg and formatted text" {
     tree.get(drag_value).layout_rect = .{ .x = 10, .y = 20, .w = 120, .h = 28 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .surface);
@@ -3290,8 +3367,8 @@ test "spinbox emits buttons and value" {
     tree.get(spinbox).layout_rect = .{ .x = 10, .y = 20, .w = 120, .h = 28 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 6), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .surface);
@@ -3303,7 +3380,7 @@ test "spinbox emits buttons and value" {
     try std.testing.expectEqualStrings("4", dl.commands[5].text.text);
 }
 
-test "numeric controls baseline uses stable line metrics" {
+test "numeric controls emit text with stable resolved bounds" {
     const allocator = std.testing.allocator;
 
     var tree = widget.Tree.init(allocator);
@@ -3324,14 +3401,13 @@ test "numeric controls baseline uses stable line metrics" {
         .measureFn = &testMeasureTextWithStringBounds,
     };
 
-    var paint = try generatePaint(&tree, style.Theme.default, allocator, &text_ctx, .{});
-    defer freePaintList(&paint, allocator);
+    var visuals = try prepareVisuals(&tree, style.Theme.default, allocator, &text_ctx, .{});
+    defer freeVisuals(&visuals, allocator);
 
-    var dl = try primitive_draw.lowerPaintList(paint, allocator, &text_ctx);
-    defer primitive_draw.freeDrawList(&dl, allocator);
-
-    try std.testing.expectApproxEqAbs(@as(f32, 40), dl.commands[1].text.baseline_y, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 80), dl.commands[7].text.baseline_y, 0.01);
+    try std.testing.expect(visuals.commands[1] == .text);
+    try std.testing.expectApproxEqAbs(@as(f32, 26), visuals.commands[1].text.bounds.y, 0.01);
+    try std.testing.expect(visuals.commands[7] == .text);
+    try std.testing.expectApproxEqAbs(@as(f32, 66), visuals.commands[7].text.bounds.y, 0.01);
 }
 
 test "tab bar emits selected tab header and active panel only" {
@@ -3358,8 +3434,8 @@ test "tab bar emits selected tab header and active panel only" {
     tree.get(hidden_text).layout_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 7), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .surface); // tab bar bg
@@ -3403,8 +3479,8 @@ test "table emits header fill, row separators, and column dividers" {
     tree.get(row_type_text).layout_rect = .{ .x = 148, .y = 34, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 10), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .surface); // table bg
@@ -3456,8 +3532,8 @@ test "table separators snap to whole pixels for fractional row positions" {
     tree.get(row_b_type).layout_rect = .{ .x = 140.625, .y = 57.0, .w = 140.125, .h = 28.25 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 14), dl.commands.len);
     try std.testing.expect(dl.commands[6] == .surface);
@@ -3495,8 +3571,8 @@ test "resizable table emits header grips" {
     tree.get(header_type_text).layout_rect = .{ .x = 148, .y = 6, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 6), dl.commands.len);
     try std.testing.expect(dl.commands[5] == .surface);
@@ -3522,8 +3598,8 @@ test "splitter paints thin divider and hover overlay" {
     tree.get(splitter).interaction.hovered = true;
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 4), dl.commands.len);
     try std.testing.expect(dl.commands[1] == .surface);
@@ -3563,8 +3639,8 @@ test "sortable table emits active sort indicator" {
     tree.get(header_type_text).layout_rect = .{ .x = 148, .y = 6, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     var found_indicator = false;
     for (dl.commands) |command| {
@@ -3587,8 +3663,8 @@ test "slider emits track and thumb" {
     tree.get(sl).layout_rect = .{ .x = 10, .y = 20, .w = 200, .h = 24 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     // Track + thumb = 2 rects
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
@@ -3613,17 +3689,15 @@ test "scroll area emits clip commands" {
     tree.get(child).layout_rect = .{ .x = 8, .y = 6, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     // bg rect + clip push + text + clip pop = 4
     try std.testing.expectEqual(@as(usize, 4), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .surface); // bg
-    try std.testing.expect(dl.commands[1] == .clip); // push
-    try std.testing.expect(dl.commands[1].clip.bounds != null);
+    try std.testing.expect(dl.commands[1] == .push_clip);
     try std.testing.expect(dl.commands[2] == .text); // child text
-    try std.testing.expect(dl.commands[3] == .clip); // pop
-    try std.testing.expect(dl.commands[3].clip.bounds == null);
+    try std.testing.expect(dl.commands[3] == .pop_clip);
 }
 
 test "scroll area paints child rects at their laid out scroll position" {
@@ -3638,8 +3712,8 @@ test "scroll area paints child rects at their laid out scroll position" {
     tree.get(child).layout_rect = .{ .x = 8, .y = 10, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 4), dl.commands.len);
     try std.testing.expect(dl.commands[2] == .text);
@@ -3661,15 +3735,15 @@ test "scroll area omits fully offscreen children" {
     tree.get(hidden).layout_rect = .{ .x = 8, .y = 64, .w = 40, .h = 14 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 6), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .surface);
-    try std.testing.expect(dl.commands[1] == .clip);
+    try std.testing.expect(dl.commands[1] == .push_clip);
     try std.testing.expect(dl.commands[2] == .text);
     try std.testing.expectEqualStrings("visible", dl.commands[2].text.text);
-    try std.testing.expect(dl.commands[3] == .clip);
+    try std.testing.expect(dl.commands[3] == .pop_clip);
     try std.testing.expect(dl.commands[4] == .surface);
     try std.testing.expect(dl.commands[5] == .surface);
 }
@@ -3687,8 +3761,8 @@ test "root paint culls fully offscreen children" {
     tree.get(visible).layout_rect = .{ .x = 8, .y = 10, .w = 44, .h = 14 };
     tree.get(hidden).layout_rect = .{ .x = 8, .y = 64, .w = 40, .h = 14 };
 
-    var dl = try generatePaint(&tree, style.Theme.default, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, style.Theme.default, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     var found_visible = false;
     var found_hidden = false;
@@ -3715,8 +3789,8 @@ test "scroll area still paints visible tree children when expanded parent row is
     tree.get(child).layout_rect = .{ .x = 0, .y = 4, .w = 150, .h = 20 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     var found_child_label = false;
     for (dl.commands) |command| {
@@ -3741,15 +3815,27 @@ test "scroll area emits scrollbar thumb when content overflows" {
     tree.get(child).layout_rect = .{ .x = 6, .y = -34, .w = 108, .h = 300 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 5), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .surface);
-    try std.testing.expect(dl.commands[1] == .clip);
-    try std.testing.expect(dl.commands[2] == .clip);
+    try std.testing.expect(dl.commands[1] == .push_clip);
+    try std.testing.expect(dl.commands[2] == .pop_clip);
     try std.testing.expect(dl.commands[3] == .surface);
     try std.testing.expect(dl.commands[4] == .surface);
+    try std.testing.expectEqual(
+        style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 150),
+        dl.commands[4].surface.color,
+    );
+
+    tree.get(scroll).kind.scroll_area.internal.active_scrollbar = .vertical;
+    var active = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&active, allocator);
+    try std.testing.expectEqual(
+        style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 180),
+        active.commands[4].surface.color,
+    );
 }
 
 test "scroll area emits horizontal scrollbar thumb when content overflows width" {
@@ -3764,13 +3850,13 @@ test "scroll area emits horizontal scrollbar thumb when content overflows width"
     tree.get(child).layout_rect = .{ .x = -34, .y = 6, .w = 300, .h = 40 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 5), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .surface);
-    try std.testing.expect(dl.commands[1] == .clip);
-    try std.testing.expect(dl.commands[2] == .clip);
+    try std.testing.expect(dl.commands[1] == .push_clip);
+    try std.testing.expect(dl.commands[2] == .pop_clip);
     try std.testing.expect(dl.commands[3] == .surface);
     try std.testing.expect(dl.commands[4] == .surface);
     try std.testing.expect(dl.commands[3].surface.bounds.w > dl.commands[3].surface.bounds.h);
@@ -3789,16 +3875,16 @@ test "scroll area omits disabled horizontal scrollbar when content overflows wid
     tree.get(child).layout_rect = .{ .x = 6, .y = 6, .w = 300, .h = 40 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
     try std.testing.expect(dl.commands[0] == .surface);
-    try std.testing.expect(dl.commands[1] == .clip);
-    try std.testing.expect(dl.commands[2] == .clip);
+    try std.testing.expect(dl.commands[1] == .push_clip);
+    try std.testing.expect(dl.commands[2] == .pop_clip);
 }
 
-test "wrapped text paint commands wrap and preserve newlines" {
+test "wrapped text visual operations wrap and preserve newlines" {
     const allocator = std.testing.allocator;
 
     var tree = widget.Tree.init(allocator);
@@ -3809,8 +3895,8 @@ test "wrapped text paint commands wrap and preserve newlines" {
     tree.get(text).style_override = .{ .font_size = 16 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
     try std.testing.expectEqualStrings("alpha", dl.commands[0].text.text);
@@ -3818,7 +3904,7 @@ test "wrapped text paint commands wrap and preserve newlines" {
     try std.testing.expectEqualStrings("gamma", dl.commands[2].text.text);
 }
 
-test "wrapped text paint commands preserve leading whitespace" {
+test "wrapped text visual operations preserve leading whitespace" {
     const allocator = std.testing.allocator;
 
     var tree = widget.Tree.init(allocator);
@@ -3829,8 +3915,8 @@ test "wrapped text paint commands preserve leading whitespace" {
     tree.get(text).style_override = .{ .font_size = 16 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
     try std.testing.expectEqualStrings("  alpha", dl.commands[0].text.text);
@@ -3850,8 +3936,8 @@ test "wrapped text culls lines outside scroll viewport" {
     tree.get(text).style_override = .{ .font_size = 10 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     var found_before = false;
     var found_visible_a = false;
@@ -3881,8 +3967,8 @@ test "text input emits bg and text" {
     tree.get(ti).layout_rect = .{ .x = 10, .y = 20, .w = 300, .h = 30 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     // Unfocused, empty, no placeholder: bg rect only = 1 command
     try std.testing.expectEqual(@as(usize, 1), dl.commands.len);
@@ -3900,8 +3986,8 @@ test "focused text input emits cursor" {
     tree.get(ti).interaction.focused = true;
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     // Focused, empty, no placeholder: bg rect + cursor rect + focus ring = 3 commands
     try std.testing.expectEqual(@as(usize, 3), dl.commands.len);
@@ -3920,8 +4006,8 @@ test "empty text input shows placeholder" {
     tree.get(ti).layout_rect = .{ .x = 10, .y = 20, .w = 300, .h = 30 };
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     // Empty with placeholder: bg rect + placeholder text = 2 commands
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
@@ -3943,8 +4029,8 @@ test "text input with content shows content not placeholder" {
     tree.get(ti).kind.text_input.insert('i');
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     // Has content: bg rect + content text = 2 commands
     try std.testing.expectEqual(@as(usize, 2), dl.commands.len);
@@ -3975,8 +4061,8 @@ test "focused text input with selection emits highlight rect" {
     input.selection_anchor = 1;
 
     const theme = style.Theme.default;
-    var dl = try generatePaint(&tree, theme, allocator, null, .{});
-    defer freePaintList(&dl, allocator);
+    var dl = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&dl, allocator);
 
     // bg rect + selection highlight + text + cursor + focus ring = 5 commands
     try std.testing.expectEqual(@as(usize, 5), dl.commands.len);

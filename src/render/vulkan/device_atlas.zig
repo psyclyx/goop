@@ -1,4 +1,4 @@
-//! GPU atlas cache for snail 0.18's flat page storage.
+//! GPU atlas cache for Snail's flat page storage.
 //!
 //! Curve and band pages live in flat uniform *texel buffers* (curve =
 //! R16G16B16A16_SFLOAT, band = R16G16_UINT) sized by snail's `FlatLayout`;

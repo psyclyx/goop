@@ -1,18 +1,26 @@
 const std = @import("std");
 const widget = @import("widget.zig");
-const paint_types = @import("paint_types.zig");
+const visual_types = @import("visual_types.zig");
 const style = @import("style.zig");
 
-const Rect = paint_types.Rect;
+const Rect = visual_types.Rect;
 
-pub const Axis = enum { vertical, horizontal };
+pub const Axis = widget.WidgetKind.ScrollArea.ScrollbarAxis;
+pub const Interaction = enum { idle, hovered, active };
 
 pub const Metrics = struct {
     axis: Axis,
     track: Rect,
     thumb: Rect,
     max_scroll: f32,
+    interaction: Interaction,
 };
+
+fn interactionFor(scroll: widget.WidgetKind.ScrollArea, axis: Axis) Interaction {
+    if (scroll.internal.active_scrollbar == axis) return .active;
+    if (scroll.internal.hovered_scrollbar == axis) return .hovered;
+    return .idle;
+}
 
 pub const ContentExtent = struct {
     w: f32,
@@ -57,6 +65,7 @@ pub fn verticalMetrics(
         .track = track,
         .thumb = .{ .x = track.x, .y = thumb_y, .w = track.w, .h = thumb_h },
         .max_scroll = max_scroll_y,
+        .interaction = interactionFor(scroll, .vertical),
     };
 }
 
@@ -98,6 +107,7 @@ pub fn horizontalMetrics(
         .track = track,
         .thumb = .{ .x = thumb_x, .y = track.y, .w = thumb_w, .h = track.h },
         .max_scroll = max_scroll_x,
+        .interaction = interactionFor(scroll, .horizontal),
     };
 }
 
@@ -154,8 +164,14 @@ pub fn contentExtentForAppliedScroll(
         max_y = @max(max_y, r.y + applied_scroll_y + r.h);
     }
 
-    return .{
+    const measured = ContentExtent{
         .w = max_x - parent_rect.x,
         .h = max_y - parent_rect.y,
+    };
+    if (parent_node.kind != .scroll_area) return measured;
+    const scroll = parent_node.kind.scroll_area;
+    return .{
+        .w = scroll.content_width orelse measured.w,
+        .h = scroll.content_height orelse measured.h,
     };
 }

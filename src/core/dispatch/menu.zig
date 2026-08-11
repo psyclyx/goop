@@ -40,7 +40,7 @@ pub fn syncPopupMenuHover(tree: *widget.Tree, popup: widget.NodeHandle, hovered:
     }
 }
 
-pub fn applyMenuSelection(tree: *widget.Tree, handle: widget.NodeHandle) void {
+pub fn applyMenuSelection(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     const node = tree.getConst(handle);
     const popup_handle = node.parent orelse return;
     if (tree.getConst(popup_handle).kind != .popup) return;
@@ -51,7 +51,7 @@ pub fn applyMenuSelection(tree: *widget.Tree, handle: widget.NodeHandle) void {
             const index = menuItemIndex(tree, popup_handle, handle);
             parent.kind.dropdown.selected_text = node.kind.menu_item.label;
             parent.kind.dropdown.selected_index = index;
-            parent.interaction.changed = true;
+            mouse.emitIndex(tree, parent_handle, index);
         }
     }
 

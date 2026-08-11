@@ -3,12 +3,47 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
+#include <string.h>
+
+enum {
+    ROOT_ELEMENT = 1,
+    INPUT_ELEMENT = 2,
+    APPLY_ELEMENT = 3,
+    APPLY_ACTION = 30,
+};
+
+typedef struct {
+    size_t enters;
+    size_t leaves;
+    size_t depth;
+    size_t max_depth;
+    bool saw_apply_visual;
+} look_summary_t;
+
+static void look_enter(void *user_data, const goop_resolved_element_t *element) {
+    look_summary_t *summary = user_data;
+    ++summary->enters;
+    ++summary->depth;
+    if (summary->depth > summary->max_depth) summary->max_depth = summary->depth;
+
+    if (element->id.has_value && element->id.value == APPLY_ELEMENT &&
+        element->widget.kind == GOOP_WIDGET_BUTTON && element->bounds.w > 0) {
+        const goop_string_t label = element->widget.data.button.label;
+        summary->saw_apply_visual = label.len == 5 && label.ptr &&
+            memcmp(label.ptr, "Apply", 5) == 0;
+    }
+}
+
+static void look_leave(void *user_data, const goop_resolved_element_t *element) {
+    look_summary_t *summary = user_data;
+    (void)element;
+    ++summary->leaves;
+    if (summary->depth > 0) --summary->depth;
+}
 
 static bool push_mouse_click(goop_context_t *ctx, goop_rect_t rect) {
-    const float x = rect.x + (rect.w * 0.5f);
-    const float y = rect.y + (rect.h * 0.5f);
-
+    const float x = rect.x + rect.w * 0.5f;
+    const float y = rect.y + rect.h * 0.5f;
     const goop_event_t press = {
         .kind = GOOP_EVENT_MOUSE_BUTTON,
         .data.mouse_button = {
@@ -29,56 +64,16 @@ static bool push_mouse_click(goop_context_t *ctx, goop_rect_t rect) {
             .timestamp_ms = 2,
         },
     };
-
-    return goop_context_push_event(ctx, &press) && goop_context_push_event(ctx, &release);
+    return goop_context_push_event(ctx, &press) &&
+           goop_context_push_event(ctx, &release);
 }
 
 static bool push_text(goop_context_t *ctx, uint32_t codepoint) {
     const goop_event_t text = {
         .kind = GOOP_EVENT_TEXT,
-        .data.text = {
-            .codepoint = codepoint,
-        },
+        .data.text = { .codepoint = codepoint },
     };
     return goop_context_push_event(ctx, &text);
-}
-
-typedef struct {
-    size_t surface;
-    size_t text;
-    size_t clip;
-    size_t icon;
-    size_t custom;
-    size_t unknown;
-} paint_summary_t;
-
-static paint_summary_t summarize_paint_list(const goop_paint_list_t *paint_list) {
-    paint_summary_t summary = {0};
-
-    for (size_t i = 0; i < paint_list->len; ++i) {
-        switch (paint_list->commands[i].kind) {
-            case GOOP_PAINT_SURFACE:
-                ++summary.surface;
-                break;
-            case GOOP_PAINT_TEXT:
-                ++summary.text;
-                break;
-            case GOOP_PAINT_CLIP:
-                ++summary.clip;
-                break;
-            case GOOP_PAINT_ICON:
-                ++summary.icon;
-                break;
-            case GOOP_PAINT_CUSTOM:
-                ++summary.custom;
-                break;
-            default:
-                ++summary.unknown;
-                break;
-        }
-    }
-
-    return summary;
 }
 
 int main(void) {
@@ -86,46 +81,52 @@ int main(void) {
         .width = 480,
         .height = 240,
     });
-    if (!ctx) {
-        fprintf(stderr, "failed to create goop context\n");
-        return 1;
-    }
+    if (!ctx) return 1;
 
     goop_node_handle_t root = {0};
-    if (!goop_context_add_root(ctx, &(goop_widget_t){
-            .kind = GOOP_WIDGET_CONTAINER,
-            .data.container = { .direction = GOOP_DIRECTION_COLUMN },
-        }, &root)) {
-        fprintf(stderr, "failed to add root container\n");
-        goop_context_destroy(ctx);
-        return 1;
-    }
-
     goop_node_handle_t input = {0};
-    if (!goop_context_add_child(ctx, root, &(goop_widget_t){
-            .kind = GOOP_WIDGET_TEXT_INPUT,
-            .data.text_input = {
-                .placeholder = goop_string_from_cstr("Name"),
-                .value = goop_string_from_cstr(""),
-            },
-        }, &input)) {
-        fprintf(stderr, "failed to add text input\n");
-        goop_context_destroy(ctx);
-        return 1;
-    }
-
     goop_node_handle_t button = {0};
-    if (!goop_context_add_child(ctx, root, &(goop_widget_t){
-            .kind = GOOP_WIDGET_BUTTON,
-            .data.button = { .label = goop_string_from_cstr("Apply") },
-        }, &button)) {
-        fprintf(stderr, "failed to add button\n");
+    if (!goop_context_add_root(ctx, &(goop_control_desc_t){
+            .identity = { .element_id = ROOT_ELEMENT },
+            .widget = {
+                .kind = GOOP_WIDGET_CONTAINER,
+                .data.container = { .direction = GOOP_DIRECTION_COLUMN },
+            },
+        }, &root) ||
+        !goop_context_add_child(ctx, root, &(goop_control_desc_t){
+            .identity = { .element_id = INPUT_ELEMENT },
+            .widget = {
+                .kind = GOOP_WIDGET_TEXT_INPUT,
+                .data.text_input = {
+                    .placeholder = goop_string_from_cstr("Name"),
+                },
+            },
+        }, &input) ||
+        !goop_context_add_child(ctx, root, &(goop_control_desc_t){
+            .identity = {
+                .element_id = APPLY_ELEMENT,
+                .action_id = { .value = APPLY_ACTION, .has_value = true },
+            },
+            .widget = {
+                .kind = GOOP_WIDGET_BUTTON,
+                .data.button = { .label = goop_string_from_cstr("Apply") },
+            },
+        }, &button) ||
+        !goop_context_do_layout(ctx, NULL)) {
         goop_context_destroy(ctx);
         return 1;
     }
 
-    if (!goop_context_do_layout(ctx, NULL)) {
-        fprintf(stderr, "layout failed\n");
+    look_summary_t look = {0};
+    const goop_resolved_visitor_t visitor = {
+        .enter = look_enter,
+        .leave = look_leave,
+        .user_data = &look,
+    };
+    if (!goop_context_visit_resolved(ctx, &visitor) ||
+        look.enters != 3 || look.leaves != 3 || look.depth != 0 ||
+        look.max_depth != 2 || !look.saw_apply_visual) {
+        fprintf(stderr, "failed to consume resolved UI with a custom look\n");
         goop_context_destroy(ctx);
         return 1;
     }
@@ -133,103 +134,57 @@ int main(void) {
     goop_node_view_t input_node = {0};
     goop_node_view_t button_node = {0};
     if (!goop_context_node(ctx, input, &input_node) ||
-        !goop_context_node(ctx, button, &button_node)) {
-        fprintf(stderr, "failed to query node snapshots\n");
+        !goop_context_node(ctx, button, &button_node) ||
+        input_node.identity.element_id != INPUT_ELEMENT ||
+        button_node.identity.element_id != APPLY_ELEMENT) {
         goop_context_destroy(ctx);
         return 1;
     }
 
-    if (!goop_context_clear_clicked_flags(ctx) ||
-        !push_mouse_click(ctx, input_node.rect) ||
+    if (!push_mouse_click(ctx, input_node.rect) ||
         !push_text(ctx, 'R') ||
         !push_text(ctx, 'e') ||
         !push_text(ctx, 'n') ||
         !push_text(ctx, 0x00E9) ||
-        !push_mouse_click(ctx, button_node.rect) ||
-        !goop_context_process_events(ctx)) {
-        fprintf(stderr, "failed to drive input events\n");
+        !push_mouse_click(ctx, button_node.rect)) {
         goop_context_destroy(ctx);
         return 1;
     }
 
-    if (!goop_context_node(ctx, input, &input_node) ||
-        input_node.kind.kind != GOOP_WIDGET_TEXT_INPUT) {
-        fprintf(stderr, "failed to read text input snapshot\n");
-        goop_context_destroy(ctx);
-        return 1;
-    }
-    const goop_string_t value = input_node.kind.data.text_input.content;
-    if (!goop_context_node(ctx, button, &button_node)) {
-        fprintf(stderr, "failed to re-read button snapshot\n");
-        goop_context_destroy(ctx);
-        return 1;
-    }
-    const bool clicked = button_node.clicked;
-
-    if (!clicked || value.len != 5 || !value.ptr ||
-        value.ptr[0] != 'R' || value.ptr[1] != 'e' || value.ptr[2] != 'n' ||
-        (unsigned char)value.ptr[3] != 0xC3 || (unsigned char)value.ptr[4] != 0xA9) {
-        fprintf(stderr, "unexpected widget state after event processing\n");
+    goop_control_events_t events = {0};
+    if (!goop_context_process_events(ctx, &events)) {
         goop_context_destroy(ctx);
         return 1;
     }
 
-    goop_paint_list_t paint_list = {0};
-    if (!goop_context_generate_paint_list(ctx, &paint_list) || paint_list.len == 0) {
-        fprintf(stderr, "failed to generate paint list\n");
-        goop_context_destroy(ctx);
-        return 1;
-    }
-
-    printf("goop c example: text=%.*s clicked=%d paint_commands=%zu\n",
-           (int)value.len, value.ptr, clicked ? 1 : 0, paint_list.len);
-
-    const paint_summary_t summary = summarize_paint_list(&paint_list);
-    printf("paint summary: surface=%zu text=%zu clip=%zu icon=%zu custom=%zu\n",
-           summary.surface, summary.text, summary.clip, summary.icon, summary.custom);
-
-    if (summary.unknown != 0) {
-        fprintf(stderr,
-                "paint list contains %zu commands with unknown kind — "
-                "C header is likely out of sync with c_api.zig\n",
-                summary.unknown);
-        goop_context_destroy(ctx);
-        return 1;
-    }
-
-    if (summary.surface + summary.text + summary.clip + summary.icon + summary.custom != paint_list.len) {
-        fprintf(stderr, "paint summary did not classify every command\n");
-        goop_context_destroy(ctx);
-        return 1;
-    }
-
-    if (summary.text < 1) {
-        fprintf(stderr,
-                "expected at least one text command (button label), got %zu — "
-                "paint command layout may be misaligned\n",
-                summary.text);
-        goop_context_destroy(ctx);
-        return 1;
-    }
-
-    bool found_button_label = false;
-    for (size_t i = 0; i < paint_list.len; ++i) {
-        if (paint_list.commands[i].kind != GOOP_PAINT_TEXT) continue;
-        const goop_paint_text_t *t = &paint_list.commands[i].data.text;
-        if (t->text.len == 5 && t->text.ptr != NULL &&
-            memcmp(t->text.ptr, "Apply", 5) == 0) {
-            found_button_label = true;
-            break;
+    goop_string_t final_text = {0};
+    bool applied = false;
+    size_t text_changes = 0;
+    for (size_t i = 0; i < events.len; ++i) {
+        const goop_control_event_t *event = &events.items[i];
+        if (event->kind == GOOP_CONTROL_EVENT_TEXT_CHANGED &&
+            event->data.text_changed.element == INPUT_ELEMENT) {
+            final_text = goop_control_events_text(&events, event->data.text_changed.text);
+            ++text_changes;
+        } else if (event->kind == GOOP_CONTROL_EVENT_ACTIVATED &&
+                   event->data.activated.element == APPLY_ELEMENT) {
+            const goop_optional_action_id_t action = event->data.activated.action;
+            applied = action.has_value && action.value == APPLY_ACTION && text_changes == 4;
         }
     }
-    if (!found_button_label) {
-        fprintf(stderr,
-                "expected a text command with content \"Apply\" — "
-                "goop_paint_text_t field layout likely diverged from c_api.zig\n");
+
+    const bool text_ok = final_text.len == 5 && final_text.ptr &&
+        final_text.ptr[0] == 'R' && final_text.ptr[1] == 'e' && final_text.ptr[2] == 'n' &&
+        (unsigned char)final_text.ptr[3] == 0xC3 &&
+        (unsigned char)final_text.ptr[4] == 0xA9;
+    if (!applied || !text_ok) {
+        fprintf(stderr, "unexpected semantic event batch\n");
         goop_context_destroy(ctx);
         return 1;
     }
 
+    printf("goop core C example: resolved=%zu events=%zu text=%.*s action=%u\n",
+           look.enters, events.len, (int)final_text.len, final_text.ptr, APPLY_ACTION);
     goop_context_destroy(ctx);
     return 0;
 }

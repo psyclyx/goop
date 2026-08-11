@@ -1,37 +1,84 @@
 const std = @import("std");
-const goop = @import("goop");
 
-const fm = @import("controller.zig");
+const capabilities = @import("capabilities.zig");
+const model_ops = @import("model.zig");
 const types = @import("types.zig");
-const State = fm.State;
-const allocator = fm.allocator;
+const format = @import("format.zig");
+const Scope = capabilities.Filesystem;
+const allocator = std.heap.smp_allocator;
 const BrowserEntry = types.BrowserEntry;
 const BrowserEntryKind = types.BrowserEntryKind;
 const BrowserPlace = types.BrowserPlace;
 const FolderTreeChild = types.FolderTreeChild;
-const BrowserSortColumn = types.BrowserSortColumn;
-const BrowserSortDirection = types.BrowserSortDirection;
 
-// Callbacks back into the main module:
-const stateIo = fm.stateIo;
-const clearPlaces = fm.clearPlaces;
-const clearEntries = fm.clearEntries;
-const clearSelectedPaths = fm.clearSelectedPaths;
-const freeOptionalOwnedSlice = fm.freeOptionalOwnedSlice;
-const syncSelectionAnchor = fm.syncSelectionAnchor;
-const syncPrimarySelection = fm.syncPrimarySelection;
-const syncAddressInputToCurrentDir = fm.syncAddressInputToCurrentDir;
-const appendSelectedPathIfMissing = fm.appendSelectedPathIfMissing;
-const selectedEntryExists = fm.selectedEntryExists;
-const preserveFolderTreeContextForNavigation = fm.preserveFolderTreeContextForNavigation;
-const isPathSelected = fm.isPathSelected;
-const clearTrackedPaths = fm.clearTrackedPaths;
-const selectedEntry = fm.selectedEntry;
-const allocAssetUiString = fm.allocAssetUiString;
-const allocUiString = fm.allocUiString;
+test "filesystem seam has no UI core, effect, identity, or projection dependency" {
+    const source = @embedFile("fs.zig");
+    const forbidden = [_][]const u8{
+        "@im" ++ "port(\"goop\")",
+        "Beha" ++ "vior",
+        ".eff" ++ "ects",
+        ".iden" ++ "tities",
+        ".projec" ++ "tion",
+        ".dom" ++ "ain",
+    };
+    for (forbidden) |name| {
+        try std.testing.expect(std.mem.indexOf(u8, source, name) == null);
+    }
+}
 
-pub fn homePath(state: *const State) ?[]const u8 {
-    const env = state.runtime.env orelse return null;
+fn stateIo(state: Scope) !std.Io {
+    return state.session.io orelse error.IoUnavailable;
+}
+
+fn clearPlaces(state: Scope) void {
+    model_ops.clearPlaces(state.model);
+}
+
+fn clearEntries(state: Scope) void {
+    model_ops.clearEntries(state.model);
+}
+
+fn clearSelectedPaths(state: Scope) void {
+    model_ops.clearSelectedPaths(state.model);
+}
+
+const freeOptionalOwnedSlice = model_ops.freeOptionalOwnedSlice;
+const clearTrackedPaths = model_ops.clearTrackedPaths;
+
+fn syncSelectionAnchor(state: Scope) void {
+    model_ops.syncSelectionAnchor(state.model);
+}
+
+fn syncPrimarySelection(state: Scope) !void {
+    try model_ops.syncPrimarySelection(state.model);
+}
+
+fn syncAddressInputToCurrentDir(state: Scope) void {
+    model_ops.syncAddressInputToCurrentDir(state.interaction, state.model);
+}
+
+fn appendSelectedPathIfMissing(state: Scope, path: []const u8) !void {
+    try model_ops.appendSelectedPathIfMissing(state.model, path);
+}
+
+fn selectedEntryExists(state: Scope, path: []const u8) bool {
+    return model_ops.selectedEntryExists(state.model, path);
+}
+
+fn preserveFolderTreeContextForNavigation(state: Scope, next_dir: []const u8) !void {
+    try model_ops.preserveFolderTreeContextForNavigation(state.model, next_dir);
+}
+
+fn isPathSelected(state: Scope, path: []const u8) bool {
+    return model_ops.isPathSelected(state.model, path);
+}
+
+fn selectedEntry(state: Scope) ?*const BrowserEntry {
+    return model_ops.selectedEntry(state.model);
+}
+
+pub fn homePath(state: Scope) ?[]const u8 {
+    const env = state.session.env orelse return null;
     return env.get("HOME");
 }
 
@@ -69,12 +116,6 @@ pub fn parentPathAlloc(alloc: std.mem.Allocator, path: []const u8) !?[]u8 {
     return try alloc.dupe(u8, trimmed[0..slash_index]);
 }
 
-pub fn pathHasDirectoryPrefix(path: []const u8, prefix: []const u8) bool {
-    if (std.mem.eql(u8, prefix, "/")) return path.len > 0 and path[0] == '/';
-    if (!std.mem.startsWith(u8, path, prefix)) return false;
-    return path.len == prefix.len or path[prefix.len] == '/';
-}
-
 pub fn folderTreeChildLessThan(_: void, a: FolderTreeChild, b: FolderTreeChild) bool {
     return std.ascii.lessThanIgnoreCase(a.name, b.name);
 }
@@ -98,7 +139,7 @@ pub fn collectFolderTreeChildren(io: std.Io, dir_path: []const u8, children: *st
         const name = dir_entry.name;
         if (name.len == 0) continue;
 
-        const full_path = joinPath(allocator, dir_path, name) catch continue;
+        const full_path = try joinPath(allocator, dir_path, name);
 
         const stat = std.Io.Dir.cwd().statFile(io, full_path, .{ .follow_symlinks = true }) catch {
             allocator.free(full_path);
@@ -109,9 +150,9 @@ pub fn collectFolderTreeChildren(io: std.Io, dir_path: []const u8, children: *st
             continue;
         }
 
-        const entry_name = allocator.dupe(u8, name) catch {
+        const entry_name = allocator.dupe(u8, name) catch |err| {
             allocator.free(full_path);
-            continue;
+            return err;
         };
 
         children.append(allocator, .{
@@ -127,16 +168,16 @@ pub fn collectFolderTreeChildren(io: std.Io, dir_path: []const u8, children: *st
     std.mem.sort(FolderTreeChild, children.items, {}, folderTreeChildLessThan);
 }
 
-pub fn folderTreeDirectoryHasChildren(io: std.Io, dir_path: []const u8) bool {
+pub fn folderTreeDirectoryHasChildren(io: std.Io, dir_path: []const u8) !bool {
     var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true, .follow_symlinks = false }) catch return false;
     defer dir.close(io);
 
     var iter = dir.iterate();
-    while (iter.next(io) catch return false) |dir_entry| {
+    while (try iter.next(io)) |dir_entry| {
         const name = dir_entry.name;
         if (name.len == 0) continue;
 
-        const full_path = joinPath(allocator, dir_path, name) catch return false;
+        const full_path = try joinPath(allocator, dir_path, name);
         defer allocator.free(full_path);
 
         const stat = std.Io.Dir.cwd().statFile(io, full_path, .{ .follow_symlinks = true }) catch continue;
@@ -166,191 +207,25 @@ pub fn browserEntryKind(kind: std.Io.File.Kind) BrowserEntryKind {
     };
 }
 
-pub fn unixSecondsFromTimestamp(timestamp: std.Io.Timestamp) i64 {
-    const seconds = @divFloor(timestamp.nanoseconds, std.time.ns_per_s);
-    return std.math.cast(i64, seconds) orelse if (seconds < 0)
-        std.math.minInt(i64)
-    else
-        std.math.maxInt(i64);
-}
-
-pub const DecodedTimestamp = struct {
-    year: u16,
-    yday: u16,
-    month_index: u8,
-    day: u8,
-    hour: u8,
-    minute: u8,
-};
-
-pub fn decodeUnixSecondsUtc(unix_seconds: i64) ?DecodedTimestamp {
-    if (unix_seconds < 0) return null;
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = @intCast(unix_seconds) };
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
-    return .{
-        .year = year_day.year,
-        .yday = year_day.day,
-        .month_index = @intCast(@intFromEnum(month_day.month) - 1),
-        .day = month_day.day_index + 1,
-        .hour = day_seconds.getHoursIntoDay(),
-        .minute = day_seconds.getMinutesIntoHour(),
-    };
-}
-
-pub fn timestampMonthAbbrev(index: usize) []const u8 {
-    const months = [_][]const u8{
-        "Jan",
-        "Feb",
-        "Mar",
-        "Apr",
-        "May",
-        "Jun",
-        "Jul",
-        "Aug",
-        "Sep",
-        "Oct",
-        "Nov",
-        "Dec",
-    };
-    return months[@min(index, months.len - 1)];
-}
-
-pub fn formatTimestampCompactText(buffer: []u8, unix_seconds: i64, now_seconds: ?i64) []const u8 {
-    if (unix_seconds <= 0) return "";
-
-    const tm_buf = decodeUnixSecondsUtc(unix_seconds) orelse return "";
-    const now_tm = if (now_seconds) |now| decodeUnixSecondsUtc(now) else null;
-    const diff_seconds = if (now_seconds) |now| now - unix_seconds else std.math.maxInt(i64);
-
-    if (now_tm) |now| if (tm_buf.year == now.year and tm_buf.yday == now.yday) {
-        return std.fmt.bufPrint(buffer, "Today {d:0>2}:{d:0>2}", .{
-            tm_buf.hour,
-            tm_buf.minute,
-        }) catch "";
-    };
-    if (now_tm != null and diff_seconds >= 0 and diff_seconds < 48 * 60 * 60) {
-        return std.fmt.bufPrint(buffer, "Yesterday {d:0>2}:{d:0>2}", .{
-            tm_buf.hour,
-            tm_buf.minute,
-        }) catch "";
-    }
-    if (now_tm) |now| if (tm_buf.year == now.year) {
-        return std.fmt.bufPrint(buffer, "{s} {d} {d:0>2}:{d:0>2}", .{
-            timestampMonthAbbrev(tm_buf.month_index),
-            tm_buf.day,
-            tm_buf.hour,
-            tm_buf.minute,
-        }) catch "";
-    };
-
-    return std.fmt.bufPrint(buffer, "{s} {d}, {d}", .{
-        timestampMonthAbbrev(tm_buf.month_index),
-        tm_buf.day,
-        tm_buf.year,
-    }) catch "";
-}
-
-pub fn formatTimestampDetailText(buffer: []u8, unix_seconds: i64) []const u8 {
-    if (unix_seconds <= 0) return "";
-
-    const tm_buf = decodeUnixSecondsUtc(unix_seconds) orelse return "";
-
-    return std.fmt.bufPrint(buffer, "{s} {d}, {d} at {d:0>2}:{d:0>2}", .{
-        timestampMonthAbbrev(tm_buf.month_index),
-        tm_buf.day,
-        tm_buf.year,
-        tm_buf.hour,
-        tm_buf.minute,
-    }) catch "";
-}
-
-pub fn formatSizeText(buffer: []u8, kind: BrowserEntryKind, size_bytes: u64, target_kind: ?BrowserEntryKind) []const u8 {
-    if (kind == .directory or target_kind == .directory) return "";
-    if (size_bytes < 1024) return std.fmt.bufPrint(buffer, "{} B", .{size_bytes}) catch "";
-
-    const units = [_][]const u8{ "B", "KB", "MB", "GB", "TB" };
-    var scaled = @as(f64, @floatFromInt(size_bytes));
-    var unit_index: usize = 0;
-    while (scaled >= 1024 and unit_index + 1 < units.len) : (unit_index += 1) {
-        scaled /= 1024;
-    }
-    return std.fmt.bufPrint(buffer, "{d:.1} {s}", .{ scaled, units[unit_index] }) catch "";
-}
-
-pub fn sortColumnLabel(column: BrowserSortColumn) []const u8 {
-    return switch (column) {
-        .name => "name",
-        .modified => "modified time",
-        .kind => "type",
-        .size => "size",
-    };
-}
-
-pub fn sortDirectionLabel(direction: BrowserSortDirection) []const u8 {
-    return switch (direction) {
-        .ascending => "ascending",
-        .descending => "descending",
-    };
-}
-
-pub fn allocAssetEntryNameText(state: *State, entry: BrowserEntry) ![]const u8 {
-    return allocAssetUiString(state, "{f}", .{
-        std.unicode.fmtUtf8(entry.name),
-    });
-}
-
-pub fn currentUnixSeconds(state: *const State) ?i64 {
-    const io = state.runtime.io orelse return null;
-    const ns = std.Io.Clock.real.now(io).nanoseconds;
-    const seconds = @divFloor(ns, std.time.ns_per_s);
-    return std.math.cast(i64, seconds);
-}
-
-pub fn allocFormattedTimestamp(state: *State, unix_seconds: i64) ![]const u8 {
-    var buf: [40]u8 = undefined;
-    const text = formatTimestampCompactText(buf[0..], unix_seconds, currentUnixSeconds(state));
-    return allocUiString(state, "{s}", .{text});
-}
-
-pub fn allocAssetFormattedTimestamp(state: *State, unix_seconds: i64) ![]const u8 {
-    var buf: [40]u8 = undefined;
-    const text = formatTimestampCompactText(buf[0..], unix_seconds, currentUnixSeconds(state));
-    return allocAssetUiString(state, "{s}", .{text});
-}
-
-pub fn allocFormattedTimestampDetail(state: *State, unix_seconds: i64) ![]const u8 {
-    var buf: [48]u8 = undefined;
-    const text = formatTimestampDetailText(buf[0..], unix_seconds);
-    return allocUiString(state, "{s}", .{text});
-}
-
-pub fn allocFormattedSize(state: *State, kind: BrowserEntryKind, size_bytes: u64, target_kind: ?BrowserEntryKind) ![]const u8 {
-    var buf: [24]u8 = undefined;
-    const text = formatSizeText(buf[0..], kind, size_bytes, target_kind);
-    return allocUiString(state, "{s}", .{text});
-}
-
-pub fn allocAssetFormattedSize(state: *State, kind: BrowserEntryKind, size_bytes: u64, target_kind: ?BrowserEntryKind) ![]const u8 {
-    var buf: [24]u8 = undefined;
-    const text = formatSizeText(buf[0..], kind, size_bytes, target_kind);
-    return allocAssetUiString(state, "{s}", .{text});
-}
-
-pub fn appendPlaceIfDirectory(state: *State, label: []const u8, path: []const u8) !void {
+pub fn appendPlaceIfDirectory(state: Scope, label: []const u8, path: []const u8) !void {
     const normalized = try normalizeDirectoryPath(allocator, path);
     errdefer allocator.free(normalized);
-    ensureDirectoryOpenable(try stateIo(state), normalized) catch return;
+    ensureDirectoryOpenable(try stateIo(state), normalized) catch {
+        allocator.free(normalized);
+        return;
+    };
 
     for (state.model.places.items) |existing| {
-        if (std.mem.eql(u8, existing.path, normalized)) return;
+        if (std.mem.eql(u8, existing.path, normalized)) {
+            allocator.free(normalized);
+            return;
+        }
     }
 
     try state.model.places.append(allocator, .{ .label = label, .path = normalized });
 }
 
-pub fn refreshPlaces(state: *State) !void {
+pub fn refreshPlaces(state: Scope) !void {
     clearPlaces(state);
 
     if (homePath(state)) |home| {
@@ -373,7 +248,7 @@ pub fn refreshPlaces(state: *State) !void {
     try appendPlaceIfDirectory(state, "/", "/");
 }
 
-pub fn sortFieldLess(state: *const State, a: BrowserEntry, b: BrowserEntry) bool {
+pub fn sortFieldLess(state: Scope, a: BrowserEntry, b: BrowserEntry) bool {
     return switch (state.model.sort_column) {
         .name => switch (state.model.sort_direction) {
             .ascending => std.ascii.lessThanIgnoreCase(a.name, b.name),
@@ -394,14 +269,14 @@ pub fn sortFieldLess(state: *const State, a: BrowserEntry, b: BrowserEntry) bool
     };
 }
 
-pub fn browserEntryLessThan(state: *const State, a: BrowserEntry, b: BrowserEntry) bool {
+pub fn browserEntryLessThan(state: Scope, a: BrowserEntry, b: BrowserEntry) bool {
     if (state.model.sort_directories_together and a.isDirectory() != b.isDirectory()) return a.isDirectory();
     if (sortFieldLess(state, a, b)) return true;
     if (sortFieldLess(state, b, a)) return false;
     return std.ascii.lessThanIgnoreCase(a.name, b.name);
 }
 
-pub fn sortDirectoryEntries(state: *State) void {
+pub fn sortDirectoryEntries(state: Scope) void {
     std.mem.sort(BrowserEntry, state.model.entries.items, state, browserEntryLessThan);
 }
 
@@ -425,7 +300,7 @@ pub const MovePreflight = enum {
     blocked,
 };
 
-pub fn preflightMovePathToDirectory(state: *State, source_path: []const u8, target_dir: []const u8) !MovePreflight {
+pub fn preflightMovePathToDirectory(state: Scope, source_path: []const u8, target_dir: []const u8) !MovePreflight {
     if (pathIsSameOrInside(source_path, target_dir)) {
         state.interaction.status_note = "Cannot move a folder into itself.";
         return .blocked;
@@ -436,7 +311,7 @@ pub fn preflightMovePathToDirectory(state: *State, source_path: []const u8, targ
 
     if (std.mem.eql(u8, source_path, destination)) return .noop;
 
-    const io = state.runtime.io orelse {
+    const io = state.session.io orelse {
         state.interaction.status_note = "Unable to move files.";
         return .blocked;
     };
@@ -448,12 +323,12 @@ pub fn preflightMovePathToDirectory(state: *State, source_path: []const u8, targ
     return .movable;
 }
 
-pub fn renamePathIntoDirectory(state: *State, source_path: []const u8, target_dir: []const u8) !bool {
+pub fn renamePathIntoDirectory(state: Scope, source_path: []const u8, target_dir: []const u8) !bool {
     const destination = try moveDestinationPath(source_path, target_dir);
     defer allocator.free(destination);
     if (std.mem.eql(u8, source_path, destination)) return false;
 
-    const io = state.runtime.io orelse {
+    const io = state.session.io orelse {
         state.interaction.status_note = "Unable to move files.";
         return false;
     };
@@ -464,7 +339,7 @@ pub fn renamePathIntoDirectory(state: *State, source_path: []const u8, target_di
     return true;
 }
 
-pub fn movePathsToDirectory(state: *State, paths: []const []const u8, target_dir: []const u8) !bool {
+pub fn movePathsToDirectory(state: Scope, paths: []const []const u8, target_dir: []const u8) !bool {
     var movable_count: usize = 0;
 
     for (paths) |path| {
@@ -501,7 +376,7 @@ pub fn movePathsToDirectory(state: *State, paths: []const []const u8, target_dir
     return true;
 }
 
-pub fn moveDropPathsToDirectory(state: *State, source_path: []const u8, target_dir: []const u8) !bool {
+pub fn moveDropPathsToDirectory(state: Scope, source_path: []const u8, target_dir: []const u8) !bool {
     if (isPathSelected(state, source_path) and state.model.selected_paths.items.len > 0) {
         return movePathsToDirectory(state, state.model.selected_paths.items, target_dir);
     }
@@ -510,7 +385,7 @@ pub fn moveDropPathsToDirectory(state: *State, source_path: []const u8, target_d
     return movePathsToDirectory(state, single_path[0..], target_dir);
 }
 
-pub fn preflightCopyPathToDirectory(state: *State, source_path: []const u8, target_dir: []const u8) !bool {
+pub fn preflightCopyPathToDirectory(state: Scope, source_path: []const u8, target_dir: []const u8) !bool {
     if (pathIsSameOrInside(source_path, target_dir)) {
         state.interaction.status_note = "Cannot copy a folder into itself.";
         return false;
@@ -519,7 +394,7 @@ pub fn preflightCopyPathToDirectory(state: *State, source_path: []const u8, targ
     const destination = try moveDestinationPath(source_path, target_dir);
     defer allocator.free(destination);
 
-    const io = state.runtime.io orelse {
+    const io = state.session.io orelse {
         state.interaction.status_note = "Unable to copy files.";
         return false;
     };
@@ -531,11 +406,11 @@ pub fn preflightCopyPathToDirectory(state: *State, source_path: []const u8, targ
     return true;
 }
 
-pub fn copyPathToDirectory(state: *State, source_path: []const u8, target_dir: []const u8) ![]u8 {
+pub fn copyPathToDirectory(state: Scope, source_path: []const u8, target_dir: []const u8) ![]u8 {
     const destination = try moveDestinationPath(source_path, target_dir);
     errdefer allocator.free(destination);
 
-    const io = state.runtime.io orelse {
+    const io = state.session.io orelse {
         state.interaction.status_note = "Unable to copy files.";
         return error.IoUnavailable;
     };
@@ -580,7 +455,7 @@ pub fn copySymlinkAbsolute(io: std.Io, source_path: []const u8, destination: []c
     try std.Io.Dir.cwd().symLink(io, target, destination, .{ .is_directory = is_directory });
 }
 
-pub fn copyPathsToDirectory(state: *State, paths: []const []const u8, target_dir: []const u8) !bool {
+pub fn copyPathsToDirectory(state: Scope, paths: []const []const u8, target_dir: []const u8) !bool {
     if (paths.len == 0) return false;
     for (paths) |path| {
         if (!try preflightCopyPathToDirectory(state, path, target_dir)) return false;
@@ -597,6 +472,7 @@ pub fn copyPathsToDirectory(state: *State, paths: []const []const u8, target_dir
             state.interaction.status_note = "Unable to copy files.";
             return false;
         };
+        errdefer allocator.free(copied);
         try copied_paths.append(allocator, copied);
     }
 
@@ -611,9 +487,9 @@ pub fn copyPathsToDirectory(state: *State, paths: []const []const u8, target_dir
     return true;
 }
 
-pub fn deletePaths(state: *State, paths: []const []const u8) !bool {
+pub fn deletePaths(state: Scope, paths: []const []const u8) !bool {
     if (paths.len == 0) return false;
-    const io = state.runtime.io orelse {
+    const io = state.session.io orelse {
         state.interaction.status_note = "Unable to delete files.";
         return false;
     };
@@ -637,7 +513,7 @@ pub fn deletePaths(state: *State, paths: []const []const u8) !bool {
     return true;
 }
 
-pub fn loadDirectoryEntries(state: *State) !void {
+pub fn loadDirectoryEntries(state: Scope) !void {
     clearEntries(state);
 
     const io = try stateIo(state);
@@ -662,7 +538,7 @@ pub fn loadDirectoryEntries(state: *State) !void {
 
         const kind = browserEntryKind(stat.kind);
         var size_bytes = stat.size;
-        var modified_unix = unixSecondsFromTimestamp(stat.mtime);
+        var modified_unix = format.unixSecondsFromNanoseconds(stat.mtime.nanoseconds);
         var target_path: ?[]u8 = null;
         var target_kind: ?BrowserEntryKind = null;
 
@@ -677,7 +553,7 @@ pub fn loadDirectoryEntries(state: *State) !void {
                         0
                     else
                         target_stat.size;
-                    modified_unix = unixSecondsFromTimestamp(target_stat.mtime);
+                    modified_unix = format.unixSecondsFromNanoseconds(target_stat.mtime.nanoseconds);
                 } else |_| {}
             }
         }
@@ -713,7 +589,7 @@ pub fn loadDirectoryEntries(state: *State) !void {
     syncSelectionAnchor(state);
 }
 
-pub fn setCurrentDirectory(state: *State, path: []const u8, push_history: bool) !bool {
+pub fn setCurrentDirectory(state: Scope, path: []const u8, push_history: bool) !bool {
     const normalized = try normalizeDirectoryPath(allocator, path);
     errdefer allocator.free(normalized);
     try ensureDirectoryOpenable(try stateIo(state), normalized);
@@ -728,8 +604,10 @@ pub fn setCurrentDirectory(state: *State, path: []const u8, push_history: bool) 
     try preserveFolderTreeContextForNavigation(state, normalized);
 
     if (push_history) {
+        const history_path = try allocator.dupe(u8, normalized);
+        errdefer allocator.free(history_path);
         while (state.model.history.items.len > state.model.history_index + 1) allocator.free(state.model.history.pop().?);
-        try state.model.history.append(allocator, try allocator.dupe(u8, normalized));
+        try state.model.history.append(allocator, history_path);
         state.model.history_index = state.model.history.items.len - 1;
     }
 
@@ -747,45 +625,45 @@ pub fn setCurrentDirectory(state: *State, path: []const u8, push_history: bool) 
     return true;
 }
 
-pub fn navigateBack(state: *State) !bool {
+pub fn navigateBack(state: Scope) !bool {
     if (state.model.history_index == 0 or state.model.history.items.len == 0) return false;
     state.model.history_index -= 1;
     return setCurrentDirectory(state, state.model.history.items[state.model.history_index], false);
 }
 
-pub fn navigateForward(state: *State) !bool {
+pub fn navigateForward(state: Scope) !bool {
     if (state.model.history.items.len == 0 or state.model.history_index + 1 >= state.model.history.items.len) return false;
     state.model.history_index += 1;
     return setCurrentDirectory(state, state.model.history.items[state.model.history_index], false);
 }
 
-pub fn navigateUp(state: *State) !bool {
+pub fn navigateUp(state: Scope) !bool {
     const parent = try parentPathAlloc(allocator, state.model.current_dir);
     defer if (parent) |path| allocator.free(path);
     const parent_path = parent orelse return false;
     return setCurrentDirectory(state, parent_path, true);
 }
 
-pub fn refreshCurrentDirectory(state: *State) !void {
+pub fn refreshCurrentDirectory(state: Scope) !void {
     freeOptionalOwnedSlice(&state.model.last_click_path);
     state.model.last_click_ms = 0;
     syncAddressInputToCurrentDir(state);
     try loadDirectoryEntries(state);
 }
 
-pub fn selectedSymlinkDirectoryEntry(state: *const State) ?*const BrowserEntry {
+pub fn selectedSymlinkDirectoryEntry(state: Scope) ?*const BrowserEntry {
     const entry = selectedEntry(state) orelse return null;
     return if (entry.isSymlinkToDirectory()) entry else null;
 }
 
-pub fn entryForPath(state: *const State, path: []const u8) ?*const BrowserEntry {
+pub fn entryForPath(state: Scope, path: []const u8) ?*const BrowserEntry {
     for (state.model.entries.items) |*entry| {
         if (std.mem.eql(u8, entry.path, path)) return entry;
     }
     return null;
 }
 
-pub fn entryIndexForPath(state: *const State, path: []const u8) ?usize {
+pub fn entryIndexForPath(state: Scope, path: []const u8) ?usize {
     for (state.model.entries.items, 0..) |entry, index| {
         if (std.mem.eql(u8, entry.path, path)) return index;
     }

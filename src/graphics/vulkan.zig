@@ -57,7 +57,6 @@ pub const Device = struct {
     present_queue: vk.VkQueue,
     graphics_family: u32,
     present_family: u32,
-    supports_dual_source_blend: bool,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -102,11 +101,10 @@ pub const Device = struct {
             queue_info_count = 2;
         }
 
-        var available_features: vk.VkPhysicalDeviceFeatures = undefined;
-        vk.vkGetPhysicalDeviceFeatures(choice.physical, &available_features);
-        const enabled_features = std.mem.zeroInit(vk.VkPhysicalDeviceFeatures, .{
-            .dualSrcBlend = available_features.dualSrcBlend,
-        });
+        // Goop's text path is grayscale coverage only. Keep optional Vulkan
+        // features disabled instead of quietly enabling the dual-source blend
+        // machinery used by LCD/subpixel renderers.
+        const enabled_features = std.mem.zeroInit(vk.VkPhysicalDeviceFeatures, .{});
 
         const swapchain_extensions = [_][*c]const u8{
             vk.VK_KHR_SWAPCHAIN_EXTENSION_NAME,
@@ -141,7 +139,6 @@ pub const Device = struct {
             .present_queue = present_queue,
             .graphics_family = choice.graphics_family,
             .present_family = choice.present_family,
-            .supports_dual_source_blend = available_features.dualSrcBlend == vk.VK_TRUE,
         };
     }
 
@@ -161,7 +158,6 @@ pub const Device = struct {
             .device = self.handle,
             .graphics_queue = self.graphics_queue,
             .graphics_family = self.graphics_family,
-            .supports_dual_source_blend = self.supports_dual_source_blend,
         };
     }
 };
@@ -171,7 +167,17 @@ pub const Context = struct {
     device: vk.VkDevice,
     graphics_queue: vk.VkQueue,
     graphics_family: u32,
-    supports_dual_source_blend: bool,
+};
+
+/// The Vulkan state needed to record rendering commands for one frame.
+///
+/// The producer owns the command buffer and the surrounding render pass.
+/// `frame_slot` identifies storage that is safe to overwrite for this frame;
+/// it is not a swapchain image index.
+pub const RenderTarget = struct {
+    command_buffer: vk.VkCommandBuffer,
+    extent: vk.VkExtent2D,
+    frame_slot: u32,
 };
 
 const Selection = struct {
@@ -239,4 +245,15 @@ test "Vulkan context is graphics-only data" {
     try std.testing.expect(@sizeOf(Context) > 0);
     try std.testing.expect(!@hasField(Context, "surface"));
     try std.testing.expect(!@hasField(Context, "swapchain"));
+}
+
+test "render target contains only command-recording state" {
+    try std.testing.expectEqual(@as(usize, 3), @typeInfo(RenderTarget).@"struct".fields.len);
+    try std.testing.expect(@hasField(RenderTarget, "command_buffer"));
+    try std.testing.expect(@hasField(RenderTarget, "extent"));
+    try std.testing.expect(@hasField(RenderTarget, "frame_slot"));
+    try std.testing.expect(!@hasField(RenderTarget, "format"));
+    try std.testing.expect(!@hasField(RenderTarget, "render_pass"));
+    try std.testing.expect(!@hasField(RenderTarget, "framebuffer"));
+    try std.testing.expect(!@hasField(RenderTarget, "image_index"));
 }

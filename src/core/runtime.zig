@@ -1,13 +1,14 @@
 //! `goop` is a retained-mode GUI library. The embedder owns the native
 //! window, input pump, text shaper, and renderer; `goop` owns widget
-//! state, layout, hit testing, event dispatch, and paint-list generation.
+//! state, layout, hit testing, and event dispatch. Visual looks are separate
+//! consumers of the resolved UI read model exposed here.
 //!
 //! Public surface, in rough import order:
 //!
-//! - `Runtime` is the primitive: it owns clay state, the event queue,
-//!   paint caches, and hit/dispatch state for one or more caller-owned
-//!   `Tree`s. Embedders that drive multiple trees (e.g. main window plus
-//!   detached popup surfaces) wire up `Runtime` directly.
+//! - `Runtime` is the primitive for one interaction/layout domain: it owns
+//!   clay state, the event queue, visual revisions, and hit/dispatch state for
+//!   one caller-owned `Tree`. A tree must not move between runtimes while an
+//!   interaction is active.
 //! - `Context` is the single-tree convenience layer over `Runtime`. It
 //!   bundles a `Tree`, `Theme`, optional `Clipboard`, and a `Runtime` so
 //!   the common case is one type. Anything `Context` exposes is a thin
@@ -16,17 +17,17 @@
 //!   directly (`tree.addRoot`, `tree.addChild`, `tree.remove`); the
 //!   runtime watches the tree revision and re-runs layout when topology
 //!   changes. *In-place* mutations (style overrides, kind payload,
-//!   per-frame flags) must go through `Runtime.setStyle`,
-//!   `Runtime.updateWidget`, `Runtime.mutateKind`, or
-//!   `Runtime.setCustomPaint` (or the matching `Context` method) so the
-//!   layout/paint caches invalidate. Reaching into `tree.get(h).foo = ...`
-//!   silently bypasses invalidation and may produce stale frames.
+//!   persistent interaction state) must go through `Runtime.setStyle`,
+//!   `Runtime.updateWidget`, or `Runtime.mutateKind` (or the matching
+//!   `Context` method) so layout and resolved-UI revisions advance.
+//!   Reaching into `tree.get(h).foo = ...` silently bypasses invalidation and
+//!   may produce stale resolved output.
 //! - The everyday primitives (`NodeHandle`, `WidgetKind`, `WidgetView`,
-//!   `Style`, `Theme`, `Event`, `PaintCommand`, …) are re-exported at
+//!   `Style`, `Theme`, `Event`, …) are re-exported at
 //!   this level so most code only imports `goop`.
-//! - Sub-namespaces (`widget`, `style`, `paint`, `layout`, `hittest`,
-//!   `event`) hold the helpers and types embedders reach for less often
-//!   (rect math, text measurement, hit testing, paint command shape).
+//! - Sub-namespaces (`widget`, `style`, `layout`, `hittest`,
+//!   `control_event`) hold helpers and types embedders reach for less often
+//!   (rect math, text measurement, hit testing, semantic output payloads).
 //!   `dispatch` is intentionally private — it runs through `Runtime`.
 
 const std = @import("std");
@@ -35,11 +36,14 @@ const c = @cImport({
 });
 
 pub const widget = @import("widget.zig");
-pub const event = @import("event.zig");
+const input_types = @import("goop_input");
 pub const style = @import("style.zig");
-pub const paint = @import("paint.zig");
 pub const layout = @import("layout.zig");
 pub const hittest = @import("hittest.zig");
+pub const geometry = @import("geometry.zig");
+pub const scrollbar = @import("scrollbar.zig");
+pub const control_event = @import("control_event.zig");
+pub const visual = @import("goop_visual");
 
 const dispatch = @import("dispatch.zig");
 
@@ -49,20 +53,6 @@ pub const WidgetKind = widget.WidgetKind;
 pub const WidgetDesc = widget.WidgetDesc;
 pub const WidgetView = widget.WidgetView;
 pub const NodeView = widget.NodeView;
-pub const NodeSnapshot = widget.NodeSnapshot;
-pub const TreeSnapshot = widget.TreeSnapshot;
-pub const WidgetType = widget.WidgetType;
-pub const WidgetRegistry = widget.WidgetRegistry;
-pub const WidgetCtx = widget.WidgetCtx;
-pub const LayoutCtx = widget.LayoutCtx;
-pub const LayoutSpec = widget.LayoutSpec;
-pub const PaintCtx = widget.PaintCtx;
-pub const HitTestCtx = widget.HitTestCtx;
-pub const PointerEvent = widget.PointerEvent;
-pub const PointerCtx = widget.PointerCtx;
-pub const KeyCtx = widget.KeyCtx;
-pub const TextInputCtx = widget.TextInputCtx;
-pub const ActivateCtx = widget.ActivateCtx;
 pub const TextEditState = widget.TextEditState;
 pub const kindFromDesc = widget.kindFromDesc;
 
@@ -81,56 +71,121 @@ pub const tableDataRowIndex = widget.tableDataRowIndex;
 pub const gridSelectorItemCount = widget.gridSelectorItemCount;
 pub const gridItemAt = widget.gridItemAt;
 pub const gridItemIndex = widget.gridItemIndex;
-pub const Rect = paint.Rect;
-pub const Event = event.Event;
+pub const Rect = visual.Rect;
+pub const Event = input_types.Event;
 pub const Theme = style.Theme;
 pub const Style = style.Style;
 pub const Color = style.Color;
-pub const PaintCommand = paint.PaintCommand;
-pub const PaintList = paint.PaintList;
-pub const PaintOptions = paint.PaintOptions;
-pub const PaintScope = paint.PaintScope;
-pub const TextAlign = paint.TextAlign;
-pub const TextOverflow = paint.TextOverflow;
-pub const IconId = paint.IconId;
+pub const TextAlign = visual.TextAlign;
+pub const TextOverflow = visual.TextOverflow;
+pub const IconId = visual.IconId;
 pub const TextMeasureCtx = layout.TextMeasureCtx;
 pub const MeasureTextFn = layout.MeasureTextFn;
 pub const TextDimensions = layout.TextDimensions;
+pub const ElementId = control_event.ElementId;
+pub const ActionId = control_event.ActionId;
+pub const ControlEvent = control_event.ControlEvent;
+pub const ControlEvents = control_event.ControlEvents;
+pub const Activation = control_event.Activation;
+pub const SecondaryActivation = control_event.SecondaryActivation;
+pub const ValueChanged = control_event.ValueChanged;
+pub const ToggleChanged = control_event.ToggleChanged;
+pub const TextChanged = control_event.TextChanged;
+pub const SortChanged = control_event.SortChanged;
+pub const SelectionChanged = control_event.SelectionChanged;
+pub const ScrollChanged = control_event.ScrollChanged;
+pub const ControlDrop = control_event.Drop;
+pub const ControlIdentity = widget.ControlIdentity;
+pub const ControlDesc = widget.ControlDesc;
 
 pub const Clipboard = dispatch.Clipboard;
-pub const SecondaryClick = dispatch.SecondaryClick;
-pub const TreeDrop = dispatch.TreeDrop;
-/// Shared container-drop type used by `.grid`, `.list`, and `.table`
-/// arms of the `Drop` union — the source container kind is still
-/// distinguishable through the union arm.
-pub const ContainerDrop = dispatch.ContainerDrop;
-pub const WidgetDrop = dispatch.WidgetDrop;
-pub const Drop = dispatch.Drop;
-
-pub const PointerPosition = struct {
-    x: f32,
-    y: f32,
+/// Plain resolved UI state supplied to a custom look.
+///
+/// The value contains no retained storage identity. String slices inside
+/// `widget` borrow from the tree and remain valid only until the next mutation
+/// that touches their source node.
+pub const ResolvedElement = struct {
+    id: ?ElementId,
+    parent_id: ?ElementId,
+    action_id: ?ActionId,
+    bounds: Rect,
+    style: style.ResolvedStyle,
+    widget: WidgetView,
+    focused: bool,
+    hovered: bool,
+    pressed: bool,
+    drop_hovered: bool,
 };
 
-/// Snapshot of cross-handle frame state. Returned by `Runtime.frame`.
-/// Folds together pointer position, button state, focus, drag source,
-/// and one-frame events (last drop, last secondary click, last primary
-/// press timestamp) so embedders can take one snapshot per frame
-/// instead of calling seven separate accessors.
-pub const FrameSnapshot = struct {
-    pointer: PointerPosition,
-    buttons: Buttons,
-    focused: ?NodeHandle,
-    drag_source: ?NodeHandle,
-    last_drop: ?Drop,
-    last_secondary_click: ?SecondaryClick,
-    last_primary_press_ms: u64,
-
-    pub const Buttons = struct {
-        left: bool,
-        right: bool,
-        middle: bool,
+fn visitResolvedSubtree(
+    tree: *const Tree,
+    theme: Theme,
+    handle: NodeHandle,
+    visitor: anytype,
+) !void {
+    const node = tree.getConst(handle);
+    const resolved: ResolvedElement = .{
+        .id = node.element_id,
+        .parent_id = if (node.parent) |parent|
+            tree.getConst(parent).element_id
+        else
+            null,
+        .action_id = node.action_id,
+        .bounds = node.layout_rect,
+        .style = node.style_override.resolve(theme),
+        .widget = WidgetView.fromNode(node),
+        .focused = node.interaction.focused,
+        .hovered = node.interaction.hovered,
+        .pressed = node.interaction.pressed,
+        .drop_hovered = node.interaction.drop_hovered,
     };
+    try deliverResolvedEnter(visitor, resolved);
+
+    var child = node.first_child;
+    while (child) |current| {
+        try visitResolvedSubtree(tree, theme, current, visitor);
+        child = tree.getConst(current).next_sibling;
+    }
+    try deliverResolvedLeave(visitor, resolved);
+}
+
+fn deliverResolvedEnter(visitor: anytype, element: ResolvedElement) !void {
+    const Return = @TypeOf(visitor.enter(element));
+    switch (@typeInfo(Return)) {
+        .void => visitor.enter(element),
+        .error_union => |error_union| {
+            if (error_union.payload != void) {
+                @compileError("resolved enter visitor must return void or an error union with void payload");
+            }
+            try visitor.enter(element);
+        },
+        else => @compileError("resolved enter visitor must return void or an error union with void payload"),
+    }
+}
+
+fn deliverResolvedLeave(visitor: anytype, element: ResolvedElement) !void {
+    const Return = @TypeOf(visitor.leave(element));
+    switch (@typeInfo(Return)) {
+        .void => visitor.leave(element),
+        .error_union => |error_union| {
+            if (error_union.payload != void) {
+                @compileError("resolved leave visitor must return void or an error union with void payload");
+            }
+            try visitor.leave(element);
+        },
+        else => @compileError("resolved leave visitor must return void or an error union with void payload"),
+    }
+}
+
+/// Read-only capability used by `goop_chrome` for hierarchy-aware stock
+/// visuals. Custom looks should consume `ResolvedElement` values through
+/// `Context.visitResolved`. This capability owns nothing and cannot mutate
+/// core state.
+pub const ChromeState = struct {
+    tree: *const Tree,
+    theme: Theme,
+    text_measure: ?*const TextMeasureCtx,
+    revision: u64,
 };
 
 pub const Runtime = struct {
@@ -138,12 +193,12 @@ pub const Runtime = struct {
     clay_arena: []u8,
     clay_context: *c.Clay_Context,
     events: std.ArrayListUnmanaged(Event),
+    control_journal: control_event.Journal = .{},
     mouse: dispatch.MouseState = .{},
     text_measure_ctx: ?*const TextMeasureCtx = null,
     layout_dirty: bool = true,
-    paint_dirty: bool = true,
+    visual_revision: u64 = 1,
     last_tree_revision: u64 = 0,
-    cached_paint_list: ?PaintList = null,
 
     pub fn init(allocator: std.mem.Allocator, opts: InitOptions) !Runtime {
         const min_memory = c.Clay_MinMemorySize();
@@ -165,7 +220,7 @@ pub const Runtime = struct {
     }
 
     pub fn deinit(self: *Runtime) void {
-        self.invalidatePaintCache();
+        self.control_journal.deinit(self.allocator);
         self.events.deinit(self.allocator);
         if (c.Clay_GetCurrentContext() == self.clay_context) {
             c.Clay_SetCurrentContext(null);
@@ -177,10 +232,9 @@ pub const Runtime = struct {
     ///
     /// Consecutive `.mouse_move` events collapse into the latest position.
     /// Consecutive `.mouse_scroll` events collapse into a summed delta.
-    /// All other events are appended verbatim. If your embedder needs a
-    /// per-event trail (e.g. handwriting, freehand drawing), push a
-    /// terminator event between samples or process events synchronously
-    /// rather than queuing.
+    /// All other events are appended verbatim. If an embedder needs every
+    /// pointer sample (for example, freehand drawing), process the current
+    /// batch before queuing the next sample.
     pub fn pushEvent(self: *Runtime, ev: Event) !void {
         switch (ev) {
             .mouse_move => |move| {
@@ -213,16 +267,26 @@ pub const Runtime = struct {
         try self.events.append(self.allocator, ev);
     }
 
-    /// Mark cached layout and paint output stale after caller-owned state changes.
+    /// Mark layout and resolved visual state stale after caller-owned changes.
     pub fn invalidate(self: *Runtime) void {
         self.layout_dirty = true;
-        self.paint_dirty = true;
+        self.bumpVisualRevision();
     }
 
-    /// Process all queued events: hit test, update interaction state,
-    /// detect clicks. Call after doLayout. Marks layout dirty if any
-    /// events could affect layout (text input, scroll, resize).
-    pub fn processEvents(self: *Runtime, tree: *Tree, theme: Theme, clipboard: ?Clipboard) void {
+    /// Process queued input and return semantic control output in occurrence
+    /// order. The returned batch borrows Runtime storage and remains valid
+    /// until the next call to this method or `deinit`.
+    /// Variable-size text and selection payloads are resolved with
+    /// `ControlEvents.text` and `ControlEvents.selection`.
+    ///
+    /// Output storage for the full queued batch grows before dispatch starts
+    /// and is retained across calls. Callers with strict frame-time allocation
+    /// requirements can warm the runtime by processing representative input
+    /// during setup.
+    pub fn processEvents(self: *Runtime, tree: *Tree, theme: Theme, clipboard: ?Clipboard) !ControlEvents {
+        self.control_journal.clearRetainingCapacity();
+        try self.control_journal.prepareBatch(self.allocator, tree.count(), self.events.items.len);
+        const had_input = self.events.items.len != 0;
         self.mouse.layout_changed = false;
         for (self.events.items) |ev| {
             switch (ev) {
@@ -233,62 +297,41 @@ pub const Runtime = struct {
                 else => {},
             }
         }
-        if (self.events.items.len > 0) self.paint_dirty = true;
-        dispatch.processWithClipboard(tree, self.events.items, &self.mouse, theme, clipboard, self.text_measure_ctx);
+        // Input can revise persistent visual state such as hover, press,
+        // focus, selection, or an open popup. Idle batches remain stable so
+        // caller-owned look caches can be reused.
+        if (had_input) self.bumpVisualRevision();
+        dispatch.process(
+            tree,
+            self.events.items,
+            &self.mouse,
+            theme,
+            clipboard,
+            self.text_measure_ctx,
+            &self.control_journal,
+        );
         if (self.layout_dirty or self.mouse.layout_changed) {
             const previous = self.bindClayContext();
             defer c.Clay_SetCurrentContext(previous);
             layout.run(tree, theme, self.text_measure_ctx);
             self.layout_dirty = false;
-            self.paint_dirty = true;
+            self.bumpVisualRevision();
             self.last_tree_revision = tree.revision();
             self.mouse.layout_changed = false;
         }
         self.events.clearRetainingCapacity();
-    }
-
-    /// Clear transient activation/change flags. Call at the start of each
-    /// frame so clicks, toggles, and selection changes are only observed
-    /// for one frame. Per-kind event fields are reset by the kind's
-    /// `resetPerFrameEvents` method (when present), so each kind owns
-    /// what it considers per-frame state.
-    pub fn clearClickedFlags(self: *Runtime, tree: *Tree) void {
-        self.mouse.last_secondary_click = null;
-        self.mouse.last_drop = null;
-        for (tree.nodes.items, 0..) |*node, index| {
-            if (!node.alive) continue;
-            node.interaction.primary_clicked = false;
-            node.interaction.secondary_clicked = false;
-            node.interaction.drop_received = false;
-            node.interaction.changed = false;
-            node.interaction.toggled = false;
-            if (node.widget_type) |widget_type| {
-                if (widget_type.resetFrame) |reset| {
-                    const handle = tree.handleFromIndex(@intCast(index));
-                    reset(.{
-                        .tree = tree,
-                        .handle = handle,
-                        .node = node,
-                        .state = node.widget_state,
-                        .theme = .{},
-                    });
-                }
-                continue;
-            }
-            widget.resetPerFrameEvents(&node.kind);
-        }
+        return self.control_journal.view();
     }
 
     /// Replace a widget's payload with the provided descriptor. The
     /// desc tag must match the widget's current kind. Returns true on
     /// success, false if the handle is dead or the tag does not match.
-    /// Marks the runtime dirty. Per-frame interaction state (clicked,
-    /// dragging, etc.) is reset to defaults; for surgical edits to
+    /// Marks the runtime dirty. Runtime-owned interaction state is reset to
+    /// defaults; for surgical edits to
     /// existing state use `mutateKind` instead.
     pub fn updateWidget(self: *Runtime, tree: *Tree, handle: NodeHandle, desc: WidgetDesc) bool {
         if (!tree.isAlive(handle)) return false;
         const node = tree.get(handle);
-        if (node.widget_type != null) return false;
         if (@as(std.meta.Tag(WidgetKind), node.kind) != @as(std.meta.Tag(WidgetDesc), desc)) return false;
         node.kind = widget.kindFromDesc(desc);
         widget.syncDerivedState(&node.kind);
@@ -298,7 +341,7 @@ pub const Runtime = struct {
 
     /// Replace a widget's per-node style overrides. Returns false if
     /// the handle is dead. Marks the runtime dirty so the change
-    /// re-lays-out and re-renders on the next frame.
+    /// advances layout and resolved visual state.
     pub fn setStyle(self: *Runtime, tree: *Tree, handle: NodeHandle, override: Style) bool {
         if (!tree.isAlive(handle)) return false;
         tree.get(handle).style_override = override;
@@ -310,49 +353,19 @@ pub const Runtime = struct {
     /// edits (e.g. scroll position, popup visibility). Returns null if
     /// the handle is dead. Always pessimistically marks the runtime
     /// dirty — the runtime cannot tell which fields the caller will
-    /// touch, so it assumes layout and paint both need to rerun.
+    /// touch, so it advances both layout and resolved visual state.
     pub fn mutateKind(self: *Runtime, tree: *Tree, handle: NodeHandle) ?*WidgetKind {
         if (!tree.isAlive(handle)) return null;
         self.invalidate();
         return &tree.get(handle).kind;
     }
 
-    /// Mark a widget as needing an embedder paint hook. The library emits
-    /// a `.custom` paint command for it in addition to its built-in paint.
-    /// Returns false if the handle is dead.
-    pub fn setCustomPaint(self: *Runtime, tree: *Tree, handle: NodeHandle, custom: bool) bool {
-        if (!tree.isAlive(handle)) return false;
-        tree.get(handle).custom_paint = custom;
-        self.invalidate();
-        return true;
-    }
-
-    /// Snapshot the per-frame interaction state: pointer position,
-    /// button state, focus, active drag source, and the one-frame
-    /// events (last drop, last secondary click, last primary press
-    /// timestamp). The `focused` field is alive-checked against
-    /// `tree`; the others are recorded as the dispatch layer set
-    /// them and are valid until the next `processEvents` call.
-    pub fn frame(self: *const Runtime, tree: *const Tree) FrameSnapshot {
-        const focused: ?NodeHandle = blk: {
-            if (self.mouse.focused) |h| {
-                if (tree.isAlive(h)) break :blk h;
-            }
-            break :blk null;
-        };
-        return .{
-            .pointer = .{ .x = self.mouse.x, .y = self.mouse.y },
-            .buttons = .{
-                .left = self.mouse.left_down,
-                .right = self.mouse.right_down,
-                .middle = self.mouse.middle_down,
-            },
-            .focused = focused,
-            .drag_source = self.mouse.drag_target,
-            .last_drop = self.mouse.last_drop,
-            .last_secondary_click = self.mouse.last_secondary_click,
-            .last_primary_press_ms = self.mouse.last_click_time_ms,
-        };
+    /// Return the caller-owned semantic identity of the focused control.
+    /// Stale retained handles are contained inside the runtime and surface as
+    /// null rather than crossing this boundary.
+    pub fn focusedElementId(self: *const Runtime, tree: *const Tree) ?ElementId {
+        const focused = self.mouse.focused orelse return null;
+        return tree.elementId(focused);
     }
 
     /// Set keyboard focus to a live widget.
@@ -366,7 +379,7 @@ pub const Runtime = struct {
         }
         tree.get(handle).interaction.focused = true;
         self.mouse.focused = handle;
-        self.paint_dirty = true;
+        self.bumpVisualRevision();
         return true;
     }
 
@@ -376,13 +389,13 @@ pub const Runtime = struct {
             if (node.alive) node.interaction.focused = false;
         }
         self.mouse.focused = null;
-        self.paint_dirty = true;
+        self.bumpVisualRevision();
     }
 
     /// Cancel the active pointer gesture, clearing any drag or marquee state.
     pub fn cancelPointerGesture(self: *Runtime, tree: *Tree) void {
         dispatch.cancelPointerGesture(tree, &self.mouse);
-        self.paint_dirty = true;
+        self.bumpVisualRevision();
     }
 
     /// Run layout: walk the widget tree through clay and write back rects.
@@ -397,36 +410,48 @@ pub const Runtime = struct {
         defer c.Clay_SetCurrentContext(previous);
         layout.run(tree, theme, text_ctx);
         self.layout_dirty = false;
-        self.paint_dirty = true;
+        self.bumpVisualRevision();
         self.last_tree_revision = current_revision;
     }
 
-    /// Generate the semantic paint command list.
+    /// Visit resolved UI values for a custom look.
     ///
-    /// The returned slice is owned by the Runtime. It stays valid until
-    /// the next call to `generatePaintList` or `deinit` on this runtime.
-    /// Other state changes (events, tree mutation, theme/dimension
-    /// changes) only set the dirty flag; the previous list keeps pointing
-    /// at allocated memory until you regenerate. Copy the slice if you
-    /// need it to outlive the next regeneration.
-    pub fn generatePaintList(self: *Runtime, tree: *const Tree, theme: Theme) !PaintList {
-        if (!self.paint_dirty) {
-            if (self.cached_paint_list) |cached| return cached;
+    /// The visitor is statically dispatched and must provide exact
+    /// `enter(ResolvedElement)` and `leave(ResolvedElement)` methods returning `void` or
+    /// `!void`. Every successful enter receives one leave after its descendants,
+    /// allowing custom looks to emit balanced clips and surfaces without
+    /// reconstructing the hierarchy. Traversal is allocation-free and
+    /// depth-first in logical sibling order.
+    /// The visitor must not mutate `tree` during the call: resolved strings
+    /// borrow node storage and traversal holds the current structural position.
+    /// Multiple root order is deliberately unspecified. Floating subtrees stay
+    /// inline at their logical position; the custom look owns layering policy.
+    pub fn visitResolved(
+        self: *const Runtime,
+        tree: *const Tree,
+        theme: Theme,
+        visitor: anytype,
+    ) !void {
+        _ = self;
+        for (tree.nodes.items, 0..) |*node, index| {
+            if (!node.alive or node.parent != null) continue;
+            try visitResolvedSubtree(tree, theme, tree.handleFromIndex(@intCast(index)), visitor);
         }
-        self.invalidatePaintCache();
-        const paint_list = try paint.generatePaint(tree, theme, self.allocator, self.text_measure_ctx, .{});
-        self.cached_paint_list = paint_list;
-        self.paint_dirty = false;
-        return paint_list;
     }
 
-    /// Invalidate and free the cached paint list.
-    fn invalidatePaintCache(self: *Runtime) void {
-        if (self.cached_paint_list) |*cached| {
-            paint.freePaintList(cached, self.allocator);
-            self.cached_paint_list = null;
-        }
-        self.paint_dirty = true;
+    /// Borrow the hierarchy-aware capability consumed by stock Chrome.
+    pub fn chromeState(self: *const Runtime, tree: *const Tree, theme: Theme) ChromeState {
+        return .{
+            .tree = tree,
+            .theme = theme,
+            .text_measure = self.text_measure_ctx,
+            .revision = self.visual_revision,
+        };
+    }
+
+    fn bumpVisualRevision(self: *Runtime) void {
+        self.visual_revision +%= 1;
+        if (self.visual_revision == 0) self.visual_revision = 1;
     }
 
     /// Update layout dimensions (e.g. on window resize).
@@ -459,14 +484,14 @@ pub const Runtime = struct {
 ///
 /// Every method here is a thin forward to the matching `Runtime` /
 /// `Tree` method, with the bundled tree/theme/clipboard supplied
-/// implicitly. Embedders that drive multiple trees from one runtime
-/// (e.g. main window plus detached popup surfaces) wire up `Runtime`
-/// directly with caller-owned trees instead.
+/// implicitly. `Runtime` is still available when the caller wants to own its
+/// tree/theme separately, but one Runtime represents one interaction/layout
+/// domain and its one active tree.
 ///
 /// Read-only access to `tree`, `theme`, `runtime`, and `clipboard` is
 /// fine. Mutating state should go through the methods below
-/// (especially `setTheme` / `setClipboard`) so the layout/paint caches
-/// invalidate.
+/// (especially `setTheme` / `setClipboard`) so layout and visual revisions
+/// stay correct.
 pub const Context = struct {
     tree: Tree,
     theme: Theme,
@@ -498,16 +523,10 @@ pub const Context = struct {
         try self.runtime.pushEvent(ev);
     }
 
-    /// Process all queued events. Call after `doLayout`.
-    pub fn processEvents(self: *Context) void {
-        self.runtime.processEvents(&self.tree, self.theme, self.clipboard);
-    }
-
-    /// Clear transient activation/change flags. Call at the start of each
-    /// frame so clicks, toggles, and selection changes are only observed
-    /// for one frame.
-    pub fn clearClickedFlags(self: *Context) void {
-        self.runtime.clearClickedFlags(&self.tree);
+    /// Process queued input and borrow the ordered semantic output batch.
+    /// See `Runtime.processEvents` for lifetime and allocation rules.
+    pub fn processEvents(self: *Context) !ControlEvents {
+        return self.runtime.processEvents(&self.tree, self.theme, self.clipboard);
     }
 
     /// Run layout. Pass a `TextMeasureCtx` for accurate text sizing or
@@ -516,10 +535,15 @@ pub const Context = struct {
         self.runtime.doLayout(&self.tree, self.theme, text_ctx);
     }
 
-    /// Generate the semantic paint list. See `Runtime.generatePaintList`
-    /// for lifetime rules.
-    pub fn generatePaintList(self: *Context) !PaintList {
-        return self.runtime.generatePaintList(&self.tree, self.theme);
+    /// Visit the allocation-free, handle-free values used by custom looks.
+    /// See `Runtime.visitResolved` for the visitor and ordering contract.
+    pub fn visitResolved(self: *const Context, visitor: anytype) !void {
+        return self.runtime.visitResolved(&self.tree, self.theme, visitor);
+    }
+
+    /// Borrow the hierarchy-aware, read-only capability used by stock Chrome.
+    pub fn chromeState(self: *const Context) ChromeState {
+        return self.runtime.chromeState(&self.tree, self.theme);
     }
 
     /// Update layout dimensions (e.g. on window resize).
@@ -529,7 +553,7 @@ pub const Context = struct {
 
     // --- Settings ------------------------------------------------------
 
-    /// Replace the active theme. Invalidates layout/paint caches.
+    /// Replace the active theme. Advances layout and resolved visual state.
     pub fn setTheme(self: *Context, theme: Theme) void {
         self.theme = theme;
         self.runtime.invalidate();
@@ -549,20 +573,6 @@ pub const Context = struct {
         return self.runtime.updateWidget(&self.tree, handle, desc);
     }
 
-    /// Add a root-level behavior-backed widget.
-    pub fn addRootWidget(self: *Context, widget_type: *const WidgetType, state: ?*anyopaque) !NodeHandle {
-        const handle = try self.tree.addRootWidget(widget_type, state);
-        self.runtime.invalidate();
-        return handle;
-    }
-
-    /// Add a behavior-backed child widget.
-    pub fn addChildWidget(self: *Context, parent: NodeHandle, widget_type: *const WidgetType, state: ?*anyopaque) !NodeHandle {
-        const handle = try self.tree.addChildWidget(parent, widget_type, state);
-        self.runtime.invalidate();
-        return handle;
-    }
-
     /// Replace a widget's per-node style overrides. See `Runtime.setStyle`.
     pub fn setStyle(self: *Context, handle: NodeHandle, override: Style) bool {
         return self.runtime.setStyle(&self.tree, handle, override);
@@ -574,22 +584,16 @@ pub const Context = struct {
         return self.runtime.mutateKind(&self.tree, handle);
     }
 
-    /// Mark a widget as embedder-rendered. See `Runtime.setCustomPaint`.
-    pub fn setCustomPaint(self: *Context, handle: NodeHandle, custom: bool) bool {
-        return self.runtime.setCustomPaint(&self.tree, handle, custom);
-    }
-
-    /// Mark cached layout and paint output stale after caller-owned
-    /// state changes. See `Runtime.invalidate`.
+    /// Advance layout and resolved visual state after caller-owned changes.
+    /// See `Runtime.invalidate`.
     pub fn invalidate(self: *Context) void {
         self.runtime.invalidate();
     }
 
-    // --- Per-frame snapshot / focus / gestures -------------------------
+    // --- Focus / gestures ----------------------------------------------
 
-    /// Snapshot per-frame interaction state. See `Runtime.frame`.
-    pub fn frame(self: *const Context) FrameSnapshot {
-        return self.runtime.frame(&self.tree);
+    pub fn focusedElementId(self: *const Context) ?ElementId {
+        return self.runtime.focusedElementId(&self.tree);
     }
 
     /// Set keyboard focus to a live widget. See `Runtime.focusWidget`.
@@ -618,7 +622,7 @@ pub const Context = struct {
 // Test-only helpers (file-private, used by the tests below this
 // block). Not part of the public API. Embedders that want similar
 // conveniences should write their own off the `WidgetView` /
-// `NodeView` snapshots returned by `tree.node(handle)`.
+// `NodeView` values returned by `tree.node(handle)`.
 // =============================================================
 
 fn testIsChecked(ctx: *const Context, h: NodeHandle) bool {
@@ -728,7 +732,7 @@ test "context initializes" {
     try std.testing.expectEqual(@as(u32, 0), ctx.tree.count());
 }
 
-test "runtime operates on caller-owned tree" {
+test "runtime lays out a caller-owned tree" {
     var runtime = try Runtime.init(std.testing.allocator, .{ .width = 800, .height = 600 });
     defer runtime.deinit();
 
@@ -739,9 +743,7 @@ test "runtime operates on caller-owned tree" {
     _ = try tree.addChild(root, .{ .button = .{ .label = "OK" } });
 
     runtime.doLayout(&tree, .{}, null);
-    const paint_list = try runtime.generatePaintList(&tree, .{});
-
-    try std.testing.expect(paint_list.commands.len > 0);
+    try std.testing.expect(tree.getConst(root).layout_rect.w > 0);
 }
 
 test "runtime restores previous clay context" {
@@ -777,22 +779,7 @@ test "layout produces non-zero rects" {
     try std.testing.expect(root_rect.h > 0);
 }
 
-test "layout then paint produces commands" {
-    var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
-    defer ctx.deinit();
-
-    const root = try ctx.tree.addRoot(.{ .container = .{} });
-    _ = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
-    _ = try ctx.tree.addChild(root, .{ .text = .{ .content = "hello" } });
-
-    ctx.doLayout(null);
-    const paint_list = try ctx.generatePaintList();
-
-    // Should have at least: container surface, button surface, button text, text label
-    try std.testing.expect(paint_list.commands.len >= 4);
-}
-
-test "custom widgets expose semantic paint and state" {
+test "custom widgets expose resolved semantic state" {
     var ctx = try Context.init(std.testing.allocator, .{ .width = 320, .height = 200 });
     defer ctx.deinit();
 
@@ -808,17 +795,33 @@ test "custom widgets expose semantic paint and state" {
     try std.testing.expectApproxEqAbs(@as(f32, 96), rect.w, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 32), rect.h, 0.01);
 
-    const paint_list = try ctx.generatePaintList();
-    try std.testing.expectEqual(@as(usize, 1), paint_list.commands.len);
-    try std.testing.expect(paint_list.commands[0] == .custom);
-    try std.testing.expect(paint_list.commands[0].custom.handle.eql(custom));
+    const Collector = struct {
+        resolved: ?ResolvedElement = null,
 
+        fn enter(self: *@This(), resolved: ResolvedElement) void {
+            std.debug.assert(self.resolved == null);
+            self.resolved = resolved;
+        }
+
+        fn leave(_: *@This(), _: ResolvedElement) void {}
+    };
+    var collector: Collector = .{};
+    try ctx.visitResolved(&collector);
+    const resolved = collector.resolved.?;
+    try std.testing.expect(resolved.widget == .custom);
+    try std.testing.expectEqual(@as(u32, 42), resolved.widget.custom.type_id);
+
+    try ctx.tree.setControlIdentity(custom, .{ .element_id = .init(900), .action_id = .init(901) });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = rect.x + 4, .y = rect.y + 4 } });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = rect.x + 4, .y = rect.y + 4 } });
-    ctx.processEvents();
+    const output = try ctx.processEvents();
+
+    try std.testing.expectEqual(@as(usize, 1), output.items.len);
+    try std.testing.expect(output.items[0] == .activated);
+    try std.testing.expectEqual(ElementId.init(900), output.items[0].activated.element);
+    try std.testing.expectEqual(ActionId.init(901), output.items[0].activated.action.?);
 
     const view = ctx.tree.node(custom).?;
-    try std.testing.expect(view.clicked);
     try std.testing.expect(view.focused);
     try std.testing.expectEqual(WidgetView{ .custom = .{
         .type_id = 42,
@@ -832,166 +835,444 @@ test "custom widgets expose semantic paint and state" {
     } }, view.kind);
 }
 
-const TestBehaviorState = struct {
-    pointer_presses: u8 = 0,
-    activations: u8 = 0,
-    key_presses: u8 = 0,
-    text_bytes: u8 = 0,
-};
-
-fn testBehaviorLayout(_: LayoutCtx) LayoutSpec {
-    return .{
-        .width = .{ .size = 80, .grow = false },
-        .height = .{ .size = 24, .grow = false },
-    };
-}
-
-fn testBehaviorPaint(ctx: PaintCtx) !void {
-    var paint_ctx = ctx;
-    try paint_ctx.append(.{ .surface = .{
-        .bounds = ctx.rect,
-        .color = Color.rgb(10, 20, 30),
-        .border_color = Color.rgb(40, 50, 60),
-        .border_width = 1,
-        .corner_radius = 2,
-    } });
-}
-
-fn testBehaviorHit(ctx: HitTestCtx) bool {
-    return ctx.x >= ctx.rect.x + 8 and ctx.x < ctx.rect.x + ctx.rect.w and
-        ctx.y >= ctx.rect.y and ctx.y < ctx.rect.y + ctx.rect.h;
-}
-
-fn testBehaviorFocusable(_: WidgetCtx) bool {
-    return true;
-}
-
-fn testBehaviorPointer(ctx: PointerCtx) bool {
-    if (ctx.event == .press) {
-        const state = ctx.widget.stateAs(TestBehaviorState).?;
-        state.pointer_presses += 1;
-        return true;
-    }
-    return false;
-}
-
-fn testBehaviorActivate(ctx: ActivateCtx) bool {
-    const state = ctx.widget.stateAs(TestBehaviorState).?;
-    state.activations += 1;
-    ctx.widget.node.interaction.primary_clicked = true;
-    return true;
-}
-
-fn testBehaviorKey(ctx: KeyCtx) bool {
-    if (ctx.event.state == .pressed) {
-        const state = ctx.widget.stateAs(TestBehaviorState).?;
-        state.key_presses += 1;
-        return true;
-    }
-    return false;
-}
-
-fn testBehaviorText(ctx: TextInputCtx) bool {
-    const state = ctx.widget.stateAs(TestBehaviorState).?;
-    state.text_bytes += @intCast(ctx.text.len);
-    return true;
-}
-
-const test_behavior_type = WidgetType{
-    .name = "test_behavior",
-    .layout = testBehaviorLayout,
-    .paint = testBehaviorPaint,
-    .hitTest = testBehaviorHit,
-    .focusable = testBehaviorFocusable,
-    .pointer = testBehaviorPointer,
-    .key = testBehaviorKey,
-    .textInput = testBehaviorText,
-    .activate = testBehaviorActivate,
-};
-
-test "behavior-backed widget participates in core passes" {
+test "resolved visitor projects nested siblings without handles or allocation" {
     var ctx = try Context.init(std.testing.allocator, .{ .width = 320, .height = 200 });
-    var registry = WidgetRegistry.init(std.testing.allocator);
-    defer registry.deinit();
     defer ctx.deinit();
 
-    var state = TestBehaviorState{};
-    const widget_type = try registry.register(test_behavior_type);
-    const handle = try ctx.addRootWidget(widget_type, &state);
+    const root = try ctx.tree.addRootControl(.{
+        .identity = .{ .element_id = .init(10) },
+        .widget = .{ .container = .{} },
+    });
+    const first = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(11), .action_id = .init(111) },
+        .widget = .{ .button = .{ .label = "first" } },
+    });
+    const nested = try ctx.tree.addChildControl(first, .{
+        .identity = .{ .element_id = .init(12) },
+        .widget = .{ .text = .{ .content = "nested" } },
+    });
+    _ = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(13) },
+        .widget = .{ .custom = .{ .type_id = 7, .width = 20, .height = 10 } },
+    });
+    try std.testing.expect(ctx.focusWidget(nested));
     ctx.doLayout(null);
 
-    const rect = ctx.tree.getConst(handle).layout_rect;
-    try std.testing.expectApproxEqAbs(@as(f32, 80), rect.w, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 24), rect.h, 0.01);
+    const Draw = struct {
+        id: ?ElementId,
+        parent_id: ?ElementId,
+        action_id: ?ActionId,
+        bounds: Rect,
+        widget: std.meta.Tag(WidgetView),
+        bg: Color,
+        focused: bool,
+    };
+    const CustomRenderer = struct {
+        draws: [4]Draw = undefined,
+        len: usize = 0,
+        depth: usize = 0,
+        order: [8]i64 = undefined,
+        order_len: usize = 0,
 
-    const paint_list = try ctx.generatePaintList();
-    try std.testing.expectEqual(@as(usize, 1), paint_list.commands.len);
-    try std.testing.expect(paint_list.commands[0] == .surface);
+        fn enter(self: *@This(), resolved: ResolvedElement) error{TooManyElements}!void {
+            if (self.len == self.draws.len) return error.TooManyElements;
+            self.draws[self.len] = .{
+                .id = resolved.id,
+                .parent_id = resolved.parent_id,
+                .action_id = resolved.action_id,
+                .bounds = resolved.bounds,
+                .widget = resolved.widget,
+                .bg = resolved.style.bg,
+                .focused = resolved.focused,
+            };
+            self.depth += 1;
+            self.order[self.order_len] = @intCast(resolved.id.?.value());
+            self.order_len += 1;
+            self.len += 1;
+        }
 
-    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = rect.x + 2, .y = rect.y + 2 } });
-    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = rect.x + 2, .y = rect.y + 2 } });
-    ctx.processEvents();
-    try std.testing.expectEqual(@as(u8, 0), state.pointer_presses);
-    try std.testing.expectEqual(@as(u8, 0), state.activations);
+        fn leave(self: *@This(), resolved: ResolvedElement) void {
+            self.depth -= 1;
+            self.order[self.order_len] = -@as(i64, @intCast(resolved.id.?.value()));
+            self.order_len += 1;
+        }
+    };
+    var renderer: CustomRenderer = .{};
 
-    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = rect.x + 10, .y = rect.y + 2 } });
-    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = rect.x + 10, .y = rect.y + 2 } });
-    ctx.processEvents();
-    try std.testing.expectEqual(@as(u8, 1), state.pointer_presses);
-    try std.testing.expectEqual(@as(u8, 1), state.activations);
+    // Once the runtime and tree are set up, the visit must not consult either
+    // allocator. Replacing both with an allocator that rejects every request
+    // turns a hidden traversal allocation into an immediate test failure.
+    const runtime_allocator = ctx.runtime.allocator;
+    const tree_allocator = ctx.tree.allocator;
+    ctx.runtime.allocator = std.testing.failing_allocator;
+    ctx.tree.allocator = std.testing.failing_allocator;
+    defer {
+        ctx.runtime.allocator = runtime_allocator;
+        ctx.tree.allocator = tree_allocator;
+    }
+    try ctx.visitResolved(&renderer);
 
-    try ctx.pushEvent(.{ .key = .{ .keycode = .a, .state = .pressed } });
-    try ctx.pushEvent(.{ .text = .{ .codepoint = 'x' } });
-    ctx.processEvents();
-    try std.testing.expectEqual(@as(u8, 1), state.key_presses);
-    try std.testing.expectEqual(@as(u8, 1), state.text_bytes);
-
-    const view = ctx.tree.node(handle).?;
-    try std.testing.expect(view.clicked);
-    try std.testing.expect(view.focused);
+    try std.testing.expectEqual(@as(usize, 4), renderer.len);
+    try std.testing.expectEqual(@as(usize, 0), renderer.depth);
+    try std.testing.expectEqualSlices(i64, &.{ 10, 11, 12, -12, -11, 13, -13, -10 }, renderer.order[0..renderer.order_len]);
+    try std.testing.expectEqualSlices(?ElementId, &.{
+        ElementId.init(10),
+        ElementId.init(11),
+        ElementId.init(12),
+        ElementId.init(13),
+    }, &.{
+        renderer.draws[0].id,
+        renderer.draws[1].id,
+        renderer.draws[2].id,
+        renderer.draws[3].id,
+    });
+    try std.testing.expectEqualSlices(?ElementId, &.{
+        null,
+        ElementId.init(10),
+        ElementId.init(11),
+        ElementId.init(10),
+    }, &.{
+        renderer.draws[0].parent_id,
+        renderer.draws[1].parent_id,
+        renderer.draws[2].parent_id,
+        renderer.draws[3].parent_id,
+    });
+    try std.testing.expectEqual(ActionId.init(111), renderer.draws[1].action_id.?);
+    try std.testing.expectEqual(std.meta.Tag(WidgetView).text, renderer.draws[2].widget);
+    try std.testing.expect(renderer.draws[2].focused);
+    try std.testing.expect(renderer.draws[0].bounds.w > 0);
 }
 
-test "tree snapshot returns live node views with handles" {
-    var ctx = try Context.init(std.testing.allocator, .{ .width = 320, .height = 200 });
+test "resolved output public data contains no tree or retained handle" {
+    comptime {
+        if (@hasDecl(@This(), "ResolvedUi")) {
+            @compileError("the retained ResolvedUi capability must not be public");
+        }
+        if (containsType(ResolvedElement, Tree)) {
+            @compileError("ResolvedElement must not contain Tree");
+        }
+        if (containsType(ResolvedElement, NodeHandle)) {
+            @compileError("ResolvedElement must not contain NodeHandle");
+        }
+    }
+}
+
+test "icon is a passive resolved leaf and cannot emit semantic events" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 160, .height = 80 });
     defer ctx.deinit();
 
     const root = try ctx.tree.addRoot(.{ .container = .{} });
-    const label = try ctx.tree.addChild(root, .{ .text = .{ .content = "snapshot" } });
-    const removed = try ctx.tree.addChild(root, .{ .button = .{ .label = "gone" } });
-    try ctx.tree.remove(removed);
+    const icon = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(91), .action_id = .init(92) },
+        .widget = .{ .icon = .{ .kind = 17, .color = .rgb(4, 5, 6) } },
+    });
+    _ = ctx.setStyle(icon, .{ .font_size = 24 });
+    ctx.doLayout(null);
 
-    var snapshot = try ctx.tree.snapshot(std.testing.allocator);
-    defer snapshot.deinit(std.testing.allocator);
+    const node = ctx.tree.node(icon).?;
+    try std.testing.expect(node.kind == .icon);
+    try std.testing.expectEqual(@as(IconId, 17), node.kind.icon.kind);
+    try std.testing.expectEqual(Color.rgb(4, 5, 6), node.kind.icon.color.?);
+    try std.testing.expect(!@import("focus.zig").isFocusable(ctx.tree.getConst(icon).kind));
 
-    try std.testing.expectEqual(@as(usize, 2), snapshot.nodes.len);
-    try std.testing.expect(snapshot.nodes[0].handle.eql(root));
-    try std.testing.expect(snapshot.nodes[1].handle.eql(label));
-    try std.testing.expectEqual(WidgetView{ .text = .{ .content = "snapshot" } }, snapshot.nodes[1].node.kind);
+    const rect = node.rect;
+    const x = rect.x + rect.w * 0.5;
+    const y = rect.y + rect.h * 0.5;
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = x, .y = y } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = x, .y = y } });
+    const output = try ctx.processEvents();
+    try std.testing.expectEqual(@as(usize, 0), output.items.len);
+    try std.testing.expect(ctx.focusedElementId() == null);
 }
 
-test "event dispatch detects button click" {
+test "semantic control output preserves activation order and clears between borrows" {
     var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
     defer ctx.deinit();
 
     const root = try ctx.tree.addRoot(.{ .container = .{} });
-    const btn = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
-
+    const open = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(10), .action_id = .init(100) },
+        .widget = .{ .button = .{ .label = "Open" } },
+    });
+    const hidden = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(20), .action_id = .init(200) },
+        .widget = .{ .checkbox = .{ .label = "Hidden" } },
+    });
     ctx.doLayout(null);
 
-    // Button should have a non-zero rect after layout
-    const btn_rect = ctx.tree.getConst(btn).layout_rect;
-    const click_x = btn_rect.x + btn_rect.w / 2;
-    const click_y = btn_rect.y + btn_rect.h / 2;
+    const open_rect = ctx.tree.getConst(open).layout_rect;
+    const hidden_rect = ctx.tree.getConst(hidden).layout_rect;
+    inline for (.{ open_rect, hidden_rect }) |rect| {
+        const x = rect.x + rect.w / 2;
+        const y = rect.y + rect.h / 2;
+        try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = x, .y = y } });
+        try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = x, .y = y } });
+    }
 
-    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = click_y } });
-    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = click_x, .y = click_y } });
-    ctx.processEvents();
+    const output = try ctx.processEvents();
+    try std.testing.expectEqual(@as(usize, 3), output.items.len);
+    try std.testing.expectEqual(ElementId.init(10), output.items[0].activated.element);
+    try std.testing.expectEqual(ActionId.init(100), output.items[0].activated.action.?);
+    try std.testing.expectEqual(ElementId.init(20), output.items[1].activated.element);
+    try std.testing.expectEqual(ActionId.init(200), output.items[1].activated.action.?);
+    try std.testing.expectEqual(ElementId.init(20), output.items[2].toggle_changed.element);
+    try std.testing.expect(output.items[2].toggle_changed.value);
+    // A new processing call ends the previous borrow and starts a fresh batch,
+    // even when the input queue is empty.
+    const empty = try ctx.processEvents();
+    try std.testing.expectEqual(@as(usize, 0), empty.items.len);
+}
 
-    try std.testing.expect(ctx.tree.node(btn).?.clicked);
+test "semantic output reports committed grid drop with stable IDs" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
+    defer ctx.deinit();
 
-    // After clearing, clicked should be false
-    ctx.clearClickedFlags();
-    try std.testing.expect(!ctx.tree.node(btn).?.clicked);
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    const grid = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(30) },
+        .widget = .{ .grid_selector = .{ .selection_mode = .multiple } },
+    });
+    const source = try ctx.tree.addChildControl(grid, .{
+        .identity = .{ .element_id = .init(31) },
+        .widget = .{ .grid_item = .{ .label = "Brick" } },
+    });
+    const target = try ctx.tree.addChildControl(grid, .{
+        .identity = .{ .element_id = .init(32) },
+        .widget = .{ .grid_item = .{ .label = "Metal" } },
+    });
+
+    ctx.tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    ctx.tree.get(grid).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 130 };
+    ctx.tree.get(grid).kind.grid_selector.computed_columns = 2;
+    ctx.tree.get(source).layout_rect = .{ .x = 18, .y = 18, .w = 80, .h = 44 };
+    ctx.tree.get(target).layout_rect = .{ .x = 106, .y = 18, .w = 80, .h = 44 };
+
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 58, .y = 40 } });
+    try ctx.pushEvent(.{ .mouse_move = .{ .x = 146, .y = 40 } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = 146, .y = 40 } });
+
+    const output = try ctx.processEvents();
+    var found_drop: ?control_event.Drop = null;
+    for (output.items) |control_output| {
+        if (control_output == .drop) found_drop = control_output.drop;
+    }
+    const drop = found_drop orelse return error.TestExpectedDrop;
+    try std.testing.expectEqual(ElementId.init(31), drop.source);
+    try std.testing.expectEqual(ElementId.init(32), drop.target);
+    try std.testing.expect(drop.position == .item);
+}
+
+test "semantic output reports secondary activation and scalar and text values" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 240 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    const button = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(40), .action_id = .init(400) },
+        .widget = .{ .button = .{ .label = "Context" } },
+    });
+    const slider = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(41) },
+        .widget = .{ .slider = .{ .min = 0, .max = 100 } },
+    });
+    const input = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(42) },
+        .widget = .{ .text_input = .{ .placeholder = "Name" } },
+    });
+
+    ctx.tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 240 };
+    ctx.tree.get(button).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
+    ctx.tree.get(slider).layout_rect = .{ .x = 10, .y = 50, .w = 200, .h = 30 };
+    ctx.tree.get(input).layout_rect = .{ .x = 10, .y = 90, .w = 200, .h = 30 };
+
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .right, .state = .pressed, .x = 30, .y = 20 } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .right, .state = .released, .x = 30, .y = 20 } });
+    const secondary = try ctx.processEvents();
+    try std.testing.expectEqual(@as(usize, 1), secondary.items.len);
+    try std.testing.expectEqual(ElementId.init(40), secondary.items[0].secondary_activated.element);
+    try std.testing.expectEqual(ActionId.init(400), secondary.items[0].secondary_activated.action.?);
+    try std.testing.expectApproxEqAbs(@as(f32, 30), secondary.items[0].secondary_activated.x, 0.01);
+
+    // Layout has now run, so use the resolved slider rectangle for the click.
+    const slider_rect = ctx.tree.getConst(slider).layout_rect;
+    const slider_x = slider_rect.x + slider_rect.w * 0.75;
+    const slider_y = slider_rect.y + slider_rect.h * 0.5;
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = slider_x, .y = slider_y } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = slider_x, .y = slider_y } });
+    const scalar = try ctx.processEvents();
+    var scalar_value: ?f32 = null;
+    for (scalar.items) |output| {
+        if (output == .value_changed and output.value_changed.value == .scalar) {
+            try std.testing.expectEqual(ElementId.init(41), output.value_changed.element);
+            scalar_value = output.value_changed.value.scalar;
+        }
+    }
+    try std.testing.expect(scalar_value != null);
+    try std.testing.expect(scalar_value.? > 50);
+
+    try std.testing.expect(ctx.focusWidget(input));
+    try ctx.pushEvent(.{ .text = .{ .codepoint = 'h' } });
+    try ctx.pushEvent(.{ .text = .{ .codepoint = 'i' } });
+    const text_output = try ctx.processEvents();
+    try std.testing.expectEqual(@as(usize, 2), text_output.items.len);
+    try std.testing.expectEqualStrings("h", text_output.text(text_output.items[0].text_changed));
+    try std.testing.expectEqualStrings("hi", text_output.text(text_output.items[1].text_changed));
+    try std.testing.expectEqual(ElementId.init(42), text_output.items[1].text_changed.element);
+}
+
+test "semantic output reports dropdown index and table sort" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 640, .height = 360 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    const dropdown = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(50) },
+        .widget = .{ .dropdown = .{ .placeholder = "Select item" } },
+    });
+    const popup = try ctx.tree.addChild(dropdown, .{ .popup = .{ .placement = .below_start } });
+    const alpha = try ctx.tree.addChild(popup, .{ .menu_item = .{ .label = "Alpha" } });
+    const beta = try ctx.tree.addChildControl(popup, .{
+        .identity = .{ .element_id = .init(51) },
+        .widget = .{ .menu_item = .{ .label = "Beta" } },
+    });
+
+    ctx.tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 640, .h = 360 };
+    ctx.tree.get(dropdown).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 26 };
+    ctx.tree.get(popup).layout_rect = .{ .x = 10, .y = 36, .w = 220, .h = 52 };
+    ctx.tree.get(alpha).layout_rect = .{ .x = 10, .y = 36, .w = 220, .h = 26 };
+    ctx.tree.get(beta).layout_rect = .{ .x = 10, .y = 62, .w = 220, .h = 26 };
+
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 30, .y = 20 } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = 30, .y = 20 } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 30, .y = 72 } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = 30, .y = 72 } });
+    const index_output = try ctx.processEvents();
+    var selected_index: ?u16 = null;
+    for (index_output.items) |output| {
+        if (output == .value_changed and output.value_changed.value == .index) {
+            try std.testing.expectEqual(ElementId.init(50), output.value_changed.element);
+            selected_index = output.value_changed.value.index;
+        }
+    }
+    try std.testing.expectEqual(@as(?u16, 1), selected_index);
+
+    const table = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(52) },
+        .widget = .{ .table = .{ .columns = 2, .sortable = true } },
+    });
+    const header = try ctx.tree.addChild(table, .{ .table_row = .{ .header = true } });
+    const name = try ctx.tree.addChild(header, .{ .table_cell = .{} });
+    const kind = try ctx.tree.addChild(header, .{ .table_cell = .{} });
+    _ = try ctx.tree.addChild(name, .{ .text = .{ .content = "Name" } });
+    _ = try ctx.tree.addChild(kind, .{ .text = .{ .content = "Kind" } });
+    ctx.invalidate();
+    ctx.doLayout(null);
+
+    const kind_rect = ctx.tree.getConst(kind).layout_rect;
+    const sort_x = kind_rect.x + kind_rect.w * 0.5;
+    const sort_y = kind_rect.y + kind_rect.h * 0.5;
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = sort_x, .y = sort_y } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = sort_x, .y = sort_y } });
+    const sort_output = try ctx.processEvents();
+    try std.testing.expectEqual(@as(usize, 2), sort_output.items.len);
+    try std.testing.expectEqual(ElementId.init(52), sort_output.items[0].activated.element);
+    try std.testing.expectEqual(ElementId.init(52), sort_output.items[1].sort_changed.element);
+    try std.testing.expectEqual(@as(u8, 1), sort_output.items[1].sort_changed.column);
+    try std.testing.expectEqual(control_event.SortChanged.Direction.ascending, sort_output.items[1].sort_changed.direction);
+}
+
+test "keyboard selection and tree disclosure emit semantic state" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 640, .height = 480 });
+    defer ctx.deinit();
+
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    const list = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(60) },
+        .widget = .{ .list_box = .{} },
+    });
+    const list_first = try ctx.tree.addChildControl(list, .{
+        .identity = .{ .element_id = .init(61) },
+        .widget = .{ .selectable = .{ .label = "First", .selected = true } },
+    });
+    _ = try ctx.tree.addChildControl(list, .{
+        .identity = .{ .element_id = .init(62) },
+        .widget = .{ .selectable = .{ .label = "Second" } },
+    });
+
+    const grid = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(70) },
+        .widget = .{ .grid_selector = .{} },
+    });
+    const grid_first = try ctx.tree.addChildControl(grid, .{
+        .identity = .{ .element_id = .init(71) },
+        .widget = .{ .grid_item = .{ .label = "First", .selected = true } },
+    });
+    _ = try ctx.tree.addChildControl(grid, .{
+        .identity = .{ .element_id = .init(72) },
+        .widget = .{ .grid_item = .{ .label = "Second" } },
+    });
+
+    const table = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(80) },
+        .widget = .{ .table = .{ .selection_mode = .single } },
+    });
+    const table_first = try ctx.tree.addChildControl(table, .{
+        .identity = .{ .element_id = .init(81) },
+        .widget = .{ .table_row = .{ .selected = true } },
+    });
+    _ = try ctx.tree.addChildControl(table, .{
+        .identity = .{ .element_id = .init(82) },
+        .widget = .{ .table_row = .{} },
+    });
+
+    const tree_item = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(90) },
+        .widget = .{ .tree_item = .{ .label = "Parent", .has_children = true, .expanded = true } },
+    });
+    _ = try ctx.tree.addChild(tree_item, .{ .tree_item = .{ .label = "Child" } });
+
+    try std.testing.expect(ctx.focusWidget(list_first));
+    try ctx.pushEvent(.{ .key = .{ .keycode = .down, .state = .pressed } });
+    const list_output = try ctx.processEvents();
+    try std.testing.expectEqualSlices(ElementId, &.{ElementId.init(62)}, list_output.selection(list_output.items[0].selection_changed));
+
+    try std.testing.expect(ctx.focusWidget(grid_first));
+    try ctx.pushEvent(.{ .key = .{ .keycode = .right, .state = .pressed } });
+    const grid_output = try ctx.processEvents();
+    try std.testing.expectEqualSlices(ElementId, &.{ElementId.init(72)}, grid_output.selection(grid_output.items[0].selection_changed));
+
+    try std.testing.expect(ctx.focusWidget(table_first));
+    try ctx.pushEvent(.{ .key = .{ .keycode = .down, .state = .pressed } });
+    const table_output = try ctx.processEvents();
+    try std.testing.expectEqualSlices(ElementId, &.{ElementId.init(82)}, table_output.selection(table_output.items[0].selection_changed));
+
+    try std.testing.expect(ctx.focusWidget(tree_item));
+    try ctx.pushEvent(.{ .key = .{ .keycode = .left, .state = .pressed } });
+    const tree_output = try ctx.processEvents();
+    try std.testing.expectEqual(@as(usize, 1), tree_output.items.len);
+    try std.testing.expectEqual(ElementId.init(90), tree_output.items[0].toggle_changed.element);
+    try std.testing.expect(!tree_output.items[0].toggle_changed.value);
+}
+
+test "wheel scrolling emits observable scroll position" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 320, .height = 240 });
+    defer ctx.deinit();
+
+    const scroll = try ctx.tree.addRootControl(.{
+        .identity = .{ .element_id = .init(100) },
+        .widget = .{ .scroll_area = .{} },
+    });
+    const content = try ctx.tree.addChild(scroll, .{ .text = .{ .content = "tall" } });
+    ctx.tree.get(scroll).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 80 };
+    ctx.tree.get(content).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 300 };
+
+    try ctx.pushEvent(.{ .mouse_move = .{ .x = 40, .y = 40 } });
+    try ctx.pushEvent(.{ .mouse_scroll = .{ .dx = 0, .dy = 35 } });
+    const output = try ctx.processEvents();
+    try std.testing.expectEqual(@as(usize, 1), output.items.len);
+    try std.testing.expectEqual(ElementId.init(100), output.items[0].scroll_changed.element);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), output.items[0].scroll_changed.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 35), output.items[0].scroll_changed.y, 0.01);
 }
 
 test "checkbox toggle via events" {
@@ -1011,7 +1292,7 @@ test "checkbox toggle via events" {
 
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = click_x, .y = click_y } });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = click_x, .y = click_y } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
     try std.testing.expect(testIsChecked(&ctx, cb));
 }
@@ -1029,20 +1310,15 @@ test "radio button group selection via events" {
     const rb1_rect = ctx.tree.getConst(rb1).layout_rect;
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = rb1_rect.x + 5, .y = rb1_rect.y + 5 } });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = rb1_rect.x + 5, .y = rb1_rect.y + 5 } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
     try std.testing.expect(testIsSelected(&ctx, rb1));
     try std.testing.expect(!testIsSelected(&ctx, rb2));
-    try std.testing.expect(ctx.tree.node(rb1).?.clicked);
-
-    ctx.clearClickedFlags();
-    try std.testing.expect(!ctx.tree.node(rb1).?.clicked);
-
     // Click rb2 — should deselect rb1
     const rb2_rect = ctx.tree.getConst(rb2).layout_rect;
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = rb2_rect.x + 5, .y = rb2_rect.y + 5 } });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = rb2_rect.x + 5, .y = rb2_rect.y + 5 } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
     try std.testing.expect(!testIsSelected(&ctx, rb1));
     try std.testing.expect(testIsSelected(&ctx, rb2));
@@ -1068,13 +1344,70 @@ test "layout skips when not dirty" {
 
     // Mouse-only events don't dirty layout
     try ctx.pushEvent(.{ .mouse_move = .{ .x = 50, .y = 50 } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
     try std.testing.expect(!ctx.runtime.layout_dirty);
 
     // Key events trigger a follow-up layout inside processEvents
     try ctx.pushEvent(.{ .key = .{ .scancode = 0, .keycode = .backspace, .state = .pressed } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
     try std.testing.expect(!ctx.runtime.layout_dirty);
+}
+
+test "visual revision is stable when idle and advances for input and cleared focus" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 320, .height = 200 });
+    defer ctx.deinit();
+
+    const button = try ctx.tree.addRootControl(.{
+        .identity = .{ .element_id = .init(501) },
+        .widget = .{ .button = .{ .label = "focus" } },
+    });
+    ctx.doLayout(null);
+
+    const settled = ctx.chromeState().revision;
+    _ = try ctx.processEvents();
+    try std.testing.expectEqual(settled, ctx.chromeState().revision);
+
+    try ctx.pushEvent(.{ .mouse_move = .{ .x = 4, .y = 4 } });
+    _ = try ctx.processEvents();
+    const after_input = ctx.chromeState().revision;
+    try std.testing.expect(after_input != settled);
+
+    try std.testing.expect(ctx.focusWidget(button));
+    const focused = ctx.chromeState().revision;
+    ctx.clearFocus();
+    try std.testing.expect(ctx.chromeState().revision != focused);
+    try std.testing.expect(ctx.focusedElementId() == null);
+}
+
+test "journal allocation failure leaves queued input and control state untouched" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 320, .height = 200 });
+    defer ctx.deinit();
+
+    const checkbox = try ctx.tree.addRootControl(.{
+        .identity = .{ .element_id = .init(601) },
+        .widget = .{ .checkbox = .{ .label = "atomic" } },
+    });
+    ctx.doLayout(null);
+    const rect = ctx.tree.getConst(checkbox).layout_rect;
+    const x = rect.x + rect.w * 0.5;
+    const y = rect.y + rect.h * 0.5;
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = x, .y = y } });
+    try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = x, .y = y } });
+
+    const allocator = ctx.runtime.allocator;
+    ctx.runtime.allocator = std.testing.failing_allocator;
+    defer ctx.runtime.allocator = allocator;
+    try std.testing.expectError(error.OutOfMemory, ctx.processEvents());
+    ctx.runtime.allocator = allocator;
+
+    try std.testing.expect(!ctx.tree.getConst(checkbox).kind.checkbox.checked);
+    try std.testing.expectEqual(@as(usize, 2), ctx.runtime.events.items.len);
+
+    const output = try ctx.processEvents();
+    try std.testing.expect(ctx.tree.getConst(checkbox).kind.checkbox.checked);
+    try std.testing.expectEqual(@as(usize, 2), output.items.len);
+    try std.testing.expectEqual(ElementId.init(601), output.items[0].activated.element);
+    try std.testing.expectEqual(ElementId.init(601), output.items[1].toggle_changed.element);
 }
 
 test "runtime coalesces consecutive mouse scroll events" {
@@ -1179,45 +1512,6 @@ test "same-count topology changes trigger layout" {
     try std.testing.expect(ctx.tree.getConst(second).layout_rect.w > 0);
 }
 
-test "paint list caching returns same list when clean" {
-    var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
-    defer ctx.deinit();
-
-    const root = try ctx.tree.addRoot(.{ .container = .{} });
-    _ = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
-
-    ctx.doLayout(null);
-
-    const paint1 = try ctx.generatePaintList();
-    try std.testing.expect(!ctx.runtime.paint_dirty);
-
-    // Second call without changes returns the cached pointer
-    const paint2 = try ctx.generatePaintList();
-    try std.testing.expectEqual(paint1.commands.ptr, paint2.commands.ptr);
-}
-
-test "paint list regenerated after events" {
-    var ctx = try Context.init(std.testing.allocator, .{ .width = 800, .height = 600 });
-    defer ctx.deinit();
-
-    const root = try ctx.tree.addRoot(.{ .container = .{} });
-    _ = try ctx.tree.addChild(root, .{ .button = .{ .label = "OK" } });
-
-    ctx.doLayout(null);
-    const paint1 = try ctx.generatePaintList();
-    const ptr1 = paint1.commands.ptr;
-
-    // Pushing an event and processing marks paint dirty
-    try ctx.pushEvent(.{ .mouse_move = .{ .x = 50, .y = 50 } });
-    ctx.processEvents();
-    try std.testing.expect(ctx.runtime.paint_dirty);
-
-    // Regeneration produces a new list (old cache freed internally)
-    _ = try ctx.generatePaintList();
-    try std.testing.expect(!ctx.runtime.paint_dirty);
-    _ = ptr1;
-}
-
 test "collapsed tree item can be reopened across context frames" {
     var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
     defer ctx.deinit();
@@ -1232,7 +1526,6 @@ test "collapsed tree item can be reopened across context frames" {
         .group = 1,
     } });
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
 
     const parent_rect = ctx.tree.getConst(parent).layout_rect;
@@ -1241,16 +1534,15 @@ test "collapsed tree item can be reopened across context frames" {
 
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = disclosure_x, .y = disclosure_y } });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = disclosure_x, .y = disclosure_y } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
     try std.testing.expect(!ctx.tree.node(parent).?.kind.tree_item.expanded);
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
-    try std.testing.expectEqual(paint.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(child).layout_rect);
+    try std.testing.expectEqual(Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(child).layout_rect);
 
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = disclosure_x, .y = disclosure_y } });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = disclosure_x, .y = disclosure_y } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
     try std.testing.expect(ctx.tree.node(parent).?.kind.tree_item.expanded);
 }
 
@@ -1267,8 +1559,9 @@ test "tree item drop is reported across context frames" {
         .label = "Camera",
         .group = 2,
     } });
+    try ctx.tree.setElementId(first, .init(301));
+    try ctx.tree.setElementId(second, .init(302));
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
 
     const first_rect = ctx.tree.getConst(first).layout_rect;
@@ -1277,15 +1570,11 @@ test "tree item drop is reported across context frames" {
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = first_rect.x + 12, .y = first_rect.y + first_rect.h * 0.5 } });
     try ctx.pushEvent(.{ .mouse_move = .{ .x = second_rect.x + 12, .y = second_rect.y + second_rect.h * 0.5 } });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = second_rect.x + 12, .y = second_rect.y + second_rect.h * 0.5 } });
-    ctx.processEvents();
-
-    const drop = ctx.runtime.frame(&ctx.tree).last_drop.?.tree;
-    try std.testing.expect(drop.source.eql(first));
-    try std.testing.expect(drop.target.eql(second));
-    try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, drop.position);
-
-    ctx.clearClickedFlags();
-    try std.testing.expect(ctx.runtime.frame(&ctx.tree).last_drop == null);
+    const output = try ctx.processEvents();
+    const drop = output.items[output.items.len - 1].drop;
+    try std.testing.expectEqual(ElementId.init(301), drop.source);
+    try std.testing.expectEqual(ElementId.init(302), drop.target);
+    try std.testing.expectEqual(control_event.Drop.Position.inside, drop.position);
 }
 
 test "tab panels switch visibility across context frames" {
@@ -1304,24 +1593,22 @@ test "tab panels switch visibility across context frames" {
     const scene_text = try ctx.tree.addChild(scene, .{ .text = .{ .content = "Scene panel" } });
     const render_text = try ctx.tree.addChild(render, .{ .text = .{ .content = "Render panel" } });
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
 
     try std.testing.expect(ctx.tree.getConst(scene_text).layout_rect.w > 0);
-    try std.testing.expectEqual(paint.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(render_text).layout_rect);
+    try std.testing.expectEqual(Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(render_text).layout_rect);
 
     const render_rect = ctx.tree.getConst(render).layout_rect;
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = render_rect.x + 5, .y = render_rect.y + 5 } });
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .released, .x = render_rect.x + 5, .y = render_rect.y + 5 } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
     try std.testing.expect(testIsSelected(&ctx, render));
     try std.testing.expect(!testIsSelected(&ctx, scene));
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
 
-    try std.testing.expectEqual(paint.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(scene_text).layout_rect);
+    try std.testing.expectEqual(Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(scene_text).layout_rect);
     try std.testing.expect(ctx.tree.getConst(render_text).layout_rect.w > 0);
 }
 
@@ -1339,7 +1626,6 @@ test "list box reports selected index and change across context frames" {
         .label = "Camera",
     } });
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
     try std.testing.expectEqual(@as(?u16, 0), testFirstSelectedSelectableIndex(&ctx, list_box));
 
@@ -1356,9 +1642,8 @@ test "list box reports selected index and change across context frames" {
         .x = camera_rect.x + 5,
         .y = camera_rect.y + 5,
     } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
-    try std.testing.expect(ctx.tree.node(list_box).?.changed);
     try std.testing.expectEqual(@as(?u16, 1), testFirstSelectedSelectableIndex(&ctx, list_box));
     try std.testing.expect(testIsSelected(&ctx, camera));
 }
@@ -1381,7 +1666,6 @@ test "grid selector reports selection count and change across context frames" {
     } });
     const metal = try ctx.tree.addChild(grid, .{ .grid_item = .{ .label = "Metal" } });
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
     try std.testing.expectEqual(@as(?u16, 0), testFirstSelectedGridItemIndex(&ctx, grid));
 
@@ -1400,9 +1684,8 @@ test "grid selector reports selection count and change across context frames" {
         .y = metal_rect.y + 5,
     } });
     try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
-    try std.testing.expect(ctx.tree.node(grid).?.changed);
     try std.testing.expectEqual(@as(u16, 2), testCountSelectedGridItems(&ctx, grid));
     try std.testing.expect(testIsSelected(&ctx, metal));
 }
@@ -1420,10 +1703,9 @@ test "grid item drop is reported across context frames" {
     } });
     const first = try ctx.tree.addChild(grid, .{ .grid_item = .{ .label = "Brick" } });
     const second = try ctx.tree.addChild(grid, .{ .grid_item = .{ .label = "Metal" } });
-    ctx.tree.setUserId(first, 101);
-    ctx.tree.setUserId(second, 102);
+    try ctx.tree.setElementId(first, .init(101));
+    try ctx.tree.setElementId(second, .init(102));
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
 
     const first_rect = ctx.tree.getConst(first).layout_rect;
@@ -1439,13 +1721,9 @@ test "grid item drop is reported across context frames" {
         .x = second_rect.x + second_rect.w * 0.5,
         .y = second_rect.y + second_rect.h * 0.5,
     } });
-    ctx.processEvents();
-
-    const f1 = ctx.runtime.frame(&ctx.tree);
-    try std.testing.expect(f1.buttons.left);
-    try std.testing.expect(f1.drag_source.?.eql(first));
-    try std.testing.expectApproxEqAbs(second_rect.x + second_rect.w * 0.5, f1.pointer.x, 0.01);
-    try std.testing.expectEqual(@as(u64, 101), ctx.tree.userId(first));
+    _ = try ctx.processEvents();
+    try std.testing.expect(ctx.tree.getConst(first).kind.grid_item.internal.drag.active);
+    try std.testing.expectEqual(ElementId.init(101), ctx.tree.elementId(first).?);
 
     try ctx.pushEvent(.{ .mouse_button = .{
         .button = .left,
@@ -1453,17 +1731,12 @@ test "grid item drop is reported across context frames" {
         .x = second_rect.x + second_rect.w * 0.5,
         .y = second_rect.y + second_rect.h * 0.5,
     } });
-    ctx.processEvents();
-
-    const f2 = ctx.runtime.frame(&ctx.tree);
-    const drop = f2.last_drop.?.grid;
-    try std.testing.expect(drop.source.eql(first));
-    try std.testing.expect(drop.target.eql(second));
-    try std.testing.expectEqual(dispatch.ContainerDrop.Position.item, drop.position);
-    try std.testing.expect(!f2.buttons.left);
-
-    ctx.clearClickedFlags();
-    try std.testing.expect(ctx.runtime.frame(&ctx.tree).last_drop == null);
+    const output = try ctx.processEvents();
+    const drop = output.items[output.items.len - 1].drop;
+    try std.testing.expectEqual(ElementId.init(101), drop.source);
+    try std.testing.expectEqual(ElementId.init(102), drop.target);
+    try std.testing.expectEqual(control_event.Drop.Position.item, drop.position);
+    try std.testing.expect(!ctx.tree.getConst(first).kind.grid_item.internal.drag.active);
 }
 
 test "multi-select list box supports ctrl-toggle and shift-range selection" {
@@ -1478,11 +1751,10 @@ test "multi-select list box supports ctrl-toggle and shift-range selection" {
     } });
     const camera = try ctx.tree.addChild(list_box, .{ .selectable = .{ .label = "Camera" } });
     const light = try ctx.tree.addChild(list_box, .{ .selectable = .{ .label = "Light" } });
-    ctx.tree.setUserId(scene, 201);
-    ctx.tree.setUserId(camera, 202);
-    ctx.tree.setUserId(light, 203);
+    try ctx.tree.setElementId(scene, .init(201));
+    try ctx.tree.setElementId(camera, .init(202));
+    try ctx.tree.setElementId(light, .init(203));
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
 
     const camera_rect = ctx.tree.getConst(camera).layout_rect;
@@ -1500,9 +1772,8 @@ test "multi-select list box supports ctrl-toggle and shift-range selection" {
         .y = camera_rect.y + 5,
     } });
     try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
-    try std.testing.expect(ctx.tree.node(list_box).?.changed);
     try std.testing.expect(testIsSelected(&ctx, scene));
     try std.testing.expect(testIsSelected(&ctx, camera));
     try std.testing.expectEqual(@as(u16, 2), testCountSelectedChildren(&ctx, list_box));
@@ -1529,10 +1800,9 @@ test "multi-select list box supports ctrl-toggle and shift-range selection" {
         }
         try std.testing.expect(found.?.eql(camera));
         try std.testing.expectEqual(@as(u16, 1), found_index);
-        try std.testing.expectEqual(@as(u64, 202), ctx.tree.userId(found.?));
+        try std.testing.expectEqual(ElementId.init(202), ctx.tree.elementId(found.?).?);
     }
 
-    ctx.clearClickedFlags();
     const light_rect = ctx.tree.getConst(light).layout_rect;
     try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } });
     try ctx.pushEvent(.{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } });
@@ -1550,9 +1820,8 @@ test "multi-select list box supports ctrl-toggle and shift-range selection" {
     } });
     try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
     try ctx.pushEvent(.{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
-    try std.testing.expect(ctx.tree.node(list_box).?.changed);
     try std.testing.expect(testIsSelected(&ctx, scene));
     try std.testing.expect(testIsSelected(&ctx, camera));
     try std.testing.expect(testIsSelected(&ctx, light));
@@ -1592,7 +1861,6 @@ test "table row selection reports count and first selected row" {
     _ = try ctx.tree.addChild(third_name, .{ .text = .{ .content = "KeyLight" } });
     _ = try ctx.tree.addChild(third_type, .{ .text = .{ .content = "Light" } });
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
 
     const second_rect = ctx.tree.getConst(second).layout_rect;
@@ -1610,15 +1878,13 @@ test "table row selection reports count and first selected row" {
         .y = second_rect.y + 5,
     } });
     try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
-    try std.testing.expect(ctx.tree.node(table).?.kind.table.selection_changed);
     try std.testing.expectEqual(@as(u16, 2), testCountSelectedDataRows(&ctx, table));
     try std.testing.expectEqual(@as(?u16, 0), testFirstSelectedDataRowIndex(&ctx, table));
     try std.testing.expect(testIsSelected(&ctx, first));
     try std.testing.expect(testIsSelected(&ctx, second));
 
-    ctx.clearClickedFlags();
     const third_rect = ctx.tree.getConst(third).layout_rect;
     try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } });
     try ctx.pushEvent(.{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } });
@@ -1636,9 +1902,8 @@ test "table row selection reports count and first selected row" {
     } });
     try ctx.pushEvent(.{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .released } });
     try ctx.pushEvent(.{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
-    try std.testing.expect(ctx.tree.node(table).?.kind.table.selection_changed);
     try std.testing.expectEqual(@as(u16, 3), testCountSelectedDataRows(&ctx, table));
     try std.testing.expectEqual(@as(?u16, 0), testFirstSelectedDataRowIndex(&ctx, table));
     try std.testing.expect(testIsSelected(&ctx, third));
@@ -1666,7 +1931,6 @@ test "table layout keeps columns aligned across rows" {
     _ = try ctx.tree.addChild(row_type, .{ .text = .{ .content = "Mesh" } });
     _ = try ctx.tree.addChild(row_vis, .{ .text = .{ .content = "Yes" } });
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
 
     const header_name_rect = ctx.tree.getConst(header_name).layout_rect;
@@ -1709,7 +1973,6 @@ test "resizable table columns update widths in the same frame as drag" {
     _ = try ctx.tree.addChild(row_type, .{ .text = .{ .content = "Mesh" } });
     _ = try ctx.tree.addChild(row_vis, .{ .text = .{ .content = "Yes" } });
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
 
     const initial_name = ctx.tree.getConst(header_name).layout_rect;
@@ -1733,15 +1996,13 @@ test "resizable table columns update widths in the same frame as drag" {
         .x = divider_x + 48,
         .y = divider_y,
     } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
     const resized_name = ctx.tree.getConst(header_name).layout_rect;
     const resized_type = ctx.tree.getConst(header_type).layout_rect;
     const resized_row_name = ctx.tree.getConst(row_name).layout_rect;
     const resized_row_type = ctx.tree.getConst(row_type).layout_rect;
 
-    try std.testing.expect(ctx.tree.node(table).?.changed);
-    try std.testing.expectEqual(@as(?u8, 0), ctx.tree.node(table).?.kind.table.resized_column);
     try std.testing.expect(ctx.tree.tableColumnFraction(table, 0).? > (1.0 / 3.0));
     try std.testing.expect(resized_name.w > initial_name.w);
     try std.testing.expect(resized_type.w < initial_type.w);
@@ -1774,7 +2035,6 @@ test "sortable table headers update retained sort state" {
     _ = try ctx.tree.addChild(row_type, .{ .text = .{ .content = "Mesh" } });
     _ = try ctx.tree.addChild(row_vis, .{ .text = .{ .content = "Yes" } });
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
 
     const header_type_rect = ctx.tree.getConst(header_type).layout_rect;
@@ -1795,14 +2055,11 @@ test "sortable table headers update retained sort state" {
         .y = click_y,
         .timestamp_ms = 20,
     } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
-    try std.testing.expect(ctx.tree.node(table).?.clicked);
-    try std.testing.expect(ctx.tree.node(table).?.kind.table.sort_changed);
     try std.testing.expectEqual(@as(?u8, 1), ctx.tree.node(table).?.kind.table.sorted_column);
     try std.testing.expectEqual(widget.WidgetKind.Table.SortDirection.ascending, ctx.tree.node(table).?.kind.table.sort_direction);
 
-    ctx.clearClickedFlags();
     try ctx.pushEvent(.{ .mouse_button = .{
         .button = .left,
         .state = .pressed,
@@ -1817,9 +2074,8 @@ test "sortable table headers update retained sort state" {
         .y = click_y,
         .timestamp_ms = 40,
     } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
-    try std.testing.expect(ctx.tree.node(table).?.kind.table.sort_changed);
     try std.testing.expectEqual(@as(?u8, 1), ctx.tree.node(table).?.kind.table.sorted_column);
     try std.testing.expectEqual(widget.WidgetKind.Table.SortDirection.descending, ctx.tree.node(table).?.kind.table.sort_direction);
 }
@@ -1833,24 +2089,23 @@ test "tooltip layout updates in the same frame as hover" {
     const tooltip = try ctx.tree.addChild(owner, .{ .tooltip = .{ .placement = .below_start, .y = 4 } });
     _ = try ctx.tree.addChild(tooltip, .{ .text = .{ .content = "Tooltip body" } });
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
-    try std.testing.expectEqual(paint.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(tooltip).layout_rect);
+    try std.testing.expectEqual(Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(tooltip).layout_rect);
 
     const owner_rect = ctx.tree.getConst(owner).layout_rect;
     try ctx.pushEvent(.{ .mouse_move = .{
         .x = owner_rect.x + 5,
         .y = owner_rect.y + 5,
     } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
     const tooltip_rect = ctx.tree.getConst(tooltip).layout_rect;
     try std.testing.expect(tooltip_rect.w > 0);
     try std.testing.expect(tooltip_rect.h > 0);
 
     try ctx.pushEvent(.{ .mouse_move = .{ .x = 390, .y = 290 } });
-    ctx.processEvents();
-    try std.testing.expectEqual(paint.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(tooltip).layout_rect);
+    _ = try ctx.processEvents();
+    try std.testing.expectEqual(Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(tooltip).layout_rect);
 }
 
 test "menu popup layout updates in the same frame as activation" {
@@ -1866,7 +2121,6 @@ test "menu popup layout updates in the same frame as activation" {
     } });
     _ = try ctx.tree.addChild(popup, .{ .menu_item = .{ .label = "Open" } });
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
 
     const file_rect = ctx.tree.getConst(file).layout_rect;
@@ -1882,7 +2136,7 @@ test "menu popup layout updates in the same frame as activation" {
         .x = file_rect.x + 5,
         .y = file_rect.y + 5,
     } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
     const popup_rect = ctx.tree.getConst(popup).layout_rect;
     try std.testing.expect(popup_rect.w > 0);
@@ -1908,7 +2162,6 @@ test "submenu hover updates layout in the same frame" {
     } });
     _ = try ctx.tree.addChild(recent_popup, .{ .menu_item = .{ .label = "shot.blend" } });
 
-    ctx.clearClickedFlags();
     ctx.doLayout(null);
 
     const file_rect = ctx.tree.getConst(file).layout_rect;
@@ -1924,25 +2177,64 @@ test "submenu hover updates layout in the same frame" {
         .x = file_rect.x + 5,
         .y = file_rect.y + 5,
     } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
     const recent_rect = ctx.tree.getConst(recent).layout_rect;
     try ctx.pushEvent(.{ .mouse_move = .{
         .x = recent_rect.x + 5,
         .y = recent_rect.y + 5,
     } });
-    ctx.processEvents();
+    _ = try ctx.processEvents();
 
     const recent_popup_rect = ctx.tree.getConst(recent_popup).layout_rect;
     try std.testing.expect(recent_popup_rect.w > 0);
     try std.testing.expect(recent_popup_rect.x >= recent_rect.x + recent_rect.w - 0.01);
 }
 
+test "focused semantic identity hides retained handle lifetime" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 320, .height = 200 });
+    defer ctx.deinit();
+
+    try std.testing.expectEqual(@as(?ElementId, null), ctx.focusedElementId());
+    const root = try ctx.tree.addRoot(.{ .container = .{} });
+    const input_handle = try ctx.tree.addChildControl(root, .{
+        .identity = .{ .element_id = .init(77) },
+        .widget = .{ .text_input = .{} },
+    });
+    try std.testing.expect(ctx.focusWidget(input_handle));
+    try std.testing.expectEqual(ElementId.init(77), ctx.focusedElementId().?);
+
+    try ctx.tree.remove(input_handle);
+    try std.testing.expectEqual(@as(?ElementId, null), ctx.focusedElementId());
+}
+
+fn containsType(comptime T: type, comptime Needle: type) bool {
+    if (T == Needle) return true;
+    return switch (@typeInfo(T)) {
+        .pointer => |pointer| containsType(pointer.child, Needle),
+        .optional => |optional| containsType(optional.child, Needle),
+        .array => |array| containsType(array.child, Needle),
+        .vector => |vector| containsType(vector.child, Needle),
+        .@"struct" => |structure| contains: {
+            inline for (structure.fields) |field| {
+                if (containsType(field.type, Needle)) break :contains true;
+            }
+            break :contains false;
+        },
+        .@"union" => |union_info| contains: {
+            inline for (union_info.fields) |field| {
+                if (containsType(field.type, Needle)) break :contains true;
+            }
+            break :contains false;
+        },
+        else => false,
+    };
+}
+
 test {
     _ = widget;
     _ = style;
     _ = layout;
-    _ = paint;
     _ = dispatch;
     _ = @import("focus.zig");
     _ = @import("hittest.zig");

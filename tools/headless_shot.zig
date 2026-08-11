@@ -7,11 +7,11 @@
 
 const std = @import("std");
 const goop = @import("goop");
-const fm = @import("file_manager_logic");
+const chrome_module = @import("goop_chrome");
+const fm = @import("file_manager");
 const snail = @import("goop_snail");
 const demo_text = @import("demo_text");
 const headless = @import("headless");
-const paint_convert = @import("paint_convert");
 
 const width: u32 = 1280;
 const height: u32 = 720;
@@ -26,41 +26,65 @@ pub fn main(init: std.process.Init) !void {
 
     var ctx = try goop.Context.init(allocator, .{ .width = width, .height = height });
     defer ctx.deinit();
+    var chrome = chrome_module.Chrome.init(allocator);
+    defer chrome.deinit();
 
-    var state = fm.State{};
-    defer fm.deinitSession(&state);
-    try fm.initSession(&state, init.io, init.environ_map, &ctx, &measure);
-    fm.resize(&state, &ctx, width, height);
+    var browser: fm.state.Browser = .{};
+    var behavior = fm.capabilities.behavior(&browser.session, &browser.viewport, &browser.domain, &browser.effects);
+    try fm.controller.init(&behavior, init.io, init.environ_map);
+    defer {
+        fm.projection.deinit(&browser.projection);
+        browser.domain.identities.deinit();
+        fm.controller.deinit(&behavior);
+    }
+    fm.projection.configure(&browser.projection, &measure);
+    fm.controller.resize(&browser.viewport, width, height);
+    ctx.setTheme(fm.style.fileManagerThemeForScale(browser.viewport.ui_scale));
+    ctx.setClipboard(fm.controller.clipboard(&browser.effects.transfer));
+    const view_input = fm.capabilities.viewInput(
+        &browser.viewport,
+        &browser.domain.model,
+        &browser.domain.interaction,
+        &browser.domain.presentation,
+    );
+    const view_output = fm.capabilities.viewOutput(
+        &browser.projection,
+        &browser.domain.identities,
+    );
+    try fm.view.buildWidgetTree(view_input, view_output, &ctx);
 
     var shot = try headless.Offscreen.init(allocator, &text.engine, width, height);
     defer shot.deinit();
 
     // Frame 1: initial layout, nothing selected.
-    try fm.update(&state, &ctx, &measure, init.io);
+    try updateBrowser(&behavior, view_input, view_output, &ctx, &measure, init.io);
     {
-        const paint_list = try fm.paint(&state, &ctx, &measure);
-        const commands = try paint_convert.convert(allocator, paint_list, 1);
-        defer allocator.free(commands);
-        try shot.renderPaintList(&text.engine, commands, clear_rgb);
+        const visuals = try chrome.prepare(ctx.chromeState(), .{});
+        var prepared = try shot.renderer.prepareVisuals(allocator, &text.engine, visuals.commands, 1);
+        defer prepared.deinit();
+        try shot.renderer.updateVisualResources(&text.engine);
+        try shot.renderPreparedVisuals(&text.engine, &prepared, clear_rgb);
     }
     const shaped_after_frame1 = text.engine.shapeCacheSize();
 
     // Re-render the identical frame: with the shape cache warm, no run should
     // need reshaping.
     {
-        const paint_list = try fm.paint(&state, &ctx, &measure);
-        const commands = try paint_convert.convert(allocator, paint_list, 1);
-        defer allocator.free(commands);
-        try shot.renderPaintList(&text.engine, commands, clear_rgb);
+        const visuals = try chrome.prepare(ctx.chromeState(), .{});
+        var prepared = try shot.renderer.prepareVisuals(allocator, &text.engine, visuals.commands, 1);
+        defer prepared.deinit();
+        try shot.renderer.updateVisualResources(&text.engine);
+        try shot.renderPreparedVisuals(&text.engine, &prepared, clear_rgb);
     }
     const shaped_after_reframe = text.engine.shapeCacheSize();
     std.debug.print("shape cache: {} after frame 1, {} after identical re-render (delta {})\n", .{ shaped_after_frame1, shaped_after_reframe, shaped_after_reframe - shaped_after_frame1 });
 
     // Click the first asset row so the frame we capture exercises selection.
     var clicked = false;
-    if (state.view.assets.row_handles.items.len > 0) {
-        const row = state.view.assets.row_handles.items[0];
-        if (ctx.tree.isAlive(row)) {
+    if (browser.domain.model.entries.items.len > 0) {
+        const first_entry = browser.domain.model.entries.items[0];
+        const element = browser.domain.identities.existingIdForPath(.asset, first_entry.path);
+        if (if (element) |id| ctx.tree.findByElementId(id) else null) |row| {
             const rect = ctx.tree.getConst(row).layout_rect;
             const x = rect.x + rect.w * 0.5;
             const y = rect.y + rect.h * 0.5;
@@ -70,11 +94,12 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    try fm.update(&state, &ctx, &measure, init.io);
-    const paint_list = try fm.paint(&state, &ctx, &measure);
-    const commands = try paint_convert.convert(allocator, paint_list, 1);
-    defer allocator.free(commands);
-    try shot.renderPaintList(&text.engine, commands, clear_rgb);
+    try updateBrowser(&behavior, view_input, view_output, &ctx, &measure, init.io);
+    const visuals = try chrome.prepare(ctx.chromeState(), .{});
+    var prepared = try shot.renderer.prepareVisuals(allocator, &text.engine, visuals.commands, 1);
+    defer prepared.deinit();
+    try shot.renderer.updateVisualResources(&text.engine);
+    try shot.renderPreparedVisuals(&text.engine, &prepared, clear_rgb);
 
     // Sample a spread of pixels to confirm real content rendered (not a
     // uniform clear) and report the selected row's fill color.
@@ -93,9 +118,10 @@ pub fn main(init: std.process.Init) !void {
     }
     std.debug.print("pixel spread: R[{}..{}] G[{}..{}] B[{}..{}]\n", .{ min[0], max[0], min[1], max[1], min[2], max[2] });
 
-    if (clicked and state.model.selected_paths.items.len > 0 and state.view.assets.row_handles.items.len > 0) {
-        const row = state.view.assets.row_handles.items[0];
-        if (ctx.tree.isAlive(row)) {
+    if (clicked and browser.domain.model.selected_paths.items.len > 0 and browser.domain.model.entries.items.len > 0) {
+        const first_entry = browser.domain.model.entries.items[0];
+        const element = browser.domain.identities.existingIdForPath(.asset, first_entry.path);
+        if (if (element) |id| ctx.tree.findByElementId(id) else null) |row| {
             const rect = ctx.tree.getConst(row).layout_rect;
             const px: u32 = @intFromFloat(@max(0, rect.x + rect.w * 0.5));
             const py: u32 = @intFromFloat(@max(0, rect.y + rect.h * 0.5));
@@ -114,4 +140,23 @@ pub fn main(init: std.process.Init) !void {
         return error.UniformFrame;
     }
     std.debug.print("PASS: real UI rendered headlessly\n", .{});
+}
+
+fn updateBrowser(
+    behavior: *fm.capabilities.Behavior,
+    view_input: fm.capabilities.ViewInput,
+    view_output: fm.capabilities.ViewOutput,
+    ctx: *goop.Context,
+    measure: *const goop.TextMeasureCtx,
+    io: std.Io,
+) !void {
+    ctx.doLayout(measure);
+    const events = try ctx.processEvents();
+    if (try fm.controller.update(behavior, events, io)) {
+        try fm.view.buildWidgetTree(view_input, view_output, ctx);
+    }
+    ctx.doLayout(measure);
+    if (try fm.view.refreshAssetViewportIfNeeded(view_input, view_output, ctx)) {
+        ctx.doLayout(measure);
+    }
 }

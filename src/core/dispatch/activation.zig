@@ -7,98 +7,76 @@ const selection = @import("selection.zig");
 
 const MouseState = types.MouseState;
 
-pub fn activateTable(tree: *widget.Tree, handle: widget.NodeHandle, x: f32, y: f32) void {
+pub fn activateTable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, x: f32, y: f32) void {
     const column = widget.tableHeaderCellIndexAtPoint(tree, handle, x, y) orelse return;
     const node = tree.get(handle);
-    node.interaction.primary_clicked = true;
-    _ = node.kind.table.toggleSort(column);
+    mouse.emitActivation(tree, handle);
+    if (node.kind.table.toggleSort(column)) {
+        mouse.emitSort(tree, handle, column, node.kind.table.sort_direction);
+    }
 }
 
-pub fn activateSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*const MouseState) void {
+pub fn activateSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     const node = tree.get(handle);
     if (node.kind != .selectable) return;
 
-    node.interaction.primary_clicked = true;
+    mouse.emitActivation(tree, handle);
 
-    if (mouse) |state| {
-        if (selection.selectableParentListBox(tree, handle)) |list_box| {
-            if (tree.getConst(list_box).kind.list_box.selection_mode == .multiple) {
-                _ = selection.selectListBoxMulti(tree, list_box, handle, state);
-                return;
-            }
-        }
-    }
-
-    _ = selection.selectSelectable(tree, handle);
-}
-
-pub fn activateGridSelector(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*const MouseState) void {
-    const node = tree.get(handle);
-    if (node.kind != .grid_selector) return;
-
-    node.interaction.primary_clicked = true;
-    if (mouse) |state| {
-        if (state.ctrl_down or state.shift_down) return;
-    }
-    _ = selection.clearGridSelectorSelection(tree, handle);
-}
-
-pub fn activateGridItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*const MouseState) void {
-    const node = tree.get(handle);
-    if (node.kind != .grid_item) return;
-
-    node.interaction.primary_clicked = true;
-
-    if (mouse) |state| {
-        if (widget.gridItemParentSelector(tree, handle)) |selector| {
-            if (tree.getConst(selector).kind.grid_selector.selection_mode == .multiple) {
-                _ = selection.selectGridItemsMulti(tree, selector, handle, state);
-                return;
-            }
-        }
-    }
-
-    _ = selection.selectGridItem(tree, handle);
-}
-
-pub fn activateTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: ?*const MouseState) void {
-    if (!widget.tableRowSelectable(tree, handle)) return;
-
-    const node = tree.get(handle);
-    node.interaction.primary_clicked = true;
-
-    if (mouse) |state| {
-        const table_handle = node.parent orelse return;
-        if (tree.getConst(table_handle).kind.table.selection_mode == .multiple) {
-            _ = selection.selectTableRowsMulti(tree, table_handle, handle, state);
+    if (selection.selectableParentListBox(tree, handle)) |list_box| {
+        if (tree.getConst(list_box).kind.list_box.selection_mode == .multiple) {
+            if (selection.selectListBoxMulti(tree, list_box, handle, mouse)) mouse.emitSelection(tree, list_box);
             return;
         }
     }
 
-    _ = selection.selectTableRow(tree, handle);
+    if (selection.selectSelectable(tree, handle)) emitSelectionForItem(tree, handle, mouse);
 }
 
-pub fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle) void {
+pub fn activateGridSelector(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     const node = tree.get(handle);
-    if (node.widget_type) |widget_type| {
-        if (widget_type.activate) |activate_fn| {
-            if (activate_fn(.{
-                .widget = .{
-                    .tree = tree,
-                    .handle = handle,
-                    .node = node,
-                    .state = node.widget_state,
-                    .theme = .{},
-                },
-            })) return;
+    if (node.kind != .grid_selector) return;
+
+    mouse.emitActivation(tree, handle);
+    if (mouse.ctrl_down or mouse.shift_down) return;
+    if (selection.clearGridSelectorSelection(tree, handle)) mouse.emitSelection(tree, handle);
+}
+
+pub fn activateGridItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    const node = tree.get(handle);
+    if (node.kind != .grid_item) return;
+
+    mouse.emitActivation(tree, handle);
+
+    if (widget.gridItemParentSelector(tree, handle)) |selector| {
+        if (tree.getConst(selector).kind.grid_selector.selection_mode == .multiple) {
+            if (selection.selectGridItemsMulti(tree, selector, handle, mouse)) mouse.emitSelection(tree, selector);
+            return;
         }
-        node.interaction.primary_clicked = true;
+    }
+
+    if (selection.selectGridItem(tree, handle)) emitSelectionForItem(tree, handle, mouse);
+}
+
+pub fn activateTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    if (!widget.tableRowSelectable(tree, handle)) return;
+
+    const node = tree.get(handle);
+    mouse.emitActivation(tree, handle);
+
+    const table_handle = node.parent orelse return;
+    if (tree.getConst(table_handle).kind.table.selection_mode == .multiple) {
+        if (selection.selectTableRowsMulti(tree, table_handle, handle, mouse)) mouse.emitSelection(tree, table_handle);
         return;
     }
-    activateBuiltin(node.kind)(tree, handle);
+
+    if (selection.selectTableRow(tree, handle)) mouse.emitSelection(tree, table_handle);
 }
 
-const BuiltinActivate = *const fn (*widget.Tree, widget.NodeHandle) void;
+pub fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    activateBuiltin(tree.getConst(handle).kind)(tree, handle, mouse);
+}
+
+const BuiltinActivate = *const fn (*widget.Tree, widget.NodeHandle, *MouseState) void;
 
 fn activateBuiltin(kind: widget.WidgetKind) BuiltinActivate {
     const tag: std.meta.Tag(widget.WidgetKind) = kind;
@@ -110,6 +88,7 @@ const builtin_activators = blk: {
     var activators: [std.meta.fields(Tag).len]BuiltinActivate = undefined;
     activators[@intFromEnum(Tag.container)] = activateNoop;
     activators[@intFromEnum(Tag.text)] = activateNoop;
+    activators[@intFromEnum(Tag.icon)] = activateNoop;
     activators[@intFromEnum(Tag.button)] = activateButton;
     activators[@intFromEnum(Tag.checkbox)] = activateCheckbox;
     activators[@intFromEnum(Tag.radio_button)] = activateRadioButton;
@@ -142,21 +121,21 @@ const builtin_activators = blk: {
     break :blk activators;
 };
 
-fn activateNoop(_: *widget.Tree, _: widget.NodeHandle) void {}
+fn activateNoop(_: *widget.Tree, _: widget.NodeHandle, _: *MouseState) void {}
 
-fn activateButton(tree: *widget.Tree, handle: widget.NodeHandle) void {
-    tree.get(handle).interaction.primary_clicked = true;
+fn activateButton(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    mouse.emitActivation(tree, handle);
 }
 
-fn activateCheckbox(tree: *widget.Tree, handle: widget.NodeHandle) void {
+fn activateCheckbox(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     const node = tree.get(handle);
-    node.interaction.primary_clicked = true;
     node.kind.checkbox.checked = !node.kind.checkbox.checked;
+    mouse.emitActivation(tree, handle);
+    mouse.emitToggle(tree, handle, node.kind.checkbox.checked);
 }
 
-fn activateRadioButton(tree: *widget.Tree, handle: widget.NodeHandle) void {
+fn activateRadioButton(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     const node = tree.get(handle);
-    node.interaction.primary_clicked = true;
     const group = node.kind.radio_button.group;
     for (tree.nodes.items) |*n| {
         if (n.kind == .radio_button and n.kind.radio_button.group == group) {
@@ -164,12 +143,13 @@ fn activateRadioButton(tree: *widget.Tree, handle: widget.NodeHandle) void {
         }
     }
     node.kind.radio_button.selected = true;
+    mouse.emitActivation(tree, handle);
+    mouse.emitItemSelection(tree, handle, true);
 }
 
-fn activateTreeItem(tree: *widget.Tree, handle: widget.NodeHandle) void {
+fn activateTreeItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     const node = tree.get(handle);
     if (node.kind.tree_item.editing) return;
-    node.interaction.primary_clicked = true;
     const group = node.kind.tree_item.group;
     for (tree.nodes.items) |*n| {
         if (n.alive and n.kind == .tree_item and n.kind.tree_item.group == group) {
@@ -177,73 +157,91 @@ fn activateTreeItem(tree: *widget.Tree, handle: widget.NodeHandle) void {
         }
     }
     node.kind.tree_item.selected = true;
+    mouse.emitActivation(tree, handle);
+    mouse.emitItemSelection(tree, handle, true);
 }
 
-fn activateDropdown(tree: *widget.Tree, handle: widget.NodeHandle) void {
+fn activateDropdown(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     const node = tree.get(handle);
-    node.interaction.primary_clicked = true;
     node.kind.dropdown.open = !node.kind.dropdown.open;
+    mouse.emitActivation(tree, handle);
 }
 
-fn activateSelectableNoMouse(tree: *widget.Tree, handle: widget.NodeHandle) void {
-    activateSelectable(tree, handle, null);
+fn activateSelectableNoMouse(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    activateSelectable(tree, handle, mouse);
 }
 
-fn activateGridItemNoMouse(tree: *widget.Tree, handle: widget.NodeHandle) void {
-    activateGridItem(tree, handle, null);
+fn activateGridItemNoMouse(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    activateGridItem(tree, handle, mouse);
 }
 
-fn activateTableRowNoMouse(tree: *widget.Tree, handle: widget.NodeHandle) void {
-    activateTableRow(tree, handle, null);
+fn activateTableRowNoMouse(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    activateTableRow(tree, handle, mouse);
 }
 
-fn activateDragValue(tree: *widget.Tree, handle: widget.NodeHandle) void {
+fn activateDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     const node = tree.get(handle);
     if (!node.kind.drag_value.editing) node.kind.drag_value.beginEdit();
+    mouse.emitActivation(tree, handle);
 }
 
-fn activateSpinBox(tree: *widget.Tree, handle: widget.NodeHandle) void {
+fn activateSpinBox(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     const node = tree.get(handle);
     if (!node.kind.spinbox.editing) node.kind.spinbox.beginEdit();
+    mouse.emitActivation(tree, handle);
 }
 
-fn activateMenu(tree: *widget.Tree, handle: widget.NodeHandle) void {
-    const node = tree.get(handle);
-    node.interaction.primary_clicked = true;
+fn activateMenu(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     menu.toggleOwnedPopup(tree, handle, null);
+    mouse.emitActivation(tree, handle);
 }
 
-fn activateMenuItem(tree: *widget.Tree, handle: widget.NodeHandle) void {
+fn activateMenuItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     const node = tree.get(handle);
     if (node.kind.menu_item.disabled) return;
-    node.interaction.primary_clicked = true;
     if (menu.directPopupChild(tree, handle) != null) {
         menu.toggleOwnedPopup(tree, handle, null);
     } else {
-        menu.applyMenuSelection(tree, handle);
+        menu.applyMenuSelection(tree, handle, mouse);
     }
+    mouse.emitActivation(tree, handle);
 }
 
-fn activateTabItem(tree: *widget.Tree, handle: widget.NodeHandle) void {
-    const node = tree.get(handle);
-    node.interaction.primary_clicked = true;
+fn activateTabItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     navigation.selectTabItem(tree, handle);
+    mouse.emitActivation(tree, handle);
+    mouse.emitItemSelection(tree, handle, true);
 }
 
 pub fn fireSecondaryClick(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
-    const node = tree.get(handle);
-    node.interaction.secondary_clicked = true;
-    mouse.last_secondary_click = .{
-        .target = handle,
-        .x = mouse.x,
-        .y = mouse.y,
-    };
+    mouse.emitSecondaryActivation(tree, handle);
 }
 
-pub fn commitTreeItemRename(tree: *widget.Tree, handle: widget.NodeHandle) void {
+fn emitSelectionForItem(tree: *const widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    const node = tree.getConst(handle);
+    if (node.parent) |parent| {
+        switch (tree.getConst(parent).kind) {
+            .list_box, .grid_selector, .table => {
+                mouse.emitSelection(tree, parent);
+                return;
+            },
+            else => {},
+        }
+    }
+    const selected = switch (node.kind) {
+        .selectable => |item| item.selected,
+        .grid_item => |item| item.selected,
+        .table_row => |item| item.selected,
+        else => false,
+    };
+    mouse.emitItemSelection(tree, handle, selected);
+}
+
+pub fn commitTreeItemRename(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     const node = tree.get(handle);
     if (node.kind != .tree_item or !node.kind.tree_item.editing) return;
     node.kind.tree_item.commitRename();
+    mouse.emitText(tree, handle, node.kind.tree_item.label, true);
 }
 
 pub fn cancelTreeItemRename(tree: *widget.Tree, handle: widget.NodeHandle) void {

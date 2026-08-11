@@ -64,35 +64,6 @@ pub const DemoIcon = enum(u32) {
     info = 9,
 };
 
-pub const WidgetUserKind = enum(u8) {
-    none = 0,
-    asset_entry = 1,
-    place = 2,
-    folder_tree = 3,
-    breadcrumb = 4,
-    toolbar_up = 5,
-};
-
-pub fn widgetUserId(kind: WidgetUserKind, index: usize) u64 {
-    return (@as(u64, @intFromEnum(kind)) << 56) | @as(u64, @intCast(index));
-}
-
-pub fn widgetUserKind(user_id: u64) WidgetUserKind {
-    const raw: u8 = @intCast(user_id >> 56);
-    return switch (raw) {
-        1 => .asset_entry,
-        2 => .place,
-        3 => .folder_tree,
-        4 => .breadcrumb,
-        5 => .toolbar_up,
-        else => .none,
-    };
-}
-
-pub fn widgetUserIndex(user_id: u64) usize {
-    return @intCast(user_id & 0x00ff_ffff_ffff_ffff);
-}
-
 pub const BrowserEntryKind = enum {
     directory,
     file,
@@ -162,6 +133,7 @@ pub const ListVirtualWindow = struct {
     top_spacer: f32 = 0,
     bottom_spacer: f32 = 0,
     scroll_y: f32 = 0,
+    content_height: f32 = 0,
 };
 
 pub const GridVirtualWindow = struct {
@@ -171,6 +143,7 @@ pub const GridVirtualWindow = struct {
     top_spacer: f32 = 0,
     bottom_spacer: f32 = 0,
     scroll_y: f32 = 0,
+    content_height: f32 = 0,
 };
 
 pub const FolderTreeExpansion = enum {
@@ -205,10 +178,17 @@ pub fn fileTypeLabel(name: []const u8) []const u8 {
     if (std.ascii.eqlIgnoreCase(ext, ".yaml") or std.ascii.eqlIgnoreCase(ext, ".yml")) return "YAML";
     if (std.ascii.eqlIgnoreCase(ext, ".png")) return "PNG image";
     if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg")) return "JPEG image";
+    if (std.ascii.eqlIgnoreCase(ext, ".webp")) return "WebP image";
     if (std.ascii.eqlIgnoreCase(ext, ".svg")) return "SVG";
     if (std.ascii.eqlIgnoreCase(ext, ".pdf")) return "PDF";
     if (std.ascii.eqlIgnoreCase(ext, ".so")) return "Shared library";
     if (std.ascii.eqlIgnoreCase(ext, ".a")) return "Static library";
     if (std.ascii.eqlIgnoreCase(ext, ".o")) return "Object file";
     return "File";
+}
+
+test "native preview image extensions have specific labels" {
+    try std.testing.expectEqualStrings("PNG image", fileTypeLabel("probe.PNG"));
+    try std.testing.expectEqualStrings("JPEG image", fileTypeLabel("probe.jpeg"));
+    try std.testing.expectEqualStrings("WebP image", fileTypeLabel("probe.WeBp"));
 }

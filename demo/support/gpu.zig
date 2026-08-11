@@ -53,7 +53,10 @@ pub const Gpu = struct {
             device.context(),
             presenter.renderPass(),
             text,
-            .{},
+            .{
+                .frame_slot_count = present.frame_slot_count,
+                .attachment_format = presenter.format,
+            },
         );
         errdefer renderer.deinit();
 
@@ -82,18 +85,22 @@ pub const Gpu = struct {
         self.presenter.setDesiredExtent(width, height);
     }
 
-    pub fn beginFrame(self: *Gpu, text: *const snail.TextEngine, clear: [4]f32) !?present.FrameTarget {
+    pub fn beginFrame(self: *Gpu, text: *const snail.TextEngine, clear: [4]f32) !?graphics.RenderTarget {
         const target = try self.presenter.beginFrame(clear) orelse return null;
-        if (target.format != self.renderer_format) {
+        const attachment_format = self.presenter.format;
+        if (attachment_format != self.renderer_format) {
             self.renderer.deinit();
             self.renderer = try render.Renderer.init(
                 self.allocator,
                 self.device.context(),
-                target.render_pass,
+                self.presenter.renderPass(),
                 text,
-                .{},
+                .{
+                    .frame_slot_count = present.frame_slot_count,
+                    .attachment_format = attachment_format,
+                },
             );
-            self.renderer_format = target.format;
+            self.renderer_format = attachment_format;
         }
         return target;
     }

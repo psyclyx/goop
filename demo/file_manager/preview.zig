@@ -1,22 +1,44 @@
 const std = @import("std");
-const goop = @import("goop");
 
-const fm = @import("controller.zig");
+const state_module = @import("state.zig");
 const types = @import("types.zig");
-const State = fm.State;
-const allocator = fm.allocator;
+const fs = @import("fs.zig");
+const format = @import("format.zig");
+const projection = @import("projection.zig");
+const image = @import("goop_image");
+const allocator = std.heap.smp_allocator;
 
 const BrowserEntry = types.BrowserEntry;
-const allocUtf8LossyOwned = fm.allocUtf8LossyOwned;
-const browserEntryKind = fm.browserEntryKind;
-const resolveSymlinkTargetAlloc = fm.resolveSymlinkTargetAlloc;
-const joinPath = fm.joinPath;
-const selectedPathCount = fm.selectedPathCount;
-const isPathSelected = fm.isPathSelected;
-const selectedEntry = fm.selectedEntry;
-const formatSizeText = fm.formatSizeText;
-const previewBodyFontSizePx = fm.previewBodyFontSizePx;
-const allocUiWrappedOwnedText = fm.allocUiWrappedOwnedText;
+const allocUtf8LossyOwned = projection.allocUtf8LossyOwned;
+const browserEntryKind = fs.browserEntryKind;
+const resolveSymlinkTargetAlloc = fs.resolveSymlinkTargetAlloc;
+const joinPath = fs.joinPath;
+const formatSizeText = format.formatSizeText;
+
+pub const Input = struct {
+    io: ?std.Io,
+    model: *const state_module.Model,
+    image_decoder: ?image.Decoder = null,
+};
+
+fn selectedPathCount(input: Input) usize {
+    return input.model.selected_paths.items.len;
+}
+
+fn isPathSelected(input: Input, path: []const u8) bool {
+    for (input.model.selected_paths.items) |selected| {
+        if (std.mem.eql(u8, selected, path)) return true;
+    }
+    return false;
+}
+
+fn selectedEntry(input: Input) ?*const BrowserEntry {
+    const path = input.model.selected_path orelse return null;
+    for (input.model.entries.items) |*entry| {
+        if (std.mem.eql(u8, entry.path, path)) return entry;
+    }
+    return null;
+}
 
 pub fn appendPreviewLine(buffer: *std.ArrayListUnmanaged(u8), text: []const u8) !void {
     if (buffer.items.len > 0) try buffer.append(allocator, '\n');
@@ -75,7 +97,7 @@ pub fn appendPreviewEntryName(buffer: *std.ArrayListUnmanaged(u8), name: []const
 }
 
 pub fn appendDirectoryPreviewSummary(
-    state: *State,
+    state: Input,
     buffer: *std.ArrayListUnmanaged(u8),
     path: []const u8,
     loaded_entries: ?[]const BrowserEntry,
@@ -98,7 +120,7 @@ pub fn appendDirectoryPreviewSummary(
             shown_names += 1;
         }
     } else {
-        const io = state.runtime.io orelse return;
+        const io = state.io orelse return;
         var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true, .follow_symlinks = false }) catch return;
         defer dir.close(io);
 
@@ -147,14 +169,17 @@ pub fn appendDirectoryPreviewSummary(
 }
 
 pub const SelectionPreview = struct {
-    text: []const u8,
+    text: ?[]u8,
+    image: ?image.Pixels = null,
     framed: bool = false,
 };
 
-pub fn allocSelectionPreview(state: *State) !SelectionPreview {
+pub fn allocSelectionPreview(state: Input) !SelectionPreview {
     var buffer: std.ArrayListUnmanaged(u8) = .empty;
     defer buffer.deinit(allocator);
     var framed = false;
+    var image_preview: ?image.Pixels = null;
+    errdefer if (image_preview) |*pixels| pixels.deinit();
 
     const selected_count = selectedPathCount(state);
     if (selected_count == 0) {
@@ -215,13 +240,46 @@ pub fn allocSelectionPreview(state: *State) !SelectionPreview {
                 null;
             try appendDirectoryPreviewSummary(state, &buffer, preview_path, loaded_entries);
         } else {
-            const preview_bytes = if (state.runtime.io) |io|
+            const preview_bytes = if (state.io) |io|
                 readFilePreviewBytesAlloc(io, allocator, entry.previewPath(), 8192) catch null
             else
                 null;
             if (preview_bytes) |bytes| {
                 defer allocator.free(bytes);
-                if (bytesLookLikeTextPreview(bytes)) {
+                const encoded_format = image.detectFormat(bytes);
+                if (encoded_format != null and state.image_decoder != null and
+                    entry.size_bytes <= max_image_preview_bytes)
+                {
+                    // Decoders require the complete encoded document. The
+                    // text probe above intentionally permits a short read;
+                    // image loading instead uses the standard whole-file API
+                    // with an explicit limit so a short filesystem read can
+                    // never be mistaken for a complete image.
+                    const encoded = if (state.io) |io|
+                        std.Io.Dir.cwd().readFileAlloc(
+                            io,
+                            entry.previewPath(),
+                            allocator,
+                            .limited(@intCast(max_image_preview_bytes)),
+                        ) catch null
+                    else
+                        null;
+                    if (encoded) |contents| {
+                        defer allocator.free(contents);
+                        image_preview = state.image_decoder.?.decode(
+                            encoded_format.?,
+                            contents,
+                            allocator,
+                        ) catch null;
+                    }
+                }
+
+                if (image_preview != null) {
+                    var size_buf: [24]u8 = undefined;
+                    const size_text = formatSizeText(size_buf[0..], entry.kind, entry.size_bytes, entry.target_kind);
+                    try appendPreviewLine(&buffer, entry.typeLabel());
+                    if (size_text.len > 0) try appendPreviewPrintLine(&buffer, "Size: {s}", .{size_text});
+                } else if (bytesLookLikeTextPreview(bytes)) {
                     framed = buffer.items.len == 0;
                     if (bytes.len == 0) {
                         try appendPreviewLine(&buffer, "Empty file.");
@@ -253,7 +311,10 @@ pub fn allocSelectionPreview(state: *State) !SelectionPreview {
     }
 
     return .{
-        .text = try allocUiWrappedOwnedText(state, try allocator.dupe(u8, buffer.items), previewBodyFontSizePx(state)),
+        .text = if (buffer.items.len > 0) try allocator.dupe(u8, buffer.items) else null,
+        .image = image_preview,
         .framed = framed,
     };
 }
+
+const max_image_preview_bytes: u64 = 64 * 1024 * 1024;

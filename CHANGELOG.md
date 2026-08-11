@@ -8,7 +8,21 @@ breaking changes between minor versions.
 
 ### Changed
 
-- Cut over to Snail 0.18 and its CPU-side font/Faces/PagePool/Atlas API,
+- Split Goop into independently composable geometry, normalized input,
+  semantic identity, core interaction/layout, desktop policy, visual
+  component, stock Chrome, rendering, presentation, and platform libraries.
+- Replaced retained-handle occurrence polling with stable `ElementId` /
+  `ActionId` control descriptions and an ordered borrowed semantic event
+  journal.
+- Added allocation-free balanced resolved traversal for custom looks and a
+  seven-operation structural visual capability that can write directly into an
+  application renderer.
+- Made stock Chrome an optional caller-owned cache and moved reusable buttons,
+  checkboxes, radio buttons, passive icons, surfaces, text, and focus rings
+  into visual-only components.
+- Split the C artifacts into core-only `libgoop` and optional
+  `libgoop_chrome`, with semantic output and caller-owned Chrome lifetimes.
+- Cut over to Snail 0.19 and its CPU-side font/Faces/PagePool/Atlas API,
   including the plan/prepare/apply atlas population pipeline.
 - Replaced the Vulkan renderer's wrap of snail's demo reference renderer
   (an unpublished snail path) with a goop-owned renderer: goop compiles its
@@ -18,18 +32,30 @@ breaking changes between minor versions.
   and consumes only snail's public data contract and committed shader
   reflection. Building the Vulkan renderer now requires `slangc`
   (shader-slang) on PATH; the nix shell already provides it.
-- Split declarative UI, dumb components, retained driving, display deltas,
-  Snail adaptation, Vulkan graphics, Vulkan rendering, Vulkan presentation,
-  Wayland platform handling, and Wayland/Vulkan WSI into named Zig modules.
-- Migrated both established demos from EGL/OpenGL to Vulkan without replacing
-  their widget trees. The showcase now has separate view, controller, and
-  composition modules; the filesystem browser separates state, filesystem
-  operations, view construction, controller logic, platform translation, and
-  GPU ownership.
-- Added stable command reconciliation, old/new-bound damage tracking, a
-  persistent Vulkan composition image, and no-damage frame elision.
+- Migrated both established demos from EGL/OpenGL to the explicit
+  Chrome/Snail/Vulkan/presentation/Wayland composition. The file manager now
+  reduces semantic events into domain state and retains no widget handle bag.
+- Added native Fontconfig fallback-chain composition for the desktop demos,
+  explicit device-grid text placement, ppem-specific TrueType hinting, and a
+  grayscale-only Vulkan text path with no LCD shader or dual-source feature.
+- Corrected TrueType shaping to prepare hinted advances and reshape through
+  Snail before placement. Native layout shapes and rendered TT shapes now use
+  separate caches, with the latter keyed by exact device ppem.
+- Added the renderer-neutral decoded-image/resource seam, passive image
+  component, C Chrome image operation, separate Snail/Vulkan application-image
+  atlas, and PNG/JPEG/WebP file-manager previews. Native demos compose
+  libspng, libjpeg-turbo, and libwebp explicitly; consumers may supply their
+  own decoder and renderer unchanged.
+- Added Snail color-bitmap glyph support using exact strike/ppem cache keys,
+  while retaining grayscale-only outline rendering.
+- Made scrollbars self-hide from logical overflow and own their standard idle,
+  hovered, and active presentation instead of requiring demo styling.
+- Fixed file-browser list/grid icons and made cross-child marquee selection a
+  container-owned gesture that publishes once on release and rolls back on
+  cancellation.
 - Removed the retired GL renderer, EGL utilities, screenshot tool, and
-  application-owned Wayland renderer.
+  application-owned Wayland renderer, along with the old paint/display and
+  callback-widget compatibility surfaces.
 
 ## 0.1.1 — 2026-05-10
 

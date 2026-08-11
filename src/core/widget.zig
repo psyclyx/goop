@@ -1,165 +1,10 @@
 const std = @import("std");
+const ui = @import("goop_ui");
 const style = @import("style.zig");
-const paint = @import("paint.zig");
-const event = @import("event.zig");
+const visual_types = @import("visual_types.zig");
 const handle_mod = @import("handle.zig");
 
 pub const NodeHandle = handle_mod.NodeHandle;
-
-/// Type-erased behavior hooks for a retained widget node.
-pub const WidgetType = struct {
-    name: []const u8,
-    layout: LayoutFn = defaultLayout,
-    paint: ?PaintFn = null,
-    hitTest: HitTestFn = defaultHitTest,
-    focusable: FocusableFn = neverFocusable,
-    pointer: ?PointerFn = null,
-    key: ?KeyFn = null,
-    textInput: ?TextInputFn = null,
-    activate: ?ActivateFn = null,
-    resetFrame: ?ResetFrameFn = null,
-    deinit: ?DeinitFn = null,
-
-    pub const LayoutFn = *const fn (ctx: LayoutCtx) LayoutSpec;
-    pub const PaintFn = *const fn (ctx: PaintCtx) anyerror!void;
-    pub const HitTestFn = *const fn (ctx: HitTestCtx) bool;
-    pub const FocusableFn = *const fn (ctx: WidgetCtx) bool;
-    pub const PointerFn = *const fn (ctx: PointerCtx) bool;
-    pub const KeyFn = *const fn (ctx: KeyCtx) bool;
-    pub const TextInputFn = *const fn (ctx: TextInputCtx) bool;
-    pub const ActivateFn = *const fn (ctx: ActivateCtx) bool;
-    pub const ResetFrameFn = *const fn (ctx: WidgetCtx) void;
-    pub const DeinitFn = *const fn (ctx: WidgetCtx) void;
-
-    fn defaultLayout(_: LayoutCtx) LayoutSpec {
-        return .{};
-    }
-
-    fn defaultHitTest(ctx: HitTestCtx) bool {
-        return pointInRect(ctx.x, ctx.y, ctx.rect);
-    }
-
-    fn neverFocusable(_: WidgetCtx) bool {
-        return false;
-    }
-};
-
-/// Optional owner for dynamically registered widget types. Static
-/// `const WidgetType` values can be passed directly to `addRootWidget`;
-/// this registry is for embedders/plugins that need runtime registration
-/// with stable type addresses. A registry must outlive any tree nodes that
-/// still reference its types.
-pub const WidgetRegistry = struct {
-    allocator: std.mem.Allocator,
-    types: std.ArrayListUnmanaged(*WidgetType) = .empty,
-
-    pub fn init(allocator: std.mem.Allocator) WidgetRegistry {
-        return .{ .allocator = allocator };
-    }
-
-    pub fn deinit(self: *WidgetRegistry) void {
-        for (self.types.items) |ty| {
-            self.allocator.destroy(ty);
-        }
-        self.types.deinit(self.allocator);
-    }
-
-    pub fn register(self: *WidgetRegistry, ty: WidgetType) !*const WidgetType {
-        const stored = try self.allocator.create(WidgetType);
-        errdefer self.allocator.destroy(stored);
-        stored.* = ty;
-        try self.types.append(self.allocator, stored);
-        return stored;
-    }
-};
-
-pub const WidgetCtx = struct {
-    tree: *Tree,
-    handle: NodeHandle,
-    node: *Node,
-    state: ?*anyopaque,
-    theme: style.Theme,
-
-    pub fn stateAs(self: WidgetCtx, comptime T: type) ?*T {
-        const ptr = self.state orelse return null;
-        return @ptrCast(@alignCast(ptr));
-    }
-};
-
-pub const LayoutCtx = struct {
-    widget: WidgetCtx,
-    resolved: style.ResolvedStyle,
-};
-
-pub const LayoutSpec = struct {
-    width: Axis = .{},
-    height: Axis = .{},
-    padding: style.Edges = .{},
-    direction: WidgetKind.Container.Direction = .column,
-
-    pub const Axis = struct {
-        size: f32 = 0,
-        min: f32 = 0,
-        grow: bool = true,
-    };
-};
-
-pub const PaintCtx = struct {
-    widget: WidgetCtx,
-    rect: paint.Rect,
-    resolved: style.ResolvedStyle,
-    commands: *std.ArrayListUnmanaged(paint.PaintCommand),
-    allocator: std.mem.Allocator,
-
-    pub fn append(self: *PaintCtx, command: paint.PaintCommand) !void {
-        try self.commands.append(self.allocator, command);
-    }
-
-    pub fn appendCustom(self: *PaintCtx) !void {
-        if (self.rect.w <= 0 or self.rect.h <= 0) return;
-        try self.append(.{ .custom = .{
-            .handle = self.widget.handle,
-            .bounds = self.rect,
-        } });
-    }
-};
-
-pub const HitTestCtx = struct {
-    widget: WidgetCtx,
-    rect: paint.Rect,
-    x: f32,
-    y: f32,
-};
-
-pub const PointerCtx = struct {
-    widget: WidgetCtx,
-    event: PointerEvent,
-};
-
-pub const PointerEvent = union(enum) {
-    move: event.Event.MouseMove,
-    press: event.Event.MouseButton,
-    release: event.Event.MouseButton,
-    scroll: event.Event.MouseScroll,
-};
-
-pub const KeyCtx = struct {
-    widget: WidgetCtx,
-    event: event.Event.Key,
-};
-
-pub const TextInputCtx = struct {
-    widget: WidgetCtx,
-    text: []const u8,
-};
-
-pub const ActivateCtx = struct {
-    widget: WidgetCtx,
-};
-
-fn pointInRect(x: f32, y: f32, rect: paint.Rect) bool {
-    return x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h;
-}
 
 /// Outcome of committing an inline numeric editor (`DragValue`,
 /// `SpinBox`). Lets dispatch distinguish parse failure from a clean
@@ -179,37 +24,27 @@ pub const CommitResult = enum {
 /// observe `active` (via `WidgetView.<kind>.dragging`).
 pub const DragState = struct {
     active: bool = false,
-    rect: paint.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    rect: visual_types.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
     offset_x: f32 = 0,
     offset_y: f32 = 0,
 };
 
-/// Interaction state tracked per widget.
-///
-/// `*_clicked`, `drop_received`, `changed`, and `toggled` are
-/// per-frame activation flags reset by `clearClickedFlags`. The
-/// remaining fields are persistent until the dispatch layer revises
-/// them. Per-kind flags that carried only a `bool` (e.g. button
-/// clicked, dropdown changed, tree disclosure toggled) all live here;
-/// the kind structs only carry data that is genuinely typed
-/// (table.resized_column, tree_item.rename_committed, etc.).
+/// Persistent interaction state tracked per widget. Occurrences such as
+/// activation, value changes, and drops are emitted only through the semantic
+/// control-event journal; they are never stored on retained nodes.
 pub const InteractionState = struct {
     hovered: bool = false,
     pressed: bool = false,
     focused: bool = false,
     accepts_drop: bool = false,
     drop_hovered: bool = false,
-    drop_received: bool = false,
-    primary_clicked: bool = false,
-    secondary_clicked: bool = false,
-    changed: bool = false,
-    toggled: bool = false,
 };
 
 /// Widget-specific data.
 pub const WidgetKind = union(enum) {
     container: Container,
     text: Text,
+    icon: Icon,
     button: Button,
     checkbox: Checkbox,
     radio_button: RadioButton,
@@ -248,7 +83,14 @@ pub const WidgetKind = union(enum) {
 
     pub const Text = struct {
         content: []const u8,
-        overflow: paint.TextOverflow = .visible,
+        overflow: visual_types.TextOverflow = .visible,
+    };
+
+    /// Passive visual identity. The active look decides how an IconId maps to
+    /// pixels; core owns no icon resources or drawing behavior.
+    pub const Icon = struct {
+        kind: visual_types.IconId,
+        color: ?style.Color = null,
     };
 
     pub const Button = struct {
@@ -269,7 +111,7 @@ pub const WidgetKind = union(enum) {
     pub const TreeItem = struct {
         label: []const u8,
         group: u32 = 0,
-        icon: ?paint.IconId = null,
+        icon: ?visual_types.IconId = null,
         icon_color: ?style.Color = null,
         editable: bool = false,
         rename_trigger: RenameTrigger = .none,
@@ -277,8 +119,7 @@ pub const WidgetKind = union(enum) {
         expanded: bool = true,
         selected: bool = false,
         editing: bool = false,
-        rename_committed: bool = false,
-        /// Internal state owned by dispatch/paint. Embedders should not
+        /// Internal state owned by dispatch/visual_types. Embedders should not
         /// touch this field directly — use the public methods.
         internal: Internal = .{},
 
@@ -309,24 +150,17 @@ pub const WidgetKind = union(enum) {
             self.internal.editor.insertSlice(self.label);
             self.internal.editor.selection_anchor = 0;
             self.internal.editor.cursor = self.internal.editor.len;
-            self.rename_committed = false;
             self.editing = true;
         }
 
         pub fn cancelRename(self: *TreeItem) void {
             self.internal.editor = .{};
-            self.rename_committed = false;
             self.editing = false;
         }
 
         pub fn commitRename(self: *TreeItem) void {
             self.label = self.internal.editor.content();
-            self.rename_committed = true;
             self.editing = false;
-        }
-
-        pub fn resetPerFrameEvents(self: *TreeItem) void {
-            self.rename_committed = false;
         }
     };
 
@@ -339,13 +173,13 @@ pub const WidgetKind = union(enum) {
 
     pub const ListBox = struct {
         selection_mode: SelectionMode = .single,
-        /// Internal state owned by dispatch/paint. Don't touch.
+        /// Internal state owned by dispatch/visual_types. Don't touch.
         internal: Internal = .{},
 
         pub const Internal = struct {
             anchor_index: ?u16 = null,
             marquee_active: bool = false,
-            marquee_rect: paint.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+            marquee_rect: visual_types.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
             drop_preview_background: bool = false,
         };
 
@@ -359,7 +193,7 @@ pub const WidgetKind = union(enum) {
         label: []const u8,
         group: u32 = 0,
         selected: bool = false,
-        /// Internal state owned by dispatch/paint. Don't touch.
+        /// Internal state owned by dispatch/visual_types. Don't touch.
         internal: Internal = .{},
 
         pub const Internal = struct {
@@ -376,14 +210,14 @@ pub const WidgetKind = union(enum) {
         column_gap: f32 = 8,
         row_gap: f32 = 8,
         computed_columns: u16 = 1,
-        /// Internal state owned by dispatch/paint/layout. Don't touch.
+        /// Internal state owned by dispatch/look/layout. Don't touch.
         internal: Internal = .{},
 
         pub const Internal = struct {
             anchor_index: ?u16 = null,
             content_height: f32 = 0,
             marquee_active: bool = false,
-            marquee_rect: paint.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+            marquee_rect: visual_types.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
             drop_preview_background: bool = false,
         };
 
@@ -395,9 +229,10 @@ pub const WidgetKind = union(enum) {
 
     pub const GridItem = struct {
         label: []const u8,
-        icon: []const u8 = "",
+        icon: ?visual_types.IconId = null,
+        icon_color: ?style.Color = null,
         selected: bool = false,
-        /// Internal state owned by dispatch/paint. Don't touch.
+        /// Internal state owned by dispatch/visual_types. Don't touch.
         internal: Internal = .{},
 
         pub const Internal = struct {
@@ -419,19 +254,16 @@ pub const WidgetKind = union(enum) {
         sortable: bool = false,
         selection_mode: SelectionMode = .none,
         min_column_width: f32 = 96,
-        resized_column: ?u8 = null,
-        sort_changed: bool = false,
         sorted_column: ?u8 = null,
         sort_direction: SortDirection = .ascending,
-        selection_changed: bool = false,
         active_columns: u8 = 0,
-        /// Internal state owned by dispatch/paint/layout. Don't touch.
+        /// Internal state owned by dispatch/look/layout. Don't touch.
         internal: Internal = .{},
 
         pub const Internal = struct {
             anchor_row: ?u16 = null,
             marquee_active: bool = false,
-            marquee_rect: paint.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+            marquee_rect: visual_types.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
             drop_preview_background: bool = false,
             column_weights: [max_columns]f32 = [_]f32{0} ** max_columns,
         };
@@ -512,14 +344,7 @@ pub const WidgetKind = union(enum) {
             const new_right = pair_total - new_left;
             self.internal.column_weights[divider_index] = new_left / total_width;
             self.internal.column_weights[divider_index + 1] = new_right / total_width;
-            self.resized_column = divider_index;
             return true;
-        }
-
-        pub fn resetPerFrameEvents(self: *Table) void {
-            self.resized_column = null;
-            self.sort_changed = false;
-            self.selection_changed = false;
         }
 
         pub fn toggleSort(self: *Table, column: u8) bool {
@@ -531,14 +356,12 @@ pub const WidgetKind = union(enum) {
                         .ascending => .descending,
                         .descending => .ascending,
                     };
-                    self.sort_changed = true;
                     return true;
                 }
             }
 
             self.sorted_column = column;
             self.sort_direction = .ascending;
-            self.sort_changed = true;
             return true;
         }
     };
@@ -546,7 +369,7 @@ pub const WidgetKind = union(enum) {
     pub const TableRow = struct {
         header: bool = false,
         selected: bool = false,
-        /// Internal state owned by dispatch/paint. Don't touch.
+        /// Internal state owned by dispatch/visual_types. Don't touch.
         internal: Internal = .{},
 
         pub const Internal = struct {
@@ -725,6 +548,15 @@ pub const WidgetKind = union(enum) {
         scroll_y: f32 = 0,
         disable_horizontal_scroll: bool = false,
         disable_vertical_scroll: bool = false,
+        content_width: ?f32 = null,
+        content_height: ?f32 = null,
+        internal: Internal = .{},
+
+        pub const ScrollbarAxis = enum { vertical, horizontal };
+        pub const Internal = struct {
+            hovered_scrollbar: ?ScrollbarAxis = null,
+            active_scrollbar: ?ScrollbarAxis = null,
+        };
 
         pub fn effectiveScrollX(self: ScrollArea) f32 {
             return if (self.disable_horizontal_scroll) 0 else self.scroll_x;
@@ -995,6 +827,24 @@ pub const WidgetKind = union(enum) {
 };
 
 pub const TextEditState = WidgetKind.TextInput;
+pub const ElementId = ui.ElementId;
+pub const ActionId = ui.ActionId;
+
+/// Stable semantic metadata attached to an interactive node. `element_id`
+/// identifies the source control; `action_id` identifies an application
+/// command presented by that control.
+pub const ControlIdentity = struct {
+    element_id: ElementId,
+    action_id: ?ActionId = null,
+};
+
+/// Construction input for a semantic control. This keeps identity/action
+/// orthogonal to the visual widget descriptor instead of duplicating those
+/// fields across every widget kind.
+pub const ControlDesc = struct {
+    identity: ControlIdentity,
+    widget: WidgetDesc,
+};
 
 /// User-authored construction inputs for a widget node.
 ///
@@ -1005,14 +855,13 @@ pub const TextEditState = WidgetKind.TextInput;
 /// item_width, etc.), and persistent input state the embedder controls
 /// (checked, expanded, ratio, scroll position, etc.).
 ///
-/// Per-frame interaction state (`clicked`, `toggled`, `changed`,
-/// `dragging`, `editing`, drag rectangles, label buffers, marquee
-/// state, and so on) is *not* part of `WidgetDesc` — goop owns those
-/// fields and resets them each frame. Trying to set them at
-/// construction time is a compile error.
+/// Runtime-owned interaction state (`dragging`, `editing`, drag rectangles,
+/// label buffers, marquee state, and so on) is *not* part of `WidgetDesc`.
+/// Occurrences are reported through `ControlEvents`, never descriptors.
 pub const WidgetDesc = union(enum) {
     container: Container,
     text: Text,
+    icon: Icon,
     button: Button,
     checkbox: Checkbox,
     radio_button: RadioButton,
@@ -1049,7 +898,12 @@ pub const WidgetDesc = union(enum) {
 
     pub const Text = struct {
         content: []const u8,
-        overflow: paint.TextOverflow = .visible,
+        overflow: visual_types.TextOverflow = .visible,
+    };
+
+    pub const Icon = struct {
+        kind: visual_types.IconId,
+        color: ?style.Color = null,
     };
 
     pub const Button = struct {
@@ -1070,7 +924,7 @@ pub const WidgetDesc = union(enum) {
     pub const TreeItem = struct {
         label: []const u8,
         group: u32 = 0,
-        icon: ?paint.IconId = null,
+        icon: ?visual_types.IconId = null,
         icon_color: ?style.Color = null,
         editable: bool = false,
         rename_trigger: WidgetKind.TreeItem.RenameTrigger = .none,
@@ -1106,7 +960,8 @@ pub const WidgetDesc = union(enum) {
 
     pub const GridItem = struct {
         label: []const u8,
-        icon: []const u8 = "",
+        icon: ?visual_types.IconId = null,
+        icon_color: ?style.Color = null,
         selected: bool = false,
     };
 
@@ -1211,6 +1066,8 @@ pub const WidgetDesc = union(enum) {
         scroll_y: f32 = 0,
         disable_horizontal_scroll: bool = false,
         disable_vertical_scroll: bool = false,
+        content_width: ?f32 = null,
+        content_height: ?f32 = null,
     };
 
     pub const TextInput = struct {
@@ -1277,11 +1134,8 @@ pub fn kindFromDesc(desc: WidgetDesc) WidgetKind {
 /// Read-only projection of a widget node's kind-specific state.
 ///
 /// `WidgetView` carries identifying fields and persistent state
-/// (label, value, selected, expanded, …) plus typed event payloads
-/// that have widget-specific shape (table.sort_changed,
-/// table.resized_column, tree_item.rename_committed). Cross-kind
-/// per-frame flags (clicked, changed, toggled, drop_received) live on
-/// `NodeView`, not here. Pure construction-time configuration
+/// (label, value, selected, expanded, …). Occurrence data lives only in the
+/// semantic event journal. Pure construction-time configuration
 /// (min/max/precision/min_first) is also omitted — the embedder is
 /// the source of truth for that.
 ///
@@ -1290,6 +1144,7 @@ pub fn kindFromDesc(desc: WidgetDesc) WidgetKind {
 pub const WidgetView = union(enum) {
     container: Container,
     text: Text,
+    icon: Icon,
     button: Button,
     checkbox: Checkbox,
     radio_button: RadioButton,
@@ -1324,6 +1179,11 @@ pub const WidgetView = union(enum) {
 
     pub const Text = struct { content: []const u8 };
 
+    pub const Icon = struct {
+        kind: visual_types.IconId,
+        color: ?style.Color,
+    };
+
     pub const Button = struct {
         label: []const u8,
     };
@@ -1342,12 +1202,13 @@ pub const WidgetView = union(enum) {
     pub const TreeItem = struct {
         label: []const u8,
         group: u32,
+        icon: ?visual_types.IconId,
+        icon_color: ?style.Color,
         has_children: bool,
         expanded: bool,
         selected: bool,
         editing: bool,
         dragging: bool,
-        rename_committed: bool,
     };
 
     pub const Dropdown = struct {
@@ -1370,17 +1231,16 @@ pub const WidgetView = union(enum) {
 
     pub const GridItem = struct {
         label: []const u8,
+        icon: ?visual_types.IconId,
+        icon_color: ?style.Color,
         selected: bool,
         dragging: bool,
     };
 
     pub const Table = struct {
         active_columns: u8,
-        resized_column: ?u8,
         sorted_column: ?u8,
         sort_direction: WidgetKind.Table.SortDirection,
-        sort_changed: bool,
-        selection_changed: bool,
     };
 
     pub const TableRow = struct {
@@ -1462,9 +1322,8 @@ pub const WidgetView = union(enum) {
 
     pub fn fromNode(node: *const Node) WidgetView {
         // Slice fields borrow from tree storage rather than a copy.
-        // Cross-kind per-frame flags (clicked, changed, toggled,
-        // drop_received) live on `NodeView`; this view carries only
-        // kind-specific persistent state and typed events.
+        // This projection contains persistent state only. Occurrences are
+        // carried by the semantic event journal.
         const kind = &node.kind;
         return switch (kind.*) {
             // Bespoke arms: rename `drag.active` to `dragging`, route
@@ -1473,12 +1332,13 @@ pub const WidgetView = union(enum) {
             .tree_item => .{ .tree_item = .{
                 .label = kind.tree_item.displayLabel(),
                 .group = kind.tree_item.group,
+                .icon = kind.tree_item.icon,
+                .icon_color = kind.tree_item.icon_color,
                 .has_children = kind.tree_item.has_children,
                 .expanded = kind.tree_item.expanded,
                 .selected = kind.tree_item.selected,
                 .editing = kind.tree_item.editing,
                 .dragging = kind.tree_item.internal.drag.active,
-                .rename_committed = kind.tree_item.rename_committed,
             } },
             .selectable => .{ .selectable = .{
                 .label = kind.selectable.label,
@@ -1488,6 +1348,8 @@ pub const WidgetView = union(enum) {
             } },
             .grid_item => .{ .grid_item = .{
                 .label = kind.grid_item.label,
+                .icon = kind.grid_item.icon,
+                .icon_color = kind.grid_item.icon_color,
                 .selected = kind.grid_item.selected,
                 .dragging = kind.grid_item.internal.drag.active,
             } },
@@ -1529,75 +1391,40 @@ pub const WidgetView = union(enum) {
     }
 };
 
-/// Read-only snapshot of a single node — bundles layout rect,
-/// per-frame interaction flags, and the kind-specific `WidgetView`.
+/// Read-only view of a single node — bundles layout, persistent
+/// interaction state, and the kind-specific `WidgetView`.
 /// Returned by `Tree.node`. Slices borrow from tree storage and stay
 /// valid until the next mutation that touches the node.
 pub const NodeView = struct {
-    rect: paint.Rect,
-    user_id: u64,
-    custom_paint: bool,
+    rect: visual_types.Rect,
+    element_id: ?ElementId,
+    action_id: ?ActionId,
     focused: bool,
     accepts_drop: bool,
     drop_hovered: bool,
-    drop_received: bool,
-    /// Activated this frame with the primary pointer button.
-    clicked: bool,
-    /// Activated this frame with the secondary pointer button.
-    secondary_clicked: bool,
-    /// State changed this frame (value edited, selection changed,
-    /// dropdown picked, splitter dragged, table column resized, …).
-    /// Typed change semantics like `table.sort_changed` stay on the
-    /// kind view; `changed` is the catch-all.
-    changed: bool,
-    /// Tree item disclosure was toggled this frame.
-    toggled: bool,
     kind: WidgetView,
 
     pub fn fromNode(node: *const Node) NodeView {
         return .{
             .rect = node.layout_rect,
-            .user_id = node.user_id,
-            .custom_paint = node.custom_paint,
+            .element_id = node.element_id,
+            .action_id = node.action_id,
             .focused = node.interaction.focused,
             .accepts_drop = node.interaction.accepts_drop,
             .drop_hovered = node.interaction.drop_hovered,
-            .drop_received = node.interaction.drop_received,
-            .clicked = node.interaction.primary_clicked,
-            .secondary_clicked = node.interaction.secondary_clicked,
-            .changed = node.interaction.changed,
-            .toggled = node.interaction.toggled,
             .kind = WidgetView.fromNode(node),
         };
-    }
-};
-
-pub const NodeSnapshot = struct {
-    handle: NodeHandle,
-    node: NodeView,
-};
-
-/// Borrowed read model for the live tree in storage order. The slice is
-/// caller-owned, but each `NodeView` still borrows strings from the tree.
-pub const TreeSnapshot = struct {
-    nodes: []const NodeSnapshot,
-
-    pub fn deinit(self: *TreeSnapshot, allocator: std.mem.Allocator) void {
-        allocator.free(self.nodes);
-        self.nodes = &.{};
     }
 };
 
 /// A single node in the widget tree.
 pub const Node = struct {
     kind: WidgetKind,
-    widget_type: ?*const WidgetType = null,
-    widget_state: ?*anyopaque = null,
     style_override: style.Style = .{},
     interaction: InteractionState = .{},
-    user_id: u64 = 0,
-    layout_rect: paint.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-    custom_paint: bool = false,
+    element_id: ?ElementId = null,
+    action_id: ?ActionId = null,
+    layout_rect: visual_types.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
 
     parent: ?NodeHandle = null,
     first_child: ?NodeHandle = null,
@@ -1613,6 +1440,7 @@ pub const Node = struct {
 pub const Tree = struct {
     nodes: std.ArrayListUnmanaged(Node) = .empty,
     free_list: std.ArrayListUnmanaged(u32) = .empty,
+    element_index: std.AutoHashMapUnmanaged(ElementId, NodeHandle) = .empty,
     structural_revision: u64 = 0,
     allocator: std.mem.Allocator,
 
@@ -1621,10 +1449,7 @@ pub const Tree = struct {
     }
 
     pub fn deinit(self: *Tree) void {
-        for (self.nodes.items, 0..) |candidate, index| {
-            if (!candidate.alive) continue;
-            self.deinitNodeBehavior(self.handleFromIndex(@intCast(index)));
-        }
+        self.element_index.deinit(self.allocator);
         self.free_list.deinit(self.allocator);
         self.nodes.deinit(self.allocator);
     }
@@ -1639,18 +1464,28 @@ pub const Tree = struct {
         return self.addNode(kindFromDesc(desc), parent);
     }
 
-    /// Add a root-level behavior-backed widget. This is the general
-    /// widget path: the supplied `WidgetType` controls layout, paint,
-    /// focus, hit testing, and input hooks. `state` is type-erased and
-    /// remains caller-owned unless the widget type's `deinit` hook takes
-    /// ownership by convention.
-    pub fn addRootWidget(self: *Tree, widget_type: *const WidgetType, state: ?*anyopaque) !NodeHandle {
-        return self.addWidgetNode(widget_type, state, null);
+    /// Add a root widget with stable semantic identity and optional action.
+    pub fn addRootControl(self: *Tree, desc: ControlDesc) !NodeHandle {
+        if (self.findByElementId(desc.identity.element_id) != null) return error.DuplicateElementId;
+        try self.element_index.ensureUnusedCapacity(self.allocator, 1);
+        const handle = try self.addRoot(desc.widget);
+        const target = self.get(handle);
+        target.element_id = desc.identity.element_id;
+        target.action_id = desc.identity.action_id;
+        self.element_index.putAssumeCapacity(desc.identity.element_id, handle);
+        return handle;
     }
 
-    /// Add a behavior-backed child widget under the given parent.
-    pub fn addChildWidget(self: *Tree, parent: NodeHandle, widget_type: *const WidgetType, state: ?*anyopaque) !NodeHandle {
-        return self.addWidgetNode(widget_type, state, parent);
+    /// Add a child widget with stable semantic identity and optional action.
+    pub fn addChildControl(self: *Tree, parent: NodeHandle, desc: ControlDesc) !NodeHandle {
+        if (self.findByElementId(desc.identity.element_id) != null) return error.DuplicateElementId;
+        try self.element_index.ensureUnusedCapacity(self.allocator, 1);
+        const handle = try self.addChild(parent, desc.widget);
+        const target = self.get(handle);
+        target.element_id = desc.identity.element_id;
+        target.action_id = desc.identity.action_id;
+        self.element_index.putAssumeCapacity(desc.identity.element_id, handle);
+        return handle;
     }
 
     /// Remove a node and all its descendants from the tree.
@@ -1689,13 +1524,13 @@ pub const Tree = struct {
             self.nodes.items[nxt.index].prev_sibling = n.prev_sibling;
         }
 
-        self.deinitNodeBehavior(handle);
+        if (n.element_id) |element_id| {
+            std.debug.assert(self.element_index.remove(element_id));
+        }
 
         // Mark dead, bump generation, push to free list
         n.alive = false;
         n.generation +%= 1;
-        n.widget_type = null;
-        n.widget_state = null;
         n.parent = null;
         n.first_child = null;
         n.last_child = null;
@@ -1727,63 +1562,71 @@ pub const Tree = struct {
         return n.alive and n.generation == handle.generation;
     }
 
-    /// Snapshot of a node's read-only state. Returns null if the
-    /// handle is dead. Slices in the snapshot borrow from tree
+    /// Read view of a node's state. Returns null if the handle is dead.
+    /// Slices in the view borrow from tree
     /// storage and stay valid until the next mutation on this node.
     pub fn node(self: *const Tree, handle: NodeHandle) ?NodeView {
         if (!self.isAlive(handle)) return null;
         return NodeView.fromNode(self.getConst(handle));
     }
 
-    /// Snapshot all live nodes in storage order. The returned slice is
-    /// caller-owned; string/content slices inside each `NodeView` borrow
-    /// from the tree.
-    pub fn snapshot(self: *const Tree, allocator: std.mem.Allocator) !TreeSnapshot {
-        var nodes: std.ArrayListUnmanaged(NodeSnapshot) = .empty;
-        errdefer nodes.deinit(allocator);
-
-        try nodes.ensureTotalCapacity(allocator, self.count());
-        for (self.nodes.items, 0..) |*candidate, index| {
-            if (!candidate.alive) continue;
-            nodes.appendAssumeCapacity(.{
-                .handle = self.handleFromIndex(@intCast(index)),
-                .node = NodeView.fromNode(candidate),
-            });
-        }
-
-        return .{ .nodes = try nodes.toOwnedSlice(allocator) };
-    }
-
-    /// Set an embedder-defined stable identifier on a widget. Pure
-    /// field write — does not touch layout or paint caches, so call
-    /// it freely without invalidation concerns.
-    pub fn setUserId(self: *Tree, handle: NodeHandle, user_id: u64) void {
+    /// Attach stable semantic identity and an optional application action.
+    pub fn setControlIdentity(self: *Tree, handle: NodeHandle, identity: ControlIdentity) !void {
         if (!self.isAlive(handle)) return;
-        self.get(handle).user_id = user_id;
+        if (self.findByElementId(identity.element_id)) |existing| {
+            if (!existing.eql(handle)) return error.DuplicateElementId;
+        }
+        const target = self.get(handle);
+        if (target.element_id == identity.element_id and target.action_id == identity.action_id) return;
+        if (target.element_id == null) try self.element_index.ensureUnusedCapacity(self.allocator, 1);
+        if (target.element_id) |old| std.debug.assert(self.element_index.remove(old));
+        target.element_id = identity.element_id;
+        target.action_id = identity.action_id;
+        self.element_index.putAssumeCapacity(identity.element_id, handle);
+        self.bumpRevision();
     }
 
-    /// Read a widget's embedder-defined identifier. Returns 0 for
-    /// dead handles so drop sources / drag targets that may have
-    /// gone stale by the time the embedder consumes the event don't
-    /// require explicit aliveness checks at the call site.
-    pub fn userId(self: *const Tree, handle: NodeHandle) u64 {
-        if (!self.isAlive(handle)) return 0;
-        return self.getConst(handle).user_id;
-    }
-
-    /// Find a live node carrying the given stable user id, if any. Used to
-    /// re-resolve a retained interaction target (e.g. the press target of an
-    /// in-progress click) after a full tree rebuild hands the same logical
-    /// widget a fresh handle. A zero user id is the "unset" sentinel and never
-    /// matches, so unidentified widgets can't alias one another.
-    pub fn findByUserId(self: *const Tree, user_id: u64) ?NodeHandle {
-        if (user_id == 0) return null;
-        for (self.nodes.items, 0..) |candidate, index| {
-            if (candidate.alive and candidate.user_id == user_id) {
-                return .{ .index = @intCast(index), .generation = candidate.generation };
+    pub fn setElementId(self: *Tree, handle: NodeHandle, element_id: ?ElementId) !void {
+        if (!self.isAlive(handle)) return;
+        if (element_id) |id| {
+            if (self.findByElementId(id)) |existing| {
+                if (!existing.eql(handle)) return error.DuplicateElementId;
             }
         }
-        return null;
+        const target = self.get(handle);
+        if (target.element_id == element_id) return;
+        if (target.element_id == null and element_id != null) try self.element_index.ensureUnusedCapacity(self.allocator, 1);
+        if (target.element_id) |old| std.debug.assert(self.element_index.remove(old));
+        target.element_id = element_id;
+        if (element_id) |id| self.element_index.putAssumeCapacity(id, handle);
+        self.bumpRevision();
+    }
+
+    pub fn setActionId(self: *Tree, handle: NodeHandle, action_id: ?ActionId) void {
+        if (!self.isAlive(handle)) return;
+        const target = self.get(handle);
+        if (target.action_id == action_id) return;
+        target.action_id = action_id;
+        self.bumpRevision();
+    }
+
+    pub fn elementId(self: *const Tree, handle: NodeHandle) ?ElementId {
+        if (!self.isAlive(handle)) return null;
+        return self.getConst(handle).element_id;
+    }
+
+    pub fn actionId(self: *const Tree, handle: NodeHandle) ?ActionId {
+        if (!self.isAlive(handle)) return null;
+        return self.getConst(handle).action_id;
+    }
+
+    /// Find a live node by semantic identity. Element IDs are caller-owned and
+    /// must be unique within a tree.
+    pub fn findByElementId(self: *const Tree, element_id: ElementId) ?NodeHandle {
+        const handle = self.element_index.get(element_id) orelse return null;
+        std.debug.assert(self.isAlive(handle));
+        std.debug.assert(self.getConst(handle).element_id == element_id);
+        return handle;
     }
 
     /// Mark a widget as a generic drop target for active drags. Pure
@@ -1873,61 +1716,6 @@ pub const Tree = struct {
 
         self.bumpRevision();
         return handle;
-    }
-
-    fn addWidgetNode(self: *Tree, widget_type: *const WidgetType, state: ?*anyopaque, parent_handle: ?NodeHandle) !NodeHandle {
-        var index: u32 = undefined;
-        var generation: u32 = undefined;
-
-        if (self.free_list.pop()) |reuse_index| {
-            index = reuse_index;
-            generation = self.nodes.items[index].generation;
-            self.nodes.items[index] = .{
-                .kind = .{ .custom = .{ .type_id = @intFromPtr(widget_type) } },
-                .widget_type = widget_type,
-                .widget_state = state,
-                .parent = parent_handle,
-                .generation = generation,
-            };
-        } else {
-            index = @intCast(self.nodes.items.len);
-            generation = 0;
-            try self.nodes.append(self.allocator, .{
-                .kind = .{ .custom = .{ .type_id = @intFromPtr(widget_type) } },
-                .widget_type = widget_type,
-                .widget_state = state,
-                .parent = parent_handle,
-            });
-        }
-
-        const handle: NodeHandle = .{ .index = index, .generation = generation };
-
-        if (parent_handle) |ph| {
-            const parent = self.get(ph);
-            if (parent.last_child) |last| {
-                self.nodes.items[last.index].next_sibling = handle;
-                self.nodes.items[index].prev_sibling = last;
-            } else {
-                parent.first_child = handle;
-            }
-            parent.last_child = handle;
-        }
-
-        self.bumpRevision();
-        return handle;
-    }
-
-    fn deinitNodeBehavior(self: *Tree, handle: NodeHandle) void {
-        const target_node = &self.nodes.items[handle.index];
-        const widget_type = target_node.widget_type orelse return;
-        const deinit_fn = widget_type.deinit orelse return;
-        deinit_fn(.{
-            .tree = self,
-            .handle = handle,
-            .node = target_node,
-            .state = target_node.widget_state,
-            .theme = .{},
-        });
     }
 
     /// Internal: get a mutable pointer without generation check (for remove).
@@ -2068,7 +1856,7 @@ pub fn tableHeaderRow(tree: *const Tree, table: NodeHandle) ?NodeHandle {
     return best;
 }
 
-pub fn tableResizeHandleRect(tree: *const Tree, table: NodeHandle, divider_index: u8) ?paint.Rect {
+pub fn tableResizeHandleRect(tree: *const Tree, table: NodeHandle, divider_index: u8) ?visual_types.Rect {
     const node = tree.getConst(table);
     if (node.kind != .table or !node.kind.table.resizable) return null;
 
@@ -2146,13 +1934,8 @@ pub fn syncDerivedState(kind: *WidgetKind) void {
     kindOps(kind.*).sync(kind);
 }
 
-pub fn resetPerFrameEvents(kind: *WidgetKind) void {
-    kindOps(kind.*).reset_frame(kind);
-}
-
 const KindOps = struct {
     sync: KindMutFn = kindMutNoop,
-    reset_frame: KindMutFn = kindMutNoop,
 };
 
 const KindMutFn = *const fn (*WidgetKind) void;
@@ -2166,25 +1949,13 @@ const kind_ops = blk: {
     const Tag = std.meta.Tag(WidgetKind);
     var ops: [std.meta.fields(Tag).len]KindOps = undefined;
     for (&ops) |*op| op.* = .{};
-    ops[@intFromEnum(Tag.tree_item)] = .{ .reset_frame = resetTreeItemFrame };
-    ops[@intFromEnum(Tag.table)] = .{
-        .sync = syncTableState,
-        .reset_frame = resetTableFrame,
-    };
+    ops[@intFromEnum(Tag.table)] = .{ .sync = syncTableState };
     ops[@intFromEnum(Tag.drag_value)] = .{ .sync = syncDragValueState };
     ops[@intFromEnum(Tag.spinbox)] = .{ .sync = syncSpinBoxState };
     break :blk ops;
 };
 
 fn kindMutNoop(_: *WidgetKind) void {}
-
-fn resetTreeItemFrame(kind: *WidgetKind) void {
-    kind.tree_item.resetPerFrameEvents();
-}
-
-fn resetTableFrame(kind: *WidgetKind) void {
-    kind.table.resetPerFrameEvents();
-}
 
 fn syncTableState(kind: *WidgetKind) void {
     kind.table.syncColumns(kind.table.columns);
@@ -2309,6 +2080,42 @@ test "remove middle sibling preserves order" {
     const second = iter.next().?;
     try std.testing.expect(second.eql(cc));
     try std.testing.expect(iter.next() == null);
+}
+
+test "semantic element identities are unique within a tree" {
+    var tree = Tree.init(std.testing.allocator);
+    defer tree.deinit();
+
+    const first = try tree.addRootControl(.{
+        .identity = .{ .element_id = .init(41) },
+        .widget = .{ .button = .{ .label = "first" } },
+    });
+    try std.testing.expectError(error.DuplicateElementId, tree.addRootControl(.{
+        .identity = .{ .element_id = .init(41) },
+        .widget = .{ .button = .{ .label = "duplicate" } },
+    }));
+    try std.testing.expectEqual(@as(u32, 1), tree.count());
+
+    const second = try tree.addRoot(.{ .button = .{ .label = "second" } });
+    const before_duplicate = tree.revision();
+    try std.testing.expectError(error.DuplicateElementId, tree.setElementId(second, .init(41)));
+    try std.testing.expect(tree.elementId(second) == null);
+    try std.testing.expectEqual(before_duplicate, tree.revision());
+    try tree.setElementId(second, .init(42));
+    try std.testing.expect(tree.revision() != before_duplicate);
+    try tree.setControlIdentity(first, .{ .element_id = .init(41), .action_id = .init(9) });
+    try std.testing.expectError(
+        error.DuplicateElementId,
+        tree.setControlIdentity(second, .{ .element_id = .init(41) }),
+    );
+    try std.testing.expectEqual(ElementId.init(42), tree.elementId(second).?);
+
+    try tree.remove(first);
+    const replacement = try tree.addRootControl(.{
+        .identity = .{ .element_id = .init(41) },
+        .widget = .{ .button = .{ .label = "replacement" } },
+    });
+    try std.testing.expect(tree.findByElementId(.init(41)).?.eql(replacement));
 }
 
 test "wordBounds finds word boundaries" {

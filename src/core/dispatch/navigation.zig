@@ -1,6 +1,6 @@
 const std = @import("std");
 const widget = @import("../widget.zig");
-const event = @import("../event.zig");
+const input = @import("goop_input");
 const focus = @import("../focus.zig");
 const style = @import("../style.zig");
 const geometry = @import("../geometry.zig");
@@ -11,14 +11,14 @@ const text = @import("text.zig");
 
 const MouseState = types.MouseState;
 
-fn keyPressedOrRepeat(k: event.Event.Key) bool {
+fn keyPressedOrRepeat(k: input.Event.Key) bool {
     return k.state == .pressed or k.state == .repeat;
 }
 
-pub fn handleFocusTraversalKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Key) bool {
+pub fn handleFocusTraversalKey(tree: *widget.Tree, mouse: *MouseState, k: input.Event.Key) bool {
     if (k.keycode != .tab) return false;
     if (!keyPressedOrRepeat(k)) return true;
-    if (mouse.focused) |f| text.commitOrCancelNumericEditorOnBlur(tree, f);
+    if (mouse.focused) |f| text.commitOrCancelNumericEditorOnBlur(tree, f, mouse);
     mouse.focused = if (mouse.shift_down)
         focus.focusPrev(tree, mouse.focused)
     else
@@ -27,7 +27,7 @@ pub fn handleFocusTraversalKey(tree: *widget.Tree, mouse: *MouseState, k: event.
     return true;
 }
 
-pub fn handleFocusedNavigationKey(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, k: event.Event.Key) bool {
+pub fn handleFocusedNavigationKey(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, k: input.Event.Key) bool {
     if (!keyPressedOrRepeat(k)) return false;
     const focused = mouse.focused orelse return false;
     switch (k.keycode) {
@@ -43,11 +43,11 @@ pub fn handleFocusedNavigationKey(tree: *widget.Tree, mouse: *MouseState, theme:
 
 fn navigateLeft(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, focused: widget.NodeHandle) bool {
     if (tree.getConst(focused).kind == .drag_value) {
-        control.stepDragValue(tree, focused, -1);
+        control.stepDragValue(tree, focused, mouse, -1);
     } else if (tree.getConst(focused).kind == .spinbox) {
-        control.stepSpinBox(tree, focused, -1, false);
+        control.stepSpinBox(tree, focused, mouse, -1, false);
     } else if (tree.getConst(focused).kind == .splitter and tree.getConst(focused).kind.splitter.direction == .row) {
-        control.stepSplitter(tree, focused, -1, theme);
+        control.stepSplitter(tree, focused, mouse, -1, theme);
     } else if (tree.getConst(focused).kind == .tab_item) {
         if (prevTabItem(tree, focused)) |prev| setKeyboardFocusAfterNavigation(tree, mouse, prev, .tab);
     } else if (tree.getConst(focused).kind == .grid_item) {
@@ -55,7 +55,7 @@ fn navigateLeft(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, focu
     } else if (tree.getConst(focused).kind == .tree_item) {
         const node = tree.get(focused);
         if (node.kind.tree_item.expanded and hasTreeItemChildren(tree, focused)) {
-            toggleTreeItem(tree, focused);
+            toggleTreeItem(tree, focused, mouse);
         } else if (geometry.findTreeParent(tree, focused)) |parent| {
             mouse.focused = parent;
             focus.syncFocusFlags(tree, mouse.focused);
@@ -66,11 +66,11 @@ fn navigateLeft(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, focu
 
 fn navigateRight(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, focused: widget.NodeHandle) bool {
     if (tree.getConst(focused).kind == .drag_value) {
-        control.stepDragValue(tree, focused, 1);
+        control.stepDragValue(tree, focused, mouse, 1);
     } else if (tree.getConst(focused).kind == .spinbox) {
-        control.stepSpinBox(tree, focused, 1, false);
+        control.stepSpinBox(tree, focused, mouse, 1, false);
     } else if (tree.getConst(focused).kind == .splitter and tree.getConst(focused).kind.splitter.direction == .row) {
-        control.stepSplitter(tree, focused, 1, theme);
+        control.stepSplitter(tree, focused, mouse, 1, theme);
     } else if (tree.getConst(focused).kind == .tab_item) {
         if (nextTabItem(tree, focused)) |next| setKeyboardFocusAfterNavigation(tree, mouse, next, .tab);
     } else if (tree.getConst(focused).kind == .grid_item) {
@@ -78,7 +78,7 @@ fn navigateRight(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, foc
     } else if (tree.getConst(focused).kind == .tree_item) {
         const node = tree.get(focused);
         if (!node.kind.tree_item.expanded and hasTreeItemChildren(tree, focused)) {
-            toggleTreeItem(tree, focused);
+            toggleTreeItem(tree, focused, mouse);
         } else if (node.kind.tree_item.expanded) {
             mouse.focused = firstChildTreeItem(tree, focused) orelse mouse.focused;
             focus.syncFocusFlags(tree, mouse.focused);
@@ -89,11 +89,11 @@ fn navigateRight(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, foc
 
 fn navigateUp(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, focused: widget.NodeHandle) bool {
     if (tree.getConst(focused).kind == .spinbox) {
-        control.stepSpinBox(tree, focused, 1, false);
+        control.stepSpinBox(tree, focused, mouse, 1, false);
     } else if (tree.getConst(focused).kind == .drag_value) {
-        control.stepDragValue(tree, focused, 1);
+        control.stepDragValue(tree, focused, mouse, 1);
     } else if (tree.getConst(focused).kind == .splitter and tree.getConst(focused).kind.splitter.direction == .column) {
-        control.stepSplitter(tree, focused, -1, theme);
+        control.stepSplitter(tree, focused, mouse, -1, theme);
     } else if (tree.getConst(focused).kind == .selectable) {
         if (prevSelectableSibling(tree, focused)) |prev| setKeyboardFocusAfterNavigation(tree, mouse, prev, .selectable);
     } else if (tree.getConst(focused).kind == .grid_item) {
@@ -109,11 +109,11 @@ fn navigateUp(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, focuse
 
 fn navigateDown(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, focused: widget.NodeHandle) bool {
     if (tree.getConst(focused).kind == .spinbox) {
-        control.stepSpinBox(tree, focused, -1, false);
+        control.stepSpinBox(tree, focused, mouse, -1, false);
     } else if (tree.getConst(focused).kind == .drag_value) {
-        control.stepDragValue(tree, focused, -1);
+        control.stepDragValue(tree, focused, mouse, -1);
     } else if (tree.getConst(focused).kind == .splitter and tree.getConst(focused).kind.splitter.direction == .column) {
-        control.stepSplitter(tree, focused, 1, theme);
+        control.stepSplitter(tree, focused, mouse, 1, theme);
     } else if (tree.getConst(focused).kind == .selectable) {
         if (nextSelectableSibling(tree, focused)) |next| setKeyboardFocusAfterNavigation(tree, mouse, next, .selectable);
     } else if (tree.getConst(focused).kind == .grid_item) {
@@ -152,11 +152,34 @@ fn navigateEnd(tree: *widget.Tree, mouse: *MouseState, focused: widget.NodeHandl
 const KeyboardNavigationKind = enum { tab, selectable, grid, table };
 
 fn setKeyboardFocusAfterNavigation(tree: *widget.Tree, mouse: *MouseState, target: widget.NodeHandle, kind: KeyboardNavigationKind) void {
-    switch (kind) {
-        .tab => selectTabItem(tree, target),
+    const changed = switch (kind) {
+        .tab => blk: {
+            selectTabItem(tree, target);
+            break :blk true;
+        },
         .selectable => selection.applySelectableKeyboardNavigation(tree, target, mouse),
         .grid => selection.applyGridItemKeyboardNavigation(tree, target, mouse),
         .table => selection.applyTableRowKeyboardNavigation(tree, target, mouse),
+    };
+    if (changed) {
+        switch (kind) {
+            .tab => mouse.emitItemSelection(tree, target, true),
+            .selectable => {
+                if (selection.selectableParentListBox(tree, target)) |container|
+                    mouse.emitSelection(tree, container)
+                else
+                    mouse.emitItemSelection(tree, target, true);
+            },
+            .grid => {
+                if (widget.gridItemParentSelector(tree, target)) |container|
+                    mouse.emitSelection(tree, container)
+                else
+                    mouse.emitItemSelection(tree, target, true);
+            },
+            .table => {
+                if (tree.getConst(target).parent) |container| mouse.emitSelection(tree, container);
+            },
+        }
     }
     mouse.focused = target;
     focus.syncFocusFlags(tree, mouse.focused);
@@ -178,12 +201,12 @@ pub fn selectTabItem(tree: *widget.Tree, handle: widget.NodeHandle) void {
     }
 }
 
-pub fn toggleTreeItem(tree: *widget.Tree, handle: widget.NodeHandle) void {
+pub fn toggleTreeItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     const node = tree.get(handle);
     if (node.kind != .tree_item) return;
     if (!hasTreeItemChildren(tree, handle)) return;
     node.kind.tree_item.expanded = !node.kind.tree_item.expanded;
-    node.interaction.toggled = true;
+    mouse.emitToggle(tree, handle, node.kind.tree_item.expanded);
 }
 
 pub fn hasTreeItemChildren(tree: *const widget.Tree, handle: widget.NodeHandle) bool {

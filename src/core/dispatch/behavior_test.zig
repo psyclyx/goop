@@ -1,13 +1,71 @@
 const std = @import("std");
 const widget = @import("../widget.zig");
-const event = @import("../event.zig");
+const input_types = @import("goop_input");
 const focus = @import("../focus.zig");
 const style = @import("../style.zig");
-const dispatch = @import("../dispatch.zig");
+const dispatch_core = @import("../dispatch.zig");
+const control_event = @import("../control_event.zig");
 const scroll_dispatch = @import("scroll.zig");
 
-const MouseState = dispatch.MouseState;
-const ContainerDrop = dispatch.ContainerDrop;
+const MouseState = dispatch_core.MouseState;
+
+/// State-oriented dispatch tests use the canonical semantic path but ignore
+/// the returned occurrence batch. Tests about occurrences call
+/// `processEvents` directly and assert semantic IDs and payloads.
+const dispatch = struct {
+    fn process(tree: *widget.Tree, events: []const input_types.Event, mouse: *MouseState, theme: style.Theme) void {
+        var journal: @import("../control_event.zig").Journal = .{};
+        defer journal.deinit(std.testing.allocator);
+        journal.prepareBatch(std.testing.allocator, tree.count(), events.len) catch unreachable;
+        dispatch_core.process(
+            tree,
+            events,
+            mouse,
+            theme,
+            null,
+            null,
+            &journal,
+        );
+    }
+
+    fn processEvents(
+        tree: *widget.Tree,
+        events: []const input_types.Event,
+        mouse: *MouseState,
+        theme: style.Theme,
+        journal: *control_event.Journal,
+    ) !control_event.ControlEvents {
+        journal.clearRetainingCapacity();
+        try journal.prepareBatch(std.testing.allocator, tree.count(), events.len);
+        dispatch_core.process(
+            tree,
+            events,
+            mouse,
+            theme,
+            null,
+            null,
+            journal,
+        );
+        return journal.view();
+    }
+
+    fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
+        dispatch_core.cancelPointerGesture(tree, mouse);
+    }
+
+    fn cancelPointerGestureEvents(
+        tree: *widget.Tree,
+        mouse: *MouseState,
+        journal: *control_event.Journal,
+    ) !control_event.ControlEvents {
+        journal.clearRetainingCapacity();
+        try journal.prepareBatch(std.testing.allocator, tree.count(), 1);
+        mouse.control_journal = journal;
+        defer mouse.control_journal = null;
+        dispatch_core.cancelPointerGesture(tree, mouse);
+        return journal.view();
+    }
+};
 
 test "hover updates on mouse move" {
     const allocator = std.testing.allocator;
@@ -33,13 +91,14 @@ test "hover updates on mouse move" {
     try std.testing.expect(tree.getConst(root).interaction.hovered);
 }
 
-test "button click sets clicked flag" {
+test "button click emits semantic activation" {
     const allocator = std.testing.allocator;
     var tree = widget.Tree.init(allocator);
     defer tree.deinit();
 
     const root = try tree.addRoot(.{ .container = .{} });
     const btn = try tree.addChild(root, .{ .button = .{ .label = "Click me" } });
+    try tree.setElementId(btn, .init(1));
 
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
     tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
@@ -47,23 +106,26 @@ test "button click sets clicked flag" {
     var mouse = MouseState{};
 
     // Press and release on button
-    dispatch.process(&tree, &.{
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    const output = try dispatch.processEvents(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 50, .y = 20 } },
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
-    }, &mouse, style.Theme.default);
+    }, &mouse, style.Theme.default, &journal);
 
-    try std.testing.expect(tree.getConst(btn).interaction.primary_clicked);
+    try std.testing.expectEqual(@as(usize, 1), output.items.len);
+    try std.testing.expectEqual(control_event.ElementId.init(1), output.items[0].activated.element);
     try std.testing.expect(!tree.getConst(btn).interaction.pressed);
 }
 
-test "click across a tree rebuild still fires via stable user id" {
+test "click across a tree rebuild still fires via stable element id" {
     const allocator = std.testing.allocator;
     var tree = widget.Tree.init(allocator);
     defer tree.deinit();
 
     const root = try tree.addRoot(.{ .container = .{} });
     var btn = try tree.addChild(root, .{ .button = .{ .label = "Click me" } });
-    tree.setUserId(btn, 7);
+    try tree.setElementId(btn, .init(7));
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
     tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
 
@@ -79,25 +141,28 @@ test "click across a tree rebuild still fires via stable user id" {
     // UIs do every frame): the same logical button gets a brand-new handle.
     try tree.remove(btn);
     btn = try tree.addChild(root, .{ .button = .{ .label = "Click me" } });
-    tree.setUserId(btn, 7);
+    try tree.setElementId(btn, .init(7));
     tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
 
     // Release: the click must still land on the rebuilt button.
-    dispatch.process(&tree, &.{
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    const output = try dispatch.processEvents(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
-    }, &mouse, style.Theme.default);
+    }, &mouse, style.Theme.default, &journal);
 
-    try std.testing.expect(tree.getConst(btn).interaction.primary_clicked);
+    try std.testing.expectEqual(@as(usize, 1), output.items.len);
+    try std.testing.expectEqual(control_event.ElementId.init(7), output.items[0].activated.element);
 }
 
-test "click across a tree rebuild is dropped without a stable user id" {
+test "click across a tree rebuild is dropped without semantic element identity" {
     const allocator = std.testing.allocator;
     var tree = widget.Tree.init(allocator);
     defer tree.deinit();
 
     const root = try tree.addRoot(.{ .container = .{} });
     var btn = try tree.addChild(root, .{ .button = .{ .label = "Click me" } });
-    // No setUserId: the press target has no stable identity to re-resolve.
+    // The press target has no semantic identity to re-resolve.
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
     tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
 
@@ -109,13 +174,16 @@ test "click across a tree rebuild is dropped without a stable user id" {
 
     try tree.remove(btn);
     btn = try tree.addChild(root, .{ .button = .{ .label = "Click me" } });
+    try tree.setElementId(btn, .init(8));
     tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 100, .h = 30 };
 
-    dispatch.process(&tree, &.{
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    const output = try dispatch.processEvents(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 50, .y = 20 } },
-    }, &mouse, style.Theme.default);
+    }, &mouse, style.Theme.default, &journal);
 
-    try std.testing.expect(!tree.getConst(btn).interaction.primary_clicked);
+    try std.testing.expectEqual(@as(usize, 0), output.items.len);
     try std.testing.expect(mouse.press_target == null);
 }
 
@@ -138,7 +206,7 @@ test "press and release on different widgets does not click" {
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 500, .y = 300 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(!tree.getConst(btn).interaction.primary_clicked);
+    try std.testing.expect(!tree.getConst(btn).interaction.pressed);
 }
 
 test "slider drag updates value" {
@@ -217,7 +285,6 @@ test "drag value drag updates value" {
 
     try std.testing.expect(mouse.drag_target != null);
     try std.testing.expectApproxEqAbs(@as(f32, 20), tree.getConst(drag_value).kind.drag_value.value, 0.01);
-    try std.testing.expect(tree.getConst(drag_value).interaction.changed);
 }
 
 test "drag value accepts typed edits" {
@@ -253,7 +320,6 @@ test "drag value accepts typed edits" {
 
     try std.testing.expect(!tree.getConst(drag_value).kind.drag_value.editing);
     try std.testing.expectApproxEqAbs(@as(f32, 42), tree.getConst(drag_value).kind.drag_value.value, 0.01);
-    try std.testing.expect(tree.getConst(drag_value).interaction.changed);
 }
 
 test "focused drag value begins editing on numeric text input" {
@@ -282,7 +348,6 @@ test "focused drag value begins editing on numeric text input" {
 
     try std.testing.expect(!tree.getConst(drag_value).kind.drag_value.editing);
     try std.testing.expectApproxEqAbs(@as(f32, 7), tree.getConst(drag_value).kind.drag_value.value, 0.01);
-    try std.testing.expect(tree.getConst(drag_value).interaction.changed);
 }
 
 test "spinbox click steps value" {
@@ -307,9 +372,6 @@ test "spinbox click steps value" {
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 120, .y = 20 } },
     }, &mouse, style.Theme.default);
     try std.testing.expectApproxEqAbs(@as(f32, 7), tree.getConst(spinbox).kind.spinbox.value, 0.01);
-    try std.testing.expect(tree.getConst(spinbox).interaction.changed);
-
-    tree.get(spinbox).interaction.changed = false;
     dispatch.process(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 20 } },
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 20, .y = 20 } },
@@ -349,7 +411,6 @@ test "spinbox accepts typed edits in the value field" {
 
     try std.testing.expect(!tree.getConst(spinbox).kind.spinbox.editing);
     try std.testing.expectApproxEqAbs(@as(f32, 9), tree.getConst(spinbox).kind.spinbox.value, 0.01);
-    try std.testing.expect(tree.getConst(spinbox).interaction.changed);
 }
 
 test "checkbox toggles on click" {
@@ -580,6 +641,38 @@ test "scrollbar thumb drag updates scroll position" {
     try std.testing.expect(tree.getConst(scroll).kind.scroll_area.scroll_y > 0);
 }
 
+test "scrollbar hover and active state follow its own hit geometry" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const scroll = try tree.addRoot(.{ .scroll_area = .{} });
+    const child = try tree.addChild(scroll, .{ .spacer = .{ .height = 300 } });
+    tree.get(scroll).layout_rect = .{ .x = 0, .y = 0, .w = 120, .h = 80 };
+    tree.get(child).layout_rect = .{ .x = 0, .y = 0, .w = 120, .h = 300 };
+
+    const theme = style.Theme.default;
+    const metrics = scroll_dispatch.verticalScrollbarMetrics(&tree, scroll, theme).?;
+    const x = metrics.thumb.x + metrics.thumb.w * 0.5;
+    const y = metrics.thumb.y + metrics.thumb.h * 0.5;
+    var mouse = MouseState{};
+
+    dispatch.process(&tree, &.{.{ .mouse_move = .{ .x = x, .y = y } }}, &mouse, theme);
+    try std.testing.expectEqual(
+        widget.WidgetKind.ScrollArea.ScrollbarAxis.vertical,
+        tree.getConst(scroll).kind.scroll_area.internal.hovered_scrollbar.?,
+    );
+
+    dispatch.process(&tree, &.{.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = x, .y = y } }}, &mouse, theme);
+    try std.testing.expectEqual(
+        widget.WidgetKind.ScrollArea.ScrollbarAxis.vertical,
+        tree.getConst(scroll).kind.scroll_area.internal.active_scrollbar.?,
+    );
+
+    dispatch.process(&tree, &.{.{ .mouse_button = .{ .button = .left, .state = .released, .x = x, .y = y } }}, &mouse, theme);
+    try std.testing.expect(tree.getConst(scroll).kind.scroll_area.internal.active_scrollbar == null);
+}
+
 test "horizontal scrollbar track click jumps scroll position" {
     const allocator = std.testing.allocator;
     var tree = widget.Tree.init(allocator);
@@ -644,7 +737,7 @@ test "tab cycles focus through focusable widgets" {
     tree.get(sl).layout_rect = .{ .x = 10, .y = 80, .w = 200, .h = 24 };
 
     var mouse = MouseState{};
-    const tab_press = event.Event{ .key = .{ .scancode = 15, .keycode = .tab, .state = .pressed } };
+    const tab_press = input_types.Event{ .key = .{ .scancode = 15, .keycode = .tab, .state = .pressed } };
 
     // First tab: focus button (first focusable)
     dispatch.process(&tree, &.{tab_press}, &mouse, style.Theme.default);
@@ -680,9 +773,9 @@ test "shift+tab cycles focus backwards" {
     tree.get(cb).layout_rect = .{ .x = 10, .y = 50, .w = 200, .h = 26 };
 
     var mouse = MouseState{};
-    const shift_down = event.Event{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } };
-    const tab_press = event.Event{ .key = .{ .scancode = 15, .keycode = .tab, .state = .pressed } };
-    const shift_up = event.Event{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } };
+    const shift_down = input_types.Event{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } };
+    const tab_press = input_types.Event{ .key = .{ .scancode = 15, .keycode = .tab, .state = .pressed } };
+    const shift_up = input_types.Event{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .released } };
 
     // Shift+Tab from no focus: should go to last focusable (checkbox)
     dispatch.process(&tree, &.{ shift_down, tab_press, shift_up }, &mouse, style.Theme.default);
@@ -713,7 +806,6 @@ test "enter/space activates focused widget" {
         .{ .key = .{ .scancode = 15, .keycode = .tab, .state = .pressed } },
         .{ .key = .{ .scancode = 28, .keycode = .enter, .state = .pressed } },
     }, &mouse, style.Theme.default);
-    try std.testing.expect(tree.getConst(btn).interaction.primary_clicked);
 
     // Tab to checkbox, press Space to toggle
     dispatch.process(&tree, &.{
@@ -817,7 +909,6 @@ test "tab item click selects sibling tab" {
 
     try std.testing.expect(!tree.getConst(scene).kind.tab_item.selected);
     try std.testing.expect(tree.getConst(render).kind.tab_item.selected);
-    try std.testing.expect(tree.getConst(render).interaction.primary_clicked);
 }
 
 test "selectable rows update sibling selection and list box change state" {
@@ -852,18 +943,12 @@ test "selectable rows update sibling selection and list box change state" {
 
     try std.testing.expect(!tree.getConst(first).kind.selectable.selected);
     try std.testing.expect(tree.getConst(second).kind.selectable.selected);
-    try std.testing.expect(tree.getConst(second).interaction.primary_clicked);
-    try std.testing.expect(tree.getConst(list_box).interaction.changed);
     try std.testing.expect(mouse.focused.?.eql(second));
-
-    tree.get(list_box).interaction.changed = false;
-    tree.get(second).interaction.primary_clicked = false;
 
     dispatch.process(&tree, &.{.{ .key = .{ .scancode = 108, .keycode = .down, .state = .pressed } }}, &mouse, style.Theme.default);
 
     try std.testing.expect(!tree.getConst(second).kind.selectable.selected);
     try std.testing.expect(tree.getConst(third).kind.selectable.selected);
-    try std.testing.expect(tree.getConst(list_box).interaction.changed);
     try std.testing.expect(mouse.focused.?.eql(third));
 }
 
@@ -900,8 +985,6 @@ test "multi-select list box supports ctrl-toggle and additive shift range" {
     try std.testing.expect(!tree.getConst(third).kind.selectable.selected);
     try std.testing.expectEqual(@as(?u16, 1), tree.getConst(list_box).kind.list_box.internal.anchor_index);
 
-    tree.get(list_box).interaction.changed = false;
-
     dispatch.process(&tree, &.{
         .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
         .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
@@ -914,10 +997,9 @@ test "multi-select list box supports ctrl-toggle and additive shift range" {
     try std.testing.expect(tree.getConst(first).kind.selectable.selected);
     try std.testing.expect(tree.getConst(second).kind.selectable.selected);
     try std.testing.expect(tree.getConst(third).kind.selectable.selected);
-    try std.testing.expect(tree.getConst(list_box).interaction.changed);
 }
 
-test "grid selector marquee selects intersecting tiles" {
+test "grid selector marquee stays owned by its container across child hits" {
     const allocator = std.testing.allocator;
     var tree = widget.Tree.init(allocator);
     defer tree.deinit();
@@ -930,6 +1012,11 @@ test "grid selector marquee selects intersecting tiles" {
     const second = try tree.addChild(grid, .{ .grid_item = .{ .label = "Metal" } });
     const third = try tree.addChild(grid, .{ .grid_item = .{ .label = "Leaves" } });
     const fourth = try tree.addChild(grid, .{ .grid_item = .{ .label = "Icons" } });
+    try tree.setElementId(grid, .init(91));
+    try tree.setElementId(first, .init(92));
+    try tree.setElementId(second, .init(93));
+    try tree.setElementId(third, .init(94));
+    try tree.setElementId(fourth, .init(95));
 
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
     tree.get(grid).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 130 };
@@ -940,17 +1027,42 @@ test "grid selector marquee selects intersecting tiles" {
     tree.get(fourth).layout_rect = .{ .x = 106, .y = 74, .w = 80, .h = 44 };
 
     var mouse = MouseState{};
-    dispatch.process(&tree, &.{
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    _ = try dispatch.processEvents(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 14, .y = 14 } },
-        .{ .mouse_move = .{ .x = 170, .y = 64 } },
-        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 170, .y = 64 } },
-    }, &mouse, style.Theme.default);
+    }, &mouse, style.Theme.default, &journal);
+
+    const first_move = try dispatch.processEvents(&tree, &.{
+        .{ .mouse_move = .{ .x = 94, .y = 40 } },
+    }, &mouse, style.Theme.default, &journal);
+    try std.testing.expectEqual(@as(usize, 0), first_move.items.len);
+    try std.testing.expect(mouse.drag_target.?.eql(grid));
+    try std.testing.expect(tree.getConst(grid).kind.grid_selector.internal.marquee_active);
+    try std.testing.expect(tree.getConst(first).kind.grid_item.selected);
+    try std.testing.expect(!tree.getConst(second).kind.grid_item.selected);
+
+    const second_move = try dispatch.processEvents(&tree, &.{
+        .{ .mouse_move = .{ .x = 170, .y = 40 } },
+    }, &mouse, style.Theme.default, &journal);
+    try std.testing.expectEqual(@as(usize, 0), second_move.items.len);
+    try std.testing.expect(mouse.drag_target.?.eql(grid));
 
     try std.testing.expect(tree.getConst(first).kind.grid_item.selected);
     try std.testing.expect(tree.getConst(second).kind.grid_item.selected);
     try std.testing.expect(!tree.getConst(third).kind.grid_item.selected);
     try std.testing.expect(!tree.getConst(fourth).kind.grid_item.selected);
-    try std.testing.expect(tree.getConst(grid).interaction.changed);
+
+    const release = try dispatch.processEvents(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 170, .y = 40 } },
+    }, &mouse, style.Theme.default, &journal);
+    try std.testing.expectEqual(@as(usize, 1), release.items.len);
+    try std.testing.expectEqualSlices(
+        control_event.ElementId,
+        &.{ control_event.ElementId.init(92), control_event.ElementId.init(93) },
+        release.selection(release.items[0].selection_changed),
+    );
+    try std.testing.expect(mouse.drag_target == null);
     try std.testing.expect(!tree.getConst(grid).kind.grid_selector.internal.marquee_active);
 }
 
@@ -965,6 +1077,8 @@ test "grid item drag reports drop target" {
     } });
     const first = try tree.addChild(grid, .{ .grid_item = .{ .label = "Brick" } });
     const second = try tree.addChild(grid, .{ .grid_item = .{ .label = "Metal" } });
+    try tree.setElementId(first, .init(101));
+    try tree.setElementId(second, .init(102));
 
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
     tree.get(grid).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 130 };
@@ -987,16 +1101,18 @@ test "grid item drag reports drop target" {
     try std.testing.expect(tree.getConst(first).kind.grid_item.internal.drag.active);
     try std.testing.expect(tree.getConst(second).kind.grid_item.internal.drop_preview);
 
-    dispatch.process(&tree, &.{
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    const output = try dispatch.processEvents(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 146, .y = 40 } },
-    }, &mouse, style.Theme.default);
+    }, &mouse, style.Theme.default, &journal);
 
     try std.testing.expect(!tree.getConst(first).kind.grid_item.internal.drag.active);
     try std.testing.expect(!tree.getConst(second).kind.grid_item.internal.drop_preview);
-    const drop = mouse.last_drop.?.grid;
-    try std.testing.expect(drop.source.eql(first));
-    try std.testing.expect(drop.target.eql(second));
-    try std.testing.expectEqual(ContainerDrop.Position.item, drop.position);
+    const drop = output.items[output.items.len - 1].drop;
+    try std.testing.expectEqual(control_event.ElementId.init(101), drop.source);
+    try std.testing.expectEqual(control_event.ElementId.init(102), drop.target);
+    try std.testing.expectEqual(control_event.Drop.Position.item, drop.position);
 }
 
 test "cancel pointer gesture clears active grid drag" {
@@ -1050,6 +1166,8 @@ test "generic drop target receives item drag" {
     } });
     const first = try tree.addChild(grid, .{ .grid_item = .{ .label = "Brick" } });
     const drop_button = try tree.addChild(root, .{ .button = .{ .label = "Move Here" } });
+    try tree.setElementId(first, .init(111));
+    try tree.setElementId(drop_button, .init(112));
 
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
     tree.get(grid).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 130 };
@@ -1067,15 +1185,17 @@ test "generic drop target receives item drag" {
     try std.testing.expect(tree.getConst(drop_button).interaction.drop_hovered);
     try std.testing.expect(mouse.widget_drop_preview != null);
 
-    dispatch.process(&tree, &.{
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    const output = try dispatch.processEvents(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 60, .y = 186 } },
-    }, &mouse, style.Theme.default);
+    }, &mouse, style.Theme.default, &journal);
 
     try std.testing.expect(!tree.getConst(drop_button).interaction.drop_hovered);
-    try std.testing.expect(tree.getConst(drop_button).interaction.drop_received);
-    const drop = mouse.last_drop.?.widget;
-    try std.testing.expect(drop.source.eql(first));
-    try std.testing.expect(drop.target.eql(drop_button));
+    const drop = output.items[output.items.len - 1].drop;
+    try std.testing.expectEqual(control_event.ElementId.init(111), drop.source);
+    try std.testing.expectEqual(control_event.ElementId.init(112), drop.target);
+    try std.testing.expectEqual(control_event.Drop.Position{ .point = .{ .x = 60, .y = 186 } }, drop.position);
 }
 
 test "table rows support multi-select and additive shift range" {
@@ -1113,9 +1233,6 @@ test "table rows support multi-select and additive shift range" {
     try std.testing.expect(tree.getConst(second).kind.table_row.selected);
     try std.testing.expect(!tree.getConst(third).kind.table_row.selected);
     try std.testing.expectEqual(@as(?u16, 1), tree.getConst(table).kind.table.internal.anchor_row);
-    try std.testing.expect(tree.getConst(table).kind.table.selection_changed);
-
-    tree.get(table).kind.table.selection_changed = false;
 
     dispatch.process(&tree, &.{
         .{ .key = .{ .scancode = 29, .keycode = .left_ctrl, .state = .pressed } },
@@ -1129,7 +1246,6 @@ test "table rows support multi-select and additive shift range" {
     try std.testing.expect(tree.getConst(first).kind.table_row.selected);
     try std.testing.expect(tree.getConst(second).kind.table_row.selected);
     try std.testing.expect(tree.getConst(third).kind.table_row.selected);
-    try std.testing.expect(tree.getConst(table).kind.table.selection_changed);
 }
 
 test "table row keyboard navigation moves focus and extends selection" {
@@ -1164,8 +1280,6 @@ test "table row keyboard navigation moves focus and extends selection" {
     try std.testing.expect(!tree.getConst(first).kind.table_row.selected);
     try std.testing.expect(tree.getConst(second).kind.table_row.selected);
 
-    tree.get(table).kind.table.selection_changed = false;
-
     dispatch.process(&tree, &.{
         .{ .key = .{ .scancode = 42, .keycode = .left_shift, .state = .pressed } },
         .{ .key = .{ .scancode = 108, .keycode = .down, .state = .pressed } },
@@ -1175,7 +1289,6 @@ test "table row keyboard navigation moves focus and extends selection" {
     try std.testing.expect(mouse.focused.?.eql(third));
     try std.testing.expect(tree.getConst(second).kind.table_row.selected);
     try std.testing.expect(tree.getConst(third).kind.table_row.selected);
-    try std.testing.expect(tree.getConst(table).kind.table.selection_changed);
 }
 
 test "tree item toggles and keyboard navigation follows visible items" {
@@ -1203,9 +1316,7 @@ test "tree item toggles and keyboard navigation follows visible items" {
     }, &mouse, style.Theme.default);
 
     try std.testing.expect(!tree.getConst(parent).kind.tree_item.expanded);
-    try std.testing.expect(tree.getConst(parent).interaction.toggled);
     try std.testing.expect(!tree.getConst(parent).kind.tree_item.selected);
-    try std.testing.expect(!tree.getConst(parent).interaction.primary_clicked);
 
     mouse.focused = parent;
     focus.syncFocusFlags(&tree, mouse.focused);
@@ -1234,7 +1345,7 @@ test "collapsed tree item can be reopened with the mouse" {
     tree.get(parent).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 26 };
 
     var mouse = MouseState{};
-    const click = [_]event.Event{
+    const click = [_]input_types.Event{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 18, .y = 20 } },
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 18, .y = 20 } },
     };
@@ -1268,8 +1379,6 @@ test "lazy tree item can toggle without materialized child nodes" {
     }, &mouse, style.Theme.default);
 
     try std.testing.expect(tree.getConst(parent).kind.tree_item.expanded);
-    try std.testing.expect(tree.getConst(parent).interaction.toggled);
-    try std.testing.expect(!tree.getConst(parent).interaction.primary_clicked);
 }
 
 test "selected editable tree item can rename inline on click" {
@@ -1303,7 +1412,6 @@ test "selected editable tree item can rename inline on click" {
     }, &mouse, style.Theme.default);
 
     try std.testing.expectEqualStrings("X", tree.getConst(item).kind.tree_item.label);
-    try std.testing.expect(tree.getConst(item).kind.tree_item.rename_committed);
     try std.testing.expect(!tree.getConst(item).kind.tree_item.editing);
 }
 
@@ -1342,6 +1450,8 @@ test "tree item drag reports drop target and position" {
     const root = try tree.addRoot(.{ .container = .{} });
     const first = try tree.addChild(root, .{ .tree_item = .{ .label = "Scene", .group = 14 } });
     const second = try tree.addChild(root, .{ .tree_item = .{ .label = "Camera", .group = 14 } });
+    try tree.setElementId(first, .init(121));
+    try tree.setElementId(second, .init(122));
 
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
     tree.get(first).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 26 };
@@ -1356,15 +1466,16 @@ test "tree item drag reports drop target and position" {
     try std.testing.expect(tree.getConst(first).kind.tree_item.internal.drag.active);
     try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, tree.getConst(second).kind.tree_item.internal.drop_preview.?);
 
-    dispatch.process(&tree, &.{
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    const output = try dispatch.processEvents(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 40, .y = 56 } },
-    }, &mouse, style.Theme.default);
+    }, &mouse, style.Theme.default, &journal);
 
-    const drop = mouse.last_drop.?.tree;
-    try std.testing.expect(drop.source.eql(first));
-    try std.testing.expect(drop.target.eql(second));
-    try std.testing.expectEqual(widget.WidgetKind.TreeItem.DropPosition.into, drop.position);
-    try std.testing.expect(tree.getConst(second).interaction.drop_received);
+    const drop = output.items[output.items.len - 1].drop;
+    try std.testing.expectEqual(control_event.ElementId.init(121), drop.source);
+    try std.testing.expectEqual(control_event.ElementId.init(122), drop.target);
+    try std.testing.expectEqual(control_event.Drop.Position.inside, drop.position);
     try std.testing.expect(!tree.getConst(first).kind.tree_item.internal.drag.active);
     try std.testing.expect(tree.getConst(second).kind.tree_item.internal.drop_preview == null);
 }
@@ -1401,10 +1512,8 @@ test "dropdown menu item selection updates dropdown state" {
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 30, .y = 72 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(tree.getConst(b).interaction.primary_clicked);
     try std.testing.expectEqualStrings("Beta", tree.getConst(dropdown).kind.dropdown.selected_text);
     try std.testing.expectEqual(@as(?u16, 1), tree.getConst(dropdown).kind.dropdown.selected_index);
-    try std.testing.expect(tree.getConst(dropdown).interaction.changed);
     try std.testing.expect(!tree.getConst(dropdown).kind.dropdown.open);
     try std.testing.expect(!tree.getConst(popup).kind.popup.visible);
 }
@@ -1448,7 +1557,6 @@ test "menu hover opens submenu and leaf selection closes the stack" {
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 170, .y = 40 } },
     }, &mouse, style.Theme.default);
 
-    try std.testing.expect(tree.getConst(recent_a).interaction.primary_clicked);
     try std.testing.expect(!tree.getConst(file_popup).kind.popup.visible);
     try std.testing.expect(!tree.getConst(recent_popup).kind.popup.visible);
 }
@@ -1482,7 +1590,6 @@ test "splitter drag updates ratio" {
     }, &mouse, style.Theme.default);
 
     try std.testing.expect(tree.getConst(splitter).kind.splitter.ratio > 0.5);
-    try std.testing.expect(tree.getConst(splitter).interaction.changed);
 }
 
 test "secondary click is reported on the target widget" {
@@ -1492,24 +1599,27 @@ test "secondary click is reported on the target widget" {
 
     const root = try tree.addRoot(.{ .container = .{} });
     const btn = try tree.addChild(root, .{ .button = .{ .label = "Context" } });
+    try tree.setElementId(btn, .init(131));
 
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
     tree.get(btn).layout_rect = .{ .x = 10, .y = 10, .w = 120, .h = 30 };
 
     var mouse = MouseState{};
-    dispatch.process(&tree, &.{
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    const output = try dispatch.processEvents(&tree, &.{
         .{ .mouse_button = .{ .button = .right, .state = .pressed, .x = 30, .y = 20 } },
         .{ .mouse_button = .{ .button = .right, .state = .released, .x = 30, .y = 20 } },
-    }, &mouse, style.Theme.default);
+    }, &mouse, style.Theme.default, &journal);
 
-    try std.testing.expect(tree.getConst(btn).interaction.secondary_clicked);
-    try std.testing.expect(mouse.last_secondary_click != null);
-    try std.testing.expect(mouse.last_secondary_click.?.target.eql(btn));
-    try std.testing.expectApproxEqAbs(@as(f32, 30), mouse.last_secondary_click.?.x, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 20), mouse.last_secondary_click.?.y, 0.01);
+    try std.testing.expectEqual(@as(usize, 1), output.items.len);
+    const activation = output.items[0].secondary_activated;
+    try std.testing.expectEqual(control_event.ElementId.init(131), activation.element);
+    try std.testing.expectApproxEqAbs(@as(f32, 30), activation.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), activation.y, 0.01);
 }
 
-test "list box marquee selects intersecting rows" {
+test "list box marquee stays owned by its container across child hits" {
     const allocator = std.testing.allocator;
     var tree = widget.Tree.init(allocator);
     defer tree.deinit();
@@ -1519,6 +1629,10 @@ test "list box marquee selects intersecting rows" {
     const first = try tree.addChild(list_box, .{ .selectable = .{ .label = "Scene" } });
     const second = try tree.addChild(list_box, .{ .selectable = .{ .label = "Camera" } });
     const third = try tree.addChild(list_box, .{ .selectable = .{ .label = "Light" } });
+    try tree.setElementId(list_box, .init(141));
+    try tree.setElementId(first, .init(142));
+    try tree.setElementId(second, .init(143));
+    try tree.setElementId(third, .init(144));
 
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
     tree.get(list_box).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 110 };
@@ -1527,16 +1641,41 @@ test "list box marquee selects intersecting rows" {
     tree.get(third).layout_rect = .{ .x = 10, .y = 66, .w = 220, .h = 24 };
 
     var mouse = MouseState{};
-    dispatch.process(&tree, &.{
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    _ = try dispatch.processEvents(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 104 } },
+    }, &mouse, style.Theme.default, &journal);
+
+    const first_move = try dispatch.processEvents(&tree, &.{
+        .{ .mouse_move = .{ .x = 210, .y = 78 } },
+    }, &mouse, style.Theme.default, &journal);
+    try std.testing.expectEqual(@as(usize, 0), first_move.items.len);
+    try std.testing.expect(mouse.drag_target.?.eql(list_box));
+    try std.testing.expect(tree.getConst(list_box).kind.list_box.internal.marquee_active);
+    try std.testing.expect(!tree.getConst(second).kind.selectable.selected);
+    try std.testing.expect(tree.getConst(third).kind.selectable.selected);
+
+    const second_move = try dispatch.processEvents(&tree, &.{
         .{ .mouse_move = .{ .x = 210, .y = 50 } },
-        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 210, .y = 50 } },
-    }, &mouse, style.Theme.default);
+    }, &mouse, style.Theme.default, &journal);
+    try std.testing.expectEqual(@as(usize, 0), second_move.items.len);
+    try std.testing.expect(mouse.drag_target.?.eql(list_box));
 
     try std.testing.expect(!tree.getConst(first).kind.selectable.selected);
     try std.testing.expect(tree.getConst(second).kind.selectable.selected);
     try std.testing.expect(tree.getConst(third).kind.selectable.selected);
-    try std.testing.expect(tree.getConst(list_box).interaction.changed);
+
+    const release = try dispatch.processEvents(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 210, .y = 50 } },
+    }, &mouse, style.Theme.default, &journal);
+    try std.testing.expectEqual(@as(usize, 1), release.items.len);
+    try std.testing.expectEqualSlices(
+        control_event.ElementId,
+        &.{ control_event.ElementId.init(143), control_event.ElementId.init(144) },
+        release.selection(release.items[0].selection_changed),
+    );
+    try std.testing.expect(mouse.drag_target == null);
     try std.testing.expect(!tree.getConst(list_box).kind.list_box.internal.marquee_active);
 }
 
@@ -1549,6 +1688,8 @@ test "selectable drag reports list drop target" {
     const list_box = try tree.addChild(root, .{ .list_box = .{ .selection_mode = .multiple } });
     const first = try tree.addChild(list_box, .{ .selectable = .{ .label = "Scene" } });
     const second = try tree.addChild(list_box, .{ .selectable = .{ .label = "Camera" } });
+    try tree.setElementId(first, .init(141));
+    try tree.setElementId(second, .init(142));
 
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
     tree.get(list_box).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 90 };
@@ -1564,19 +1705,21 @@ test "selectable drag reports list drop target" {
     try std.testing.expect(tree.getConst(first).kind.selectable.internal.drag.active);
     try std.testing.expect(tree.getConst(second).kind.selectable.internal.drop_preview);
 
-    dispatch.process(&tree, &.{
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    const output = try dispatch.processEvents(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 40, .y = 50 } },
-    }, &mouse, style.Theme.default);
+    }, &mouse, style.Theme.default, &journal);
 
-    const drop = mouse.last_drop.?.list;
-    try std.testing.expect(drop.source.eql(first));
-    try std.testing.expect(drop.target.eql(second));
-    try std.testing.expectEqual(ContainerDrop.Position.item, drop.position);
+    const drop = output.items[output.items.len - 1].drop;
+    try std.testing.expectEqual(control_event.ElementId.init(141), drop.source);
+    try std.testing.expectEqual(control_event.ElementId.init(142), drop.target);
+    try std.testing.expectEqual(control_event.Drop.Position.item, drop.position);
     try std.testing.expect(!tree.getConst(first).kind.selectable.internal.drag.active);
     try std.testing.expect(!tree.getConst(second).kind.selectable.internal.drop_preview);
 }
 
-test "table marquee selects intersecting rows" {
+test "table marquee stays owned by its container across child hits" {
     const allocator = std.testing.allocator;
     var tree = widget.Tree.init(allocator);
     defer tree.deinit();
@@ -1586,6 +1729,10 @@ test "table marquee selects intersecting rows" {
     const first = try tree.addChild(table, .{ .table_row = .{} });
     const second = try tree.addChild(table, .{ .table_row = .{} });
     const third = try tree.addChild(table, .{ .table_row = .{} });
+    try tree.setElementId(table, .init(151));
+    try tree.setElementId(first, .init(152));
+    try tree.setElementId(second, .init(153));
+    try tree.setElementId(third, .init(154));
 
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
     tree.get(table).layout_rect = .{ .x = 10, .y = 10, .w = 240, .h = 110 };
@@ -1594,16 +1741,120 @@ test "table marquee selects intersecting rows" {
     tree.get(third).layout_rect = .{ .x = 10, .y = 66, .w = 240, .h = 24 };
 
     var mouse = MouseState{};
-    dispatch.process(&tree, &.{
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    _ = try dispatch.processEvents(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 104 } },
+    }, &mouse, style.Theme.default, &journal);
+
+    const first_move = try dispatch.processEvents(&tree, &.{
+        .{ .mouse_move = .{ .x = 230, .y = 78 } },
+    }, &mouse, style.Theme.default, &journal);
+    try std.testing.expectEqual(@as(usize, 0), first_move.items.len);
+    try std.testing.expect(mouse.drag_target.?.eql(table));
+    try std.testing.expect(tree.getConst(table).kind.table.internal.marquee_active);
+    try std.testing.expect(!tree.getConst(second).kind.table_row.selected);
+    try std.testing.expect(tree.getConst(third).kind.table_row.selected);
+
+    const second_move = try dispatch.processEvents(&tree, &.{
         .{ .mouse_move = .{ .x = 230, .y = 50 } },
-        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 230, .y = 50 } },
-    }, &mouse, style.Theme.default);
+    }, &mouse, style.Theme.default, &journal);
+    try std.testing.expectEqual(@as(usize, 0), second_move.items.len);
+    try std.testing.expect(mouse.drag_target.?.eql(table));
 
     try std.testing.expect(!tree.getConst(first).kind.table_row.selected);
     try std.testing.expect(tree.getConst(second).kind.table_row.selected);
     try std.testing.expect(tree.getConst(third).kind.table_row.selected);
-    try std.testing.expect(tree.getConst(table).kind.table.selection_changed);
+
+    const release = try dispatch.processEvents(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 230, .y = 50 } },
+    }, &mouse, style.Theme.default, &journal);
+    try std.testing.expectEqual(@as(usize, 1), release.items.len);
+    try std.testing.expectEqualSlices(
+        control_event.ElementId,
+        &.{ control_event.ElementId.init(153), control_event.ElementId.init(154) },
+        release.selection(release.items[0].selection_changed),
+    );
+    try std.testing.expect(mouse.drag_target == null);
+    try std.testing.expect(!tree.getConst(table).kind.table.internal.marquee_active);
+}
+
+test "cancel active container marquees rolls provisional selection back without output" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 400 };
+
+    const grid = try tree.addChild(root, .{ .grid_selector = .{ .selection_mode = .multiple } });
+    const grid_first = try tree.addChild(grid, .{ .grid_item = .{ .label = "First", .selected = true } });
+    const grid_second = try tree.addChild(grid, .{ .grid_item = .{ .label = "Second" } });
+    try tree.setElementId(grid, .init(161));
+    try tree.setElementId(grid_first, .init(162));
+    try tree.setElementId(grid_second, .init(163));
+    tree.get(grid).layout_rect = .{ .x = 10, .y = 10, .w = 220, .h = 60 };
+    tree.get(grid_first).layout_rect = .{ .x = 18, .y = 18, .w = 80, .h = 40 };
+    tree.get(grid_second).layout_rect = .{ .x = 106, .y = 18, .w = 80, .h = 40 };
+
+    const list = try tree.addChild(root, .{ .list_box = .{ .selection_mode = .multiple } });
+    const list_first = try tree.addChild(list, .{ .selectable = .{ .label = "First", .selected = true } });
+    const list_second = try tree.addChild(list, .{ .selectable = .{ .label = "Second" } });
+    try tree.setElementId(list, .init(171));
+    try tree.setElementId(list_first, .init(172));
+    try tree.setElementId(list_second, .init(173));
+    tree.get(list).layout_rect = .{ .x = 10, .y = 90, .w = 220, .h = 90 };
+    tree.get(list_first).layout_rect = .{ .x = 10, .y = 90, .w = 220, .h = 24 };
+    tree.get(list_second).layout_rect = .{ .x = 10, .y = 120, .w = 220, .h = 24 };
+
+    const table = try tree.addChild(root, .{ .table = .{ .selection_mode = .multiple } });
+    const table_first = try tree.addChild(table, .{ .table_row = .{ .selected = true } });
+    const table_second = try tree.addChild(table, .{ .table_row = .{} });
+    try tree.setElementId(table, .init(181));
+    try tree.setElementId(table_first, .init(182));
+    try tree.setElementId(table_second, .init(183));
+    tree.get(table).layout_rect = .{ .x = 10, .y = 200, .w = 220, .h = 90 };
+    tree.get(table_first).layout_rect = .{ .x = 10, .y = 200, .w = 220, .h = 24 };
+    tree.get(table_second).layout_rect = .{ .x = 10, .y = 230, .w = 220, .h = 24 };
+
+    var mouse = MouseState{};
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+
+    _ = try dispatch.processEvents(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 220, .y = 65 } },
+        .{ .mouse_move = .{ .x = 150, .y = 40 } },
+    }, &mouse, style.Theme.default, &journal);
+    try std.testing.expect(!tree.getConst(grid_first).kind.grid_item.selected);
+    try std.testing.expect(tree.getConst(grid_second).kind.grid_item.selected);
+    const grid_cancel = try dispatch.cancelPointerGestureEvents(&tree, &mouse, &journal);
+    try std.testing.expectEqual(@as(usize, 0), grid_cancel.items.len);
+    try std.testing.expect(tree.getConst(grid_first).kind.grid_item.selected);
+    try std.testing.expect(!tree.getConst(grid_second).kind.grid_item.selected);
+    try std.testing.expect(!tree.getConst(grid).kind.grid_selector.internal.marquee_active);
+
+    _ = try dispatch.processEvents(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 170 } },
+        .{ .mouse_move = .{ .x = 200, .y = 135 } },
+    }, &mouse, style.Theme.default, &journal);
+    try std.testing.expect(!tree.getConst(list_first).kind.selectable.selected);
+    try std.testing.expect(tree.getConst(list_second).kind.selectable.selected);
+    const list_cancel = try dispatch.cancelPointerGestureEvents(&tree, &mouse, &journal);
+    try std.testing.expectEqual(@as(usize, 0), list_cancel.items.len);
+    try std.testing.expect(tree.getConst(list_first).kind.selectable.selected);
+    try std.testing.expect(!tree.getConst(list_second).kind.selectable.selected);
+    try std.testing.expect(!tree.getConst(list).kind.list_box.internal.marquee_active);
+
+    _ = try dispatch.processEvents(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 20, .y = 280 } },
+        .{ .mouse_move = .{ .x = 200, .y = 245 } },
+    }, &mouse, style.Theme.default, &journal);
+    try std.testing.expect(!tree.getConst(table_first).kind.table_row.selected);
+    try std.testing.expect(tree.getConst(table_second).kind.table_row.selected);
+    const table_cancel = try dispatch.cancelPointerGestureEvents(&tree, &mouse, &journal);
+    try std.testing.expectEqual(@as(usize, 0), table_cancel.items.len);
+    try std.testing.expect(tree.getConst(table_first).kind.table_row.selected);
+    try std.testing.expect(!tree.getConst(table_second).kind.table_row.selected);
     try std.testing.expect(!tree.getConst(table).kind.table.internal.marquee_active);
 }
 
@@ -1616,6 +1867,8 @@ test "table row drag reports table drop target" {
     const table = try tree.addChild(root, .{ .table = .{ .selection_mode = .multiple } });
     const first = try tree.addChild(table, .{ .table_row = .{} });
     const second = try tree.addChild(table, .{ .table_row = .{} });
+    try tree.setElementId(first, .init(151));
+    try tree.setElementId(second, .init(152));
 
     tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
     tree.get(table).layout_rect = .{ .x = 10, .y = 10, .w = 240, .h = 90 };
@@ -1631,14 +1884,16 @@ test "table row drag reports table drop target" {
     try std.testing.expect(tree.getConst(first).kind.table_row.internal.drag.active);
     try std.testing.expect(tree.getConst(second).kind.table_row.internal.drop_preview);
 
-    dispatch.process(&tree, &.{
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    const output = try dispatch.processEvents(&tree, &.{
         .{ .mouse_button = .{ .button = .left, .state = .released, .x = 40, .y = 50 } },
-    }, &mouse, style.Theme.default);
+    }, &mouse, style.Theme.default, &journal);
 
-    const drop = mouse.last_drop.?.table;
-    try std.testing.expect(drop.source.eql(first));
-    try std.testing.expect(drop.target.eql(second));
-    try std.testing.expectEqual(ContainerDrop.Position.item, drop.position);
+    const drop = output.items[output.items.len - 1].drop;
+    try std.testing.expectEqual(control_event.ElementId.init(151), drop.source);
+    try std.testing.expectEqual(control_event.ElementId.init(152), drop.target);
+    try std.testing.expectEqual(control_event.Drop.Position.item, drop.position);
     try std.testing.expect(!tree.getConst(first).kind.table_row.internal.drag.active);
     try std.testing.expect(!tree.getConst(second).kind.table_row.internal.drop_preview);
 }

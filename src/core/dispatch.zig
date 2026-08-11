@@ -1,5 +1,5 @@
 const widget = @import("widget.zig");
-const event = @import("event.zig");
+const input = @import("goop_input");
 const layout = @import("layout.zig");
 const style = @import("style.zig");
 
@@ -8,27 +8,26 @@ const dispatch_focus = @import("dispatch/focus_state.zig");
 const dispatch_keyboard = @import("dispatch/keyboard.zig");
 const dispatch_pointer = @import("dispatch/pointer.zig");
 const dispatch_text = @import("dispatch/text.zig");
-pub const SecondaryClick = dispatch_types.SecondaryClick;
-pub const TreeDrop = dispatch_types.TreeDrop;
-pub const ContainerDrop = dispatch_types.ContainerDrop;
-pub const WidgetDrop = dispatch_types.WidgetDrop;
-pub const Drop = dispatch_types.Drop;
+const control_event = @import("control_event.zig");
 pub const MouseState = dispatch_types.MouseState;
 pub const Clipboard = dispatch_types.Clipboard;
 
-/// Process a batch of events against the widget tree.
-/// Updates interaction state (hovered, pressed) and widget state (clicked).
-/// Call after doLayout so layout_rects are populated.
-pub fn process(tree: *widget.Tree, events: []const event.Event, mouse: *MouseState, theme: style.Theme) void {
-    processWithClipboard(tree, events, mouse, theme, null, null);
-}
-
-pub fn processWithClipboard(tree: *widget.Tree, events: []const event.Event, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard, text_ctx: ?*const layout.TextMeasureCtx) void {
+/// Process a batch of events and append semantic occurrences to `journal`.
+/// The caller must reserve the full batch with `Journal.prepareBatch` before
+/// calling; dispatch itself is allocation-free.
+pub fn process(
+    tree: *widget.Tree,
+    events: []const input.Event,
+    mouse: *MouseState,
+    theme: style.Theme,
+    clipboard: ?Clipboard,
+    text_ctx: ?*const layout.TextMeasureCtx,
+    journal: *control_event.Journal,
+) void {
     discardDeadHandles(tree, mouse);
+    mouse.control_journal = journal;
+    defer mouse.control_journal = null;
     for (events) |ev| {
-        // Custom behavior callbacks may mutate the tree while a batch is
-        // being dispatched, so validate retained interaction handles before
-        // every event rather than only once per frame.
         discardDeadHandles(tree, mouse);
         processOne(tree, ev, mouse, theme, clipboard, text_ctx);
     }
@@ -38,7 +37,7 @@ pub fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
     dispatch_pointer.cancelPointerGesture(tree, mouse);
 }
 
-fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard, text_ctx: ?*const layout.TextMeasureCtx) void {
+fn processOne(tree: *widget.Tree, ev: input.Event, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard, text_ctx: ?*const layout.TextMeasureCtx) void {
     switch (ev) {
         .mouse_move => |mm| dispatch_pointer.handleMouseMove(tree, mouse, theme, text_ctx, mm),
         .mouse_button => |mb| dispatch_pointer.handleMouseButton(tree, mouse, theme, text_ctx, mb),
@@ -50,7 +49,7 @@ fn processOne(tree: *widget.Tree, ev: event.Event, mouse: *MouseState, theme: st
     }
 }
 
-fn handleFocus(tree: *widget.Tree, mouse: *MouseState, f: event.Event.Focus) void {
+fn handleFocus(tree: *widget.Tree, mouse: *MouseState, f: input.Event.Focus) void {
     if (!f.focused) {
         dispatch_focus.setFocusedWidget(tree, mouse, null);
     }
@@ -67,19 +66,19 @@ fn discardDeadHandles(tree: *const widget.Tree, mouse: *MouseState) void {
         if (!tree.isAlive(handle)) {
             // A click spans press and release, often several frames apart. If
             // the tree was rebuilt in between, re-resolve the press target by
-            // its stable user id so the release still registers as a click on
+            // its stable semantic element ID so the release still registers on
             // the same logical widget instead of being dropped.
-            mouse.press_target = if (mouse.press_target_user_id) |uid| tree.findByUserId(uid) else null;
+            mouse.press_target = if (mouse.press_target_element_id) |id| tree.findByElementId(id) else null;
             if (mouse.press_target == null) {
-                mouse.press_target_user_id = null;
+                mouse.press_target_element_id = null;
                 mouse.press_can_defer_drag = false;
             }
         }
     }
     if (mouse.right_press_target) |handle| {
         if (!tree.isAlive(handle)) {
-            mouse.right_press_target = if (mouse.right_press_target_user_id) |uid| tree.findByUserId(uid) else null;
-            if (mouse.right_press_target == null) mouse.right_press_target_user_id = null;
+            mouse.right_press_target = if (mouse.right_press_target_element_id) |id| tree.findByElementId(id) else null;
+            if (mouse.right_press_target == null) mouse.right_press_target_element_id = null;
         }
     }
     if (mouse.drag_target) |handle| {
@@ -91,9 +90,6 @@ fn discardDeadHandles(tree: *const widget.Tree, mouse: *MouseState) void {
             mouse.table_drop_preview = null;
             mouse.widget_drop_preview = null;
         }
-    }
-    if (mouse.last_secondary_click) |click| {
-        if (!tree.isAlive(click.target)) mouse.last_secondary_click = null;
     }
     if (mouse.tree_drop_preview) |drop| {
         if (!tree.isAlive(drop.source) or !tree.isAlive(drop.target))
@@ -114,10 +110,6 @@ fn discardDeadHandles(tree: *const widget.Tree, mouse: *MouseState) void {
     if (mouse.widget_drop_preview) |drop| {
         if (!tree.isAlive(drop.source) or !tree.isAlive(drop.target))
             mouse.widget_drop_preview = null;
-    }
-    if (mouse.last_drop) |drop| {
-        if (!tree.isAlive(drop.source()) or !tree.isAlive(drop.target()))
-            mouse.last_drop = null;
     }
 }
 

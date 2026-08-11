@@ -1,21 +1,21 @@
 const std = @import("std");
 const widget = @import("../widget.zig");
-const event = @import("../event.zig");
+const input = @import("goop_input");
 const types = @import("types.zig");
 const selection = @import("selection.zig");
 
 const MouseState = types.MouseState;
 const Clipboard = types.Clipboard;
 
-fn keyPressed(k: event.Event.Key) bool {
+fn keyPressed(k: input.Event.Key) bool {
     return k.state == .pressed;
 }
 
-fn keyPressedOrRepeat(k: event.Event.Key) bool {
+fn keyPressedOrRepeat(k: input.Event.Key) bool {
     return k.state == .pressed or k.state == .repeat;
 }
 
-pub fn handleClipboardShortcut(tree: *widget.Tree, mouse: *MouseState, clipboard: ?Clipboard, k: event.Event.Key) bool {
+pub fn handleClipboardShortcut(tree: *widget.Tree, mouse: *MouseState, clipboard: ?Clipboard, k: input.Event.Key) bool {
     if (!mouse.ctrl_down) return false;
     switch (k.keycode) {
         .a => {
@@ -29,7 +29,7 @@ pub fn handleClipboardShortcut(tree: *widget.Tree, mouse: *MouseState, clipboard
             } else if (tree.getConst(focused).kind == .grid_item) {
                 if (widget.gridItemParentSelector(tree, focused)) |selector| {
                     if (tree.getConst(selector).kind.grid_selector.selection_mode == .multiple) {
-                        _ = selection.selectAllGridSelector(tree, selector);
+                        if (selection.selectAllGridSelector(tree, selector)) mouse.emitSelection(tree, selector);
                     }
                 }
             }
@@ -51,6 +51,7 @@ pub fn handleClipboardShortcut(tree: *widget.Tree, mouse: *MouseState, clipboard
             if (editor.hasSelection()) {
                 cb.setText(editor.selectedContent());
                 editor.deleteSelection();
+                mouse.emitText(tree, focused, editor.content(), false);
             }
             return true;
         },
@@ -59,14 +60,18 @@ pub fn handleClipboardShortcut(tree: *widget.Tree, mouse: *MouseState, clipboard
             const cb = clipboard orelse return true;
             const focused = mouse.focused orelse return true;
             const editor = focusedTextEditor(tree, focused) orelse return true;
-            if (cb.getText()) |text| editor.insertSlice(text);
+            if (cb.getText()) |text_value| {
+                const could_change = text_value.len > 0 or editor.hasSelection();
+                editor.insertSlice(text_value);
+                if (could_change) mouse.emitText(tree, focused, editor.content(), false);
+            }
             return true;
         },
         else => return false,
     }
 }
 
-pub fn handleTextEditorKey(tree: *widget.Tree, mouse: *MouseState, k: event.Event.Key) bool {
+pub fn handleTextEditorKey(tree: *widget.Tree, mouse: *MouseState, k: input.Event.Key) bool {
     if (!keyPressedOrRepeat(k)) return false;
     const focused = mouse.focused orelse return switch (k.keycode) {
         .backspace, .delete, .left, .right, .home, .end => true,
@@ -79,11 +84,15 @@ pub fn handleTextEditorKey(tree: *widget.Tree, mouse: *MouseState, k: event.Even
 
     switch (k.keycode) {
         .backspace => {
+            const changed = editor.hasSelection() or editor.cursor > 0;
             if (mouse.ctrl_down) editor.deleteBackWord() else editor.deleteBack();
+            if (changed) mouse.emitText(tree, focused, editor.content(), false);
             return true;
         },
         .delete => {
+            const changed = editor.hasSelection() or editor.cursor < editor.len;
             if (mouse.ctrl_down) editor.deleteForwardWord() else editor.deleteForward();
+            if (changed) mouse.emitText(tree, focused, editor.content(), false);
             return true;
         },
         .left => {
@@ -152,38 +161,21 @@ pub fn moveTextCursorRight(editor: *widget.WidgetKind.TextInput, mouse: *const M
     }
 }
 
-pub fn handleText(tree: *widget.Tree, mouse: *MouseState, t: event.Event.Text) void {
+pub fn handleText(tree: *widget.Tree, mouse: *MouseState, t: input.Event.Text) void {
     if (mouse.focused) |f| {
-        if (handleBehaviorTextInput(tree, f, t.codepoint)) return;
         if (focusedTextEditor(tree, f)) |editor| {
             if (isPrintableTextCodepoint(t.codepoint) and
                 (!numericEditorEditing(tree, f) or isNumericEditorCodepoint(t.codepoint)))
             {
+                const could_change = editor.len < editor.buffer.len or editor.hasSelection();
                 editor.insertCodepoint(t.codepoint);
+                if (could_change) mouse.emitText(tree, f, editor.content(), false);
             }
         } else if (isPrintableTextCodepoint(t.codepoint)) {
             beginNumericEditorTextInput(tree, f, t.codepoint);
+            if (focusedTextEditor(tree, f)) |editor| mouse.emitText(tree, f, editor.content(), false);
         }
     }
-}
-
-fn handleBehaviorTextInput(tree: *widget.Tree, handle: widget.NodeHandle, codepoint: u21) bool {
-    if (!tree.isAlive(handle) or !isPrintableTextCodepoint(codepoint)) return false;
-    const node = tree.get(handle);
-    const widget_type = node.widget_type orelse return false;
-    const text_fn = widget_type.textInput orelse return false;
-    var buf: [4]u8 = undefined;
-    const len = std.unicode.utf8Encode(codepoint, &buf) catch return false;
-    return text_fn(.{
-        .widget = .{
-            .tree = tree,
-            .handle = handle,
-            .node = node,
-            .state = node.widget_state,
-            .theme = .{},
-        },
-        .text = buf[0..len],
-    });
 }
 
 pub fn isPrintableTextCodepoint(codepoint: u21) bool {
@@ -235,11 +227,17 @@ pub fn beginNumericEditorTextInput(tree: *widget.Tree, handle: widget.NodeHandle
     textKindOps(node.kind).begin_numeric_text(tree, handle, codepoint);
 }
 
-pub fn commitNumericEditor(tree: *widget.Tree, handle: widget.NodeHandle) bool {
+pub fn commitNumericEditor(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) bool {
     if (!tree.isAlive(handle)) return false;
     const node = tree.get(handle);
     const result = textKindOps(node.kind).commit_numeric(node) orelse return false;
-    if (result == .changed) node.interaction.changed = true;
+    if (result == .changed) {
+        switch (node.kind) {
+            .drag_value => |value| mouse.emitScalar(tree, handle, value.value),
+            .spinbox => |value| mouse.emitScalar(tree, handle, value.value),
+            else => {},
+        }
+    }
     return result != .invalid;
 }
 
@@ -357,7 +355,7 @@ fn cancelSpinBox(node: *widget.Node) void {
     node.kind.spinbox.cancelEdit();
 }
 
-pub fn commitOrCancelNumericEditorOnBlur(tree: *widget.Tree, handle: widget.NodeHandle) void {
+pub fn commitOrCancelNumericEditorOnBlur(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     if (!numericEditorEditing(tree, handle)) return;
-    if (!commitNumericEditor(tree, handle)) cancelNumericEditor(tree, handle);
+    if (!commitNumericEditor(tree, handle, mouse)) cancelNumericEditor(tree, handle);
 }

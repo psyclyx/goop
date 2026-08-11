@@ -1,8 +1,8 @@
 const style = @import("style.zig");
 const widget = @import("widget.zig");
-const paint_types = @import("paint_types.zig");
+const visual_types = @import("visual_types.zig");
 
-pub const Rect = paint_types.Rect;
+pub const Rect = visual_types.Rect;
 
 pub fn pointInRect(x: f32, y: f32, rect: Rect) bool {
     return x >= rect.x and x < rect.x + rect.w and

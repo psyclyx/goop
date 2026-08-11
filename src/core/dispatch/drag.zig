@@ -32,14 +32,17 @@ pub const treeDropPositionAtY = items.treeDropPositionAtY;
 
 pub const beginListBoxMarquee = marquee.beginListBoxMarquee;
 pub const updateListBoxMarquee = marquee.updateListBoxMarquee;
+pub const cancelListBoxMarquee = marquee.cancelListBoxMarquee;
 pub const finalizeListBoxMarquee = marquee.finalizeListBoxMarquee;
 pub const snapshotListBoxSelection = marquee.snapshotListBoxSelection;
 pub const beginGridSelectorMarquee = marquee.beginGridSelectorMarquee;
 pub const updateGridSelectorMarquee = marquee.updateGridSelectorMarquee;
+pub const cancelGridSelectorMarquee = marquee.cancelGridSelectorMarquee;
 pub const finalizeGridSelectorMarquee = marquee.finalizeGridSelectorMarquee;
 pub const snapshotGridSelectorSelection = marquee.snapshotGridSelectorSelection;
 pub const beginTableMarquee = marquee.beginTableMarquee;
 pub const updateTableMarquee = marquee.updateTableMarquee;
+pub const cancelTableMarquee = marquee.cancelTableMarquee;
 pub const finalizeTableMarquee = marquee.finalizeTableMarquee;
 pub const snapshotTableSelection = marquee.snapshotTableSelection;
 
@@ -129,8 +132,7 @@ pub fn updateWidgetDropPreview(tree: *widget.Tree, source: widget.NodeHandle, mo
 pub fn finalizeWidgetDrop(tree: *widget.Tree, source: widget.NodeHandle, mouse: *MouseState) void {
     if (mouse.widget_drop_preview) |preview| {
         if (preview.source.eql(source)) {
-            mouse.last_drop = .{ .widget = preview };
-            if (tree.isAlive(preview.target)) tree.get(preview.target).interaction.drop_received = true;
+            mouse.commitDrop(tree, .{ .widget = preview });
         }
     }
     clearWidgetDropPreview(tree);

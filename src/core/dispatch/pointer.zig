@@ -1,6 +1,6 @@
 const std = @import("std");
 const widget = @import("../widget.zig");
-const event = @import("../event.zig");
+const input = @import("goop_input");
 const focus = @import("../focus.zig");
 const hittest = @import("../hittest.zig");
 const layout = @import("../layout.zig");
@@ -24,11 +24,13 @@ pub fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
     if (mouse.press_target) |target| {
         if (tree.isAlive(target)) tree.get(target).interaction.pressed = false;
     }
+    if (mouse.drag_target) |target| {
+        if (tree.isAlive(target)) pointerKindOps(tree.getConst(target).kind).cancel_drag(tree, target);
+    }
 
     for (tree.nodes.items) |*node| {
         if (!node.alive) continue;
         node.interaction.drop_hovered = false;
-        node.interaction.drop_received = false;
         pointerKindOps(node.kind).cancel_gesture(node);
     }
 
@@ -46,14 +48,10 @@ pub fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
     mouse.widget_drop_preview = null;
 }
 
-pub fn handleMouseMove(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mm: event.Event.MouseMove) void {
+pub fn handleMouseMove(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mm: input.Event.MouseMove) void {
     mouse.x = mm.x;
     mouse.y = mm.y;
-    if (mouse.left_down) {
-        if (mouse.press_target) |pt| {
-            _ = dispatchBehaviorPointer(tree, pt, theme, .{ .move = mm });
-        }
-    }
+    updateScrollbarHover(tree, mouse, theme);
     drag.maybeBeginDeferredDrag(tree, mouse);
     if (mouse.drag_target) |dt| {
         pointerKindOps(tree.getConst(dt).kind).drag_move(tree, dt, mouse, theme);
@@ -73,9 +71,10 @@ pub fn handleMouseMove(tree: *widget.Tree, mouse: *MouseState, theme: style.Them
     if (!mouse.left_down) menu.syncMenuHover(tree, hovered, mouse);
 }
 
-pub fn handleMouseButton(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+pub fn handleMouseButton(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: input.Event.MouseButton) void {
     mouse.x = mb.x;
     mouse.y = mb.y;
+    updateScrollbarHover(tree, mouse, theme);
     if (mb.button == .left) {
         if (mb.state == .pressed) {
             handlePrimaryPress(tree, mouse, theme, text_ctx, mb);
@@ -96,10 +95,7 @@ pub fn handleMouseButton(tree: *widget.Tree, mouse: *MouseState, theme: style.Th
     }
 }
 
-pub fn handleMouseScroll(tree: *widget.Tree, mouse: *MouseState, ms: event.Event.MouseScroll) void {
-    if (hittest.hitTest(tree, mouse.x, mouse.y)) |hit| {
-        if (dispatchBehaviorPointer(tree, hit, .{}, .{ .scroll = ms })) return;
-    }
+pub fn handleMouseScroll(tree: *widget.Tree, mouse: *MouseState, ms: input.Event.MouseScroll) void {
     // Find the scroll area under the cursor and adjust scroll offset
     const target = hittest.hitTestKind(tree, mouse.x, mouse.y, .scroll_area);
     if (target) |t| {
@@ -120,6 +116,9 @@ pub fn handleMouseScroll(tree: *widget.Tree, mouse: *MouseState, ms: event.Event
         const max_y = if (scroll.disable_vertical_scroll) 0 else @max(extent.h - viewport.h, 0);
         node.kind.scroll_area.scroll_x = std.math.clamp(old_scroll_x + scroll_dx, 0, max_x);
         node.kind.scroll_area.scroll_y = std.math.clamp(old_scroll_y + scroll_dy, 0, max_y);
+        if (node.kind.scroll_area.scroll_x != old_scroll_x or node.kind.scroll_area.scroll_y != old_scroll_y) {
+            mouse.emitScroll(tree, t);
+        }
     }
 }
 
@@ -130,7 +129,7 @@ fn handleInlineTextEditorPress(
     text_x: f32,
     font_size: f32,
     mouse: *const MouseState,
-    mb: event.Event.MouseButton,
+    mb: input.Event.MouseButton,
     text_ctx: ?*const layout.TextMeasureCtx,
 ) void {
     const rel_x = mouse_x - text_x;
@@ -186,7 +185,7 @@ fn beginImmediateDrag(mouse: *MouseState, handle: widget.NodeHandle) void {
     mouse.drag_origin_y = mouse.y;
 }
 
-fn pressTextInput(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+fn pressTextInput(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: input.Event.MouseButton) void {
     const node = tree.get(handle);
     const rect = node.layout_rect;
     const resolved = node.style_override.resolve(theme);
@@ -194,7 +193,7 @@ fn pressTextInput(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseSt
     handleInlineTextEditorPress(text_input, text_input.content(), mouse.x, rect.x + resolved.padding.left, resolved.font_size, mouse, mb, text_ctx);
 }
 
-fn pressDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+fn pressDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: input.Event.MouseButton) void {
     if (tree.getConst(handle).kind.drag_value.editing) {
         if (hit_dispatch.textEditorTextX(tree, handle, theme)) |text_x| {
             const resolved = tree.getConst(handle).style_override.resolve(theme);
@@ -224,11 +223,13 @@ fn pressScrollArea(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseS
                 .horizontal => scroll_area.scroll_x = next,
             }
             mouse.layout_changed = true;
+            mouse.emitScroll(tree, handle);
         }
     }
 
     beginImmediateDrag(mouse, handle);
     mouse.scroll_drag_axis = hit.metrics.axis;
+    tree.get(handle).kind.scroll_area.internal.active_scrollbar = hit.metrics.axis;
     mouse.drag_origin_value = switch (hit.metrics.axis) {
         .vertical => tree.getConst(handle).kind.scroll_area.scroll_y,
         .horizontal => tree.getConst(handle).kind.scroll_area.scroll_x,
@@ -252,12 +253,12 @@ fn pressTable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState)
     }
 }
 
-fn pressSpinBox(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+fn pressSpinBox(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: input.Event.MouseButton) void {
     if (hit_dispatch.clickInSpinBoxDecrement(tree, handle, mouse.x)) {
-        control.stepSpinBox(tree, handle, -1, true);
+        control.stepSpinBox(tree, handle, mouse, -1, true);
         clearPressedTarget(tree, mouse, handle);
     } else if (hit_dispatch.clickInSpinBoxIncrement(tree, handle, mouse.x)) {
-        control.stepSpinBox(tree, handle, 1, true);
+        control.stepSpinBox(tree, handle, mouse, 1, true);
         clearPressedTarget(tree, mouse, handle);
     } else if (tree.getConst(handle).kind.spinbox.editing) {
         if (hit_dispatch.textEditorTextX(tree, handle, theme)) |text_x| {
@@ -268,9 +269,9 @@ fn pressSpinBox(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseStat
     }
 }
 
-fn pressTreeItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+fn pressTreeItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: input.Event.MouseButton) void {
     if (hit_dispatch.clickInTreeDisclosure(tree, handle, mouse.x, theme)) {
-        navigation.toggleTreeItem(tree, handle);
+        navigation.toggleTreeItem(tree, handle, mouse);
         clearPressedTarget(tree, mouse, handle);
         mouse.press_can_defer_drag = false;
     } else if (tree.getConst(handle).kind.tree_item.editing) {
@@ -286,13 +287,12 @@ fn pressTreeItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseSta
     }
 }
 
-fn handlePrimaryPressTarget(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton, handle: widget.NodeHandle) void {
+fn handlePrimaryPressTarget(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: input.Event.MouseButton, handle: widget.NodeHandle) void {
     tree.get(handle).interaction.pressed = true;
-    if (dispatchBehaviorPointer(tree, handle, theme, .{ .press = mb })) return;
     pointerKindOps(tree.getConst(handle).kind).press(tree, handle, mouse, theme, text_ctx, mb);
 }
 
-fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: input.Event.MouseButton) void {
     mouse.left_down = true;
     mouse.press_origin_x = mouse.x;
     mouse.press_origin_y = mouse.y;
@@ -303,7 +303,7 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
     menu.closePopupsForPress(tree, target);
     setFocusFromPressTarget(tree, mouse, target);
     mouse.press_target = target;
-    mouse.press_target_user_id = if (target) |t| nonZero(tree.userId(t)) else null;
+    mouse.press_target_element_id = if (target) |t| tree.elementId(t) else null;
     if (target) |handle| handlePrimaryPressTarget(tree, mouse, theme, text_ctx, mb, handle);
 }
 
@@ -321,14 +321,6 @@ fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
     const release_target = hittest.hitTest(tree, mouse.x, mouse.y);
 
     if (mouse.press_target) |pt| {
-        if (tree.isAlive(pt)) {
-            _ = dispatchBehaviorPointer(tree, pt, .{}, .{ .release = .{
-                .button = .left,
-                .state = .released,
-                .x = mouse.x,
-                .y = mouse.y,
-            } });
-        }
         if (release_target) |rt| {
             if (rt.eql(pt) and !dragSuppressedClick(tree, dragged_target, pt)) {
                 if (tree.isAlive(pt)) {
@@ -341,29 +333,13 @@ fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
         }
     }
     mouse.press_target = null;
-    mouse.press_target_user_id = null;
+    mouse.press_target_element_id = null;
     mouse.press_can_defer_drag = false;
     _ = updateHover(tree, mouse);
 }
 
-fn dispatchBehaviorPointer(tree: *widget.Tree, handle: widget.NodeHandle, theme: style.Theme, pointer_event: widget.PointerEvent) bool {
-    if (!tree.isAlive(handle)) return false;
-    const node = tree.get(handle);
-    const widget_type = node.widget_type orelse return false;
-    const pointer_fn = widget_type.pointer orelse return false;
-    return pointer_fn(.{
-        .widget = .{
-            .tree = tree,
-            .handle = handle,
-            .node = node,
-            .state = node.widget_state,
-            .theme = theme,
-        },
-        .event = pointer_event,
-    });
-}
-
 const PointerKindOps = struct {
+    cancel_drag: CancelDragFn = cancelDragNoop,
     cancel_gesture: CancelGestureFn = cancelGestureNoop,
     drag_move: DragMoveFn = dragMoveNoop,
     press: PressFn = pressNoop,
@@ -372,9 +348,10 @@ const PointerKindOps = struct {
     suppresses_drag_click: bool = false,
 };
 
+const CancelDragFn = *const fn (*widget.Tree, widget.NodeHandle) void;
 const CancelGestureFn = *const fn (*widget.Node) void;
 const DragMoveFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState, style.Theme) void;
-const PressFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState, style.Theme, ?*const layout.TextMeasureCtx, event.Event.MouseButton) void;
+const PressFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState, style.Theme, ?*const layout.TextMeasureCtx, input.Event.MouseButton) void;
 const ReleaseDragFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState) void;
 const ReleaseActivateFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState) void;
 
@@ -402,10 +379,13 @@ const pointer_kind_ops = blk: {
         .press = pressSplitter,
     };
     ops[@intFromEnum(Tag.scroll_area)] = .{
+        .cancel_gesture = cancelScrollAreaGesture,
         .drag_move = dragMoveScrollArea,
         .press = pressScrollAreaOp,
+        .release_drag = releaseScrollAreaDrag,
     };
     ops[@intFromEnum(Tag.table)] = .{
+        .cancel_drag = cancelTableDrag,
         .cancel_gesture = cancelTableGesture,
         .drag_move = dragMoveTable,
         .press = pressTableOp,
@@ -429,6 +409,7 @@ const pointer_kind_ops = blk: {
         .suppresses_drag_click = true,
     };
     ops[@intFromEnum(Tag.list_box)] = .{
+        .cancel_drag = cancelListBoxDrag,
         .cancel_gesture = cancelListBoxGesture,
         .drag_move = dragMoveListBox,
         .press = pressListBox,
@@ -436,6 +417,7 @@ const pointer_kind_ops = blk: {
         .suppresses_drag_click = true,
     };
     ops[@intFromEnum(Tag.grid_selector)] = .{
+        .cancel_drag = cancelGridSelectorDrag,
         .cancel_gesture = cancelGridSelectorGesture,
         .drag_move = dragMoveGridSelector,
         .press = pressGridSelector,
@@ -462,6 +444,20 @@ const pointer_kind_ops = blk: {
     ops[@intFromEnum(Tag.spinbox)] = .{ .press = pressSpinBoxOp };
     break :blk ops;
 };
+
+fn cancelDragNoop(_: *widget.Tree, _: widget.NodeHandle) void {}
+
+fn cancelListBoxDrag(tree: *widget.Tree, handle: widget.NodeHandle) void {
+    drag.cancelListBoxMarquee(tree, handle);
+}
+
+fn cancelGridSelectorDrag(tree: *widget.Tree, handle: widget.NodeHandle) void {
+    drag.cancelGridSelectorMarquee(tree, handle);
+}
+
+fn cancelTableDrag(tree: *widget.Tree, handle: widget.NodeHandle) void {
+    drag.cancelTableMarquee(tree, handle);
+}
 
 fn cancelGestureNoop(_: *widget.Node) void {}
 
@@ -517,10 +513,14 @@ fn cancelTableRowGesture(node: *widget.Node) void {
     row.internal.drop_preview = false;
 }
 
+fn cancelScrollAreaGesture(node: *widget.Node) void {
+    node.kind.scroll_area.internal.active_scrollbar = null;
+}
+
 fn dragMoveNoop(_: *widget.Tree, _: widget.NodeHandle, _: *MouseState, _: style.Theme) void {}
 
 fn dragMoveSlider(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme) void {
-    control.updateSliderValue(tree, handle, mouse.x, theme);
+    control.updateSliderValue(tree, handle, mouse, mouse.x, theme);
 }
 
 fn dragMoveDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme) void {
@@ -532,7 +532,10 @@ fn dragMoveSplitter(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *Mouse
 }
 
 fn dragMoveScrollArea(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme) void {
-    if (scroll_dispatch.updateScrollAreaDrag(tree, handle, mouse, theme)) mouse.layout_changed = true;
+    if (scroll_dispatch.updateScrollAreaDrag(tree, handle, mouse, theme)) {
+        mouse.layout_changed = true;
+        mouse.emitScroll(tree, handle);
+    }
 }
 
 fn dragMoveTable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme) void {
@@ -564,60 +567,60 @@ fn dragMoveTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *Mouse
     drag.updateTableRowDragPreview(tree, handle, mouse);
 }
 
-fn pressNoop(_: *widget.Tree, _: widget.NodeHandle, _: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {}
+fn pressNoop(_: *widget.Tree, _: widget.NodeHandle, _: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: input.Event.MouseButton) void {}
 
-fn pressTextInputOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+fn pressTextInputOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: input.Event.MouseButton) void {
     pressTextInput(tree, handle, mouse, theme, text_ctx, mb);
 }
 
-fn pressSlider(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+fn pressSlider(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, _: ?*const layout.TextMeasureCtx, _: input.Event.MouseButton) void {
     beginImmediateDrag(mouse, handle);
     mouse.drag_origin_value = tree.getConst(handle).kind.slider.value;
-    control.updateSliderValue(tree, handle, mouse.x, theme);
+    control.updateSliderValue(tree, handle, mouse, mouse.x, theme);
 }
 
-fn pressDragValueOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+fn pressDragValueOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: input.Event.MouseButton) void {
     pressDragValue(tree, handle, mouse, theme, text_ctx, mb);
 }
 
-fn pressSplitter(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+fn pressSplitter(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: input.Event.MouseButton) void {
     beginImmediateDrag(mouse, handle);
     mouse.drag_origin_value = tree.getConst(handle).kind.splitter.ratio;
 }
 
-fn pressScrollAreaOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+fn pressScrollAreaOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, _: ?*const layout.TextMeasureCtx, _: input.Event.MouseButton) void {
     pressScrollArea(tree, handle, mouse, theme);
 }
 
-fn pressTableOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+fn pressTableOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: input.Event.MouseButton) void {
     pressTable(tree, handle, mouse);
 }
 
-fn pressSpinBoxOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+fn pressSpinBoxOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: input.Event.MouseButton) void {
     pressSpinBox(tree, handle, mouse, theme, text_ctx, mb);
 }
 
-fn pressTreeItemOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: event.Event.MouseButton) void {
+fn pressTreeItemOp(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx, mb: input.Event.MouseButton) void {
     pressTreeItem(tree, handle, mouse, theme, text_ctx, mb);
 }
 
-fn pressSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+fn pressSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: input.Event.MouseButton) void {
     if (selection.selectableParentListBox(tree, handle) != null) mouse.press_can_defer_drag = true;
 }
 
-fn pressListBox(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+fn pressListBox(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: input.Event.MouseButton) void {
     mouse.press_can_defer_drag = tree.getConst(handle).kind.list_box.selection_mode == .multiple;
 }
 
-fn pressGridItem(_: *widget.Tree, _: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+fn pressGridItem(_: *widget.Tree, _: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: input.Event.MouseButton) void {
     mouse.press_can_defer_drag = true;
 }
 
-fn pressGridSelector(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+fn pressGridSelector(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: input.Event.MouseButton) void {
     mouse.press_can_defer_drag = tree.getConst(handle).kind.grid_selector.selection_mode == .multiple;
 }
 
-fn pressTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: event.Event.MouseButton) void {
+fn pressTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx, _: input.Event.MouseButton) void {
     if (widget.tableRowSelectable(tree, handle)) mouse.press_can_defer_drag = true;
 }
 
@@ -631,32 +634,36 @@ fn releaseSelectableDrag(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *
     drag.finalizeSelectableDrag(tree, handle, mouse);
 }
 
-fn releaseListBoxDrag(tree: *widget.Tree, handle: widget.NodeHandle, _: *MouseState) void {
-    drag.finalizeListBoxMarquee(tree, handle);
+fn releaseListBoxDrag(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    drag.finalizeListBoxMarquee(tree, handle, mouse);
 }
 
 fn releaseGridItemDrag(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     drag.finalizeGridItemDrag(tree, handle, mouse);
 }
 
-fn releaseGridSelectorDrag(tree: *widget.Tree, handle: widget.NodeHandle, _: *MouseState) void {
-    drag.finalizeGridSelectorMarquee(tree, handle);
+fn releaseGridSelectorDrag(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    drag.finalizeGridSelectorMarquee(tree, handle, mouse);
 }
 
 fn releaseTableRowDrag(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
     drag.finalizeTableRowDrag(tree, handle, mouse);
 }
 
-fn releaseTableDrag(tree: *widget.Tree, handle: widget.NodeHandle, _: *MouseState) void {
-    drag.finalizeTableMarquee(tree, handle);
+fn releaseScrollAreaDrag(tree: *widget.Tree, handle: widget.NodeHandle, _: *MouseState) void {
+    tree.get(handle).kind.scroll_area.internal.active_scrollbar = null;
 }
 
-fn releaseActivateDefault(tree: *widget.Tree, handle: widget.NodeHandle, _: *MouseState) void {
-    activation.fireClick(tree, handle);
+fn releaseTableDrag(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    drag.finalizeTableMarquee(tree, handle, mouse);
+}
+
+fn releaseActivateDefault(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+    activation.fireClick(tree, handle, mouse);
 }
 
 fn releaseActivateTable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
-    activation.activateTable(tree, handle, mouse.x, mouse.y);
+    activation.activateTable(tree, handle, mouse, mouse.x, mouse.y);
 }
 
 fn releaseActivateSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
@@ -681,7 +688,7 @@ fn handleSecondaryPress(tree: *widget.Tree, mouse: *MouseState) void {
     const target = hittest.hitTest(tree, mouse.x, mouse.y);
     menu.closePopupsForPress(tree, target);
     mouse.right_press_target = target;
-    mouse.right_press_target_user_id = if (target) |t| nonZero(tree.userId(t)) else null;
+    mouse.right_press_target_element_id = if (target) |t| tree.elementId(t) else null;
 }
 
 fn handleSecondaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
@@ -693,7 +700,7 @@ fn handleSecondaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
         }
     }
     mouse.right_press_target = null;
-    mouse.right_press_target_user_id = null;
+    mouse.right_press_target_element_id = null;
     _ = updateHover(tree, mouse);
 }
 
@@ -709,15 +716,20 @@ fn updateHover(tree: *widget.Tree, mouse: *const MouseState) ?widget.NodeHandle 
     return top;
 }
 
+fn updateScrollbarHover(tree: *widget.Tree, mouse: *const MouseState, theme: style.Theme) void {
+    for (tree.nodes.items) |*node| {
+        if (!node.alive or node.kind != .scroll_area) continue;
+        node.kind.scroll_area.internal.hovered_scrollbar = null;
+    }
+    const hit = scroll_dispatch.scrollbarHitAtPoint(tree, mouse.x, mouse.y, theme) orelse return;
+    tree.get(hit.handle).kind.scroll_area.internal.hovered_scrollbar = hit.metrics.axis;
+}
+
 fn hoverChanged(mouse: *const MouseState, hovered: ?widget.NodeHandle) bool {
     if (mouse.hovered) |previous| {
         return hovered == null or !hovered.?.eql(previous);
     }
     return hovered != null;
-}
-
-fn nonZero(user_id: u64) ?u64 {
-    return if (user_id == 0) null else user_id;
 }
 
 fn dragSuppressedClick(tree: *const widget.Tree, dragged_target: ?widget.NodeHandle, pressed_target: widget.NodeHandle) bool {
@@ -733,7 +745,7 @@ fn treeHasTooltip(tree: *const widget.Tree) bool {
     return false;
 }
 
-fn isDoubleClick(mouse: *const MouseState, mb: event.Event.MouseButton) bool {
+fn isDoubleClick(mouse: *const MouseState, mb: input.Event.MouseButton) bool {
     if (mouse.last_click_time_ms == 0 or mb.timestamp_ms == 0) return false;
     const dt = mb.timestamp_ms -| mouse.last_click_time_ms;
     if (dt > MouseState.double_click_time_ms) return false;

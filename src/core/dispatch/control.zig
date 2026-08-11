@@ -1,13 +1,13 @@
 const std = @import("std");
 const widget = @import("../widget.zig");
-const paint = @import("../paint.zig");
+const visual_types = @import("../visual_types.zig");
 const style = @import("../style.zig");
 const geometry = @import("../geometry.zig");
 const types = @import("types.zig");
 
 const MouseState = types.MouseState;
 
-pub fn updateSliderValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32, theme: style.Theme) void {
+pub fn updateSliderValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, mouse_x: f32, theme: style.Theme) void {
     const node = tree.get(handle);
     const rect = node.layout_rect;
     const resolved = node.style_override.resolve(theme);
@@ -15,7 +15,11 @@ pub fn updateSliderValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x:
     const usable = rect.w - thumb_w;
     if (usable <= 0) return;
     const t = std.math.clamp((mouse_x - rect.x - thumb_w * 0.5) / usable, 0, 1);
-    node.kind.slider.value = node.kind.slider.min + t * (node.kind.slider.max - node.kind.slider.min);
+    const next = node.kind.slider.min + t * (node.kind.slider.max - node.kind.slider.min);
+    if (next != node.kind.slider.value) {
+        node.kind.slider.value = next;
+        mouse.emitScalar(tree, handle, next);
+    }
 }
 
 pub fn updateTableColumns(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) bool {
@@ -37,11 +41,13 @@ pub fn updateTableColumns(tree: *widget.Tree, handle: widget.NodeHandle, mouse: 
         mouse.drag_origin_secondary_value,
         delta,
     );
-    if (did_resize) node.interaction.changed = true;
+    if (did_resize) {
+        mouse.emitColumnFraction(tree, handle, divider_index, node.kind.table.columnWeight(divider_index).?);
+    }
     return did_resize;
 }
 
-pub fn updateDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32, mouse: *const MouseState) void {
+pub fn updateDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f32, mouse: *MouseState) void {
     const node = tree.get(handle);
     const drag_value = &node.kind.drag_value;
     const delta = (mouse_x - mouse.drag_origin_x) * drag_value.speed;
@@ -49,11 +55,11 @@ pub fn updateDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse_x: f
     if (next != drag_value.value) {
         drag_value.value = next;
         drag_value.syncLabel();
-        node.interaction.changed = true;
+        mouse.emitScalar(tree, handle, next);
     }
 }
 
-pub fn stepDragValue(tree: *widget.Tree, handle: widget.NodeHandle, direction: i8) void {
+pub fn stepDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, direction: i8) void {
     const node = tree.get(handle);
     const drag_value = &node.kind.drag_value;
     const delta = drag_value.speed * @as(f32, @floatFromInt(direction));
@@ -61,11 +67,11 @@ pub fn stepDragValue(tree: *widget.Tree, handle: widget.NodeHandle, direction: i
     if (next != drag_value.value) {
         drag_value.value = next;
         drag_value.syncLabel();
-        node.interaction.changed = true;
+        mouse.emitScalar(tree, handle, next);
     }
 }
 
-pub fn stepSpinBox(tree: *widget.Tree, handle: widget.NodeHandle, direction: i8, activate: bool) void {
+pub fn stepSpinBox(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, direction: i8, activate: bool) void {
     const node = tree.get(handle);
     const spinbox = &node.kind.spinbox;
     const delta = spinbox.step * @as(f32, @floatFromInt(direction));
@@ -73,8 +79,10 @@ pub fn stepSpinBox(tree: *widget.Tree, handle: widget.NodeHandle, direction: i8,
     if (next != spinbox.value) {
         spinbox.value = next;
         spinbox.syncLabel();
-        node.interaction.changed = true;
-        if (activate) node.interaction.primary_clicked = true;
+        mouse.emitScalar(tree, handle, next);
+        if (activate) {
+            mouse.emitActivation(tree, handle);
+        }
     }
 }
 
@@ -99,12 +107,12 @@ pub fn updateSplitterRatio(
     const next = clampSplitterRatio(splitter.*, node.layout_rect, resolved, mouse.drag_origin_value + delta_px / available);
     if (next != splitter.ratio) {
         splitter.ratio = next;
-        node.interaction.changed = true;
         mouse.layout_changed = true;
+        mouse.emitScalar(tree, handle, next);
     }
 }
 
-pub fn stepSplitter(tree: *widget.Tree, handle: widget.NodeHandle, direction: i8, theme: style.Theme) void {
+pub fn stepSplitter(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, direction: i8, theme: style.Theme) void {
     const node = tree.get(handle);
     const splitter = &node.kind.splitter;
     const resolved = node.style_override.resolve(theme);
@@ -116,13 +124,13 @@ pub fn stepSplitter(tree: *widget.Tree, handle: widget.NodeHandle, direction: i8
     );
     if (next != splitter.ratio) {
         splitter.ratio = next;
-        node.interaction.changed = true;
+        mouse.emitScalar(tree, handle, next);
     }
 }
 
 pub fn clampSplitterRatio(
     splitter: widget.WidgetKind.Splitter,
-    rect: paint.Rect,
+    rect: visual_types.Rect,
     resolved: style.ResolvedStyle,
     ratio: f32,
 ) f32 {

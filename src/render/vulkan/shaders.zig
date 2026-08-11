@@ -30,14 +30,9 @@ pub const path_frag_spv = alignedSpv(@embedFile("path_frag_spv"));
 pub const tt_hinted_text_frag_spv = alignedSpv(@embedFile("tt_hinted_text_frag_spv"));
 pub const autohint_vert_spv = alignedSpv(@embedFile("autohint_vert_spv"));
 pub const autohint_frag_spv = alignedSpv(@embedFile("autohint_frag_spv"));
-pub const text_subpixel_frag_spv = alignedSpv(@embedFile("text_subpixel_frag_spv"));
-pub const tt_hinted_text_subpixel_frag_spv = alignedSpv(@embedFile("tt_hinted_text_subpixel_frag_spv"));
-pub const autohint_subpixel_frag_spv = alignedSpv(@embedFile("autohint_subpixel_frag_spv"));
 
-/// A shape family the renderer builds one pipeline for. The `*subpixel`
-/// families are the LCD dual-source variants of the three text kinds
-/// (regular, TT-hinted, autohint); the rest map 1:1 to snail's `ShapeKind`.
-/// Mirrors snail 0.18's dev/demo render/vulkan/contract.zig `Family`.
+/// A grayscale shape family the renderer builds one pipeline for. These map
+/// 1:1 to Snail's `ShapeKind`; LCD/subpixel variants are intentionally absent.
 pub const Family = enum {
     text,
     colr,
@@ -46,41 +41,27 @@ pub const Family = enum {
     path,
     tt_hinted_text,
     autohint,
-    subpixel,
-    tt_hinted_subpixel,
-    autohint_subpixel,
 };
 
 pub const FAMILY_COUNT = @typeInfo(Family).@"enum".fields.len;
-
-/// Per-family blend. Every family blends premultiplied-over except subpixel,
-/// which needs dual-source (and the `dualSrcBlend` device feature).
-pub const Blend = enum { premultiplied, dual_source };
 
 /// The shader modules + blend one pipeline for a family uses. Vertex input,
 /// descriptor-set layout, and push constants are the same for all.
 pub const PipelineRecipe = struct {
     vert_spv: []align(4) const u8,
     frag_spv: []align(4) const u8,
-    blend: Blend,
-    /// Subpixel needs the `dualSrcBlend` device feature; gate on it and fall
-    /// back to `.text` (grayscale) when unavailable.
-    requires_dual_src: bool = false,
 };
 
-/// Mirrors snail 0.18's contract.zig `recipe`, over goop-compiled artifacts.
+/// Mirrors Snail's contract.zig `recipe`, over goop-compiled artifacts.
 pub fn recipe(family: Family) PipelineRecipe {
     return switch (family) {
-        .text => .{ .vert_spv = text_vert_spv, .frag_spv = text_frag_spv, .blend = .premultiplied },
-        .colr => .{ .vert_spv = text_vert_spv, .frag_spv = colr_frag_spv, .blend = .premultiplied },
-        .path_quadratic => .{ .vert_spv = text_vert_spv, .frag_spv = path_quadratic_frag_spv, .blend = .premultiplied },
-        .path_conic => .{ .vert_spv = text_vert_spv, .frag_spv = path_conic_frag_spv, .blend = .premultiplied },
-        .path => .{ .vert_spv = text_vert_spv, .frag_spv = path_frag_spv, .blend = .premultiplied },
-        .tt_hinted_text => .{ .vert_spv = text_vert_spv, .frag_spv = tt_hinted_text_frag_spv, .blend = .premultiplied },
-        .autohint => .{ .vert_spv = autohint_vert_spv, .frag_spv = autohint_frag_spv, .blend = .premultiplied },
-        .subpixel => .{ .vert_spv = text_vert_spv, .frag_spv = text_subpixel_frag_spv, .blend = .dual_source, .requires_dual_src = true },
-        .tt_hinted_subpixel => .{ .vert_spv = text_vert_spv, .frag_spv = tt_hinted_text_subpixel_frag_spv, .blend = .dual_source, .requires_dual_src = true },
-        .autohint_subpixel => .{ .vert_spv = autohint_vert_spv, .frag_spv = autohint_subpixel_frag_spv, .blend = .dual_source, .requires_dual_src = true },
+        .text => .{ .vert_spv = text_vert_spv, .frag_spv = text_frag_spv },
+        .colr => .{ .vert_spv = text_vert_spv, .frag_spv = colr_frag_spv },
+        .path_quadratic => .{ .vert_spv = text_vert_spv, .frag_spv = path_quadratic_frag_spv },
+        .path_conic => .{ .vert_spv = text_vert_spv, .frag_spv = path_conic_frag_spv },
+        .path => .{ .vert_spv = text_vert_spv, .frag_spv = path_frag_spv },
+        .tt_hinted_text => .{ .vert_spv = text_vert_spv, .frag_spv = tt_hinted_text_frag_spv },
+        .autohint => .{ .vert_spv = autohint_vert_spv, .frag_spv = autohint_frag_spv },
     };
 }
 
@@ -95,14 +76,9 @@ test "every family recipe carries non-empty word-aligned SPIR-V" {
     }
 }
 
-test "exactly the subpixel families require dual-source blending" {
-    for (std.enums.values(Family)) |family| {
-        const r = recipe(family);
-        const is_subpixel = switch (family) {
-            .subpixel, .tt_hinted_subpixel, .autohint_subpixel => true,
-            else => false,
-        };
-        try std.testing.expectEqual(is_subpixel, r.requires_dual_src);
-        try std.testing.expectEqual(is_subpixel, r.blend == .dual_source);
+test "pipeline family set is grayscale-only" {
+    try std.testing.expectEqual(@as(usize, 7), FAMILY_COUNT);
+    inline for (@typeInfo(Family).@"enum".fields) |field| {
+        try std.testing.expect(std.mem.indexOf(u8, field.name, "subpixel") == null);
     }
 }

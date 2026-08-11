@@ -1,157 +1,203 @@
 # Architecture
 
-Goop is a set of libraries, not an application framework. The caller owns the
-model, event loop, effects, frame scheduling, memory policy, and rendering
-pipeline. Each Goop layer is usable without importing the layers above it.
+Goop is a collection of libraries rather than a framework. Applications
+compose the layers they need and own every cross-layer call.
 
 ## Dependency graph
 
 ```text
-application model and effects
-        |
-        +----> goop_desktop --------+
-        |       desktop semantics   |
-        |       and notifications   |
-        |                           v
-        +------------------------> goop
-                                    runtime, keyed reconciliation,
-                                    interaction, layout, resolved UI
-                                             |
-                  +--------------------------+--------------------------+
-                  |                                                     |
-                  v                                                     v
-             goop_chrome                                      caller-owned look
-             stock, read-only visuals                         custom visuals
-                  |                                                     |
-                  +-----------------------+-----------------------------+
-                                          v
-                                  visual encoder contract
-                                  /                       \
-                         caller renderer            optional recorder
-                                                        or Vulkan stack
+goop_geometry + goop_image ──> goop_visual
+goop_ui + goop_input + goop_visual ──> goop
+goop_input + goop ──> goop_desktop
+goop_visual ──> goop_components
+
+goop + optional goop_components ──> custom look ──> caller renderer
+goop + goop_components + goop_visual ──> goop_chrome ──> caller renderer
+goop_visual ──> optional recorder
+
+goop_visual + goop_image ──> goop_snail ──> goop_render_vulkan
+goop_graphics_vulkan ─────────> goop_render_vulkan
+        ├─────────────────────> goop_present_vulkan ──> RenderTarget
+        └─────────────────────> goop_wayland_vulkan <── WSI handles
+goop_platform_wayland ─────────────────────────────────┘
 ```
 
-Platform input is an independent source of plain input values. Wayland is one
-such source. Presentation is an independent producer of render targets. Vulkan
-rendering consumes a minimal Vulkan render target; it does not import a
-presenter or a window-system module.
+Arrows point from a supplied contract to a consumer. The build
+wiring enforces the important negative dependencies: core, desktop,
+components, and Chrome do not import Wayland or Vulkan; the Vulkan renderer
+does not import presentation or a window system; the Wayland platform does not
+import Vulkan, rendering, or core.
 
-## Library responsibilities
+## Leaf value libraries
 
-### `goop_ui`
+`goop_geometry` owns `Point` and `Rect`.
 
-`goop_ui` owns immutable description values and semantic identity:
+`goop_ui` owns only the distinct stable `ElementId` and `ActionId` value types.
+It has no widget, behavior, retained-state, style, or rendering API.
 
-- `ElementId` and `ActionId`;
-- tree structure, content, layout inputs, and appearance selection;
-- no retained state, handles, callbacks, renderer objects, or platform types.
+`goop_input` owns the exact normalized `Event`, key, button, modifier, and
+shortcut vocabulary. Native platforms and game input systems translate into
+these plain values.
 
-There is one definition of each identity type in the repository. Other layers
-reuse or re-export these exact types.
+`goop_image` owns decoded straight-alpha sRGBA8 values, stable resource
+identity/revision, encoded-format detection, and an explicit caller-supplied
+decoder capability. It performs no file I/O and chooses no codec.
 
-### `goop`
+`goop_visual` owns resolved surfaces, text, icons, images, clip operations, and
+semantic custom visuals, plus generic direct-emission helpers. It knows no UI
+tree or rendering backend.
 
-The core library owns mechanism:
+## Core mechanism: `goop`
 
-- reconciliation by `ElementId`;
-- retained interaction state;
-- normalized input processing, hit testing, focus, and gestures;
-- layout and resolved geometry;
-- an ordered semantic event journal keyed by `ElementId`/`ActionId`.
+Core owns the retained widget tree, input queue, interaction state, hit
+testing, Clay layout, semantic event journal, and resolved UI projection. It
+does not execute application commands or own a visual cache, renderer,
+presenter, platform loop, or GPU resource.
 
-Core never executes application behavior. Interaction results are returned as
-data. `NodeHandle` is an internal storage address and is not application
-identity. Core does not import Vulkan, Wayland, Snail, a desktop look, or an
-application event loop.
+`ControlDesc` keeps semantic identity orthogonal to widget content.
+`NodeHandle` is a temporary, generation-checked structural address used during
+tree construction/projection. Cross-layer output instead uses `ElementId` and
+`ActionId`.
 
-Output lifetime is explicit. A borrowed event or snapshot slice states which
-operation invalidates it. Frame clearing is part of processing; consumers do
-not clear transient flags on individual nodes.
+`processEvents` returns the borrowed ordered `ControlEvents` journal.
+Occurrence order is preserved across activation, values, toggles, text, sort,
+selection, scroll, and drop output. Text and selection spans resolve through
+the batch. Consumers copy only data that must outlive the next processing
+boundary.
 
-### `goop_desktop`
+`visitResolved` calls a statically dispatched visitor with balanced
+`enter(ResolvedElement)` and `leave(ResolvedElement)` operations. Traversal allocates nothing,
+exposes no retained handles, and preserves enough structure for direct clip
+emission. The application-owned look decides both mapping to visual operations
+and floating-layer policy.
 
-The desktop library owns reusable desktop semantics:
+A `Runtime` represents one interaction/layout domain. `Context` composes it
+with one tree, theme, and clipboard capability. Independent focus or window
+domains use independent contexts; there is no implicit cross-context manager.
 
-- commands and shortcuts;
-- buttons, menus, toolbars, text editing, selection, tables, outlines,
-  disclosure, split views, popups, and drag/drop notifications;
-- typed desktop events that contain semantic IDs and values.
+## Reusable policy: `goop_desktop`
 
-Desktop owns no visuals, renderer, filesystem behavior, or application
-callbacks. It depends only on value contracts and core mechanism. A command
-activation is emitted as data; the application decides what that command
-means.
+Desktop is an optional, exact-type layer above normalized input and core
+semantics. It supplies command/shortcut/binding values, shortcut resolution,
+semantic activation matching, and common control-description constructors.
 
-### `goop_chrome`
+It owns neither behavior nor visuals. Resolving a command produces an
+`ActionId`; the application reduces that data into its model and effects.
 
-Chrome is an optional stock look. It reads resolved content, geometry, style,
-and visual state and emits drawing operations. It may provide intrinsic
-measurement and default metrics. It cannot mutate interaction or application
-state.
+## Dumb visuals: `goop_components`
 
-Custom looks can replace Chrome entirely or delegate individual roles to it.
-Look composition is caller-owned and explicit; there is no global component
-registry or type-erased lifecycle convention.
+Components consume already-resolved geometry, content, and appearance and emit
+into a generic visual encoder. They allocate nothing and own no interaction,
+identity, renderer resource, or retained state. A look may reuse a component,
+override every supplied style value, combine it with custom visuals, or ignore
+the library entirely.
 
-### Visual encoding
+Components do not “draw the model” on their own: the caller maps
+`ResolvedElement` plus application policy to component values. That mapping is
+the look.
 
-The mandatory rendering boundary is a small capability for clips, surfaces,
-text, icons/images, and explicit custom visuals. It is not a mandatory retained
-scene or Goop-owned GPU abstraction.
+## Optional stock look: `goop_chrome`
 
-A game renderer may implement that capability directly and record into its own
-frame queues without allocating or translating an intermediate Goop scene. An
-optional recorder may store the same operations for tests, deferred rendering,
-or the bundled Vulkan stack. Unsupported operations are errors or declared
-capability failures; they are never silently discarded.
+Chrome is one implementation of a look. It reads a narrow, immutable
+hierarchy-aware core capability and uses `goop_components` to emit canonical
+`goop_visual` operations. It cannot update interaction or application state.
 
-Text measurement, shaping, icon resolution, image lookup, scale, and resource
-upload are explicit caller-supplied capabilities or explicit preparation
-steps. Recording does not hide allocation or queue-wide synchronization.
+Its cache is a caller-owned `Chrome` value. Dirty preparation may allocate;
+matching preparation is a no-allocation cache hit. Generic replay into an
+encoder is allocation-free. This cost boundary is visible in `prepare` and
+`emit`, and applications can explicitly invalidate or destroy the cache.
 
-### Optional integrations
+## Renderer boundary
 
-- `goop_snail`: Snail text/vector preparation.
-- `goop_graphics_vulkan`: generic Vulkan mechanism from explicit device
-  requirements.
-- `goop_render_vulkan`: Vulkan recording against a minimal render target.
-- `goop_present_vulkan`: swapchain and frame scheduling; produces targets.
-- `goop_platform_wayland`: connection, surface, input, and frame-clock pieces.
-- `goop_wayland_vulkan`: the sole Wayland/Vulkan WSI join.
+A look targets a structural capability with exactly these operations:
 
-None is a dependency of core, desktop, or Chrome.
+```text
+pushClip   popClip   surface   text   icon   image   custom
+```
 
-## Application boundary
+The capability is generic rather than a vtable. A game can implement it on its
+own render-queue type and receive operations directly. No second scene format,
+conversion allocation, global component registry, or backend object is
+required.
 
-Applications own domain meaning. For the file browser this includes paths,
-directory history, filesystem operations, preview loading, conflict policy,
-and mapping UI item IDs to files. The file-browser controller consumes typed
-desktop events; it does not inspect a Goop tree, retain `NodeHandle`s, read
-layout rectangles, or import rendering/platform modules.
+The optional `visual.Recorder` is useful when retained operations are desired.
+Stock Chrome uses such retained operations for its explicit cache. Direct
+custom looks need not record anything.
 
-The showcase and file browser are acceptance tests for composition. Neither
-contains a legacy handle-polling path or paint-protocol adapter.
+## Vulkan, presentation, and Wayland
+
+The optional native stack separates device mechanism, rendering, presentation,
+platform input, and their one necessary join:
+
+1. `goop_graphics_vulkan` creates an instance/device and defines
+   `RenderTarget { command_buffer, extent, frame_slot }`.
+2. `goop_present_vulkan` owns the swapchain and frame lifecycle. Its
+   `beginFrame` returns a target inside an active render pass, and `endFrame`
+   submits and presents it.
+3. `goop_render_vulkan` consumes only the target plus visual/text resources.
+   `prepareVisuals` performs explicit CPU work, `updateVisualResources`
+   performs the explicit GPU resource phase, and `drawPreparedVisuals` records
+   the already-prepared stream.
+4. `goop_platform_wayland` produces window events and exposes raw WSI handles.
+5. `goop_wayland_vulkan` consumes those handles solely to create the Vulkan
+   surface and name the required instance extensions.
+
+Scale is passed explicitly to visual preparation. Frame-slot count and
+attachment format are explicit renderer initialization inputs. Unsupported
+custom visuals are reported by the bundled renderer rather than ignored.
+Text and application images have separate caller-owned preparation caches and
+Vulkan atlas bindings. Bitmap font strikes and native file previews receive a
+decoder from the composition root; a game can supply its existing asset
+decoder without adapting rendering systems. The application-image atlas is
+bounded by the current prepared stream; resource identity revisions make
+replacement explicit without retaining every prior preview.
 
 ## Supported compositions
 
-- File browser: domain + desktop + core + stock Chrome + Snail/Vulkan +
-  presenter + Wayland.
-- Game tools: selected desktop controls + core + stock/custom look + the
-  game's input and renderer.
-- Game HUD: core interaction/layout + custom look + the game's renderer.
-- Headless tests: core and optionally the recording encoder; no GPU/window.
+| Composition | Goop supplies | Caller supplies |
+| --- | --- | --- |
+| Game HUD | core interaction/layout and resolved visits | input mapping, custom look, game renderer/window |
+| Game UI with components | core plus dumb resolved visuals | look policy, game renderer/window |
+| Desktop-style game tool | desktop semantics, core, optional components/Chrome | domain behavior, game renderer/window |
+| Full file-browser demo | desktop, core, Chrome, Snail/Vulkan, presenter, Wayland | browser model/effects and explicit composition root |
+| Headless tests | core and optionally a visual recorder | synthetic input and assertions |
 
-## Hard rules
+No row implies a preferred application architecture. Each is a supported
+library cut.
 
-1. Input and output cross library boundaries as values.
-2. Stable semantic IDs replace cross-layer storage handles.
-3. Behavior, visual projection, rendering, presentation, and platform input
-   are separate dependencies.
-4. A lower layer never imports an optional higher layer.
-5. No hidden application callbacks, global registries, service locators, or
-   ownership-by-convention `anyopaque` state.
-6. No duplicate paint/scene protocols or ordinal/bit-cast bridges.
-7. Allocation, preparation, upload, and synchronization costs are visible in
-   operation names and API boundaries.
-8. Convenience composition is optional and remains a thin, inspectable call
-   sequence; it never owns the caller's loop.
+## File-manager proof
+
+The file manager is the acceptance test for the full composition. It keeps
+browser domain data and interaction intent in `Domain`, external transfer
+buffers in `Effects`, application lifetime/dimensions in `Session`, and visual
+projection scratch in `View`. Its composition-only `Browser` groups those
+owners but is not passed indiscriminately through behavior and view code.
+
+The controller receives `Behavior` plus borrowed semantic events and returns
+whether the view should be rebuilt. It imports neither tree storage nor native
+rendering. Projection receives read-only `ViewInput` and a focused `ViewOutput`
+for scratch and identity assignment. The application root alone connects
+Wayland, core, Chrome, Snail/Vulkan, and presentation.
+
+The optional image-preview capability is equally explicit: filesystem behavior
+decodes into presentation-owned pixels, the projection emits passive image
+data, and the renderer consumes the same `goop_visual.Image` a game renderer
+would. libspng, libjpeg-turbo, and libwebp exist only in the native demo
+composition.
+
+These demo types are evidence that the seams hold, not another framework layer
+for consumers.
+
+## Rules
+
+1. Input and output cross boundaries as plain values or narrow borrowed
+   capabilities.
+2. Semantic IDs cross layers; retained storage addresses do not.
+3. Behavior, look, visual encoding, rendering, presentation, and native input
+   remain independently replaceable.
+4. Optional higher layers never leak into lower-layer types.
+5. Application behavior is an explicit reducer, not an invisible callback.
+6. Allocation, CPU preparation, GPU upload, and synchronization remain visible
+   at named boundaries.
+7. Convenience layers are caller-owned values and never capture the
+   application's loop.

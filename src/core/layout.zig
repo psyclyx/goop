@@ -2,7 +2,7 @@ const std = @import("std");
 const c = @cImport({
     @cInclude("clay.h");
 });
-const paint = @import("paint.zig");
+const visual_types = @import("visual_types.zig");
 const widget = @import("widget.zig");
 const style_mod = @import("style.zig");
 const geometry = @import("geometry.zig");
@@ -142,12 +142,6 @@ fn writeBackRects(tree: *widget.Tree) void {
 fn emitNode(tree: *const widget.Tree, handle: widget.NodeHandle, theme: style_mod.Theme) void {
     const node = tree.getConst(handle);
     const resolved = node.style_override.resolve(theme);
-
-    if (node.widget_type) |_| {
-        emitBehaviorNode(tree, handle, node, resolved, theme);
-        return;
-    }
-
     layoutEmitter(node.kind)(tree, handle, node, resolved, theme);
 }
 
@@ -163,6 +157,7 @@ const layout_emitters = blk: {
     var emitters: [std.meta.fields(Tag).len]LayoutEmitter = undefined;
     emitters[@intFromEnum(Tag.container)] = emitContainerNode;
     emitters[@intFromEnum(Tag.text)] = emitTextNode;
+    emitters[@intFromEnum(Tag.icon)] = emitIconNode;
     emitters[@intFromEnum(Tag.button)] = emitButtonNode;
     emitters[@intFromEnum(Tag.checkbox)] = emitCheckboxNode;
     emitters[@intFromEnum(Tag.radio_button)] = emitRadioButtonNode;
@@ -201,6 +196,10 @@ fn emitContainerNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: 
 
 fn emitTextNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
     emitText(handle, node.kind.text, resolved);
+}
+
+fn emitIconNode(_: *const widget.Tree, handle: widget.NodeHandle, _: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
+    emitIcon(handle, resolved);
 }
 
 fn emitButtonNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
@@ -319,56 +318,6 @@ fn emitCustomNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const
     emitCustom(handle, node.kind.custom);
 }
 
-fn emitBehaviorNode(
-    tree: *const widget.Tree,
-    handle: widget.NodeHandle,
-    node: *const widget.Node,
-    resolved: style_mod.ResolvedStyle,
-    theme: style_mod.Theme,
-) void {
-    const widget_type = node.widget_type orelse return;
-    const spec = widget_type.layout(.{
-        .widget = .{
-            .tree = @constCast(tree),
-            .handle = handle,
-            .node = @constCast(node),
-            .state = node.widget_state,
-            .theme = theme,
-        },
-        .resolved = resolved,
-    });
-
-    c.Clay__OpenElement();
-    c.Clay__ConfigureOpenElement(.{
-        .id = nodeId(handle),
-        .layout = .{
-            .sizing = .{
-                .width = behaviorSizingAxis(spec.width),
-                .height = behaviorSizingAxis(spec.height),
-            },
-            .padding = clayPadding(spec.padding),
-            .childGap = 0,
-            .childAlignment = .{},
-            .layoutDirection = switch (spec.direction) {
-                .row => c.CLAY_LEFT_TO_RIGHT,
-                .column => c.CLAY_TOP_TO_BOTTOM,
-            },
-        },
-        .backgroundColor = .{},
-        .cornerRadius = .{},
-        .aspectRatio = .{},
-        .image = .{},
-        .floating = .{},
-        .custom = .{},
-        .clip = .{},
-        .border = .{},
-        .userData = null,
-    });
-    emitChildrenSkippingPopups(tree, handle, theme);
-    c.Clay__CloseElement();
-    emitPopupChildren(tree, handle, theme);
-}
-
 fn emitText(handle: widget.NodeHandle, txt: widget.WidgetKind.Text, resolved: style_mod.ResolvedStyle) void {
     c.Clay__OpenElement();
     c.Clay__ConfigureOpenElement(.{
@@ -409,6 +358,30 @@ fn emitText(handle: widget.NodeHandle, txt: widget.WidgetKind.Text, resolved: st
             .textAlignment = c.CLAY_TEXT_ALIGN_LEFT,
         }),
     );
+    c.Clay__CloseElement();
+}
+
+fn emitIcon(handle: widget.NodeHandle, resolved: style_mod.ResolvedStyle) void {
+    const size = @max(resolved.font_size, 0);
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .id = nodeId(handle),
+        .layout = .{
+            .sizing = .{
+                .width = fixedSizing(size),
+                .height = fixedSizing(size),
+            },
+        },
+        .backgroundColor = .{},
+        .cornerRadius = .{},
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
     c.Clay__CloseElement();
 }
 
@@ -937,9 +910,9 @@ fn emitTableCell(
                 .height = .{},
             },
             .padding = clayPadding(resolved.padding),
-            .childGap = @intFromFloat(theme.spacing),
+            .childGap = @intFromFloat(resolved.spacing),
             .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
-            .layoutDirection = c.CLAY_TOP_TO_BOTTOM,
+            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
         },
         .backgroundColor = .{},
         .cornerRadius = .{},
@@ -1864,10 +1837,6 @@ fn customSizingAxis(size: f32, min_size: f32, grow: bool) c.Clay_SizingAxis {
     return if (grow) growSizingMin(min_size) else fitSizingMin(min_size);
 }
 
-fn behaviorSizingAxis(axis: widget.LayoutSpec.Axis) c.Clay_SizingAxis {
-    return customSizingAxis(axis.size, axis.min, axis.grow);
-}
-
 fn percentSizing(percent: f32) c.Clay_SizingAxis {
     return .{
         .size = .{ .percent = std.math.clamp(percent, 0, 1) },
@@ -2328,8 +2297,8 @@ fn clampPopupRects(tree: *widget.Tree) void {
     }
 }
 
-fn popupViewport(tree: *const widget.Tree) ?paint.Rect {
-    var viewport: ?paint.Rect = null;
+fn popupViewport(tree: *const widget.Tree) ?visual_types.Rect {
+    var viewport: ?visual_types.Rect = null;
 
     for (tree.nodes.items, 0..) |node, i| {
         if (!node.alive or node.parent != null or node.kind == .popup or node.kind == .tooltip) continue;
@@ -2348,7 +2317,7 @@ fn popupViewport(tree: *const widget.Tree) ?paint.Rect {
     return viewport;
 }
 
-fn clampPopupSubtree(tree: *widget.Tree, handle: widget.NodeHandle, viewport: paint.Rect) void {
+fn clampPopupSubtree(tree: *widget.Tree, handle: widget.NodeHandle, viewport: visual_types.Rect) void {
     const bounds = popupSubtreeBounds(tree, handle) orelse return;
 
     var dx: f32 = 0;
@@ -2372,7 +2341,7 @@ fn clampPopupSubtree(tree: *widget.Tree, handle: widget.NodeHandle, viewport: pa
     if (dx != 0 or dy != 0) shiftSubtree(tree, handle, dx, dy);
 }
 
-fn popupSubtreeBounds(tree: *const widget.Tree, handle: widget.NodeHandle) ?paint.Rect {
+fn popupSubtreeBounds(tree: *const widget.Tree, handle: widget.NodeHandle) ?visual_types.Rect {
     const node = tree.getConst(handle);
     if (node.layout_rect.w <= 0 or node.layout_rect.h <= 0) return null;
 
@@ -2762,51 +2731,6 @@ test "ellipsized text grows to parent width instead of content width" {
     const line_rect = tree.getConst(line).layout_rect;
     const root_inner_w = root_rect.w - theme.padding.left - theme.padding.right;
     try std.testing.expectApproxEqAbs(root_inner_w, line_rect.w, 0.01);
-}
-
-test "wrapped text layout height matches paint line count for path boundaries" {
-    const theme = style_mod.Theme.default;
-    const allocator = std.testing.allocator;
-    const min_memory = c.Clay_MinMemorySize();
-    const arena = try allocator.alloc(u8, min_memory);
-    defer allocator.free(arena);
-
-    const clay_arena = c.Clay_Arena{
-        .capacity = min_memory,
-        .memory = arena.ptr,
-    };
-    _ = c.Clay_Initialize(clay_arena, .{
-        .width = 84,
-        .height = 240,
-    }, .{});
-    defer c.Clay_SetCurrentContext(null);
-
-    var tree = widget.Tree.init(allocator);
-    defer tree.deinit();
-
-    const root = try tree.addRoot(.{ .container = .{ .direction = .column } });
-    const text = try tree.addChild(root, .{ .text = .{
-        .content = "alpha/beta/gamma/delta",
-        .overflow = .wrap,
-    } });
-
-    run(&tree, theme, null);
-
-    var paint_list = try paint.generatePaint(&tree, theme, allocator, null, .{});
-    defer paint.freePaintList(&paint_list, allocator);
-
-    var text_command_count: usize = 0;
-    for (paint_list.commands) |command| {
-        if (command == .text) text_command_count += 1;
-    }
-
-    try std.testing.expect(text_command_count > 1);
-    const line_h = textMetrics(theme.font_size, null).height;
-    try std.testing.expectApproxEqAbs(
-        @as(f32, @floatFromInt(text_command_count)) * line_h,
-        tree.getConst(text).layout_rect.h,
-        0.01,
-    );
 }
 
 test "wrapped text inside padded scroll area uses the visible content width" {

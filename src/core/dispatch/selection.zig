@@ -6,7 +6,6 @@ const MouseState = types.MouseState;
 
 const SelectedFn = *const fn (*const widget.Node) bool;
 const SetSelectedFn = *const fn (*widget.Node, bool) void;
-const MarkChangedFn = *const fn (*widget.Tree, widget.NodeHandle) void;
 const GetAnchorFn = *const fn (*const widget.Node) ?u16;
 const SetAnchorFn = *const fn (*widget.Node, ?u16) void;
 const ItemEligibleFn = *const fn (*const widget.Tree, widget.NodeHandle, *const widget.Node) bool;
@@ -14,7 +13,6 @@ const ItemEligibleFn = *const fn (*const widget.Tree, widget.NodeHandle, *const 
 const SelectionCollectionOps = struct {
     selected: SelectedFn,
     set_selected: SetSelectedFn,
-    mark_changed: MarkChangedFn,
     get_anchor: GetAnchorFn,
     set_anchor: SetAnchorFn,
     item_eligible: ItemEligibleFn,
@@ -60,7 +58,6 @@ fn selectSingleInContainer(
     }
 
     ops.set_anchor(tree.get(container), selected_index);
-    if (changed) ops.mark_changed(tree, container);
     return changed;
 }
 
@@ -86,7 +83,6 @@ fn selectRangeInContainer(
         }
         index += 1;
     }
-    if (changed) ops.mark_changed(tree, container);
     return changed;
 }
 
@@ -96,9 +92,9 @@ fn toggleInContainer(
     item: widget.NodeHandle,
     ops: SelectionCollectionOps,
 ) bool {
+    _ = container;
     const current = ops.selected(tree.getConst(item));
     ops.set_selected(tree.get(item), !current);
-    ops.mark_changed(tree, container);
     return true;
 }
 
@@ -119,7 +115,6 @@ fn clearSelectionInContainer(
     }
 
     ops.set_anchor(tree.get(container), null);
-    if (changed) ops.mark_changed(tree, container);
     return changed;
 }
 
@@ -144,7 +139,6 @@ fn selectAllInContainer(
     }
     if (changed) {
         ops.set_anchor(tree.get(container), last_index);
-        ops.mark_changed(tree, container);
     }
     return changed;
 }
@@ -177,7 +171,6 @@ fn selectMultiInContainer(
 const listSelectionOps = SelectionCollectionOps{
     .selected = selectableSelected,
     .set_selected = setSelectableSelected,
-    .mark_changed = markInteractionChanged,
     .get_anchor = listSelectionAnchor,
     .set_anchor = setListSelectionAnchor,
     .item_eligible = selectableSelectionItem,
@@ -186,7 +179,6 @@ const listSelectionOps = SelectionCollectionOps{
 const gridSelectionOps = SelectionCollectionOps{
     .selected = gridItemSelected,
     .set_selected = setGridItemSelected,
-    .mark_changed = markInteractionChanged,
     .get_anchor = gridSelectionAnchor,
     .set_anchor = setGridSelectionAnchor,
     .item_eligible = gridSelectionItem,
@@ -195,7 +187,6 @@ const gridSelectionOps = SelectionCollectionOps{
 const tableSelectionOps = SelectionCollectionOps{
     .selected = tableRowSelected,
     .set_selected = setTableRowSelected,
-    .mark_changed = markTableSelectionChanged,
     .get_anchor = tableSelectionAnchor,
     .set_anchor = setTableSelectionAnchor,
     .item_eligible = tableSelectionItem,
@@ -261,14 +252,6 @@ fn tableSelectionItem(_: *const widget.Tree, _: widget.NodeHandle, node: *const 
     return node.kind == .table_row and !node.kind.table_row.header;
 }
 
-fn markInteractionChanged(tree: *widget.Tree, container: widget.NodeHandle) void {
-    tree.get(container).interaction.changed = true;
-}
-
-fn markTableSelectionChanged(tree: *widget.Tree, table_handle: widget.NodeHandle) void {
-    tree.get(table_handle).kind.table.selection_changed = true;
-}
-
 pub fn selectSelectable(tree: *widget.Tree, handle: widget.NodeHandle) bool {
     const node = tree.get(handle);
     if (node.kind != .selectable) return false;
@@ -284,7 +267,6 @@ pub fn selectSelectable(tree: *widget.Tree, handle: widget.NodeHandle) bool {
             if (candidate.kind.selectable.selected != should_select) {
                 candidate.kind.selectable.selected = should_select;
                 changed = true;
-                markSelectableListBoxChanged(tree, candidate_handle);
             }
         }
         return changed;
@@ -302,7 +284,6 @@ pub fn selectSelectable(tree: *widget.Tree, handle: widget.NodeHandle) bool {
             if (tree.getConst(child).kind.selectable.selected != should_select) {
                 tree.get(child).kind.selectable.selected = should_select;
                 changed = true;
-                markSelectableListBoxChanged(tree, child);
             }
         }
         return changed;
@@ -311,7 +292,6 @@ pub fn selectSelectable(tree: *widget.Tree, handle: widget.NodeHandle) bool {
     if (!node.kind.selectable.selected) {
         node.kind.selectable.selected = true;
         changed = true;
-        markSelectableListBoxChanged(tree, handle);
     }
     return changed;
 }
@@ -422,13 +402,6 @@ pub fn toggleListBoxSelectable(tree: *widget.Tree, list_box: widget.NodeHandle, 
     return toggleInContainer(tree, list_box, handle, listSelectionOps);
 }
 
-pub fn markSelectableListBoxChanged(tree: *widget.Tree, handle: widget.NodeHandle) void {
-    const parent_handle = tree.getConst(handle).parent orelse return;
-    if (tree.getConst(parent_handle).kind == .list_box) {
-        tree.get(parent_handle).interaction.changed = true;
-    }
-}
-
 pub fn selectableParentListBox(tree: *const widget.Tree, handle: widget.NodeHandle) ?widget.NodeHandle {
     const parent_handle = tree.getConst(handle).parent orelse return null;
     if (tree.getConst(parent_handle).kind != .list_box) return null;
@@ -440,32 +413,29 @@ pub fn selectableIndexInParent(tree: *const widget.Tree, handle: widget.NodeHand
     return itemIndexInContainer(tree, parent_handle, handle, listSelectionOps);
 }
 
-pub fn applySelectableKeyboardNavigation(tree: *widget.Tree, target: widget.NodeHandle, mouse: *const MouseState) void {
+pub fn applySelectableKeyboardNavigation(tree: *widget.Tree, target: widget.NodeHandle, mouse: *const MouseState) bool {
     if (selectableParentListBox(tree, target)) |list_box| {
         if (tree.getConst(list_box).kind.list_box.selection_mode == .multiple and mouse.shift_down) {
-            _ = selectListBoxMulti(tree, list_box, target, mouse);
-            return;
+            return selectListBoxMulti(tree, list_box, target, mouse);
         }
     }
-    _ = selectSelectable(tree, target);
+    return selectSelectable(tree, target);
 }
 
-pub fn applyGridItemKeyboardNavigation(tree: *widget.Tree, target: widget.NodeHandle, mouse: *const MouseState) void {
+pub fn applyGridItemKeyboardNavigation(tree: *widget.Tree, target: widget.NodeHandle, mouse: *const MouseState) bool {
     if (widget.gridItemParentSelector(tree, target)) |selector| {
         if (tree.getConst(selector).kind.grid_selector.selection_mode == .multiple and mouse.shift_down) {
-            _ = selectGridItemsMulti(tree, selector, target, mouse);
-            return;
+            return selectGridItemsMulti(tree, selector, target, mouse);
         }
     }
-    _ = selectGridItem(tree, target);
+    return selectGridItem(tree, target);
 }
 
-pub fn applyTableRowKeyboardNavigation(tree: *widget.Tree, target: widget.NodeHandle, mouse: *const MouseState) void {
-    if (!widget.tableRowSelectable(tree, target)) return;
-    const table_handle = tree.getConst(target).parent orelse return;
+pub fn applyTableRowKeyboardNavigation(tree: *widget.Tree, target: widget.NodeHandle, mouse: *const MouseState) bool {
+    if (!widget.tableRowSelectable(tree, target)) return false;
+    const table_handle = tree.getConst(target).parent orelse return false;
     if (tree.getConst(table_handle).kind.table.selection_mode == .multiple and mouse.shift_down) {
-        _ = selectTableRowsMulti(tree, table_handle, target, mouse);
-        return;
+        return selectTableRowsMulti(tree, table_handle, target, mouse);
     }
-    _ = selectTableRow(tree, target);
+    return selectTableRow(tree, target);
 }
