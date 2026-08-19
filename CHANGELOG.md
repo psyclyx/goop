@@ -4,7 +4,23 @@ All notable changes to `goop` will be documented here. The project follows
 [Semantic Versioning](https://semver.org). Pre-1.0 releases may include
 breaking changes between minor versions.
 
-## Unreleased
+## 0.2.0 — 2026-08-18
+
+### Added
+
+- Time-driven `Context.update(now_ms)` (and C `goop_context_update`) returning a
+  `changed` flag and next wake-up deadline; tooltips derive visibility from this
+  explicit host clock. Added an allocation-free scalar `animation` primitive.
+- A backend-neutral stock-icon vocabulary (`StockIcon`) with tonal shading,
+  drawn by the Vulkan renderer and used for checked menu items and button icons.
+- Win32-style menu access keys: `Alt`+letter opens a menu and a bare letter
+  activates an item while a menu is open, with the access key underlined.
+- `PopupVisibilityChanged` control events, host pointer-cursor / dragged-element
+  accessors, and captured-button press-visual semantics that clear outside the
+  button and restore on re-entry.
+- Wayland cursor theming, child dialog windows sharing one Vulkan
+  instance/device, and external file drag-out. The file-manager demo gains a
+  permissions inspector that edits Unix mode bits.
 
 ### Changed
 

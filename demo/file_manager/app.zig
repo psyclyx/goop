@@ -111,7 +111,7 @@ const AboutWindow = struct {
             .overflow = .wrap,
         } });
         _ = ctx.setStyle(body, .{ .fg = .rgb(60, 68, 82), .font_size = 14.5 });
-        const version = try ctx.tree.addChild(root, .{ .text = .{ .content = "goop 0.0.1 · retained UI toolkit" } });
+        const version = try ctx.tree.addChild(root, .{ .text = .{ .content = "goop 0.2.0 · retained UI toolkit" } });
         _ = ctx.setStyle(version, .{ .fg = .rgb(120, 128, 140), .font_size = 12.5 });
         // A growing filler pins the action row to the bottom of the window.
         _ = try ctx.tree.addChild(root, .{ .container = .{ .direction = .column } });
