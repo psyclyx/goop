@@ -4,6 +4,10 @@ All notable changes to `goop` will be documented here. The project follows
 [Semantic Versioning](https://semver.org). Pre-1.0 releases may include
 breaking changes between minor versions.
 
+## Unreleased
+
+_In development._
+
 ## 0.2.0 — 2026-08-18
 
 ### Added
