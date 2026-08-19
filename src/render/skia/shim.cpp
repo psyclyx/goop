@@ -17,6 +17,7 @@
 #include "core/SkColor.h"
 #include "core/SkColorSpace.h"
 #include "core/SkFont.h"
+#include "core/SkFontMetrics.h"
 #include "core/SkFontMgr.h"
 #include "core/SkFontStyle.h"
 #include "core/SkFontTypes.h"
@@ -310,6 +311,29 @@ void goop_skia_draw_text(void *ctx_handle, void *canvas, const char *utf8,
     paint.setColor(toSkColor(rgba));
     static_cast<SkCanvas *>(canvas)->drawSimpleText(
         utf8, len, SkTextEncoding::kUTF8, x, baseline, font, paint);
+}
+
+// Measure text with the context's font. `out` receives
+// [width, height, ascent, descent] (ascent/descent positive from baseline).
+void goop_skia_measure_text(void *ctx_handle, const char *utf8, size_t len,
+                            float size, float *out) {
+    out[0] = 0.0f;
+    out[1] = 0.0f;
+    out[2] = 0.0f;
+    out[3] = 0.0f;
+    auto ctx = static_cast<Context *>(ctx_handle);
+    if (!ctx->typeface) return;
+    SkFont font(ctx->typeface, size);
+    font.setEdging(SkFont::Edging::kAntiAlias);
+
+    SkFontMetrics metrics;
+    font.getMetrics(&metrics);
+    const float ascent = -metrics.fAscent;   // fAscent is negative (above baseline)
+    const float descent = metrics.fDescent;  // fDescent is positive (below baseline)
+    out[0] = font.measureText(utf8, len, SkTextEncoding::kUTF8, nullptr, nullptr);
+    out[1] = ascent + descent;
+    out[2] = ascent;
+    out[3] = descent;
 }
 
 }  // extern "C"

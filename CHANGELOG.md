@@ -28,11 +28,14 @@ breaking changes between minor versions.
   with a `zig build skia-window -Dskia` example. This path needs a Wayland
   compositor and a real GPU; it compiles and links but is not exercised by the
   headless test suite. The snail `goop_present_vulkan` path is untouched.
-- The file manager demo can render through the Skia backend
-  (`zig build file-manager-skia -Dskia`), a separate executable sharing all
-  browser logic with the snail demo. Needs a display + real GPU; icon/image ops
-  are not yet mapped (icons and previews do not draw) and text is measured with
-  the demo font but drawn with Skia's.
+- The file manager demo renders through the Skia backend when built with `-Dskia`
+  (`zig build file-manager-demo -Dskia`) — the flag swaps the file manager's
+  renderer and text-measurement layers behind a `fm_render` seam, so the snail
+  build links no Skia and the Skia build links no snail (it measures text with
+  Skia's own `SkFont`). Needs a display + real GPU; icon/image ops are not yet
+  mapped, so toolbar/list icons and image previews do not draw. `WindowTarget`
+  now defers swapchain creation until the surface is sized and reports granular
+  errors instead of one opaque `SwapchainInitFailed`.
 
 ## 0.2.0 — 2026-08-18
 

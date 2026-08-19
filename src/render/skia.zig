@@ -32,6 +32,7 @@ extern fn goop_skia_flush(ctx: ?*anyopaque) void;
 extern fn goop_skia_surface_create(ctx: ?*anyopaque, width: c_int, height: c_int) ?*anyopaque;
 extern fn goop_skia_surface_wrap_vk_image(ctx: ?*anyopaque, image: ?*anyopaque, format: u32, width: c_int, height: c_int, usage: u32) ?*anyopaque;
 extern fn goop_skia_flush_present(ctx: ?*anyopaque, surface: ?*anyopaque, wait_sem: ?*anyopaque, signal_sem: ?*anyopaque, queue_family: u32) c_int;
+extern fn goop_skia_measure_text(ctx: ?*anyopaque, utf8: [*]const u8, len: usize, size: f32, out: [*]f32) void;
 extern fn goop_skia_surface_destroy(surface: ?*anyopaque) void;
 extern fn goop_skia_surface_canvas(surface: ?*anyopaque) ?*anyopaque;
 extern fn goop_skia_surface_read_pixels(surface: ?*anyopaque, width: c_int, height: c_int, out_rgba: [*]u8) c_int;
@@ -191,6 +192,23 @@ pub const Context = struct {
         if (goop_skia_flush_present(self.handle, surf.handle, @ptrCast(wait_sem), @ptrCast(signal_sem), queue_family) != 0)
             return error.SkiaPresentFailed;
     }
+
+    /// Measure text with the context's own font (Skia's `SkFont`). Lets a
+    /// Skia-rendered UI lay out text without linking a separate text engine.
+    pub fn measureText(self: *Context, bytes: []const u8, size: f32) TextMetrics {
+        var out = [4]f32{ 0, 0, 0, 0 };
+        goop_skia_measure_text(self.handle, bytes.ptr, bytes.len, size, &out);
+        return .{ .width = out[0], .height = out[1], .ascent = out[2], .descent = out[3] };
+    }
+};
+
+/// Result of `Context.measureText`. `ascent`/`descent` are positive distances
+/// from the baseline.
+pub const TextMetrics = struct {
+    width: f32,
+    height: f32,
+    ascent: f32,
+    descent: f32,
 };
 
 /// A GPU render target. Its `encoder` replays `goop_visual` operations.
@@ -289,7 +307,10 @@ pub const Encoder = struct {
 /// simple rather than pipelined; a consumer wanting frames in flight can build
 /// its own loop on `wrapVkImage`/`flushPresent`.
 pub const WindowTarget = struct {
-    ctx: *Context,
+    // The stable C++ GrDirectContext handle (not a *Context): survives moving
+    // the owning struct, so a caller can store the Context and WindowTarget
+    // together by value.
+    ctx_handle: *anyopaque,
     allocator: std.mem.Allocator,
     device_handle: vk.VkDevice,
     physical: vk.VkPhysicalDevice,
@@ -299,6 +320,8 @@ pub const WindowTarget = struct {
     present_family: u32,
     surface: vk.VkSurfaceKHR,
 
+    desired_width: u32 = 0,
+    desired_height: u32 = 0,
     swapchain: vk.VkSwapchainKHR = null,
     images: []vk.VkImage = &.{},
     surfaces: []?*anyopaque = &.{},
@@ -307,7 +330,18 @@ pub const WindowTarget = struct {
     image_available: vk.VkSemaphore = null,
     render_finished: vk.VkSemaphore = null,
 
-    pub const InitError = Error || error{ SwapchainInitFailed, OutOfMemory };
+    // Granular so a caller can tell which Vulkan step failed rather than one
+    // opaque "init failed".
+    pub const InitError = Error || error{
+        NotGpuBackend,
+        SemaphoreCreateFailed,
+        SurfaceCapabilitiesQueryFailed,
+        SurfaceFormatQueryFailed,
+        SwapchainCreateFailed,
+        SwapchainImageQueryFailed,
+        SwapchainImageWrapFailed,
+        OutOfMemory,
+    };
 
     pub const Frame = struct { surface: Surface, image_index: u32 };
 
@@ -319,9 +353,9 @@ pub const WindowTarget = struct {
         height: u32,
         allocator: std.mem.Allocator,
     ) InitError!WindowTarget {
-        if (ctx.backend != .vulkan) return error.SwapchainInitFailed;
+        if (ctx.backend != .vulkan) return error.NotGpuBackend;
         var self = WindowTarget{
-            .ctx = ctx,
+            .ctx_handle = ctx.handle,
             .allocator = allocator,
             .device_handle = device.handle,
             .physical = device.physical,
@@ -330,16 +364,24 @@ pub const WindowTarget = struct {
             .graphics_family = device.graphics_family,
             .present_family = device.present_family,
             .surface = surface,
+            .desired_width = width,
+            .desired_height = height,
         };
         const sem_info = std.mem.zeroInit(vk.VkSemaphoreCreateInfo, .{
             .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO)),
         });
         if (vk.vkCreateSemaphore(self.device_handle, &sem_info, null, &self.image_available) != vk.VK_SUCCESS)
-            return error.SwapchainInitFailed;
+            return error.SemaphoreCreateFailed;
         if (vk.vkCreateSemaphore(self.device_handle, &sem_info, null, &self.render_finished) != vk.VK_SUCCESS)
-            return error.SwapchainInitFailed;
-        try self.createSwapchain(width, height);
+            return error.SemaphoreCreateFailed;
+        // The Wayland surface may not have a usable extent yet; build the
+        // swapchain lazily on the first acquire once a real size is known.
+        try self.ensureSwapchain();
         return self;
+    }
+
+    pub fn ready(self: *const WindowTarget) bool {
+        return self.swapchain != null;
     }
 
     pub fn deinit(self: *WindowTarget) void {
@@ -350,16 +392,24 @@ pub const WindowTarget = struct {
         self.* = undefined;
     }
 
-    /// Rebuild the swapchain (e.g. after a resize).
+    /// Note a new desired size (e.g. after a resize). The swapchain is rebuilt
+    /// lazily on the next acquire.
     pub fn resize(self: *WindowTarget, width: u32, height: u32) InitError!void {
+        self.desired_width = width;
+        self.desired_height = height;
         _ = vk.vkDeviceWaitIdle(self.device_handle);
         self.destroySwapchain();
-        try self.createSwapchain(width, height);
+        try self.ensureSwapchain();
     }
 
-    /// Acquire the next image and return a render target for it. `null` means
-    /// the swapchain is out of date and the caller should `resize`.
+    /// Acquire the next image and return a render target for it. `null` means no
+    /// frame is available yet (surface not sized, or out of date — the caller
+    /// keeps looping / resizes).
     pub fn acquire(self: *WindowTarget) InitError!?Frame {
+        if (self.swapchain == null) {
+            try self.ensureSwapchain();
+            if (self.swapchain == null) return null;
+        }
         var index: u32 = 0;
         const acquired = vk.vkAcquireNextImageKHR(
             self.device_handle,
@@ -369,12 +419,15 @@ pub const WindowTarget = struct {
             null,
             &index,
         );
-        if (acquired == vk.VK_ERROR_OUT_OF_DATE_KHR or acquired == vk.VK_SUBOPTIMAL_KHR) return null;
-        if (acquired != vk.VK_SUCCESS) return error.SwapchainInitFailed;
+        if (acquired == vk.VK_ERROR_OUT_OF_DATE_KHR or acquired == vk.VK_SUBOPTIMAL_KHR) {
+            self.destroySwapchain();
+            return null;
+        }
+        if (acquired != vk.VK_SUCCESS) return error.SwapchainCreateFailed;
         return .{
             .surface = .{
                 .handle = self.surfaces[index].?,
-                .ctx = self.ctx.handle,
+                .ctx = self.ctx_handle,
                 .width = self.extent.width,
                 .height = self.extent.height,
             },
@@ -384,8 +437,8 @@ pub const WindowTarget = struct {
 
     /// Present a rendered frame. `frame.surface` must have been drawn into.
     pub fn present(self: *WindowTarget, frame: Frame) InitError!void {
-        var surf = frame.surface;
-        try self.ctx.flushPresent(&surf, self.image_available, self.render_finished, self.present_family);
+        if (goop_skia_flush_present(self.ctx_handle, frame.surface.handle, @ptrCast(self.image_available), @ptrCast(self.render_finished), self.present_family) != 0)
+            return error.SkiaPresentFailed;
 
         var image_index = frame.image_index;
         const present_info = std.mem.zeroInit(vk.VkPresentInfoKHR, .{
@@ -400,14 +453,19 @@ pub const WindowTarget = struct {
         _ = vk.vkDeviceWaitIdle(self.device_handle);
     }
 
-    fn createSwapchain(self: *WindowTarget, width: u32, height: u32) InitError!void {
+    /// Build the swapchain if it is missing and the surface has a usable size.
+    /// A zero extent (surface not configured yet) is not an error — it simply
+    /// leaves the swapchain unbuilt for a later acquire.
+    fn ensureSwapchain(self: *WindowTarget) InitError!void {
+        if (self.swapchain != null) return;
+
         var caps: vk.VkSurfaceCapabilitiesKHR = undefined;
         if (vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(self.physical, self.surface, &caps) != vk.VK_SUCCESS)
-            return error.SwapchainInitFailed;
+            return error.SurfaceCapabilitiesQueryFailed;
 
-        const surface_format = self.chooseFormat() catch return error.SwapchainInitFailed;
-        const extent = chooseSwapExtent(caps, width, height);
-        if (extent.width == 0 or extent.height == 0) return error.SwapchainInitFailed;
+        const surface_format = self.chooseFormat() catch return error.SurfaceFormatQueryFailed;
+        const extent = chooseSwapExtent(caps, self.desired_width, self.desired_height);
+        if (extent.width == 0 or extent.height == 0) return; // defer until sized
 
         var image_count = caps.minImageCount + 1;
         if (caps.maxImageCount > 0) image_count = @min(image_count, caps.maxImageCount);
@@ -432,15 +490,17 @@ pub const WindowTarget = struct {
             .presentMode = @as(vk.VkPresentModeKHR, @intCast(vk.VK_PRESENT_MODE_FIFO_KHR)),
             .clipped = @as(vk.VkBool32, @intCast(vk.VK_TRUE)),
         });
-        if (vk.vkCreateSwapchainKHR(self.device_handle, &create_info, null, &self.swapchain) != vk.VK_SUCCESS)
-            return error.SwapchainInitFailed;
+        if (vk.vkCreateSwapchainKHR(self.device_handle, &create_info, null, &self.swapchain) != vk.VK_SUCCESS) {
+            self.swapchain = null;
+            return error.SwapchainCreateFailed;
+        }
 
         var count: u32 = 0;
         if (vk.vkGetSwapchainImagesKHR(self.device_handle, self.swapchain, &count, null) != vk.VK_SUCCESS)
-            return error.SwapchainInitFailed;
+            return error.SwapchainImageQueryFailed;
         self.images = try self.allocator.alloc(vk.VkImage, count);
         if (vk.vkGetSwapchainImagesKHR(self.device_handle, self.swapchain, &count, self.images.ptr) != vk.VK_SUCCESS)
-            return error.SwapchainInitFailed;
+            return error.SwapchainImageQueryFailed;
 
         self.format = surface_format.format;
         self.extent = extent;
@@ -448,13 +508,13 @@ pub const WindowTarget = struct {
         @memset(self.surfaces, null);
         for (self.images, 0..) |image, i| {
             const wrapped = goop_skia_surface_wrap_vk_image(
-                self.ctx.handle,
+                self.ctx_handle,
                 @ptrCast(image),
                 @intCast(self.format),
                 @intCast(extent.width),
                 @intCast(extent.height),
                 @intCast(usage),
-            ) orelse return error.SwapchainInitFailed;
+            ) orelse return error.SwapchainImageWrapFailed;
             self.surfaces[i] = wrapped;
         }
     }

@@ -178,11 +178,12 @@ vocabulary renders and is verified offscreen on a real GPU (including wrapping a
 caller-owned `VkImage`). On-screen output is wired through `WindowTarget`
 (swapchain acquire → render → present) and the `zig build skia-window -Dskia`
 example; that path needs a Wayland compositor and a real GPU and is not
-exercised by the headless test suite. The file manager demo also renders through
-Skia via `zig build file-manager-skia -Dskia`, sharing all its logic with the
-snail demo. Icon and image ops are the remaining gap (toolbar/list icons and
-image previews do not draw yet), and text is measured with the demo font but
-drawn with Skia's.
+exercised by the headless test suite. The file manager demo renders through Skia
+when built with the same `-Dskia` flag (`zig build file-manager-demo -Dskia`):
+the flag swaps only the renderer and text-measurement layers, so text is
+measured with Skia's own font and the snail build links no Skia (and the Skia
+build no snail). Icon and image ops are the remaining gap — toolbar/list icons
+and image previews do not draw yet.
 
 ### snail + Vulkan — the original path
 
@@ -252,7 +253,7 @@ zig build test-image-codecs       # native PNG/JPEG/WebP decoder contract
 zig build test-chrome             # stock look
 zig build test-skia -Dskia        # optional Skia GPU backend (needs libskia)
 zig build skia-window -Dskia      # on-screen Skia example (needs display + GPU)
-zig build file-manager-skia -Dskia # the file manager rendered by Skia (display + GPU)
+zig build file-manager-demo -Dskia # the file manager rendered by Skia (display + GPU)
 zig build test-file-manager       # browser model/projection seams
 zig build build-demo              # build the Vulkan widget showcase
 zig build build-file-manager-demo # build the file-browser demo
