@@ -6,6 +6,54 @@ const tree_util = @import("tree.zig");
 
 const MouseState = types.MouseState;
 
+fn handleFromIndex(tree: *const widget.Tree, i: usize) widget.NodeHandle {
+    return .{ .index = @intCast(i), .generation = tree.nodes.items[i].generation };
+}
+
+fn mnemonicMatches(mnemonic: ?u8, letter: u8) bool {
+    const key = mnemonic orelse return false;
+    return std.ascii.toLower(key) == std.ascii.toLower(letter);
+}
+
+/// The menu-bar menu whose mnemonic matches `letter` (for Alt+letter access).
+pub fn menuBarMenuByMnemonic(tree: *const widget.Tree, letter: u8) ?widget.NodeHandle {
+    for (tree.nodes.items, 0..) |*node, i| {
+        if (!node.alive or node.kind != .menu_bar) continue;
+        const bar = handleFromIndex(tree, i);
+        var it = tree.children(bar);
+        while (it.next()) |child| {
+            const child_node = tree.getConst(child);
+            if (child_node.kind != .menu) continue;
+            if (mnemonicMatches(child_node.kind.menu.mnemonic, letter)) return child;
+        }
+    }
+    return null;
+}
+
+/// Is any menu popup currently open? Used to decide whether a plain letter is
+/// an access key rather than text input.
+pub fn anyMenuPopupVisible(tree: *const widget.Tree) bool {
+    for (tree.nodes.items) |*node| {
+        if (node.alive and node.kind == .popup and node.kind.popup.visible) return true;
+    }
+    return false;
+}
+
+/// The enabled menu item under a visible popup whose mnemonic matches `letter`.
+pub fn visibleMenuItemByMnemonic(tree: *const widget.Tree, letter: u8) ?widget.NodeHandle {
+    for (tree.nodes.items, 0..) |*node, i| {
+        if (!node.alive or node.kind != .popup or !node.kind.popup.visible) continue;
+        const popup = handleFromIndex(tree, i);
+        var it = tree.children(popup);
+        while (it.next()) |child| {
+            const child_node = tree.getConst(child);
+            if (child_node.kind != .menu_item or child_node.kind.menu_item.disabled) continue;
+            if (mnemonicMatches(child_node.kind.menu_item.mnemonic, letter)) return child;
+        }
+    }
+    return null;
+}
+
 pub fn syncMenuHover(tree: *widget.Tree, hovered: ?widget.NodeHandle, mouse: *MouseState) void {
     const target = hovered orelse return;
 
@@ -33,7 +81,7 @@ pub fn syncPopupMenuHover(tree: *widget.Tree, popup: widget.NodeHandle, hovered:
             }
         } else {
             if (tree.getConst(submenu).kind.popup.visible) {
-                closePopupSubtree(tree, submenu);
+                closePopupSubtree(tree, submenu, mouse);
                 mouse.layout_changed = true;
             }
         }
@@ -55,12 +103,16 @@ pub fn applyMenuSelection(tree: *widget.Tree, handle: widget.NodeHandle, mouse: 
         }
     }
 
-    closePopupSubtree(tree, popupRoot(tree, popup_handle));
+    closePopupSubtree(tree, popupRoot(tree, popup_handle), mouse);
 }
 
-pub fn closeAllPopups(tree: *widget.Tree) void {
-    for (tree.nodes.items) |*node| {
+pub fn closeAllPopups(tree: *widget.Tree, mouse: ?*MouseState) void {
+    for (tree.nodes.items, 0..) |*node, index| {
         if (!node.alive) continue;
+        if (node.kind == .popup and node.kind.popup.visible) {
+            const handle = tree.handleFromIndex(@intCast(index));
+            if (mouse) |m| m.emitPopupVisibility(tree, handle, false);
+        }
         menuCloseAction(node.kind)(node);
     }
 }
@@ -91,7 +143,7 @@ fn closeDropdownNode(node: *widget.Node) void {
     node.kind.dropdown.open = false;
 }
 
-pub fn closePopupsForPress(tree: *widget.Tree, target: ?widget.NodeHandle) void {
+pub fn closePopupsForPress(tree: *widget.Tree, target: ?widget.NodeHandle, mouse: *MouseState) void {
     for (tree.nodes.items, 0..) |*node, i| {
         if (!node.alive or node.kind != .popup) continue;
         const popup_handle = tree.handleFromIndex(@intCast(i));
@@ -99,7 +151,7 @@ pub fn closePopupsForPress(tree: *widget.Tree, target: ?widget.NodeHandle) void 
         if (target) |t| {
             if (popupOwnsTarget(tree, popup_handle, t)) continue;
         }
-        closePopupSubtree(tree, popup_handle);
+        closePopupSubtree(tree, popup_handle, mouse);
     }
 }
 
@@ -110,7 +162,7 @@ pub fn directPopupChild(tree: *const widget.Tree, handle: widget.NodeHandle) ?wi
 pub fn toggleOwnedPopup(tree: *widget.Tree, owner: widget.NodeHandle, mouse: ?*MouseState) void {
     const popup = directPopupChild(tree, owner) orelse return;
     if (tree.getConst(popup).kind.popup.visible) {
-        closePopupSubtree(tree, popup);
+        closePopupSubtree(tree, popup, mouse);
         if (mouse) |m| m.layout_changed = true;
     } else {
         openOwnedPopup(tree, owner, mouse);
@@ -121,7 +173,7 @@ pub fn openOwnedPopup(tree: *widget.Tree, owner: widget.NodeHandle, mouse: ?*Mou
     const popup = directPopupChild(tree, owner) orelse return;
     var changed = false;
     if (tree.getConst(owner).parent) |parent_handle| {
-        changed = closeSiblingOwnedPopups(tree, parent_handle, owner) or changed;
+        changed = closeSiblingOwnedPopups(tree, parent_handle, owner, mouse) or changed;
     }
     if (!tree.getConst(popup).kind.popup.visible) {
         tree.get(popup).kind.popup.visible = true;
@@ -134,23 +186,25 @@ pub fn openOwnedPopup(tree: *widget.Tree, owner: widget.NodeHandle, mouse: ?*Mou
     }
 }
 
-pub fn closeSiblingOwnedPopups(tree: *widget.Tree, parent: widget.NodeHandle, keep_owner: widget.NodeHandle) bool {
+pub fn closeSiblingOwnedPopups(tree: *widget.Tree, parent: widget.NodeHandle, keep_owner: widget.NodeHandle, mouse: ?*MouseState) bool {
     var changed = false;
     var iter = tree.children(parent);
     while (iter.next()) |child| {
         if (child.eql(keep_owner)) continue;
         const popup = directPopupChild(tree, child) orelse continue;
         if (tree.getConst(popup).kind.popup.visible) {
-            closePopupSubtree(tree, popup);
+            closePopupSubtree(tree, popup, mouse);
             changed = true;
         }
     }
     return changed;
 }
 
-pub fn closePopupSubtree(tree: *widget.Tree, popup: widget.NodeHandle) void {
+pub fn closePopupSubtree(tree: *widget.Tree, popup: widget.NodeHandle, mouse: ?*MouseState) void {
+    const was_visible = tree.getConst(popup).kind.popup.visible;
     closeDescendantPopups(tree, popup);
     tree.get(popup).kind.popup.visible = false;
+    if (was_visible) if (mouse) |m| m.emitPopupVisibility(tree, popup, false);
     if (tree.getConst(popup).parent) |parent_handle| {
         if (tree.getConst(parent_handle).kind == .dropdown) {
             tree.get(parent_handle).kind.dropdown.open = false;
@@ -162,7 +216,7 @@ pub fn closeDescendantPopups(tree: *widget.Tree, handle: widget.NodeHandle) void
     var iter = tree.children(handle);
     while (iter.next()) |child| {
         if (tree.getConst(child).kind == .popup) {
-            closePopupSubtree(tree, child);
+            closePopupSubtree(tree, child, null);
         } else {
             closeDescendantPopups(tree, child);
         }
@@ -220,4 +274,28 @@ pub fn menuItemIndex(tree: *const widget.Tree, popup: widget.NodeHandle, handle:
         idx += 1;
     }
     return null;
+}
+
+test "mnemonic lookup finds menu-bar menus and visible menu items" {
+    var tree = widget.Tree.init(std.testing.allocator);
+    defer tree.deinit();
+
+    const bar = try tree.addRoot(.{ .menu_bar = .{} });
+    const file = try tree.addChild(bar, .{ .menu = .{ .label = "File", .mnemonic = 'F' } });
+    const popup = try tree.addChild(file, .{ .popup = .{ .placement = .below_start, .visible = false } });
+    const refresh = try tree.addChild(popup, .{ .menu_item = .{ .label = "Refresh", .mnemonic = 'R' } });
+    _ = try tree.addChild(popup, .{ .menu_item = .{ .label = "Quit", .mnemonic = 'Q', .disabled = true } });
+
+    // Menu bar lookup is case-insensitive and matches the mnemonic char.
+    try std.testing.expect(menuBarMenuByMnemonic(&tree, 'f').?.eql(file));
+    try std.testing.expectEqual(@as(?widget.NodeHandle, null), menuBarMenuByMnemonic(&tree, 'z'));
+
+    // Items are only reachable while their popup is visible.
+    try std.testing.expect(!anyMenuPopupVisible(&tree));
+    try std.testing.expectEqual(@as(?widget.NodeHandle, null), visibleMenuItemByMnemonic(&tree, 'r'));
+    tree.get(popup).kind.popup.visible = true;
+    try std.testing.expect(anyMenuPopupVisible(&tree));
+    try std.testing.expect(visibleMenuItemByMnemonic(&tree, 'r').?.eql(refresh));
+    // Disabled items never match.
+    try std.testing.expectEqual(@as(?widget.NodeHandle, null), visibleMenuItemByMnemonic(&tree, 'q'));
 }

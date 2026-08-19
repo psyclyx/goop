@@ -47,7 +47,7 @@ pub fn scrollbarHitAtPoint(
     y: f32,
     theme: style.Theme,
 ) ?ScrollbarHit {
-    const target = hittest.hitTestKind(tree, x, y, .scroll_area) orelse return null;
+    const target = hittest.hitTestKindWithTheme(tree, x, y, .scroll_area, theme) orelse return null;
     if (verticalScrollbarMetrics(tree, target, theme)) |metrics| {
         if (hittest.pointInRect(x, y, metrics.track)) return .{ .handle = target, .metrics = metrics };
     }

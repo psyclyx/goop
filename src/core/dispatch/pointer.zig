@@ -35,7 +35,12 @@ pub fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
     }
 
     mouse.left_down = false;
+    mouse.right_down = false;
+    mouse.middle_down = false;
     mouse.press_target = null;
+    mouse.press_target_element_id = null;
+    mouse.right_press_target = null;
+    mouse.right_press_target_element_id = null;
     mouse.press_can_defer_drag = false;
     mouse.drag_target = null;
     mouse.drag_column_index = null;
@@ -63,7 +68,8 @@ pub fn handleMouseMove(tree: *widget.Tree, mouse: *MouseState, theme: style.Them
             dragTextEditorSelection(tree, pt, mm.x, theme, text_ctx);
         }
     }
-    const hovered = updateHover(tree, mouse);
+    const hovered = updateHover(tree, mouse, theme);
+    syncPrimaryPressVisual(tree, mouse, hovered);
     if (hoverChanged(mouse, hovered) and treeHasTooltip(tree)) {
         mouse.layout_changed = true;
     }
@@ -82,22 +88,22 @@ pub fn handleMouseButton(tree: *widget.Tree, mouse: *MouseState, theme: style.Th
             mouse.last_click_x = mb.x;
             mouse.last_click_y = mb.y;
         } else {
-            handlePrimaryRelease(tree, mouse);
+            handlePrimaryRelease(tree, mouse, theme, text_ctx);
         }
     } else if (mb.button == .right) {
         if (mb.state == .pressed) {
-            handleSecondaryPress(tree, mouse);
+            handleSecondaryPress(tree, mouse, theme);
         } else {
-            handleSecondaryRelease(tree, mouse);
+            handleSecondaryRelease(tree, mouse, theme);
         }
     } else if (mb.button == .middle) {
         mouse.middle_down = mb.state == .pressed;
     }
 }
 
-pub fn handleMouseScroll(tree: *widget.Tree, mouse: *MouseState, ms: input.Event.MouseScroll) void {
+pub fn handleMouseScroll(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, ms: input.Event.MouseScroll) void {
     // Find the scroll area under the cursor and adjust scroll offset
-    const target = hittest.hitTestKind(tree, mouse.x, mouse.y, .scroll_area);
+    const target = hittest.hitTestKindWithTheme(tree, mouse.x, mouse.y, .scroll_area, theme);
     if (target) |t| {
         const node = tree.get(t);
         const scroll = node.kind.scroll_area;
@@ -297,17 +303,17 @@ fn handlePrimaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme
     mouse.press_origin_x = mouse.x;
     mouse.press_origin_y = mouse.y;
     mouse.press_can_defer_drag = false;
-    _ = updateHover(tree, mouse);
+    mouse.hovered = updateHover(tree, mouse, theme);
 
-    const target = scroll_dispatch.scrollbarTargetAtPoint(tree, mouse.x, mouse.y, theme) orelse hittest.hitTest(tree, mouse.x, mouse.y);
-    menu.closePopupsForPress(tree, target);
+    const target = scroll_dispatch.scrollbarTargetAtPoint(tree, mouse.x, mouse.y, theme) orelse hittest.hitTestWithTheme(tree, mouse.x, mouse.y, theme);
+    menu.closePopupsForPress(tree, target, mouse);
     setFocusFromPressTarget(tree, mouse, target);
     mouse.press_target = target;
     mouse.press_target_element_id = if (target) |t| tree.elementId(t) else null;
     if (target) |handle| handlePrimaryPressTarget(tree, mouse, theme, text_ctx, mb, handle);
 }
 
-fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
+fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx) void {
     mouse.left_down = false;
     const dragged_target = mouse.drag_target;
     if (dragged_target) |dt| {
@@ -318,13 +324,13 @@ fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
     mouse.drag_column_index = null;
     mouse.drag_origin_secondary_value = 0;
     mouse.drag_origin_extent = 0;
-    const release_target = hittest.hitTest(tree, mouse.x, mouse.y);
+    const release_target = hittest.hitTestWithTheme(tree, mouse.x, mouse.y, theme);
 
     if (mouse.press_target) |pt| {
         if (release_target) |rt| {
             if (rt.eql(pt) and !dragSuppressedClick(tree, dragged_target, pt)) {
                 if (tree.isAlive(pt)) {
-                    pointerKindOps(tree.getConst(pt).kind).release_activate(tree, pt, mouse);
+                    pointerKindOps(tree.getConst(pt).kind).release_activate(tree, pt, mouse, theme, text_ctx);
                 }
             }
         }
@@ -335,7 +341,7 @@ fn handlePrimaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
     mouse.press_target = null;
     mouse.press_target_element_id = null;
     mouse.press_can_defer_drag = false;
-    _ = updateHover(tree, mouse);
+    mouse.hovered = updateHover(tree, mouse, theme);
 }
 
 const PointerKindOps = struct {
@@ -353,7 +359,7 @@ const CancelGestureFn = *const fn (*widget.Node) void;
 const DragMoveFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState, style.Theme) void;
 const PressFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState, style.Theme, ?*const layout.TextMeasureCtx, input.Event.MouseButton) void;
 const ReleaseDragFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState) void;
-const ReleaseActivateFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState) void;
+const ReleaseActivateFn = *const fn (*widget.Tree, widget.NodeHandle, *MouseState, style.Theme, ?*const layout.TextMeasureCtx) void;
 
 fn pointerKindOps(kind: widget.WidgetKind) PointerKindOps {
     const tag: std.meta.Tag(widget.WidgetKind) = kind;
@@ -658,42 +664,42 @@ fn releaseTableDrag(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *Mouse
     drag.finalizeTableMarquee(tree, handle, mouse);
 }
 
-fn releaseActivateDefault(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+fn releaseActivateDefault(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx) void {
     activation.fireClick(tree, handle, mouse);
 }
 
-fn releaseActivateTable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+fn releaseActivateTable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx) void {
     activation.activateTable(tree, handle, mouse, mouse.x, mouse.y);
 }
 
-fn releaseActivateSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+fn releaseActivateSelectable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx) void {
     activation.activateSelectable(tree, handle, mouse);
 }
 
-fn releaseActivateGridSelector(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+fn releaseActivateGridSelector(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, _: style.Theme, _: ?*const layout.TextMeasureCtx) void {
     activation.activateGridSelector(tree, handle, mouse);
 }
 
-fn releaseActivateGridItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
-    activation.activateGridItem(tree, handle, mouse);
+fn releaseActivateGridItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx) void {
+    activation.activateGridItem(tree, handle, mouse, theme, text_ctx);
 }
 
-fn releaseActivateTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
-    activation.activateTableRow(tree, handle, mouse);
+fn releaseActivateTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx) void {
+    activation.activateTableRow(tree, handle, mouse, theme, text_ctx);
 }
 
-fn handleSecondaryPress(tree: *widget.Tree, mouse: *MouseState) void {
+fn handleSecondaryPress(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme) void {
     mouse.right_down = true;
-    _ = updateHover(tree, mouse);
-    const target = hittest.hitTest(tree, mouse.x, mouse.y);
-    menu.closePopupsForPress(tree, target);
+    mouse.hovered = updateHover(tree, mouse, theme);
+    const target = hittest.hitTestWithTheme(tree, mouse.x, mouse.y, theme);
+    menu.closePopupsForPress(tree, target, mouse);
     mouse.right_press_target = target;
     mouse.right_press_target_element_id = if (target) |t| tree.elementId(t) else null;
 }
 
-fn handleSecondaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
+fn handleSecondaryRelease(tree: *widget.Tree, mouse: *MouseState, theme: style.Theme) void {
     mouse.right_down = false;
-    const release_target = hittest.hitTest(tree, mouse.x, mouse.y);
+    const release_target = hittest.hitTestWithTheme(tree, mouse.x, mouse.y, theme);
     if (mouse.right_press_target) |pt| {
         if (release_target) |rt| {
             if (rt.eql(pt)) activation.fireSecondaryClick(tree, pt, mouse);
@@ -701,11 +707,11 @@ fn handleSecondaryRelease(tree: *widget.Tree, mouse: *MouseState) void {
     }
     mouse.right_press_target = null;
     mouse.right_press_target_element_id = null;
-    _ = updateHover(tree, mouse);
+    mouse.hovered = updateHover(tree, mouse, theme);
 }
 
-fn updateHover(tree: *widget.Tree, mouse: *const MouseState) ?widget.NodeHandle {
-    const top = hittest.hitTest(tree, mouse.x, mouse.y);
+fn updateHover(tree: *widget.Tree, mouse: *const MouseState, theme: style.Theme) ?widget.NodeHandle {
+    const top = hittest.hitTestWithTheme(tree, mouse.x, mouse.y, theme);
     for (tree.nodes.items) |*node| {
         if (!node.alive) continue;
         node.interaction.hovered = false;
@@ -714,6 +720,17 @@ fn updateHover(tree: *widget.Tree, mouse: *const MouseState) ?widget.NodeHandle 
         tree.get(t).interaction.hovered = true;
     }
     return top;
+}
+
+/// Native desktop buttons retain pointer capture from press to release, but
+/// their sunken visual follows whether the captured pointer is currently back
+/// over the original target. Capture itself remains intact outside, so a
+/// re-entry restores the visual and release outside still cannot activate.
+fn syncPrimaryPressVisual(tree: *widget.Tree, mouse: *const MouseState, hovered: ?widget.NodeHandle) void {
+    if (!mouse.left_down) return;
+    const target = mouse.press_target orelse return;
+    if (!tree.isAlive(target)) return;
+    tree.get(target).interaction.pressed = if (hovered) |current| current.eql(target) else false;
 }
 
 fn updateScrollbarHover(tree: *widget.Tree, mouse: *const MouseState, theme: style.Theme) void {

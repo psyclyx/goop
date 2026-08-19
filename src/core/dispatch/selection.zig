@@ -341,6 +341,16 @@ pub fn clearGridSelectorSelection(tree: *widget.Tree, selector: widget.NodeHandl
     return clearSelectionInContainer(tree, selector, gridSelectionOps);
 }
 
+pub fn clearTableSelection(tree: *widget.Tree, table: widget.NodeHandle) bool {
+    if (tree.getConst(table).kind != .table) return false;
+    return clearSelectionInContainer(tree, table, tableSelectionOps);
+}
+
+pub fn clearListBoxSelection(tree: *widget.Tree, list_box: widget.NodeHandle) bool {
+    if (tree.getConst(list_box).kind != .list_box) return false;
+    return clearSelectionInContainer(tree, list_box, listSelectionOps);
+}
+
 pub fn selectAllGridSelector(tree: *widget.Tree, selector: widget.NodeHandle) bool {
     return selectAllInContainer(tree, selector, gridSelectionOps);
 }

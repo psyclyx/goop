@@ -124,6 +124,12 @@ pub const MouseState = struct {
         journal.emit(.{ .activated = .{ .element = element, .action = node.action_id } });
     }
 
+    pub fn emitActivationAction(self: *MouseState, tree: *const widget.Tree, handle: widget.NodeHandle, action: control_event.ActionId) void {
+        const journal = self.control_journal orelse return;
+        const element = tree.elementId(handle) orelse return;
+        journal.emit(.{ .activated = .{ .element = element, .action = action } });
+    }
+
     pub fn emitSecondaryActivation(self: *MouseState, tree: *const widget.Tree, handle: widget.NodeHandle) void {
         const journal = self.control_journal orelse return;
         const node = tree.getConst(handle);
@@ -196,6 +202,12 @@ pub const MouseState = struct {
             .x = scroll.scroll_x,
             .y = scroll.scroll_y,
         } });
+    }
+
+    pub fn emitPopupVisibility(self: *MouseState, tree: *const widget.Tree, handle: widget.NodeHandle, visible: bool) void {
+        const journal = self.control_journal orelse return;
+        const element = tree.elementId(handle) orelse return;
+        journal.emit(.{ .popup_visibility_changed = .{ .element = element, .visible = visible } });
     }
 
     /// Record the complete selected-ID state for a list/grid/table control.

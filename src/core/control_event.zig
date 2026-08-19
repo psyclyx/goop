@@ -72,6 +72,11 @@ pub const ScrollChanged = struct {
     y: f32,
 };
 
+pub const PopupVisibilityChanged = struct {
+    element: ElementId,
+    visible: bool,
+};
+
 pub const Drop = struct {
     source: ElementId,
     target: ElementId,
@@ -102,6 +107,7 @@ pub const ControlEvent = union(enum) {
     sort_changed: SortChanged,
     selection_changed: SelectionChanged,
     scroll_changed: ScrollChanged,
+    popup_visibility_changed: PopupVisibilityChanged,
     drop: Drop,
 };
 

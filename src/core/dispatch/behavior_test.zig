@@ -2,6 +2,8 @@ const std = @import("std");
 const widget = @import("../widget.zig");
 const input_types = @import("goop_input");
 const focus = @import("../focus.zig");
+const geometry = @import("../geometry.zig");
+const layout = @import("../layout.zig");
 const style = @import("../style.zig");
 const dispatch_core = @import("../dispatch.zig");
 const control_event = @import("../control_event.zig");
@@ -49,6 +51,28 @@ const dispatch = struct {
         return journal.view();
     }
 
+    fn processEventsWithTextCtx(
+        tree: *widget.Tree,
+        events: []const input_types.Event,
+        mouse: *MouseState,
+        theme: style.Theme,
+        text_ctx: *const layout.TextMeasureCtx,
+        journal: *control_event.Journal,
+    ) !control_event.ControlEvents {
+        journal.clearRetainingCapacity();
+        try journal.prepareBatch(std.testing.allocator, tree.count(), events.len);
+        dispatch_core.process(
+            tree,
+            events,
+            mouse,
+            theme,
+            null,
+            text_ctx,
+            journal,
+        );
+        return journal.view();
+    }
+
     fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
         dispatch_core.cancelPointerGesture(tree, mouse);
     }
@@ -66,6 +90,15 @@ const dispatch = struct {
         return journal.view();
     }
 };
+
+fn fixedWidthTextMeasure(text: []const u8, _: f32, _: ?*anyopaque) layout.TextDimensions {
+    return .{
+        .width = @as(f32, @floatFromInt(text.len)) * 4,
+        .height = 10,
+        .ascent = 8,
+        .descent = 2,
+    };
+}
 
 test "hover updates on mouse move" {
     const allocator = std.testing.allocator;
@@ -1617,6 +1650,141 @@ test "secondary click is reported on the target widget" {
     try std.testing.expectEqual(control_event.ElementId.init(131), activation.element);
     try std.testing.expectApproxEqAbs(@as(f32, 30), activation.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 20), activation.y, 0.01);
+}
+
+test "outside primary click reports popup dismissal before target activation" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+
+    const root = try tree.addRoot(.{ .container = .{} });
+    const button = try tree.addChild(root, .{ .button = .{ .label = "Elsewhere" } });
+    const popup = try tree.addRoot(.{ .popup = .{
+        .visible = true,
+        .close_on_outside_click = true,
+        .placement = .absolute,
+    } });
+    try tree.setElementId(button, .init(132));
+    try tree.setElementId(popup, .init(133));
+
+    tree.get(root).layout_rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    tree.get(button).layout_rect = .{ .x = 10, .y = 10, .w = 120, .h = 30 };
+    tree.get(popup).layout_rect = .{ .x = 200, .y = 80, .w = 140, .h = 100 };
+
+    var mouse = MouseState{};
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    const output = try dispatch.processEvents(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 30, .y = 20 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 30, .y = 20 } },
+    }, &mouse, style.Theme.default, &journal);
+
+    try std.testing.expectEqual(@as(usize, 2), output.items.len);
+    try std.testing.expectEqual(control_event.ElementId.init(133), output.items[0].popup_visibility_changed.element);
+    try std.testing.expect(!output.items[0].popup_visibility_changed.visible);
+    try std.testing.expectEqual(control_event.ElementId.init(132), output.items[1].activated.element);
+    try std.testing.expect(!tree.getConst(popup).kind.popup.visible);
+}
+
+test "clicking blank table space clears selection" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+    const table = try tree.addRoot(.{ .table = .{ .columns = 1, .selection_mode = .multiple } });
+    const row = try tree.addChild(table, .{ .table_row = .{ .selected = true } });
+    _ = try tree.addChild(row, .{ .table_cell = .{} });
+    try tree.setElementId(table, .init(201));
+    try tree.setElementId(row, .init(202));
+    tree.get(table).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 240 };
+    tree.get(row).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 30 };
+
+    var mouse: MouseState = .{};
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    const output = try dispatch.processEvents(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 140, .y = 180 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 140, .y = 180 } },
+    }, &mouse, style.Theme.default, &journal);
+    try std.testing.expect(!tree.getConst(row).kind.table_row.selected);
+    try std.testing.expectEqual(@as(usize, 2), output.items.len);
+    try std.testing.expect(output.items[0] == .activated);
+    try std.testing.expectEqual(@as(usize, 0), output.selection(output.items[1].selection_changed).len);
+}
+
+test "selected table label action uses the exact text bounds" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+    const table = try tree.addRoot(.{ .table = .{ .columns = 1, .selection_mode = .single } });
+    const row = try tree.addChild(table, .{ .table_row = .{
+        .selected = true,
+        .selected_label_action = .init(77),
+        .label_action_column = 0,
+    } });
+    const cell = try tree.addChild(row, .{ .table_cell = .{} });
+    const text_node = try tree.addChild(cell, .{ .text = .{ .content = "rename.txt" } });
+    try tree.setElementId(row, .init(203));
+    tree.get(table).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 40 };
+    tree.get(row).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 40 };
+    tree.get(cell).layout_rect = .{ .x = 0, .y = 0, .w = 300, .h = 40 };
+    tree.get(text_node).layout_rect = .{ .x = 42, .y = 10, .w = 180, .h = 18 };
+
+    var mouse: MouseState = .{};
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    const text_ctx = layout.TextMeasureCtx{ .measureFn = fixedWidthTextMeasure };
+
+    // The unused layout width around a short label is not part of the rename
+    // target even though it is still an ordinary row activation target.
+    const outside = try dispatch.processEventsWithTextCtx(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 150, .y = 18 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 150, .y = 18 } },
+    }, &mouse, style.Theme.default, &text_ctx, &journal);
+    try std.testing.expectEqual(@as(usize, 1), outside.items.len);
+    try std.testing.expect(outside.items[0].activated.action == null);
+
+    const inside = try dispatch.processEventsWithTextCtx(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = 60, .y = 18 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = 60, .y = 18 } },
+    }, &mouse, style.Theme.default, &text_ctx, &journal);
+    try std.testing.expectEqual(@as(usize, 1), inside.items.len);
+    try std.testing.expectEqual(control_event.ActionId.init(77), inside.items[0].activated.action.?);
+}
+
+test "selected grid label action uses centered rendered text bounds" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+    const item = try tree.addRoot(.{ .grid_item = .{
+        .label = "goop",
+        .selected = true,
+        .selected_label_action = .init(78),
+    } });
+    try tree.setElementId(item, .init(204));
+    tree.get(item).layout_rect = .{ .x = 10, .y = 10, .w = 140, .h = 90 };
+
+    const text_ctx = layout.TextMeasureCtx{ .measureFn = fixedWidthTextMeasure };
+    const resolved = tree.getConst(item).style_override.resolve(style.Theme.default);
+    const label = geometry.gridItemLabelRect(tree.getConst(item).layout_rect, resolved);
+    const measured = layout.measureTextDimensions("goop", resolved.font_size, &text_ctx);
+    const rendered = geometry.renderedTextRect(label, measured.width, measured.height, .center);
+
+    var mouse: MouseState = .{};
+    var journal: control_event.Journal = .{};
+    defer journal.deinit(allocator);
+    const outside = try dispatch.processEventsWithTextCtx(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = label.x + 1, .y = rendered.y + 1 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = label.x + 1, .y = rendered.y + 1 } },
+    }, &mouse, style.Theme.default, &text_ctx, &journal);
+    try std.testing.expectEqual(@as(usize, 1), outside.items.len);
+    try std.testing.expect(outside.items[0].activated.action == null);
+
+    const inside = try dispatch.processEventsWithTextCtx(&tree, &.{
+        .{ .mouse_button = .{ .button = .left, .state = .pressed, .x = rendered.x + 1, .y = rendered.y + 1 } },
+        .{ .mouse_button = .{ .button = .left, .state = .released, .x = rendered.x + 1, .y = rendered.y + 1 } },
+    }, &mouse, style.Theme.default, &text_ctx, &journal);
+    try std.testing.expectEqual(@as(usize, 1), inside.items.len);
+    try std.testing.expectEqual(control_event.ActionId.init(78), inside.items[0].activated.action.?);
 }
 
 test "list box marquee stays owned by its container across child hits" {

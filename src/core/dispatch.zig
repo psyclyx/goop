@@ -8,9 +8,12 @@ const dispatch_focus = @import("dispatch/focus_state.zig");
 const dispatch_keyboard = @import("dispatch/keyboard.zig");
 const dispatch_pointer = @import("dispatch/pointer.zig");
 const dispatch_text = @import("dispatch/text.zig");
+const dispatch_tooltip = @import("dispatch/tooltip.zig");
 const control_event = @import("control_event.zig");
 pub const MouseState = dispatch_types.MouseState;
 pub const Clipboard = dispatch_types.Clipboard;
+pub const TooltipState = dispatch_tooltip.State;
+pub const UpdateResult = dispatch_tooltip.UpdateResult;
 
 /// Process a batch of events and append semantic occurrences to `journal`.
 /// The caller must reserve the full batch with `Journal.prepareBatch` before
@@ -37,11 +40,15 @@ pub fn cancelPointerGesture(tree: *widget.Tree, mouse: *MouseState) void {
     dispatch_pointer.cancelPointerGesture(tree, mouse);
 }
 
+pub fn updateTimedState(tree: *widget.Tree, mouse: *const MouseState, tooltips: *TooltipState, now_ms: u64) UpdateResult {
+    return dispatch_tooltip.update(tree, mouse, tooltips, now_ms);
+}
+
 fn processOne(tree: *widget.Tree, ev: input.Event, mouse: *MouseState, theme: style.Theme, clipboard: ?Clipboard, text_ctx: ?*const layout.TextMeasureCtx) void {
     switch (ev) {
         .mouse_move => |mm| dispatch_pointer.handleMouseMove(tree, mouse, theme, text_ctx, mm),
         .mouse_button => |mb| dispatch_pointer.handleMouseButton(tree, mouse, theme, text_ctx, mb),
-        .mouse_scroll => |ms| dispatch_pointer.handleMouseScroll(tree, mouse, ms),
+        .mouse_scroll => |ms| dispatch_pointer.handleMouseScroll(tree, mouse, theme, ms),
         .focus => |f| handleFocus(tree, mouse, f),
         .key => |k| dispatch_keyboard.handleKey(tree, mouse, theme, clipboard, k),
         .text => |t| dispatch_text.handleText(tree, mouse, t),
@@ -51,6 +58,7 @@ fn processOne(tree: *widget.Tree, ev: input.Event, mouse: *MouseState, theme: st
 
 fn handleFocus(tree: *widget.Tree, mouse: *MouseState, f: input.Event.Focus) void {
     if (!f.focused) {
+        dispatch_pointer.cancelPointerGesture(tree, mouse);
         dispatch_focus.setFocusedWidget(tree, mouse, null);
     }
 }
@@ -115,5 +123,7 @@ fn discardDeadHandles(tree: *const widget.Tree, mouse: *MouseState) void {
 
 test {
     _ = @import("dispatch/behavior_test.zig");
+    _ = @import("dispatch/pointer_capture_test.zig");
+    _ = @import("dispatch/tooltip.zig");
     _ = @import("dispatch_text_input_test.zig");
 }

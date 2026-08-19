@@ -1,5 +1,8 @@
 const std = @import("std");
 const widget = @import("../widget.zig");
+const geometry = @import("../geometry.zig");
+const layout = @import("../layout.zig");
+const style = @import("../style.zig");
 const types = @import("types.zig");
 const menu = @import("menu.zig");
 const navigation = @import("navigation.zig");
@@ -8,8 +11,14 @@ const selection = @import("selection.zig");
 const MouseState = types.MouseState;
 
 pub fn activateTable(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, x: f32, y: f32) void {
-    const column = widget.tableHeaderCellIndexAtPoint(tree, handle, x, y) orelse return;
     const node = tree.get(handle);
+    const column = widget.tableHeaderCellIndexAtPoint(tree, handle, x, y) orelse {
+        if (node.kind.table.selection_mode != .none and !mouse.ctrl_down and !mouse.shift_down) {
+            mouse.emitActivation(tree, handle);
+            if (selection.clearTableSelection(tree, handle)) mouse.emitSelection(tree, handle);
+        }
+        return;
+    };
     mouse.emitActivation(tree, handle);
     if (node.kind.table.toggleSort(column)) {
         mouse.emitSort(tree, handle, column, node.kind.table.sort_direction);
@@ -41,9 +50,22 @@ pub fn activateGridSelector(tree: *widget.Tree, handle: widget.NodeHandle, mouse
     if (selection.clearGridSelectorSelection(tree, handle)) mouse.emitSelection(tree, handle);
 }
 
-pub fn activateGridItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+pub fn activateGridItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx) void {
     const node = tree.get(handle);
     if (node.kind != .grid_item) return;
+
+    if (node.kind.grid_item.selected) {
+        if (node.kind.grid_item.selected_label_action) |action| {
+            const resolved = node.style_override.resolve(theme);
+            const label = geometry.gridItemLabelRect(node.layout_rect, resolved);
+            const measured = layout.measureTextDimensions(node.kind.grid_item.label, resolved.font_size, text_ctx);
+            const rendered = geometry.renderedTextRect(label, measured.width, measured.height, .center);
+            if (geometry.pointInRect(mouse.x, mouse.y, rendered)) {
+                mouse.emitActivationAction(tree, handle, action);
+                return;
+            }
+        }
+    }
 
     mouse.emitActivation(tree, handle);
 
@@ -57,10 +79,18 @@ pub fn activateGridItem(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *M
     if (selection.selectGridItem(tree, handle)) emitSelectionForItem(tree, handle, mouse);
 }
 
-pub fn activateTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
+pub fn activateTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx) void {
     if (!widget.tableRowSelectable(tree, handle)) return;
 
     const node = tree.get(handle);
+    if (node.kind.table_row.selected) {
+        if (node.kind.table_row.selected_label_action) |action| {
+            if (tableRowLabelHit(tree, handle, node.kind.table_row.label_action_column, mouse.x, mouse.y, theme, text_ctx)) {
+                mouse.emitActivationAction(tree, handle, action);
+                return;
+            }
+        }
+    }
     mouse.emitActivation(tree, handle);
 
     const table_handle = node.parent orelse return;
@@ -70,6 +100,20 @@ pub fn activateTableRow(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *M
     }
 
     if (selection.selectTableRow(tree, handle)) mouse.emitSelection(tree, table_handle);
+}
+
+fn tableRowLabelHit(tree: *const widget.Tree, row: widget.NodeHandle, column: u8, x: f32, y: f32, theme: style.Theme, text_ctx: ?*const layout.TextMeasureCtx) bool {
+    const cell = widget.tableCellAt(tree, row, column) orelse return false;
+    var iter = tree.children(cell);
+    while (iter.next()) |child| {
+        const child_node = tree.getConst(child);
+        if (child_node.kind != .text) continue;
+        const resolved = child_node.style_override.resolve(theme);
+        const measured = layout.measureTextDimensions(child_node.kind.text.content, resolved.font_size, text_ctx);
+        const rendered = geometry.renderedTextRect(child_node.layout_rect, measured.width, measured.height, .start);
+        return geometry.pointInRect(x, y, rendered);
+    }
+    return false;
 }
 
 pub fn fireClick(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
@@ -172,11 +216,11 @@ fn activateSelectableNoMouse(tree: *widget.Tree, handle: widget.NodeHandle, mous
 }
 
 fn activateGridItemNoMouse(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
-    activateGridItem(tree, handle, mouse);
+    activateGridItem(tree, handle, mouse, style.Theme.default, null);
 }
 
 fn activateTableRowNoMouse(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
-    activateTableRow(tree, handle, mouse);
+    activateTableRow(tree, handle, mouse, style.Theme.default, null);
 }
 
 fn activateDragValue(tree: *widget.Tree, handle: widget.NodeHandle, mouse: *MouseState) void {
