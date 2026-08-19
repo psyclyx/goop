@@ -14,6 +14,7 @@ pub const layout = runtime.layout;
 pub const hittest = runtime.hittest;
 pub const geometry = runtime.geometry;
 pub const scrollbar = runtime.scrollbar;
+pub const animation = @import("animation.zig");
 
 pub const Tree = runtime.Tree;
 pub const NodeHandle = runtime.NodeHandle;
@@ -47,6 +48,8 @@ pub const Color = runtime.Color;
 pub const TextAlign = runtime.TextAlign;
 pub const TextOverflow = runtime.TextOverflow;
 pub const IconId = runtime.IconId;
+pub const StockIcon = runtime.StockIcon;
+pub const PointerCursor = runtime.PointerCursor;
 pub const TextMeasureCtx = runtime.TextMeasureCtx;
 pub const MeasureTextFn = runtime.MeasureTextFn;
 pub const TextDimensions = runtime.TextDimensions;
@@ -62,6 +65,7 @@ pub const TextChanged = runtime.TextChanged;
 pub const SortChanged = runtime.SortChanged;
 pub const SelectionChanged = runtime.SelectionChanged;
 pub const ScrollChanged = runtime.ScrollChanged;
+pub const PopupVisibilityChanged = runtime.PopupVisibilityChanged;
 pub const ControlDrop = runtime.ControlDrop;
 
 pub const Clipboard = runtime.Clipboard;

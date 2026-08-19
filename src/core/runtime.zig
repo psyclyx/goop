@@ -79,6 +79,14 @@ pub const Color = style.Color;
 pub const TextAlign = visual.TextAlign;
 pub const TextOverflow = visual.TextOverflow;
 pub const IconId = visual.IconId;
+pub const StockIcon = visual.StockIcon;
+pub const PointerCursor = enum {
+    default,
+    text,
+    resize_horizontal,
+    resize_vertical,
+};
+pub const UpdateResult = dispatch.UpdateResult;
 pub const TextMeasureCtx = layout.TextMeasureCtx;
 pub const MeasureTextFn = layout.MeasureTextFn;
 pub const TextDimensions = layout.TextDimensions;
@@ -94,6 +102,7 @@ pub const TextChanged = control_event.TextChanged;
 pub const SortChanged = control_event.SortChanged;
 pub const SelectionChanged = control_event.SelectionChanged;
 pub const ScrollChanged = control_event.ScrollChanged;
+pub const PopupVisibilityChanged = control_event.PopupVisibilityChanged;
 pub const ControlDrop = control_event.Drop;
 pub const ControlIdentity = widget.ControlIdentity;
 pub const ControlDesc = widget.ControlDesc;
@@ -195,6 +204,8 @@ pub const Runtime = struct {
     events: std.ArrayListUnmanaged(Event),
     control_journal: control_event.Journal = .{},
     mouse: dispatch.MouseState = .{},
+    tooltips: dispatch.TooltipState = .{},
+    now_ms: u64 = 0,
     text_measure_ctx: ?*const TextMeasureCtx = null,
     layout_dirty: bool = true,
     visual_revision: u64 = 1,
@@ -310,6 +321,11 @@ pub const Runtime = struct {
             self.text_measure_ctx,
             &self.control_journal,
         );
+        const timed = dispatch.updateTimedState(tree, &self.mouse, &self.tooltips, self.now_ms);
+        if (timed.changed) {
+            self.layout_dirty = true;
+            self.bumpVisualRevision();
+        }
         if (self.layout_dirty or self.mouse.layout_changed) {
             const previous = self.bindClayContext();
             defer c.Clay_SetCurrentContext(previous);
@@ -360,12 +376,66 @@ pub const Runtime = struct {
         return &tree.get(handle).kind;
     }
 
+    /// Advance runtime-owned time-driven interaction state.
+    ///
+    /// `now_ms` is an absolute monotonic timestamp supplied by the host. Time
+    /// never moves backwards if a host clock sample regresses. The returned
+    /// absolute deadline is the next time calling `update` can change state;
+    /// hosts may sleep until it instead of continuously repainting.
+    pub fn update(self: *Runtime, tree: *Tree, now_ms: u64) UpdateResult {
+        self.now_ms = @max(self.now_ms, now_ms);
+        const result = dispatch.updateTimedState(tree, &self.mouse, &self.tooltips, self.now_ms);
+        if (result.changed) {
+            self.layout_dirty = true;
+            self.bumpVisualRevision();
+        }
+        return result;
+    }
+
     /// Return the caller-owned semantic identity of the focused control.
     /// Stale retained handles are contained inside the runtime and surface as
     /// null rather than crossing this boundary.
     pub fn focusedElementId(self: *const Runtime, tree: *const Tree) ?ElementId {
         const focused = self.mouse.focused orelse return null;
         return tree.elementId(focused);
+    }
+
+    /// Return the semantic identity of the active drag source, if it has one.
+    /// Hosts can use this stable ID to begin native drag-and-drop without
+    /// exposing retained node handles across the runtime boundary.
+    pub fn draggedElementId(self: *const Runtime, tree: *const Tree) ?ElementId {
+        const dragged = self.mouse.drag_target orelse return null;
+        if (!tree.isAlive(dragged)) return null;
+        return tree.elementId(dragged);
+    }
+
+    /// Backend-neutral cursor intent for the current pointer/capture state.
+    /// The host maps this value to its native cursor resources.
+    pub fn pointerCursor(self: *const Runtime, tree: *const Tree, theme: Theme) PointerCursor {
+        const target = self.mouse.drag_target orelse hittest.hitTestWithTheme(tree, self.mouse.x, self.mouse.y, theme) orelse return .default;
+        if (!tree.isAlive(target)) return .default;
+        const node = tree.getConst(target);
+        return switch (node.kind) {
+            .text_input => .text,
+            .splitter => |splitter| switch (splitter.direction) {
+                .row => .resize_horizontal,
+                .column => .resize_vertical,
+            },
+            .table => if (widget.tableResizeHandleIndexAtPoint(tree, target, self.mouse.x, self.mouse.y) != null)
+                .resize_horizontal
+            else if (self.mouse.drag_target != null and self.mouse.drag_column_index != null)
+                .resize_horizontal
+            else
+                .default,
+            else => .default,
+        };
+    }
+
+    /// True while the pointer is captured by a pressed/dragging control.
+    /// Hosts use this to avoid synthesizing a hover-leave position in the
+    /// middle of a native implicit pointer grab.
+    pub fn pointerGestureActive(self: *const Runtime) bool {
+        return self.mouse.left_down or self.mouse.right_down or self.mouse.drag_target != null;
     }
 
     /// Set keyboard focus to a live widget.
@@ -590,10 +660,27 @@ pub const Context = struct {
         self.runtime.invalidate();
     }
 
+    /// Advance the host-supplied monotonic clock and time-driven UI state.
+    pub fn update(self: *Context, now_ms: u64) UpdateResult {
+        return self.runtime.update(&self.tree, now_ms);
+    }
+
     // --- Focus / gestures ----------------------------------------------
 
     pub fn focusedElementId(self: *const Context) ?ElementId {
         return self.runtime.focusedElementId(&self.tree);
+    }
+
+    pub fn draggedElementId(self: *const Context) ?ElementId {
+        return self.runtime.draggedElementId(&self.tree);
+    }
+
+    pub fn pointerCursor(self: *const Context) PointerCursor {
+        return self.runtime.pointerCursor(&self.tree, self.theme);
+    }
+
+    pub fn pointerGestureActive(self: *const Context) bool {
+        return self.runtime.pointerGestureActive();
     }
 
     /// Set keyboard focus to a live widget. See `Runtime.focusWidget`.
@@ -730,6 +817,51 @@ test "context initializes" {
     defer ctx.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), ctx.tree.count());
+}
+
+test "pointer cursor follows interactive geometry" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 480, .height = 240 });
+    defer ctx.deinit();
+
+    const splitter = try ctx.tree.addRoot(.{ .splitter = .{
+        .direction = .row,
+        .ratio = 0.5,
+        .thickness = 12,
+        .gap_thickness = 1,
+    } });
+    const left = try ctx.tree.addChild(splitter, .{ .container = .{} });
+    _ = try ctx.tree.addChild(left, .{ .text_input = .{ .placeholder = "Path" } });
+    _ = try ctx.tree.addChild(splitter, .{ .container = .{} });
+    ctx.doLayout(null);
+
+    const splitter_node = ctx.tree.getConst(splitter);
+    const resolved = splitter_node.style_override.resolve(ctx.theme);
+    const handle = geometry.splitterHandleRect(
+        geometry.splitterDividerRect(splitter_node.layout_rect, splitter_node.kind.splitter, resolved),
+        splitter_node.kind.splitter,
+    );
+    try ctx.pushEvent(.{ .mouse_move = .{ .x = handle.x + handle.w * 0.5, .y = handle.y + handle.h * 0.5 } });
+    _ = try ctx.processEvents();
+    try std.testing.expectEqual(PointerCursor.resize_horizontal, ctx.pointerCursor());
+
+    const input = ctx.tree.getConst(left).first_child.?;
+    const input_rect = ctx.tree.getConst(input).layout_rect;
+    try ctx.pushEvent(.{ .mouse_move = .{ .x = input_rect.x + 2, .y = input_rect.y + 2 } });
+    _ = try ctx.processEvents();
+    try std.testing.expectEqual(PointerCursor.text, ctx.pointerCursor());
+}
+
+test "dragged element ID exposes semantic identity without retained handles" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 240, .height = 120 });
+    defer ctx.deinit();
+    const source = try ctx.tree.addRoot(.{ .button = .{ .label = "Source" } });
+    try ctx.tree.setElementId(source, .init(73));
+    try std.testing.expect(ctx.draggedElementId() == null);
+
+    ctx.runtime.mouse.drag_target = source;
+    try std.testing.expectEqual(ElementId.init(73), ctx.draggedElementId().?);
+    try ctx.tree.remove(source);
+    try std.testing.expect(ctx.draggedElementId() == null);
 }
 
 test "runtime lays out a caller-owned tree" {
@@ -2080,7 +2212,7 @@ test "sortable table headers update retained sort state" {
     try std.testing.expectEqual(widget.WidgetKind.Table.SortDirection.descending, ctx.tree.node(table).?.kind.table.sort_direction);
 }
 
-test "tooltip layout updates in the same frame as hover" {
+test "tooltip layout waits for the runtime clock deadline" {
     var ctx = try Context.init(std.testing.allocator, .{ .width = 400, .height = 300 });
     defer ctx.deinit();
 
@@ -2089,6 +2221,7 @@ test "tooltip layout updates in the same frame as hover" {
     const tooltip = try ctx.tree.addChild(owner, .{ .tooltip = .{ .placement = .below_start, .y = 4 } });
     _ = try ctx.tree.addChild(tooltip, .{ .text = .{ .content = "Tooltip body" } });
 
+    _ = ctx.update(100);
     ctx.doLayout(null);
     try std.testing.expectEqual(Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(tooltip).layout_rect);
 
@@ -2099,6 +2232,10 @@ test "tooltip layout updates in the same frame as hover" {
     } });
     _ = try ctx.processEvents();
 
+    try std.testing.expectEqual(@as(?u64, 600), ctx.update(599).next_deadline_ms);
+    try std.testing.expectEqual(Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(tooltip).layout_rect);
+    try std.testing.expect(ctx.update(600).changed);
+    ctx.doLayout(null);
     const tooltip_rect = ctx.tree.getConst(tooltip).layout_rect;
     try std.testing.expect(tooltip_rect.w > 0);
     try std.testing.expect(tooltip_rect.h > 0);
@@ -2106,6 +2243,23 @@ test "tooltip layout updates in the same frame as hover" {
     try ctx.pushEvent(.{ .mouse_move = .{ .x = 390, .y = 290 } });
     _ = try ctx.processEvents();
     try std.testing.expectEqual(Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }, ctx.tree.getConst(tooltip).layout_rect);
+}
+
+test "runtime clock is monotonic and zero-delay tooltips need no timer" {
+    var ctx = try Context.init(std.testing.allocator, .{ .width = 240, .height = 120 });
+    defer ctx.deinit();
+    const owner = try ctx.tree.addRoot(.{ .button = .{ .label = "Hover" } });
+    const tooltip = try ctx.tree.addChild(owner, .{ .tooltip = .{ .delay_ms = 0 } });
+    _ = try ctx.tree.addChild(tooltip, .{ .text = .{ .content = "Now" } });
+    ctx.doLayout(null);
+    const rect = ctx.tree.getConst(owner).layout_rect;
+
+    _ = ctx.update(900);
+    try ctx.pushEvent(.{ .mouse_move = .{ .x = rect.x + 1, .y = rect.y + 1 } });
+    _ = try ctx.processEvents();
+    try std.testing.expect(ctx.tree.getConst(tooltip).kind.tooltip.visible);
+    try std.testing.expect(ctx.update(100).next_deadline_ms == null);
+    try std.testing.expect(ctx.runtime.now_ms == 900);
 }
 
 test "menu popup layout updates in the same frame as activation" {
