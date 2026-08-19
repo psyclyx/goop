@@ -127,12 +127,24 @@ void *goop_skia_context_create(void *instance, void *physical_device,
     return ctx;
 }
 
+// CPU raster context: no GrDirectContext. Surfaces are Skia raster surfaces.
+// Used when there is no real GPU (e.g. only a software Vulkan device), or when
+// GOOP_SKIA_BACKEND=cpu is set.
+void *goop_skia_context_create_cpu() {
+    auto ctx = new Context();
+    ctx->font_mgr = SkFontMgr_New_FontConfig(nullptr, SkFontScanner_Make_FreeType());
+    if (ctx->font_mgr)
+        ctx->typeface = ctx->font_mgr->legacyMakeTypeface(nullptr, SkFontStyle::Normal());
+    return ctx;
+}
+
 void goop_skia_context_destroy(void *handle) {
     delete static_cast<Context *>(handle);
 }
 
 void goop_skia_flush(void *handle) {
-    static_cast<Context *>(handle)->gr->flushAndSubmit(GrSyncCpu::kYes);
+    auto ctx = static_cast<Context *>(handle);
+    if (ctx->gr) ctx->gr->flushAndSubmit(GrSyncCpu::kYes);  // raster is immediate
 }
 
 // ── Surfaces ────────────────────────────────────────────────────────────────
@@ -141,7 +153,8 @@ void *goop_skia_surface_create(void *ctx_handle, int width, int height) {
     const SkImageInfo info = SkImageInfo::Make(
         width, height, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
     sk_sp<SkSurface> surface =
-        SkSurfaces::RenderTarget(ctx->gr.get(), skgpu::Budgeted::kYes, info);
+        ctx->gr ? SkSurfaces::RenderTarget(ctx->gr.get(), skgpu::Budgeted::kYes, info)
+                : SkSurfaces::Raster(info);
     if (!surface) return nullptr;
     return surface.release();  // owned by the caller until surface_destroy
 }

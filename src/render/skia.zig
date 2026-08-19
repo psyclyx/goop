@@ -25,6 +25,7 @@ extern fn goop_skia_context_create(
     graphics_queue_index: u32,
     get_instance_proc_addr: ?*anyopaque,
 ) ?*anyopaque;
+extern fn goop_skia_context_create_cpu() ?*anyopaque;
 extern fn goop_skia_context_destroy(ctx: ?*anyopaque) void;
 extern fn goop_skia_flush(ctx: ?*anyopaque) void;
 
@@ -71,10 +72,59 @@ pub const Error = error{
     BufferTooSmall,
 };
 
+/// Which Skia renderer to use.
+pub const Backend = enum { vulkan, cpu };
+
+/// How capable the Vulkan physical device is. A software device (e.g. lavapipe,
+/// which reports `VK_PHYSICAL_DEVICE_TYPE_CPU`) is treated as no better than
+/// Skia's own raster path.
+pub const DeviceClass = enum { real_gpu, software, none };
+
+/// Pure backend policy: an explicit `GOOP_SKIA_BACKEND` value wins; otherwise
+/// use the GPU only for a real GPU, preferring CPU raster over software Vulkan.
+pub fn chooseBackend(override: ?[]const u8, class: DeviceClass) Backend {
+    if (override) |value| {
+        if (std.ascii.eqlIgnoreCase(value, "vulkan")) return .vulkan;
+        if (std.ascii.eqlIgnoreCase(value, "cpu")) return .cpu;
+        // Unrecognized value falls through to auto-detection.
+    }
+    return switch (class) {
+        .real_gpu => .vulkan,
+        .software, .none => .cpu,
+    };
+}
+
+/// Classify a physical device by its reported type.
+pub fn deviceClass(physical: vk.VkPhysicalDevice) DeviceClass {
+    var props: vk.VkPhysicalDeviceProperties = undefined;
+    vk.vkGetPhysicalDeviceProperties(physical, &props);
+    return switch (props.deviceType) {
+        vk.VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
+        vk.VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+        vk.VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU,
+        => .real_gpu,
+        else => .software, // CPU (lavapipe) or OTHER
+    };
+}
+
+fn envBackend() ?[]const u8 {
+    const raw = std.c.getenv("GOOP_SKIA_BACKEND") orelse return null;
+    return std.mem.span(raw);
+}
+
+/// Resolve the backend for a device (or `null` when no Vulkan device exists),
+/// reading `GOOP_SKIA_BACKEND` from the environment.
+pub fn selectBackend(physical: ?vk.VkPhysicalDevice) Backend {
+    const class: DeviceClass = if (physical) |p| deviceClass(p) else .none;
+    return chooseBackend(envBackend(), class);
+}
+
 /// A Ganesh GrDirectContext bound to a goop Vulkan device.
 pub const Context = struct {
     handle: *anyopaque,
+    backend: Backend,
 
+    /// GPU (Ganesh) context bound to a goop Vulkan device.
     pub fn initVulkan(instance: graphics.Instance, device: graphics.Device) Error!Context {
         const get_instance_proc_addr: ?*anyopaque = @ptrCast(@constCast(&vk.vkGetInstanceProcAddr));
         const handle = goop_skia_context_create(
@@ -85,7 +135,22 @@ pub const Context = struct {
             device.graphics_family,
             get_instance_proc_addr,
         ) orelse return error.SkiaContextInitFailed;
-        return .{ .handle = handle };
+        return .{ .handle = handle, .backend = .vulkan };
+    }
+
+    /// CPU raster context. Needs no Vulkan device.
+    pub fn initCpu() Error!Context {
+        const handle = goop_skia_context_create_cpu() orelse return error.SkiaContextInitFailed;
+        return .{ .handle = handle, .backend = .cpu };
+    }
+
+    /// Pick the backend per `GOOP_SKIA_BACKEND` / device class, then create it.
+    /// The Vulkan device is used only if the GPU backend is selected.
+    pub fn initAuto(instance: graphics.Instance, device: graphics.Device) Error!Context {
+        return switch (selectBackend(device.physical)) {
+            .vulkan => initVulkan(instance, device),
+            .cpu => initCpu(),
+        };
     }
 
     pub fn deinit(self: *Context) void {
@@ -206,6 +271,89 @@ test "skia raster self-test draws a non-blank scene" {
     var pixels: [w * h * 4]u8 = undefined;
     try rasterSelftest(w, h, &pixels);
 
+    var saw_fill = false;
+    var i: usize = 0;
+    while (i < pixels.len) : (i += 4) {
+        if (pixels[i + 2] > 150) {
+            saw_fill = true;
+            break;
+        }
+    }
+    try std.testing.expect(saw_fill);
+}
+
+test "backend policy honors env override then device class" {
+    try std.testing.expectEqual(Backend.vulkan, chooseBackend("vulkan", .software));
+    try std.testing.expectEqual(Backend.cpu, chooseBackend("cpu", .real_gpu));
+    try std.testing.expectEqual(Backend.vulkan, chooseBackend(null, .real_gpu));
+    try std.testing.expectEqual(Backend.cpu, chooseBackend(null, .software));
+    try std.testing.expectEqual(Backend.cpu, chooseBackend(null, .none));
+    // Unrecognized override falls through to auto-detection.
+    try std.testing.expectEqual(Backend.vulkan, chooseBackend("bogus", .real_gpu));
+    try std.testing.expectEqual(Backend.cpu, chooseBackend("bogus", .software));
+}
+
+test "skia cpu raster renders visual ops without a device" {
+    var ctx = try Context.initCpu();
+    defer ctx.deinit();
+    try std.testing.expectEqual(Backend.cpu, ctx.backend);
+
+    const w: u32 = 96;
+    const h: u32 = 64;
+    var surf = try ctx.createSurface(w, h);
+    defer surf.deinit();
+
+    var enc = surf.encoder();
+    enc.clear(.{ .r = 10, .g = 12, .b = 16 });
+    try enc.surface(.{
+        .bounds = .{ .x = 8, .y = 8, .w = 80, .h = 48 },
+        .color = .{ .r = 60, .g = 140, .b = 230 },
+        .corner_radius = 6,
+    });
+    try enc.text(.{
+        .bounds = .{ .x = 12, .y = 16, .w = 70, .h = 20 },
+        .text = "cpu",
+        .color = .{ .r = 255, .g = 255, .b = 255 },
+        .font_size = 18,
+    });
+    ctx.flush();
+
+    var pixels: [w * h * 4]u8 = undefined;
+    try surf.readPixels(&pixels);
+    var saw_fill = false;
+    var i: usize = 0;
+    while (i < pixels.len) : (i += 4) {
+        if (pixels[i + 2] > 150) {
+            saw_fill = true;
+            break;
+        }
+    }
+    try std.testing.expect(saw_fill);
+}
+
+test "skia auto backend selects and renders on the available device" {
+    var instance = graphics.Instance.init("goop-skia-auto", &.{}) catch return error.SkipZigTest;
+    defer instance.deinit();
+    var device = graphics.Device.init(std.testing.allocator, instance, null) catch return error.SkipZigTest;
+    defer device.deinit();
+
+    const class = deviceClass(device.physical);
+    var ctx = Context.initAuto(instance, device) catch return error.SkipZigTest;
+    defer ctx.deinit();
+    std.debug.print("skia auto: device class={s} backend={s}\n", .{ @tagName(class), @tagName(ctx.backend) });
+
+    var surf = try ctx.createSurface(64, 48);
+    defer surf.deinit();
+    var enc = surf.encoder();
+    enc.clear(.{ .r = 10, .g = 12, .b = 16 });
+    try enc.surface(.{
+        .bounds = .{ .x = 8, .y = 8, .w = 48, .h = 32 },
+        .color = .{ .r = 60, .g = 140, .b = 230 },
+    });
+    ctx.flush();
+
+    var pixels: [64 * 48 * 4]u8 = undefined;
+    try surf.readPixels(&pixels);
     var saw_fill = false;
     var i: usize = 0;
     while (i < pixels.len) : (i += 4) {

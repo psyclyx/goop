@@ -16,6 +16,9 @@ breaking changes between minor versions.
   verified offscreen. The C++ shim is compiled by the system g++ to share
   libskia's libstdc++ ABI. Icon/image ops and on-screen swapchain presentation
   are in progress.
+- The Skia backend auto-selects GPU (Ganesh) or Skia's CPU raster path: GPU only
+  for a real GPU, CPU raster otherwise (including software Vulkan like lavapipe).
+  `GOOP_SKIA_BACKEND={vulkan,cpu}` (read in the library) overrides the choice.
 
 ## 0.2.0 — 2026-08-18
 
