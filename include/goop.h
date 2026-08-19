@@ -317,6 +317,7 @@ typedef struct {
     float x;
     float y;
     int16_t z_index;
+    uint32_t delay_ms;
 } goop_tooltip_widget_t;
 
 typedef struct {
@@ -531,7 +532,14 @@ typedef struct {
     float x;
     float y;
     int16_t z_index;
+    bool visible;
 } goop_tooltip_view_t;
+
+typedef struct {
+    bool changed;
+    bool has_next_deadline;
+    uint64_t next_deadline_ms;
+} goop_update_result_t;
 
 typedef struct {
     goop_string_t label;
@@ -817,6 +825,7 @@ typedef enum {
     GOOP_CONTROL_EVENT_SELECTION_CHANGED = 6,
     GOOP_CONTROL_EVENT_SCROLL_CHANGED = 7,
     GOOP_CONTROL_EVENT_DROP = 8,
+    GOOP_CONTROL_EVENT_POPUP_VISIBILITY_CHANGED = 9,
 } goop_control_event_kind_t;
 
 typedef struct {
@@ -884,6 +893,11 @@ typedef struct {
     float y;
 } goop_scroll_changed_t;
 
+typedef struct {
+    goop_element_id_t element;
+    bool visible;
+} goop_popup_visibility_changed_t;
+
 typedef enum {
     GOOP_DROP_POSITION_BEFORE = 0,
     GOOP_DROP_POSITION_INSIDE = 1,
@@ -917,6 +931,7 @@ typedef struct {
         goop_sort_changed_t sort_changed;
         goop_selection_changed_t selection_changed;
         goop_scroll_changed_t scroll_changed;
+        goop_popup_visibility_changed_t popup_visibility_changed;
         goop_control_drop_t drop;
     } data;
 } goop_control_event_t;
@@ -980,6 +995,7 @@ bool goop_context_set_theme(goop_context_t *ctx, const goop_theme_t *theme);
 bool goop_context_set_clipboard(goop_context_t *ctx, const goop_clipboard_t *clipboard);
 bool goop_context_push_event(goop_context_t *ctx, const goop_event_t *ev);
 bool goop_context_process_events(goop_context_t *ctx, goop_control_events_t *out_events);
+bool goop_context_update(goop_context_t *ctx, uint64_t now_ms, goop_update_result_t *out_result);
 bool goop_context_do_layout(goop_context_t *ctx, const goop_text_measure_ctx_t *measure);
 bool goop_context_set_dimensions(goop_context_t *ctx, uint32_t width, uint32_t height);
 

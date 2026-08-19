@@ -296,6 +296,7 @@ const CTooltipWidget = extern struct {
     x: f32 = 0,
     y: f32 = 0,
     z_index: i16 = 120,
+    delay_ms: u32 = 500,
 };
 
 const CMenuWidget = extern struct {
@@ -335,7 +336,7 @@ const CSplitterWidget = extern struct {
     ratio: f32 = 0.5,
     min_first: f32 = 120,
     min_second: f32 = 120,
-    thickness: f32 = 6,
+    thickness: f32 = 8,
     keyboard_step: f32 = 0.02,
 };
 
@@ -515,6 +516,13 @@ const CTooltipView = extern struct {
     x: f32 = 0,
     y: f32 = 0,
     z_index: i16 = 0,
+    visible: bool = false,
+};
+
+const CUpdateResult = extern struct {
+    changed: bool = false,
+    has_next_deadline: bool = false,
+    next_deadline_ms: u64 = 0,
 };
 
 const CMenuItemView = extern struct {
@@ -853,6 +861,7 @@ const CControlEventKind = enum(c_int) {
     selection_changed = 6,
     scroll_changed = 7,
     drop = 8,
+    popup_visibility_changed = 9,
 };
 
 const CActivation = extern struct {
@@ -920,6 +929,11 @@ const CScrollChanged = extern struct {
     y: f32 = 0,
 };
 
+const CPopupVisibilityChanged = extern struct {
+    element: u64 = 0,
+    visible: bool = false,
+};
+
 const CDropPositionKind = enum(c_int) {
     before = 0,
     inside = 1,
@@ -953,6 +967,7 @@ const CControlEvent = extern struct {
         sort_changed: CSortChanged,
         selection_changed: CSelectionChanged,
         scroll_changed: CScrollChanged,
+        popup_visibility_changed: CPopupVisibilityChanged,
         drop: CControlDrop,
     } = .{ .activated = .{} },
 };
@@ -1288,6 +1303,13 @@ fn controlEventToC(output: api.ControlEvent) CControlEvent {
                 .y = changed.y,
             } },
         },
+        .popup_visibility_changed => |changed| .{
+            .kind = .popup_visibility_changed,
+            .data = .{ .popup_visibility_changed = .{
+                .element = changed.element.value(),
+                .visible = changed.visible,
+            } },
+        },
         .drop => |drop| .{
             .kind = .drop,
             .data = .{ .drop = .{
@@ -1464,6 +1486,18 @@ export fn goop_context_process_events(ctx: ?*CContext, out_events: ?*CControlEve
         .text_bytes_len = batch.text_bytes.len,
         .selection_ids = if (context.selection_ids.items.len == 0) null else context.selection_ids.items.ptr,
         .selection_ids_len = context.selection_ids.items.len,
+    };
+    return true;
+}
+
+export fn goop_context_update(ctx: ?*CContext, now_ms: u64, out_result: ?*CUpdateResult) bool {
+    const context = ctx orelse return false;
+    const out = out_result orelse return false;
+    const result = context.ctx.update(now_ms);
+    out.* = .{
+        .changed = result.changed,
+        .has_next_deadline = result.next_deadline_ms != null,
+        .next_deadline_ms = result.next_deadline_ms orelse 0,
     };
     return true;
 }
@@ -2158,6 +2192,7 @@ test "c header parses" {
         .{ .Z = CMenuView, .C = c.goop_menu_view_t },
         .{ .Z = CPopupView, .C = c.goop_popup_view_t },
         .{ .Z = CTooltipView, .C = c.goop_tooltip_view_t },
+        .{ .Z = CUpdateResult, .C = c.goop_update_result_t },
         .{ .Z = CMenuItemView, .C = c.goop_menu_item_view_t },
         .{ .Z = CDragValueView, .C = c.goop_drag_value_view_t },
         .{ .Z = CSpinboxView, .C = c.goop_spinbox_view_t },
@@ -2195,6 +2230,7 @@ test "c header parses" {
         .{ .Z = CSortChanged, .C = c.goop_sort_changed_t },
         .{ .Z = CSelectionChanged, .C = c.goop_selection_changed_t },
         .{ .Z = CScrollChanged, .C = c.goop_scroll_changed_t },
+        .{ .Z = CPopupVisibilityChanged, .C = c.goop_popup_visibility_changed_t },
         .{ .Z = CDropPosition, .C = c.goop_drop_position_t },
         .{ .Z = CControlDrop, .C = c.goop_control_drop_t },
         .{ .Z = CControlEvent, .C = c.goop_control_event_t },
@@ -2267,6 +2303,7 @@ test "c header control event kinds match" {
     try std.testing.expectEqual(@as(c_int, @intFromEnum(CControlEventKind.selection_changed)), c.GOOP_CONTROL_EVENT_SELECTION_CHANGED);
     try std.testing.expectEqual(@as(c_int, @intFromEnum(CControlEventKind.scroll_changed)), c.GOOP_CONTROL_EVENT_SCROLL_CHANGED);
     try std.testing.expectEqual(@as(c_int, @intFromEnum(CControlEventKind.drop)), c.GOOP_CONTROL_EVENT_DROP);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(CControlEventKind.popup_visibility_changed)), c.GOOP_CONTROL_EVENT_POPUP_VISIBILITY_CHANGED);
 }
 
 test "c header widget kinds match" {
