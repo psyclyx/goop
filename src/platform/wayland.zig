@@ -9,8 +9,10 @@ const std = @import("std");
 
 pub const wl = @cImport({
     @cInclude("wayland-client.h");
+    @cInclude("wayland-cursor.h");
     @cInclude("xdg-shell-client-protocol.h");
     @cInclude("xkbcommon/xkbcommon.h");
+    @cInclude("unistd.h");
 });
 
 pub const Error = error{
@@ -23,6 +25,14 @@ pub const Error = error{
     ToplevelCreationFailed,
     DispatchFailed,
     FlushFailed,
+    DragUnavailable,
+    DragAlreadyActive,
+};
+
+pub const ExternalDragPayload = struct {
+    uri_list: []const u8,
+    plain_text: []const u8,
+    gnome_files: []const u8,
 };
 
 pub const ButtonState = enum {
@@ -39,6 +49,8 @@ pub const Axis = enum {
     horizontal,
     vertical,
 };
+
+pub const PointerCursor = enum { default, text, resize_horizontal, resize_vertical };
 
 pub const Modifiers = packed struct {
     control: bool = false,
@@ -140,12 +152,23 @@ const State = struct {
     display: *wl.wl_display,
     registry: *wl.wl_registry,
     compositor: ?*wl.wl_compositor = null,
+    shm: ?*wl.wl_shm = null,
     wm_base: ?*wl.xdg_wm_base = null,
     surface: ?*wl.wl_surface = null,
     xdg_surface: ?*wl.xdg_surface = null,
     toplevel: ?*wl.xdg_toplevel = null,
     seat: ?*wl.wl_seat = null,
+    data_device_manager: ?*wl.wl_data_device_manager = null,
+    data_device: ?*wl.wl_data_device = null,
+    drag_source: ?*DragSource = null,
+    pending_offer: ?*wl.wl_data_offer = null,
+    incoming_drag_offer: ?*wl.wl_data_offer = null,
+    selection_offer: ?*wl.wl_data_offer = null,
     pointer: ?*wl.wl_pointer = null,
+    cursor_theme: ?*wl.wl_cursor_theme = null,
+    cursor_surface: ?*wl.wl_surface = null,
+    cursor_serial: u32 = 0,
+    pointer_cursor: PointerCursor = .default,
     keyboard: ?*wl.wl_keyboard = null,
     frame_callback: ?*wl.wl_callback = null,
     xkb_context: ?*wl.xkb_context = null,
@@ -156,6 +179,33 @@ const State = struct {
     pointer_position: PointerPosition = .{ .x = 0, .y = 0 },
     modifiers: Modifiers = .{},
     queue: EventQueue = .{},
+    // Multi-window: a top-level owns the shared connection (display, globals,
+    // seat, xkb). A child (dialog) borrows all of them and only owns its own
+    // surface/xdg_surface/toplevel. The seat's input listeners are bound to the
+    // owner, which routes each event to the surface-focused window's queue.
+    owns_connection: bool = true,
+    parent: ?*State = null,
+    child: ?*State = null,
+    pointer_focus: ?*State = null,
+    keyboard_focus: ?*State = null,
+};
+
+/// Which window a seat event belongs to, chosen by the entered surface.
+fn routeTarget(owner: *State, surface: ?*wl.wl_surface) *State {
+    if (surface) |s| {
+        if (owner.child) |c| {
+            if (c.surface == s) return c;
+        }
+    }
+    return owner;
+}
+
+const DragSource = struct {
+    owner: *State,
+    handle: *wl.wl_data_source,
+    uri_list: []u8,
+    plain_text: []u8,
+    gnome_files: []u8,
 };
 
 /// A small owning handle whose callback state remains heap-stable.
@@ -187,6 +237,14 @@ pub const Window = struct {
         const surface = wl.wl_compositor_create_surface(compositor) orelse
             return error.SurfaceCreationFailed;
         state.surface = surface;
+        if (state.data_device_manager != null and state.seat != null) {
+            state.data_device = wl.wl_data_device_manager_get_data_device(state.data_device_manager, state.seat);
+            if (state.data_device) |device| _ = wl.wl_data_device_add_listener(device, &data_device_listener, state);
+        }
+        if (state.shm) |shm| {
+            state.cursor_theme = wl.wl_cursor_theme_load(null, 24, shm);
+            state.cursor_surface = wl.wl_compositor_create_surface(compositor);
+        }
         errdefer {
             wl.wl_surface_destroy(surface);
             state.surface = null;
@@ -217,14 +275,96 @@ pub const Window = struct {
         return .{ .state = state };
     }
 
+    /// Create a secondary window that SHARES `parent`'s Wayland connection,
+    /// globals, and seat. Sharing the connection is what lets us call
+    /// `xdg_toplevel.set_parent` — the standard hint tiling compositors use to
+    /// treat a window as a floating dialog — and lets one input seat route to
+    /// the right surface. Only one child is supported at a time.
+    pub fn initChild(
+        allocator: std.mem.Allocator,
+        parent: *Window,
+        options: Options,
+    ) (Error || std.mem.Allocator.Error)!Window {
+        const owner = parent.state;
+        const compositor = owner.compositor orelse return error.MissingCompositor;
+        const wm_base = owner.wm_base orelse return error.MissingShell;
+
+        const state = try allocator.create(State);
+        errdefer allocator.destroy(state);
+        state.* = .{
+            .allocator = allocator,
+            .display = owner.display,
+            .registry = owner.registry,
+            .compositor = owner.compositor,
+            .shm = owner.shm,
+            .wm_base = owner.wm_base,
+            .seat = owner.seat,
+            .size = .{ .width = options.width, .height = options.height },
+            .pending_size = .{ .width = options.width, .height = options.height },
+            .owns_connection = false,
+            .parent = owner,
+        };
+
+        const surface = wl.wl_compositor_create_surface(compositor) orelse
+            return error.SurfaceCreationFailed;
+        state.surface = surface;
+        errdefer {
+            wl.wl_surface_destroy(surface);
+            state.surface = null;
+        }
+
+        const xdg_surface = wl.xdg_wm_base_get_xdg_surface(wm_base, surface) orelse
+            return error.ShellSurfaceCreationFailed;
+        state.xdg_surface = xdg_surface;
+        errdefer {
+            wl.xdg_surface_destroy(xdg_surface);
+            state.xdg_surface = null;
+        }
+        _ = wl.xdg_surface_add_listener(xdg_surface, &xdg_surface_listener, state);
+
+        const toplevel = wl.xdg_surface_get_toplevel(xdg_surface) orelse
+            return error.ToplevelCreationFailed;
+        state.toplevel = toplevel;
+        errdefer {
+            wl.xdg_toplevel_destroy(toplevel);
+            state.toplevel = null;
+        }
+        _ = wl.xdg_toplevel_add_listener(toplevel, &toplevel_listener, state);
+        wl.xdg_toplevel_set_title(toplevel, options.title);
+        wl.xdg_toplevel_set_app_id(toplevel, options.application_id);
+        // The floating-dialog hint: a parented toplevel is a dialog, which
+        // tiling compositors (sway, Hyprland, …) float by default. Fixed
+        // min/max sizes reinforce it for compositors that key on that instead.
+        if (owner.toplevel) |owner_toplevel| wl.xdg_toplevel_set_parent(toplevel, owner_toplevel);
+        wl.xdg_toplevel_set_min_size(toplevel, @intCast(options.width), @intCast(options.height));
+        wl.xdg_toplevel_set_max_size(toplevel, @intCast(options.width), @intCast(options.height));
+
+        owner.child = state;
+        wl.wl_surface_commit(surface);
+        return .{ .state = state };
+    }
+
     pub fn deinit(self: *Window) void {
+        if (!self.state.owns_connection) {
+            deinitChild(self);
+            return;
+        }
         const state = self.state;
         if (state.frame_callback) |callback| wl.wl_callback_destroy(callback);
+        if (state.drag_source) |source| destroyDragSource(source);
+        if (state.pending_offer) |offer| wl.wl_data_offer_destroy(offer);
+        if (state.incoming_drag_offer) |offer| wl.wl_data_offer_destroy(offer);
+        if (state.selection_offer) |offer| wl.wl_data_offer_destroy(offer);
+        if (state.data_device) |device| wl.wl_data_device_release(device);
+        if (state.data_device_manager) |manager| wl.wl_data_device_manager_destroy(manager);
         if (state.xkb_state) |xkb_state| wl.xkb_state_unref(xkb_state);
         if (state.xkb_keymap) |keymap| wl.xkb_keymap_unref(keymap);
         if (state.xkb_context) |context| wl.xkb_context_unref(context);
         if (state.keyboard) |keyboard| wl.wl_keyboard_destroy(keyboard);
         if (state.pointer) |pointer| wl.wl_pointer_destroy(pointer);
+        if (state.cursor_surface) |surface| wl.wl_surface_destroy(surface);
+        if (state.cursor_theme) |theme| wl.wl_cursor_theme_destroy(theme);
+        if (state.shm) |shm| wl.wl_shm_destroy(shm);
         if (state.seat) |seat| wl.wl_seat_destroy(seat);
         if (state.toplevel) |toplevel| wl.xdg_toplevel_destroy(toplevel);
         if (state.xdg_surface) |xdg_surface| wl.xdg_surface_destroy(xdg_surface);
@@ -233,6 +373,27 @@ pub const Window = struct {
         if (state.compositor) |compositor| wl.wl_compositor_destroy(compositor);
         wl.wl_registry_destroy(state.registry);
         wl.wl_display_disconnect(state.display);
+        const allocator = state.allocator;
+        allocator.destroy(state);
+        self.* = undefined;
+    }
+
+    /// Tear down a child window: only its own surface objects, never the shared
+    /// connection/globals/seat it borrowed from its parent.
+    fn deinitChild(self: *Window) void {
+        const state = self.state;
+        if (state.parent) |owner| {
+            if (owner.child == state) owner.child = null;
+            if (owner.pointer_focus == state) owner.pointer_focus = null;
+            if (owner.keyboard_focus == state) owner.keyboard_focus = null;
+        }
+        if (state.frame_callback) |callback| wl.wl_callback_destroy(callback);
+        if (state.toplevel) |toplevel| wl.xdg_toplevel_destroy(toplevel);
+        if (state.xdg_surface) |xdg_surface| wl.xdg_surface_destroy(xdg_surface);
+        if (state.surface) |surface| wl.wl_surface_destroy(surface);
+        // A flush pushes the destroy requests before the shared connection
+        // keeps running for the parent window.
+        _ = wl.wl_display_flush(state.display);
         const allocator = state.allocator;
         allocator.destroy(state);
         self.* = undefined;
@@ -290,6 +451,47 @@ pub const Window = struct {
         self.state.queue.overflowed = false;
     }
 
+    pub fn setPointerCursor(self: *Window, cursor: PointerCursor) void {
+        const state = self.state;
+        if (state.pointer_cursor == cursor) return;
+        state.pointer_cursor = cursor;
+        applyPointerCursor(state);
+    }
+
+    /// Start a compositor-owned drag. Payloads are copied because Wayland may
+    /// request them after the pointer has left this window.
+    pub fn startExternalDrag(self: *Window, serial: u32, payload: ExternalDragPayload) !void {
+        const state = self.state;
+        if (state.drag_source != null) return error.DragAlreadyActive;
+        const manager = state.data_device_manager orelse return error.DragUnavailable;
+        const device = state.data_device orelse return error.DragUnavailable;
+        const surface = state.surface orelse return error.DragUnavailable;
+        const handle = wl.wl_data_device_manager_create_data_source(manager) orelse return error.DragUnavailable;
+        errdefer wl.wl_data_source_destroy(handle);
+        const source = try state.allocator.create(DragSource);
+        errdefer state.allocator.destroy(source);
+        const uri_list = try state.allocator.dupe(u8, payload.uri_list);
+        errdefer state.allocator.free(uri_list);
+        const plain_text = try state.allocator.dupe(u8, payload.plain_text);
+        errdefer state.allocator.free(plain_text);
+        const gnome_files = try state.allocator.dupe(u8, payload.gnome_files);
+        errdefer state.allocator.free(gnome_files);
+        source.* = .{
+            .owner = state,
+            .handle = handle,
+            .uri_list = uri_list,
+            .plain_text = plain_text,
+            .gnome_files = gnome_files,
+        };
+        _ = wl.wl_data_source_add_listener(handle, &data_source_listener, source);
+        wl.wl_data_source_offer(handle, "text/uri-list");
+        wl.wl_data_source_offer(handle, "text/plain;charset=utf-8");
+        wl.wl_data_source_offer(handle, "x-special/gnome-copied-files");
+        wl.wl_data_source_set_actions(handle, wl.WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY);
+        state.drag_source = source;
+        wl.wl_data_device_start_drag(device, handle, surface, null, serial);
+    }
+
     pub fn size(self: *const Window) Size {
         return self.state.size;
     }
@@ -336,6 +538,8 @@ fn registryGlobal(
             &wl.wl_compositor_interface,
             @min(version, 6),
         ));
+    } else if (std.mem.eql(u8, interface_name, "wl_shm")) {
+        state.shm = @ptrCast(wl.wl_registry_bind(registry, name, &wl.wl_shm_interface, @min(version, 1)));
     } else if (std.mem.eql(u8, interface_name, "xdg_wm_base")) {
         const supported: u32 = @intCast(wl.xdg_wm_base_interface.version);
         state.wm_base = @ptrCast(wl.wl_registry_bind(
@@ -353,7 +557,100 @@ fn registryGlobal(
             @min(version, 8),
         ));
         _ = wl.wl_seat_add_listener(state.seat, &seat_listener, state);
+    } else if (std.mem.eql(u8, interface_name, "wl_data_device_manager")) {
+        state.data_device_manager = @ptrCast(wl.wl_registry_bind(
+            registry,
+            name,
+            &wl.wl_data_device_manager_interface,
+            @min(version, 3),
+        ));
     }
+}
+
+const data_device_listener = wl.wl_data_device_listener{
+    .data_offer = ignoreDataOffer,
+    .enter = ignoreDragEnter,
+    .leave = ignoreDragLeave,
+    .motion = ignoreDragMotion,
+    .drop = ignoreDragDrop,
+    .selection = ignoreSelection,
+};
+
+fn ignoreDataOffer(data: ?*anyopaque, _: ?*wl.wl_data_device, offer: ?*wl.wl_data_offer) callconv(.c) void {
+    const state = stateFrom(data);
+    if (state.pending_offer) |previous| wl.wl_data_offer_destroy(previous);
+    state.pending_offer = offer;
+}
+fn ignoreDragEnter(data: ?*anyopaque, _: ?*wl.wl_data_device, _: u32, _: ?*wl.wl_surface, _: wl.wl_fixed_t, _: wl.wl_fixed_t, offer: ?*wl.wl_data_offer) callconv(.c) void {
+    const state = stateFrom(data);
+    state.incoming_drag_offer = offer;
+    if (state.pending_offer == offer) state.pending_offer = null;
+}
+fn ignoreDragLeave(data: ?*anyopaque, _: ?*wl.wl_data_device) callconv(.c) void {
+    const state = stateFrom(data);
+    if (state.incoming_drag_offer) |offer| wl.wl_data_offer_destroy(offer);
+    state.incoming_drag_offer = null;
+}
+fn ignoreDragMotion(_: ?*anyopaque, _: ?*wl.wl_data_device, _: u32, _: wl.wl_fixed_t, _: wl.wl_fixed_t) callconv(.c) void {}
+fn ignoreDragDrop(_: ?*anyopaque, _: ?*wl.wl_data_device) callconv(.c) void {}
+fn ignoreSelection(data: ?*anyopaque, _: ?*wl.wl_data_device, offer: ?*wl.wl_data_offer) callconv(.c) void {
+    const state = stateFrom(data);
+    if (state.selection_offer) |previous| wl.wl_data_offer_destroy(previous);
+    state.selection_offer = offer;
+    if (state.pending_offer == offer) state.pending_offer = null;
+}
+
+const data_source_listener = wl.wl_data_source_listener{
+    .target = dragTarget,
+    .send = dragSend,
+    .cancelled = dragCancelled,
+    .dnd_drop_performed = dragDropPerformed,
+    .dnd_finished = dragFinished,
+    .action = dragAction,
+};
+
+fn dragTarget(_: ?*anyopaque, _: ?*wl.wl_data_source, _: [*c]const u8) callconv(.c) void {}
+
+fn dragSend(data: ?*anyopaque, _: ?*wl.wl_data_source, mime: [*c]const u8, fd: i32) callconv(.c) void {
+    defer _ = std.posix.system.close(fd);
+    const source: *DragSource = @ptrCast(@alignCast(data.?));
+    const mime_type = if (mime == null) "" else std.mem.span(@as([*:0]const u8, @ptrCast(mime)));
+    const bytes = if (std.mem.eql(u8, mime_type, "text/uri-list"))
+        source.uri_list
+    else if (std.mem.eql(u8, mime_type, "x-special/gnome-copied-files"))
+        source.gnome_files
+    else
+        source.plain_text;
+    var remaining = bytes;
+    while (remaining.len > 0) {
+        const written = wl.write(fd, remaining.ptr, remaining.len);
+        if (written <= 0) return;
+        remaining = remaining[@intCast(written)..];
+    }
+}
+
+fn dragCancelled(data: ?*anyopaque, _: ?*wl.wl_data_source) callconv(.c) void {
+    finishDragSource(@ptrCast(@alignCast(data.?)));
+}
+fn dragDropPerformed(_: ?*anyopaque, _: ?*wl.wl_data_source) callconv(.c) void {}
+fn dragFinished(data: ?*anyopaque, _: ?*wl.wl_data_source) callconv(.c) void {
+    finishDragSource(@ptrCast(@alignCast(data.?)));
+}
+fn dragAction(_: ?*anyopaque, _: ?*wl.wl_data_source, _: u32) callconv(.c) void {}
+
+fn finishDragSource(source: *DragSource) void {
+    if (source.owner.drag_source != source) return;
+    source.owner.drag_source = null;
+    destroyDragSource(source);
+}
+
+fn destroyDragSource(source: *DragSource) void {
+    const allocator = source.owner.allocator;
+    wl.wl_data_source_destroy(source.handle);
+    allocator.free(source.uri_list);
+    allocator.free(source.plain_text);
+    allocator.free(source.gnome_files);
+    allocator.destroy(source);
 }
 
 fn registryGlobalRemove(_: ?*anyopaque, _: ?*wl.wl_registry, _: u32) callconv(.c) void {}
@@ -448,22 +745,59 @@ const pointer_listener = wl.wl_pointer_listener{
 fn pointerEnter(
     data: ?*anyopaque,
     _: ?*wl.wl_pointer,
-    _: u32,
-    _: ?*wl.wl_surface,
+    serial: u32,
+    surface: ?*wl.wl_surface,
     x: wl.wl_fixed_t,
     y: wl.wl_fixed_t,
 ) callconv(.c) void {
-    const state = stateFrom(data);
-    state.pointer_position = fixedPosition(x, y);
-    state.queue.push(.{ .pointer_enter = state.pointer_position });
+    const owner = stateFrom(data);
+    const target = routeTarget(owner, surface);
+    owner.pointer_focus = target;
+    owner.cursor_serial = serial;
+    target.pointer_position = fixedPosition(x, y);
+    applyPointerCursor(owner);
+    target.queue.push(.{ .pointer_enter = target.pointer_position });
+}
+
+/// The window that owns pointer/keyboard input right now (child dialog when
+/// focused, else the owner itself).
+fn pointerTarget(owner: *State) *State {
+    return owner.pointer_focus orelse owner;
+}
+
+fn keyboardTarget(owner: *State) *State {
+    return owner.keyboard_focus orelse owner;
+}
+
+fn applyPointerCursor(state: *State) void {
+    const pointer = state.pointer orelse return;
+    const theme = state.cursor_theme orelse return;
+    const surface = state.cursor_surface orelse return;
+    if (state.cursor_serial == 0) return;
+    const name: [*:0]const u8 = switch (state.pointer_cursor) {
+        .default => "left_ptr",
+        .text => "text",
+        .resize_horizontal => "col-resize",
+        .resize_vertical => "row-resize",
+    };
+    const cursor = wl.wl_cursor_theme_get_cursor(theme, name) orelse return;
+    if (cursor.*.image_count == 0) return;
+    const image = cursor.*.images[0];
+    const buffer = wl.wl_cursor_image_get_buffer(image) orelse return;
+    wl.wl_pointer_set_cursor(pointer, state.cursor_serial, surface, @intCast(image.*.hotspot_x), @intCast(image.*.hotspot_y));
+    wl.wl_surface_attach(surface, buffer, 0, 0);
+    wl.wl_surface_damage_buffer(surface, 0, 0, @intCast(image.*.width), @intCast(image.*.height));
+    wl.wl_surface_commit(surface);
 }
 
 fn pointerLeave(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: ?*wl.wl_surface) callconv(.c) void {
-    stateFrom(data).queue.push(.pointer_leave);
+    const owner = stateFrom(data);
+    pointerTarget(owner).queue.push(.pointer_leave);
+    owner.pointer_focus = null;
 }
 
 fn pointerMotion(data: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, x: wl.wl_fixed_t, y: wl.wl_fixed_t) callconv(.c) void {
-    const state = stateFrom(data);
+    const state = pointerTarget(stateFrom(data));
     state.pointer_position = fixedPosition(x, y);
     state.queue.push(.{ .pointer_motion = state.pointer_position });
 }
@@ -476,7 +810,7 @@ fn pointerButton(
     button: u32,
     raw_state: u32,
 ) callconv(.c) void {
-    const state = stateFrom(data);
+    const state = pointerTarget(stateFrom(data));
     state.queue.push(.{ .pointer_button = .{
         .serial = serial,
         .time_ms = time_ms,
@@ -487,7 +821,7 @@ fn pointerButton(
 }
 
 fn pointerAxis(data: ?*anyopaque, _: ?*wl.wl_pointer, time_ms: u32, raw_axis: u32, value: wl.wl_fixed_t) callconv(.c) void {
-    const state = stateFrom(data);
+    const state = pointerTarget(stateFrom(data));
     state.queue.push(.{ .scroll = .{
         .time_ms = time_ms,
         .axis = if (raw_axis == wl.WL_POINTER_AXIS_HORIZONTAL_SCROLL) .horizontal else .vertical,
@@ -553,12 +887,16 @@ fn keyboardKeymap(
     state.xkb_state = xkb_state;
 }
 
-fn keyboardEnter(_: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: ?*wl.wl_surface, _: ?*wl.wl_array) callconv(.c) void {}
+fn keyboardEnter(data: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, surface: ?*wl.wl_surface, _: ?*wl.wl_array) callconv(.c) void {
+    const owner = stateFrom(data);
+    owner.keyboard_focus = routeTarget(owner, surface);
+}
 
 fn keyboardLeave(data: ?*anyopaque, _: ?*wl.wl_keyboard, _: u32, _: ?*wl.wl_surface) callconv(.c) void {
-    const state = stateFrom(data);
-    state.modifiers = .{};
-    state.queue.push(.keyboard_leave);
+    const owner = stateFrom(data);
+    owner.modifiers = .{};
+    keyboardTarget(owner).queue.push(.keyboard_leave);
+    owner.keyboard_focus = null;
 }
 
 fn keyboardKey(
@@ -580,7 +918,7 @@ fn keyboardKey(
             if (value > 0 and value <= std.math.maxInt(u21)) codepoint = @intCast(value);
         }
     }
-    state.queue.push(.{ .key = .{
+    keyboardTarget(state).queue.push(.{ .key = .{
         .serial = serial,
         .time_ms = time_ms,
         .scancode = scancode,

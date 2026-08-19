@@ -160,6 +160,7 @@ pub fn build(b: *std.Build) void {
         .file = b.path("demo/protocol/xdg-shell-protocol.c"),
     });
     platform_wayland_mod.linkSystemLibrary("wayland-client", .{});
+    platform_wayland_mod.linkSystemLibrary("wayland-cursor", .{});
     platform_wayland_mod.linkSystemLibrary("xkbcommon", .{});
 
     const wayland_vulkan_mod = b.addModule("goop_wayland_vulkan", .{
