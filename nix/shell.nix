@@ -21,6 +21,7 @@
   vulkan-loader,
   shader-slang,
   wgpu-utils,
+  skia,
 }:
 let
   fontconfigBundle = callPackage ./fontconfig.nix { };
@@ -46,6 +47,7 @@ mkShell {
     vulkan-loader
     shader-slang
     wgpu-utils
+    skia
   ];
 
   FONTCONFIG_FILE = "${fontconfigBundle}/fonts.conf";
@@ -59,5 +61,6 @@ mkShell {
     libspng
     libjpeg_turbo
     libwebp
+    skia
   ];
 }

@@ -71,6 +71,11 @@ pub fn build(b: *std.Build) void {
         "demo-image-codecs",
         "Enable native image codecs in desktop demos",
     ) orelse true;
+    const skia_enabled = b.option(
+        bool,
+        "skia",
+        "Build the optional Skia (GPU/Ganesh) rendering backend",
+    ) orelse false;
 
     // ── Snail (backend-neutral text/vector preparation) ──
     const snail_dep = b.dependency("snail", .{
@@ -215,6 +220,33 @@ pub fn build(b: *std.Build) void {
     render_vulkan_mod.addImport("snail_reflection", snail_reflection_mod);
     render_vulkan_mod.addImport("goop_render_shaders", render_shaders_mod);
     render_vulkan_mod.linkSystemLibrary("vulkan", .{});
+
+    // ── Optional Skia (GPU/Ganesh) rendering backend ──
+    //
+    // A snail-free alternative renderer: it consumes the same backend-neutral
+    // `goop_visual` operations and draws them with Skia. Skia is C++, so the
+    // draw calls live in a POD-only C-ABI shim compiled by Zig's own C++
+    // toolchain (`zig c++`) and linked against system `libskia`. Gated behind
+    // `-Dskia` so consumers that do not want Skia link nothing.
+    if (skia_enabled) {
+        const render_skia_mod = b.addModule("goop_render_skia", .{
+            .root_source_file = b.path("src/render/skia.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        render_skia_mod.link_libcpp = true;
+        render_skia_mod.addImport("goop_visual", visual_mod);
+        render_skia_mod.addCSourceFile(.{
+            .file = b.path("src/render/skia/shim.cpp"),
+            .flags = &.{ "-std=c++17", "-fno-exceptions", "-fno-rtti" },
+        });
+        render_skia_mod.linkSystemLibrary("skia", .{});
+
+        const skia_tests = b.addRunArtifact(b.addTest(.{ .root_module = render_skia_mod }));
+        const skia_test_step = b.step("test-skia", "Run the Skia backend tests");
+        skia_test_step.dependOn(&skia_tests.step);
+    }
 
     // ── Core goop module ──
     //
