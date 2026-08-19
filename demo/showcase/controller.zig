@@ -91,6 +91,7 @@ pub const EventKind = enum {
     sort_changed,
     selection_changed,
     scroll_changed,
+    popup_visibility_changed,
     drop,
 };
 
@@ -135,6 +136,13 @@ pub fn update(
                     .x = activation.x,
                     .y = activation.y,
                 };
+            },
+            .popup_visibility_changed => |changed| {
+                model.trace.last_event = .popup_visibility_changed;
+                model.trace.last_element = changed.element;
+                if (changed.element == ids.element.context_popup) {
+                    model.context_popup.visible = changed.visible;
+                }
             },
             .value_changed => |changed| {
                 model.trace.last_event = .value_changed;

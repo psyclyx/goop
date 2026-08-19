@@ -93,6 +93,8 @@ pub fn main(init: std.process.Init) !void {
     if (loop.timeout_ns != null) loop.started_ns = monotonicNs(init.io);
     while (loop.running and !loop.timedOut(init.io)) {
         try drainEvents(&window, &gpu, &context, &loop);
+        const now_ms = monotonicNs(init.io) / std.time.ns_per_ms;
+        if (context.update(now_ms).changed) loop.dirty = true;
         if (loop.configured and loop.dirty and !loop.frame_pending) {
             try draw(
                 &window,
@@ -103,6 +105,7 @@ pub fn main(init: std.process.Init) !void {
                 &model,
                 &measure_context,
                 &loop,
+                now_ms,
             );
         }
         try window.dispatchTimeout(50);
@@ -199,10 +202,12 @@ fn draw(
     model: *controller.Model,
     measure_context: *const goop.TextMeasureCtx,
     loop: *Loop,
+    now_ms: u64,
 ) !void {
     loop.dirty = false;
     context.doLayout(measure_context);
     const events = try context.processEvents();
+    _ = context.update(now_ms);
     try controller.update(model, allocator, events);
     const popup = model.context_popup;
     view.applyPopupProjection(
@@ -213,6 +218,12 @@ fn draw(
         popup.y,
     );
     context.doLayout(measure_context);
+    window.setPointerCursor(switch (context.pointerCursor()) {
+        .default => .default,
+        .text => .text,
+        .resize_horizontal => .resize_horizontal,
+        .resize_vertical => .resize_vertical,
+    });
 
     const paint_list = try chrome.prepare(context.chromeState(), .{});
     const logical_to_physical_scale: f32 = 1;
