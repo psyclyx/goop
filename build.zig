@@ -255,6 +255,8 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         });
         render_skia_mod.addImport("goop_visual", visual_mod);
+        render_skia_mod.addImport("goop_graphics_vulkan", graphics_vulkan_mod);
+        render_skia_mod.linkSystemLibrary("vulkan", .{});
         render_skia_mod.addObjectFile(shim_obj);
         // Link libstdc++ by full path (g++ reports where it lives): `zig cc`'s
         // -L/-l search does not resolve the nix store path, but a positional
