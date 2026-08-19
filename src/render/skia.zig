@@ -13,6 +13,7 @@
 const std = @import("std");
 const graphics = @import("goop_graphics_vulkan");
 const visual = @import("goop_visual");
+const stock_icon = @import("stock_icon.zig");
 const vk = graphics.vk;
 
 extern fn goop_skia_raster_selftest(width: c_int, height: c_int, out_rgba: [*]u8) c_int;
@@ -60,6 +61,17 @@ extern fn goop_skia_draw_text(
     baseline: f32,
     size: f32,
     rgba: u32,
+) void;
+extern fn goop_skia_draw_image(
+    canvas: ?*anyopaque,
+    rgba: [*]const u8,
+    w: u32,
+    h: u32,
+    dx: f32,
+    dy: f32,
+    dw: f32,
+    dh: f32,
+    fit: c_int,
 ) void;
 
 /// goop packs colors as 0xRRGGBBAA for the C shim.
@@ -281,21 +293,75 @@ pub const Encoder = struct {
         );
     }
 
-    // Icon/image/custom are not yet mapped onto Skia; a look that only uses
-    // surfaces and text renders fully. These are the remaining vocabulary.
+    /// Draw a stock icon as tone-colored rectangles from its normalized part
+    /// geometry — the same vocabulary the Vulkan renderer uses.
     pub fn icon(self: *Encoder, value: visual.Icon) !void {
-        _ = self;
-        _ = value;
+        const b = value.bounds;
+        for (stock_icon.geometry(value.kind)) |part| {
+            const n = part.rect;
+            const pw = b.w * n.w;
+            const ph = b.h * n.h;
+            if (pw <= 0 or ph <= 0) continue;
+            const part_color = switch (part.tone) {
+                .base => value.color,
+                .detail => iconDetailColor(value.color),
+                .highlight => iconHighlightColor(value.color),
+                .paper => iconPaperColor(value.color),
+            };
+            goop_skia_draw_surface(self.canvas, b.x + b.w * n.x, b.y + b.h * n.y, pw, ph, packColor(part_color), 0, 0, 0);
+        }
     }
+
     pub fn image(self: *Encoder, value: visual.Image) !void {
-        _ = self;
-        _ = value;
+        const source = value.source;
+        if (source.width == 0 or source.height == 0 or source.rgba.len == 0) return;
+        goop_skia_draw_image(
+            self.canvas,
+            source.rgba.ptr,
+            source.width,
+            source.height,
+            value.bounds.x,
+            value.bounds.y,
+            value.bounds.w,
+            value.bounds.h,
+            @intFromEnum(value.fit),
+        );
     }
+
+    // Custom visuals are game-owned; a stock renderer has nothing to draw.
     pub fn custom(self: *Encoder, value: visual.Custom) !void {
         _ = self;
         _ = value;
     }
 };
+
+// Icon tone shading, matching the Vulkan renderer so both backends agree.
+fn iconDetailColor(c: visual.Color) visual.Color {
+    return .{
+        .r = @intCast(@as(u16, c.r) * 3 / 5),
+        .g = @intCast(@as(u16, c.g) * 3 / 5),
+        .b = @intCast(@as(u16, c.b) * 3 / 5),
+        .a = c.a,
+    };
+}
+
+fn iconHighlightColor(c: visual.Color) visual.Color {
+    return .{
+        .r = @intCast((@as(u16, c.r) * 3 + 255) / 4),
+        .g = @intCast((@as(u16, c.g) * 3 + 255) / 4),
+        .b = @intCast((@as(u16, c.b) * 3 + 255) / 4),
+        .a = c.a,
+    };
+}
+
+fn iconPaperColor(c: visual.Color) visual.Color {
+    return .{
+        .r = @intCast((@as(u16, c.r) + 255 * 5) / 6),
+        .g = @intCast((@as(u16, c.g) + 255 * 5) / 6),
+        .b = @intCast((@as(u16, c.b) + 255 * 5) / 6),
+        .a = c.a,
+    };
+}
 
 /// An on-screen Skia target: owns a swapchain over a `VkSurfaceKHR`, wraps each
 /// swapchain image as a Skia render target once, and drives acquire → render →
@@ -803,4 +869,62 @@ test "skia wraps an external vulkan image as a render target" {
         }
     }
     try std.testing.expect(saw_fill);
+}
+
+test "skia encoder draws a stock icon" {
+    var ctx = try Context.initCpu();
+    defer ctx.deinit();
+    var surf = try ctx.createSurface(32, 32);
+    defer surf.deinit();
+
+    var enc = surf.encoder();
+    enc.clear(.{ .r = 255, .g = 255, .b = 255 });
+    try enc.icon(.{
+        .bounds = .{ .x = 4, .y = 4, .w = 24, .h = 24 },
+        .kind = @intFromEnum(visual.StockIcon.folder),
+        .color = .{ .r = 40, .g = 90, .b = 160 },
+    });
+    ctx.flush();
+
+    var buf: [32 * 32 * 4]u8 = undefined;
+    try surf.readPixels(&buf);
+    var painted = false;
+    var i: usize = 0;
+    while (i < buf.len) : (i += 4) {
+        if (buf[i] < 200 or buf[i + 1] < 200) { // non-white → icon drew
+            painted = true;
+            break;
+        }
+    }
+    try std.testing.expect(painted);
+}
+
+test "skia encoder draws an image" {
+    var ctx = try Context.initCpu();
+    defer ctx.deinit();
+    var surf = try ctx.createSurface(32, 32);
+    defer surf.deinit();
+
+    var enc = surf.encoder();
+    enc.clear(.{ .r = 0, .g = 0, .b = 0 });
+    // 2x2 opaque bright-blue source, stretched over most of the surface.
+    const pixels = [_]u8{ 30, 60, 220, 255 } ** 4;
+    try enc.image(.{
+        .bounds = .{ .x = 4, .y = 4, .w = 24, .h = 24 },
+        .source = .{ .id = .{ .value = 1 }, .width = 2, .height = 2, .rgba = &pixels },
+        .fit = .stretch,
+    });
+    ctx.flush();
+
+    var buf: [32 * 32 * 4]u8 = undefined;
+    try surf.readPixels(&buf);
+    var saw_blue = false;
+    var i: usize = 0;
+    while (i < buf.len) : (i += 4) {
+        if (buf[i + 2] > 150 and buf[i] < 100) { // blue channel high, red low
+            saw_blue = true;
+            break;
+        }
+    }
+    try std.testing.expect(saw_blue);
 }

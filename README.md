@@ -173,17 +173,16 @@ links `libskia` through a small POD-only C-ABI shim compiled by the system g++;
 enable it with `-Dskia`. The renderer picks GPU (Ganesh) or Skia's CPU raster
 path automatically — GPU only for a real GPU, CPU raster otherwise (including
 software Vulkan such as lavapipe); override with
-`GOOP_SKIA_BACKEND={vulkan,cpu}`. It is new and opt-in. The surface/text/clip
-vocabulary renders and is verified offscreen on a real GPU (including wrapping a
-caller-owned `VkImage`). On-screen output is wired through `WindowTarget`
-(swapchain acquire → render → present) and the `zig build skia-window -Dskia`
-example; that path needs a Wayland compositor and a real GPU and is not
-exercised by the headless test suite. The file manager demo renders through Skia
-when built with the same `-Dskia` flag (`zig build file-manager-demo -Dskia`):
-the flag swaps only the renderer and text-measurement layers, so text is
-measured with Skia's own font and the snail build links no Skia (and the Skia
-build no snail). Icon and image ops are the remaining gap — toolbar/list icons
-and image previews do not draw yet.
+`GOOP_SKIA_BACKEND={vulkan,cpu}`. It is new and opt-in. The full visual
+vocabulary — clips, surfaces, text, stock icons, and images — renders and is
+verified offscreen on a real GPU (including wrapping a caller-owned `VkImage`).
+On-screen output is wired through `WindowTarget` (swapchain acquire → render →
+present) and the `zig build skia-window -Dskia` example. The file manager demo
+renders through Skia when built with the same `-Dskia` flag
+(`zig build file-manager-demo -Dskia`): the flag swaps only the renderer and
+text-measurement layers, so text is measured with Skia's own font and the snail
+build links no Skia (and the Skia build no snail). Verified end-to-end under a
+headless compositor on a real GPU.
 
 ### snail + Vulkan — the original path
 

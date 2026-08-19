@@ -11,11 +11,10 @@ breaking changes between minor versions.
 - Optional Skia (GPU/Ganesh-on-Vulkan) rendering backend, `goop_render_skia`,
   gated behind `-Dskia`. It consumes the same backend-neutral `goop_visual`
   operations as the snail renderer and reuses the snail-agnostic
-  `goop_graphics_vulkan` device; only the renderer differs. Clips, surfaces, and
-  text (via Skia's own `SkFont`/fontconfig stack) render on the GPU and are
-  verified offscreen. The C++ shim is compiled by the system g++ to share
-  libskia's libstdc++ ABI. Icon/image ops and on-screen swapchain presentation
-  are in progress.
+  `goop_graphics_vulkan` device; only the renderer differs. The full visual
+  vocabulary — clips, surfaces, text (via Skia's own `SkFont`/fontconfig stack),
+  stock icons, and images — renders on the GPU and is verified offscreen. The C++
+  shim is compiled by the system g++ to share libskia's libstdc++ ABI.
 - The Skia backend auto-selects GPU (Ganesh) or Skia's CPU raster path: GPU only
   for a real GPU, CPU raster otherwise (including software Vulkan like lavapipe).
   `GOOP_SKIA_BACKEND={vulkan,cpu}` (read in the library) overrides the choice.
@@ -32,12 +31,13 @@ breaking changes between minor versions.
   (`zig build file-manager-demo -Dskia`) — the flag swaps the file manager's
   renderer and text-measurement layers behind a `fm_render` seam, so the snail
   build links no Skia and the Skia build links no snail (it measures text with
-  Skia's own `SkFont`). Icon/image ops are not yet mapped, so toolbar/list icons
-  and image previews do not draw. `WindowTarget` defers swapchain creation until
-  the surface is sized, reports granular errors, and requests
-  transfer/sampled image usage (where the surface supports it) so Skia can wrap
-  swapchain images as render targets. Verified rendering headlessly under weston
-  (GL) on a real GPU: the file manager's panels, tree, table, and text draw.
+  Skia's own `SkFont`). The full visual vocabulary is mapped: clips, surfaces,
+  text, stock icons (tone-colored from the shared geometry) and images
+  (`SkImage`/`drawImageRect` with contain/cover/stretch). `WindowTarget` defers
+  swapchain creation until the surface is sized, reports granular errors, and
+  requests transfer/sampled image usage (where the surface supports it) so Skia
+  can wrap swapchain images as render targets. Verified end-to-end under a
+  headless compositor (weston GL) on a real GPU.
 
 ## 0.2.0 — 2026-08-18
 

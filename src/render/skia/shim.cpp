@@ -9,6 +9,7 @@
 // device (goop_graphics_vulkan), surfaces are Ganesh render targets, and the
 // visual vocabulary is replayed onto their SkCanvas.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -16,6 +17,9 @@
 #include "core/SkCanvas.h"
 #include "core/SkColor.h"
 #include "core/SkColorSpace.h"
+#include "core/SkData.h"
+#include "core/SkImage.h"
+#include "core/SkSamplingOptions.h"
 #include "core/SkFont.h"
 #include "core/SkFontMetrics.h"
 #include "core/SkFontMgr.h"
@@ -311,6 +315,48 @@ void goop_skia_draw_text(void *ctx_handle, void *canvas, const char *utf8,
     paint.setColor(toSkColor(rgba));
     static_cast<SkCanvas *>(canvas)->drawSimpleText(
         utf8, len, SkTextEncoding::kUTF8, x, baseline, font, paint);
+}
+
+// Draw straight-alpha sRGBA8 pixels into a destination rect. `fit`: 0 contain,
+// 1 cover, 2 stretch (matching goop_visual.ImageFit).
+void goop_skia_draw_image(void *canvas, const unsigned char *rgba, uint32_t w,
+                          uint32_t h, float dx, float dy, float dw, float dh,
+                          int fit) {
+    if (w == 0 || h == 0 || dw <= 0.0f || dh <= 0.0f) return;
+    const SkImageInfo info = SkImageInfo::Make(
+        static_cast<int>(w), static_cast<int>(h), kRGBA_8888_SkColorType,
+        kUnpremul_SkAlphaType);
+    sk_sp<SkData> data =
+        SkData::MakeWithCopy(rgba, static_cast<size_t>(w) * h * 4);
+    sk_sp<SkImage> image =
+        SkImages::RasterFromData(info, data, static_cast<size_t>(w) * 4);
+    if (!image) return;
+
+    const float fw = static_cast<float>(w);
+    const float fh = static_cast<float>(h);
+    SkRect src;
+    SkRect dst;
+    if (fit == 2) {  // stretch
+        src = SkRect::MakeWH(fw, fh);
+        dst = SkRect::MakeXYWH(dx, dy, dw, dh);
+    } else if (fit == 1) {  // cover
+        const float scale = std::max(dw / fw, dh / fh);
+        const float vw = dw / scale;
+        const float vh = dh / scale;
+        src = SkRect::MakeXYWH((fw - vw) * 0.5f, (fh - vh) * 0.5f, vw, vh);
+        dst = SkRect::MakeXYWH(dx, dy, dw, dh);
+    } else {  // contain
+        const float scale = std::min(dw / fw, dh / fh);
+        const float ow = fw * scale;
+        const float oh = fh * scale;
+        src = SkRect::MakeWH(fw, fh);
+        dst = SkRect::MakeXYWH(dx + (dw - ow) * 0.5f, dy + (dh - oh) * 0.5f, ow, oh);
+    }
+    SkPaint paint;
+    paint.setAntiAlias(true);
+    static_cast<SkCanvas *>(canvas)->drawImageRect(
+        image.get(), src, dst, SkSamplingOptions(SkFilterMode::kLinear), &paint,
+        SkCanvas::kStrict_SrcRectConstraint);
 }
 
 // Measure text with the context's font. `out` receives
