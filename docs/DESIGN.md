@@ -54,6 +54,7 @@ borrowed journal keyed by semantic IDs. Its variants are:
 - `value_changed` for scalar, selected index, or table-column fraction;
 - `toggle_changed`, `text_changed`, `sort_changed`, `selection_changed`, and
   `scroll_changed`;
+- `popup_visibility_changed` when core dismisses an identified retained popup;
 - `drop`, with semantic source/target IDs and a typed position.
 
 `ControlEvents.items`, `text_bytes`, and `selection_ids` borrow runtime

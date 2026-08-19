@@ -77,6 +77,11 @@ pub const WidgetKind = union(enum) {
 
     pub const Container = struct {
         direction: Direction = .column,
+        /// Size to children along the main axis (fit-content) instead of
+        /// growing to fill the parent. Use for stacks that should pack at the
+        /// start and leave surplus space empty, rather than distributing it
+        /// between children (e.g. a details column in a tall pane).
+        fit_main: bool = false,
 
         pub const Direction = enum { row, column };
     };
@@ -95,6 +100,8 @@ pub const WidgetKind = union(enum) {
 
     pub const Button = struct {
         label: []const u8,
+        icon: ?visual_types.IconId = null,
+        label_visible: bool = true,
     };
 
     pub const Checkbox = struct {
@@ -117,6 +124,7 @@ pub const WidgetKind = union(enum) {
         rename_trigger: RenameTrigger = .none,
         has_children: bool = false,
         expanded: bool = true,
+        disclosure: Disclosure = .automatic,
         selected: bool = false,
         editing: bool = false,
         /// Internal state owned by dispatch/visual_types. Embedders should not
@@ -134,6 +142,18 @@ pub const WidgetKind = union(enum) {
             selected_click,
             double_click,
         };
+
+        /// Visual disclosure state is separate from child visibility. Partial
+        /// is useful for ancestor paths whose selected branch is revealed
+        /// without treating the folder as explicitly expanded.
+        pub const Disclosure = enum { automatic, collapsed, partial, expanded };
+
+        pub fn disclosureState(self: TreeItem) Disclosure {
+            return if (self.disclosure == .automatic)
+                if (self.expanded) .expanded else .collapsed
+            else
+                self.disclosure;
+        }
 
         pub const DropPosition = enum {
             before,
@@ -232,6 +252,7 @@ pub const WidgetKind = union(enum) {
         icon: ?visual_types.IconId = null,
         icon_color: ?style.Color = null,
         selected: bool = false,
+        selected_label_action: ?ui.ActionId = null,
         /// Internal state owned by dispatch/visual_types. Don't touch.
         internal: Internal = .{},
 
@@ -244,7 +265,9 @@ pub const WidgetKind = union(enum) {
 
     pub const Table = struct {
         pub const max_columns: usize = 32;
-        pub const resize_handle_width: f32 = 8;
+        /// Pointer interaction width around a column divider. The visible grip
+        /// remains narrow; this larger transparent strip is the grab target.
+        pub const resize_handle_width: f32 = 12;
         pub const resize_grip_width: f32 = 2;
         pub const resize_grip_height: f32 = 12;
 
@@ -369,6 +392,8 @@ pub const WidgetKind = union(enum) {
     pub const TableRow = struct {
         header: bool = false,
         selected: bool = false,
+        selected_label_action: ?ui.ActionId = null,
+        label_action_column: u8 = 0,
         /// Internal state owned by dispatch/visual_types. Don't touch.
         internal: Internal = .{},
 
@@ -389,6 +414,9 @@ pub const WidgetKind = union(enum) {
 
     pub const Menu = struct {
         label: []const u8,
+        /// Access key for win32-style mnemonics: the first matching character
+        /// in `label` is underlined and Alt+<char> opens this menu.
+        mnemonic: ?u8 = null,
     };
 
     pub const Popup = struct {
@@ -413,6 +441,10 @@ pub const WidgetKind = union(enum) {
         x: f32 = 0,
         y: f32 = 0,
         z_index: i16 = 120,
+        delay_ms: u32 = 500,
+        /// Runtime-owned presentation state. Callers configure the delay;
+        /// dispatch decides when the tooltip becomes visible.
+        visible: bool = false,
     };
 
     pub const MenuItem = struct {
@@ -420,6 +452,9 @@ pub const WidgetKind = union(enum) {
         shortcut: []const u8 = "",
         checked: bool = false,
         disabled: bool = false,
+        /// Access key: when this item's menu is open, pressing <char> activates
+        /// it. The matching character in `label` is underlined.
+        mnemonic: ?u8 = null,
     };
 
     pub const DragValue = struct {
@@ -532,7 +567,7 @@ pub const WidgetKind = union(enum) {
         ratio: f32 = 0.5,
         min_first: f32 = 120,
         min_second: f32 = 120,
-        thickness: f32 = 6,
+        thickness: f32 = 8,
         gap_thickness: f32 = 1,
         keyboard_step: f32 = 0.02,
     };
@@ -827,6 +862,25 @@ pub const WidgetKind = union(enum) {
 };
 
 pub const TextEditState = WidgetKind.TextInput;
+/// Byte index of the first case-insensitive occurrence of `mnemonic` in
+/// `label` — where the access-key underline is drawn and what Alt/letter keys
+/// match. Returns null when there is no mnemonic or the character is absent.
+pub fn mnemonicIndex(label: []const u8, mnemonic: ?u8) ?usize {
+    const key = mnemonic orelse return null;
+    const lowered = std.ascii.toLower(key);
+    for (label, 0..) |c, i| {
+        if (std.ascii.toLower(c) == lowered) return i;
+    }
+    return null;
+}
+
+test "mnemonicIndex finds the access key case-insensitively" {
+    try std.testing.expectEqual(@as(?usize, 0), mnemonicIndex("File", 'f'));
+    try std.testing.expectEqual(@as(?usize, 3), mnemonicIndex("Go To", 'T'));
+    try std.testing.expectEqual(@as(?usize, null), mnemonicIndex("File", 'z'));
+    try std.testing.expectEqual(@as(?usize, null), mnemonicIndex("File", null));
+}
+
 pub const ElementId = ui.ElementId;
 pub const ActionId = ui.ActionId;
 
@@ -894,6 +948,7 @@ pub const WidgetDesc = union(enum) {
 
     pub const Container = struct {
         direction: WidgetKind.Container.Direction = .column,
+        fit_main: bool = false,
     };
 
     pub const Text = struct {
@@ -908,6 +963,8 @@ pub const WidgetDesc = union(enum) {
 
     pub const Button = struct {
         label: []const u8,
+        icon: ?visual_types.IconId = null,
+        label_visible: bool = true,
     };
 
     pub const Checkbox = struct {
@@ -930,6 +987,7 @@ pub const WidgetDesc = union(enum) {
         rename_trigger: WidgetKind.TreeItem.RenameTrigger = .none,
         has_children: bool = false,
         expanded: bool = true,
+        disclosure: WidgetKind.TreeItem.Disclosure = .automatic,
         selected: bool = false,
     };
 
@@ -963,6 +1021,7 @@ pub const WidgetDesc = union(enum) {
         icon: ?visual_types.IconId = null,
         icon_color: ?style.Color = null,
         selected: bool = false,
+        selected_label_action: ?ui.ActionId = null,
     };
 
     pub const Table = struct {
@@ -979,6 +1038,8 @@ pub const WidgetDesc = union(enum) {
     pub const TableRow = struct {
         header: bool = false,
         selected: bool = false,
+        selected_label_action: ?ui.ActionId = null,
+        label_action_column: u8 = 0,
     };
 
     pub const TableCell = struct {};
@@ -991,6 +1052,7 @@ pub const WidgetDesc = union(enum) {
 
     pub const Menu = struct {
         label: []const u8,
+        mnemonic: ?u8 = null,
     };
 
     pub const Popup = struct {
@@ -1008,6 +1070,7 @@ pub const WidgetDesc = union(enum) {
         x: f32 = 0,
         y: f32 = 0,
         z_index: i16 = 120,
+        delay_ms: u32 = 500,
     };
 
     pub const MenuItem = struct {
@@ -1015,6 +1078,9 @@ pub const WidgetDesc = union(enum) {
         shortcut: []const u8 = "",
         checked: bool = false,
         disabled: bool = false,
+        /// Access key: when this item's menu is open, pressing <char> activates
+        /// it. The matching character in `label` is underlined.
+        mnemonic: ?u8 = null,
     };
 
     pub const DragValue = struct {
@@ -1045,7 +1111,7 @@ pub const WidgetDesc = union(enum) {
         ratio: f32 = 0.5,
         min_first: f32 = 120,
         min_second: f32 = 120,
-        thickness: f32 = 6,
+        thickness: f32 = 8,
         gap_thickness: f32 = 1,
         keyboard_step: f32 = 0.02,
     };
@@ -1175,7 +1241,7 @@ pub const WidgetView = union(enum) {
     text_input: TextInput,
     custom: Custom,
 
-    pub const Container = struct { direction: WidgetKind.Container.Direction };
+    pub const Container = struct { direction: WidgetKind.Container.Direction, fit_main: bool };
 
     pub const Text = struct { content: []const u8 };
 
@@ -1186,6 +1252,8 @@ pub const WidgetView = union(enum) {
 
     pub const Button = struct {
         label: []const u8,
+        icon: ?visual_types.IconId,
+        label_visible: bool,
     };
 
     pub const Checkbox = struct {
@@ -1206,6 +1274,7 @@ pub const WidgetView = union(enum) {
         icon_color: ?style.Color,
         has_children: bool,
         expanded: bool,
+        disclosure: WidgetKind.TreeItem.Disclosure,
         selected: bool,
         editing: bool,
         dragging: bool,
@@ -1251,6 +1320,7 @@ pub const WidgetView = union(enum) {
 
     pub const Menu = struct {
         label: []const u8,
+        mnemonic: ?u8,
     };
 
     pub const Popup = struct {
@@ -1266,6 +1336,7 @@ pub const WidgetView = union(enum) {
         x: f32,
         y: f32,
         z_index: i16,
+        visible: bool,
     };
 
     pub const MenuItem = struct {
@@ -1273,6 +1344,7 @@ pub const WidgetView = union(enum) {
         shortcut: []const u8,
         checked: bool,
         disabled: bool,
+        mnemonic: ?u8,
     };
 
     pub const DragValue = struct {
@@ -1336,6 +1408,7 @@ pub const WidgetView = union(enum) {
                 .icon_color = kind.tree_item.icon_color,
                 .has_children = kind.tree_item.has_children,
                 .expanded = kind.tree_item.expanded,
+                .disclosure = kind.tree_item.disclosureState(),
                 .selected = kind.tree_item.selected,
                 .editing = kind.tree_item.editing,
                 .dragging = kind.tree_item.internal.drag.active,
@@ -1868,11 +1941,15 @@ pub fn tableResizeHandleRect(tree: *const Tree, table: NodeHandle, divider_index
     if (left_rect.w <= 0 or left_rect.h <= 0) return null;
 
     const row_rect = tree.getConst(row).layout_rect;
+    const divider_x = left_rect.x + left_rect.w;
+    const desired_left = divider_x - WidgetKind.Table.resize_handle_width * 0.5;
+    const left_edge = @max(desired_left, row_rect.x);
+    const right_edge = @min(desired_left + WidgetKind.Table.resize_handle_width, row_rect.x + row_rect.w);
     return .{
-        .x = left_rect.x + left_rect.w - WidgetKind.Table.resize_handle_width * 0.5,
+        .x = left_edge,
         .y = row_rect.y,
-        .w = WidgetKind.Table.resize_handle_width,
-        .h = row_rect.h,
+        .w = @max(right_edge - left_edge, 0),
+        .h = @max(row_rect.h, 0),
     };
 }
 

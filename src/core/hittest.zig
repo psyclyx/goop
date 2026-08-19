@@ -13,18 +13,22 @@ const HitState = struct {
 /// Find the topmost interactive widget at (x, y), giving floating popup
 /// subtrees precedence over the regular layout tree.
 pub fn hitTest(tree: *const widget.Tree, x: f32, y: f32) ?widget.NodeHandle {
+    return hitTestWithTheme(tree, x, y, style.Theme.default);
+}
+
+pub fn hitTestWithTheme(tree: *const widget.Tree, x: f32, y: f32, theme: style.Theme) ?widget.NodeHandle {
     var result: ?widget.NodeHandle = null;
 
     for (tree.nodes.items, 0..) |node, i| {
         if (!node.alive or node.parent != null or node.kind == .popup or node.kind == .tooltip) continue;
-        if (hitTestSubtree(tree, tree.handleFromIndex(@intCast(i)), x, y, null, false, .{})) |found| {
+        if (hitTestSubtree(tree, tree.handleFromIndex(@intCast(i)), x, y, null, false, .{}, theme)) |found| {
             result = found;
         }
     }
 
     for (tree.nodes.items, 0..) |node, i| {
         if (!node.alive or node.parent != null) continue;
-        if (hitTestFloatingSubtrees(tree, tree.handleFromIndex(@intCast(i)), x, y, null)) |found| {
+        if (hitTestFloatingSubtrees(tree, tree.handleFromIndex(@intCast(i)), x, y, null, theme)) |found| {
             result = found;
         }
     }
@@ -34,18 +38,22 @@ pub fn hitTest(tree: *const widget.Tree, x: f32, y: f32) ?widget.NodeHandle {
 
 /// Find the topmost widget of a specific kind at (x, y).
 pub fn hitTestKind(tree: *const widget.Tree, x: f32, y: f32, kind_tag: std.meta.Tag(widget.WidgetKind)) ?widget.NodeHandle {
+    return hitTestKindWithTheme(tree, x, y, kind_tag, style.Theme.default);
+}
+
+pub fn hitTestKindWithTheme(tree: *const widget.Tree, x: f32, y: f32, kind_tag: std.meta.Tag(widget.WidgetKind), theme: style.Theme) ?widget.NodeHandle {
     var result: ?widget.NodeHandle = null;
 
     for (tree.nodes.items, 0..) |node, i| {
         if (!node.alive or node.parent != null or node.kind == .popup or node.kind == .tooltip) continue;
-        if (hitTestSubtree(tree, tree.handleFromIndex(@intCast(i)), x, y, kind_tag, false, .{})) |found| {
+        if (hitTestSubtree(tree, tree.handleFromIndex(@intCast(i)), x, y, kind_tag, false, .{}, theme)) |found| {
             result = found;
         }
     }
 
     for (tree.nodes.items, 0..) |node, i| {
         if (!node.alive or node.parent != null) continue;
-        if (hitTestFloatingSubtrees(tree, tree.handleFromIndex(@intCast(i)), x, y, kind_tag)) |found| {
+        if (hitTestFloatingSubtrees(tree, tree.handleFromIndex(@intCast(i)), x, y, kind_tag, theme)) |found| {
             result = found;
         }
     }
@@ -120,11 +128,12 @@ fn hitTestFloatingSubtrees(
     x: f32,
     y: f32,
     kind_tag: ?std.meta.Tag(widget.WidgetKind),
+    theme: style.Theme,
 ) ?widget.NodeHandle {
     if (!isVisible(tree, handle)) return null;
     const node = tree.getConst(handle);
     if (node.kind == .popup) {
-        return hitTestSubtree(tree, handle, x, y, kind_tag, true, .{});
+        return hitTestSubtree(tree, handle, x, y, kind_tag, true, .{}, theme);
     }
     if (node.kind == .tooltip) return null;
 
@@ -133,7 +142,7 @@ fn hitTestFloatingSubtrees(
     while (iter.next()) |child| {
         if (node.kind == .tree_item and !node.kind.tree_item.expanded and tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) continue;
         if (node.kind == .tab_item and !node.kind.tab_item.selected) continue;
-        if (hitTestFloatingSubtrees(tree, child, x, y, kind_tag)) |found| {
+        if (hitTestFloatingSubtrees(tree, child, x, y, kind_tag, theme)) |found| {
             result = found;
         }
     }
@@ -148,6 +157,7 @@ fn hitTestSubtree(
     kind_tag: ?std.meta.Tag(widget.WidgetKind),
     in_floating_subtree: bool,
     state: HitState,
+    theme: style.Theme,
 ) ?widget.NodeHandle {
     if (!isVisible(tree, handle)) return null;
     const node = tree.getConst(handle);
@@ -157,9 +167,13 @@ fn hitTestSubtree(
     }
 
     var result: ?widget.NodeHandle = null;
-    if ((kind_tag == null or node.kind == kind_tag.?) and isInteractive(node.kind) and pointHitsWidget(tree, handle, x, y, state)) {
+    if ((kind_tag == null or node.kind == kind_tag.?) and isInteractive(node.kind) and pointHitsWidget(tree, handle, x, y, state, theme)) {
         result = handle;
     }
+
+    // A splitter's handle is an interaction overlay on its pane children.
+    // Descendant containers must not steal the expanded grab region.
+    if (node.kind == .splitter and result != null) return result;
 
     const child_state = childHitState(node, state);
     var iter = tree.children(handle);
@@ -167,7 +181,7 @@ fn hitTestSubtree(
         if (!in_floating_subtree and (tree.getConst(child).kind == .popup or tree.getConst(child).kind == .tooltip)) continue;
         if (node.kind == .tree_item and !node.kind.tree_item.expanded and tree.getConst(child).kind != .popup and tree.getConst(child).kind != .tooltip) continue;
         if (node.kind == .tab_item and !node.kind.tab_item.selected) continue;
-        if (hitTestSubtree(tree, child, x, y, kind_tag, in_floating_subtree, child_state)) |found| {
+        if (hitTestSubtree(tree, child, x, y, kind_tag, in_floating_subtree, child_state, theme)) |found| {
             result = found;
         }
     }
@@ -246,14 +260,14 @@ fn tooltipVisible(tree: *const widget.Tree, handle: widget.NodeHandle, node: *co
     return (owner.interaction.hovered or owner.interaction.focused) and node.layout_rect.w > 0 and node.layout_rect.h > 0;
 }
 
-fn pointHitsWidget(tree: *const widget.Tree, handle: widget.NodeHandle, x: f32, y: f32, state: HitState) bool {
+fn pointHitsWidget(tree: *const widget.Tree, handle: widget.NodeHandle, x: f32, y: f32, state: HitState, theme: style.Theme) bool {
     const node = tree.getConst(handle);
     const local_x = x - state.offset_x;
     const local_y = y - state.offset_y;
-    return pointHitTester(node.kind)(tree, handle, node, local_x, local_y);
+    return pointHitTester(node.kind)(tree, handle, node, local_x, local_y, theme);
 }
 
-const PointHitTester = *const fn (*const widget.Tree, widget.NodeHandle, *const widget.Node, f32, f32) bool;
+const PointHitTester = *const fn (*const widget.Tree, widget.NodeHandle, *const widget.Node, f32, f32, style.Theme) bool;
 
 fn pointHitTester(kind: widget.WidgetKind) PointHitTester {
     const tag: std.meta.Tag(widget.WidgetKind) = kind;
@@ -298,18 +312,17 @@ const point_hit_testers = blk: {
     break :blk testers;
 };
 
-fn rectPointHit(_: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, x: f32, y: f32) bool {
+fn rectPointHit(_: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, x: f32, y: f32, _: style.Theme) bool {
     return pointInRect(x, y, node.layout_rect);
 }
 
-fn tableRowPointHit(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, x: f32, y: f32) bool {
+fn tableRowPointHit(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, x: f32, y: f32, _: style.Theme) bool {
     return widget.tableRowSelectable(tree, handle) and pointInRect(x, y, node.layout_rect);
 }
 
-fn splitterPointHit(_: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, x: f32, y: f32) bool {
-    const resolved = node.style_override.resolve(style.Theme.default);
-    const divider = geometry.splitterDividerRect(node.layout_rect, node.kind.splitter, resolved);
-    return pointInRect(x, y, geometry.splitterHandleRect(divider, node.kind.splitter));
+fn splitterPointHit(_: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node, x: f32, y: f32, theme: style.Theme) bool {
+    const resolved = node.style_override.resolve(theme);
+    return pointInRect(x, y, geometry.splitterInteractionRect(node.layout_rect, node.kind.splitter, resolved));
 }
 
 fn childHitState(node: *const widget.Node, state: HitState) HitState {
@@ -380,4 +393,67 @@ test "scroll area clips hit testing to viewport" {
 
     try std.testing.expect(hitTestKind(&tree, 20, 35, .button).?.eql(button));
     try std.testing.expect(hitTestKind(&tree, 20, 45, .button) == null);
+}
+
+test "splitter handle wins over overlapping pane descendants" {
+    const allocator = std.testing.allocator;
+    for ([_]widget.WidgetKind.Container.Direction{ .row, .column }) |direction| {
+        for ([_]f32{ 0.2, 0.5, 0.8 }) |ratio| {
+            var tree = widget.Tree.init(allocator);
+            defer tree.deinit();
+            const splitter = try tree.addRoot(.{ .splitter = .{
+                .direction = direction,
+                .ratio = ratio,
+                .thickness = 12,
+                .gap_thickness = 1,
+            } });
+            const first = try tree.addChild(splitter, .{ .container = .{} });
+            const second = try tree.addChild(splitter, .{ .container = .{} });
+            const bounds = visual_types.Rect{ .x = 17, .y = 23, .w = 301, .h = 199 };
+            tree.get(splitter).layout_rect = bounds;
+            tree.get(first).layout_rect = bounds;
+            tree.get(second).layout_rect = bounds;
+            const theme = style.Theme{ .padding = .all(3) };
+            const resolved = tree.getConst(splitter).style_override.resolve(theme);
+            const handle = geometry.splitterInteractionRect(bounds, tree.getConst(splitter).kind.splitter, resolved);
+            for (0..7) |across_sample| {
+                for (0..11) |along_sample| {
+                    const across = (@as(f32, @floatFromInt(across_sample)) + 0.5) / 7;
+                    const along = (@as(f32, @floatFromInt(along_sample)) + 0.5) / 11;
+                    const x = handle.x + handle.w * (if (direction == .row) across else along);
+                    const y = handle.y + handle.h * (if (direction == .column) across else along);
+                    try std.testing.expect(hitTestWithTheme(&tree, x, y, theme).?.eql(splitter));
+                }
+            }
+        }
+    }
+}
+
+test "table column interaction strips win over header descendants" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+    const table = try tree.addRoot(.{ .table = .{ .columns = 2, .resizable = true } });
+    tree.get(table).kind.table.syncColumns(2);
+    const header = try tree.addChild(table, .{ .table_row = .{ .header = true } });
+    const left = try tree.addChild(header, .{ .table_cell = .{} });
+    const right = try tree.addChild(header, .{ .table_cell = .{} });
+    const left_label = try tree.addChild(left, .{ .text = .{ .content = "Name" } });
+    const right_label = try tree.addChild(right, .{ .text = .{ .content = "Type" } });
+    tree.get(table).layout_rect = .{ .x = 10, .y = 20, .w = 300, .h = 30 };
+    tree.get(header).layout_rect = tree.getConst(table).layout_rect;
+    tree.get(left).layout_rect = .{ .x = 10, .y = 20, .w = 180, .h = 30 };
+    tree.get(right).layout_rect = .{ .x = 190, .y = 20, .w = 120, .h = 30 };
+    tree.get(left_label).layout_rect = tree.getConst(left).layout_rect;
+    tree.get(right_label).layout_rect = tree.getConst(right).layout_rect;
+
+    const handle = widget.tableResizeHandleRect(&tree, table, 0).?;
+    for (0..11) |x_sample| {
+        for (0..7) |y_sample| {
+            const x = handle.x + handle.w * (@as(f32, @floatFromInt(x_sample)) + 0.5) / 11;
+            const y = handle.y + handle.h * (@as(f32, @floatFromInt(y_sample)) + 0.5) / 7;
+            try std.testing.expect(hitTestWithTheme(&tree, x, y, style.Theme.default).?.eql(table));
+            try std.testing.expectEqual(@as(?u8, 0), widget.tableResizeHandleIndexAtPoint(&tree, table, x, y));
+        }
+    }
 }

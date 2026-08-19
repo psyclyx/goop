@@ -79,7 +79,9 @@ pub const FocusRing = struct {
     corner_radius: f32,
     visible: bool,
     width: f32 = 2,
-    outset: f32 = 2,
+    /// Stock focus adornments are contained by default. This keeps sibling
+    /// backgrounds and scroll clips from erasing an owning control's ring.
+    outset: f32 = 0,
 
     pub fn emit(self: FocusRing, encoder: anytype) !void {
         if (!self.visible) return;
@@ -185,7 +187,7 @@ test "components emit resolved visuals in structural order" {
     try std.testing.expect(capture.operations[1] == .text);
     try std.testing.expect(capture.operations[2] == .surface);
     try std.testing.expectEqual(@as(f32, 2), capture.operations[2].surface.border_width);
-    try std.testing.expectEqual(@as(f32, 2), bounds.x - capture.operations[2].surface.bounds.x);
+    try std.testing.expectEqual(bounds, capture.operations[2].surface.bounds);
 }
 
 test "unchecked and unfocused controls emit no hidden operations" {
@@ -226,6 +228,35 @@ test "unchecked and unfocused controls emit no hidden operations" {
 
     try std.testing.expectEqual(@as(usize, 1), counter.surfaces);
     try std.testing.expectEqual(@as(usize, 1), counter.texts);
+}
+
+test "stock focus rings stay inside their owner for varied geometry" {
+    const std = @import("std");
+    const Capture = struct {
+        value: ?visual.Surface = null,
+
+        pub fn surface(self: *@This(), value: visual.Surface) !void {
+            self.value = value;
+        }
+    };
+
+    for ([_]f32{ -13, 0, 2.5, 101 }) |x| {
+        for ([_]f32{ 1, 8, 37.5, 240 }) |width| {
+            const owner = visual.Rect{ .x = x, .y = x * 0.5, .w = width, .h = width * 0.75 + 1 };
+            var capture = Capture{};
+            try (FocusRing{
+                .bounds = owner,
+                .color = .rgb(0, 120, 255),
+                .corner_radius = 3,
+                .visible = true,
+            }).emit(&capture);
+            const ring = capture.value.?.bounds;
+            try std.testing.expect(ring.x >= owner.x);
+            try std.testing.expect(ring.y >= owner.y);
+            try std.testing.expect(ring.x + ring.w <= owner.x + owner.w);
+            try std.testing.expect(ring.y + ring.h <= owner.y + owner.h);
+        }
+    }
 }
 
 test "source boundary excludes core, behavior, and backend concerns" {

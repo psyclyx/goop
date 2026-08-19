@@ -75,9 +75,18 @@ pub const Style = struct {
                 @field(out, field.name) = value;
             }
         }
+        // Clay's text configuration carries font size as a u16. Resolve that
+        // representation once so measurement, layout, hit testing, and paint
+        // never observe different sizes for the same control.
+        out.font_size = canonicalFontSize(out.font_size);
         return out;
     }
 };
+
+pub fn canonicalFontSize(value: f32) f32 {
+    if (!std.math.isFinite(value)) return 1;
+    return std.math.clamp(@round(value), 1, @as(f32, @floatFromInt(std.math.maxInt(u16))));
+}
 
 /// Fully resolved style — no optional fields, ready for layout and a look.
 /// Structurally identical to `Theme`.
@@ -109,4 +118,12 @@ test "style resolves against theme" {
     try std.testing.expectEqual(@as(u8, 255), resolved.bg.r);
     try std.testing.expectEqual(theme.fg, resolved.fg);
     try std.testing.expectEqual(theme.spacing, resolved.spacing);
+}
+
+test "resolved font sizes use the layout representation" {
+    for ([_]f32{ 1, 12.25, 12.5, 12.75, 4096 }) |font_size| {
+        const resolved = (Style{ .font_size = font_size }).resolve(.default);
+        try std.testing.expectEqual(@round(font_size), resolved.font_size);
+        try std.testing.expectEqual(resolved.font_size, @as(f32, @floatFromInt(@as(u16, @intFromFloat(resolved.font_size)))));
+    }
 }

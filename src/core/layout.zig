@@ -202,8 +202,8 @@ fn emitIconNode(_: *const widget.Tree, handle: widget.NodeHandle, _: *const widg
     emitIcon(handle, resolved);
 }
 
-fn emitButtonNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
-    emitButton(handle, node.kind.button, resolved);
+fn emitButtonNode(tree: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
+    emitButton(tree, handle, node.kind.button, resolved, theme);
 }
 
 fn emitCheckboxNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
@@ -311,7 +311,7 @@ fn emitScrollAreaNode(tree: *const widget.Tree, handle: widget.NodeHandle, _: *c
 }
 
 fn emitTextInputNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, resolved: style_mod.ResolvedStyle, _: style_mod.Theme) void {
-    emitTextInput(handle, node.kind.text_input, resolved);
+    emitTextInput(handle, &node.kind.text_input, resolved);
 }
 
 fn emitCustomNode(_: *const widget.Tree, handle: widget.NodeHandle, node: *const widget.Node, _: style_mod.ResolvedStyle, _: style_mod.Theme) void {
@@ -385,15 +385,15 @@ fn emitIcon(handle: widget.NodeHandle, resolved: style_mod.ResolvedStyle) void {
     c.Clay__CloseElement();
 }
 
-fn emitButton(handle: widget.NodeHandle, btn: widget.WidgetKind.Button, resolved: style_mod.ResolvedStyle) void {
+fn emitButton(tree: *const widget.Tree, handle: widget.NodeHandle, btn: widget.WidgetKind.Button, resolved: style_mod.ResolvedStyle, theme: style_mod.Theme) void {
     c.Clay__OpenElement();
     c.Clay__ConfigureOpenElement(.{
         .id = nodeId(handle),
         .layout = .{
             .sizing = .{},
             .padding = clayPadding(resolved.padding),
-            .childGap = 0,
-            .childAlignment = .{},
+            .childGap = @intFromFloat(resolved.spacing),
+            .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
             .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
         },
         .backgroundColor = clayColor(resolved.bg),
@@ -406,19 +406,40 @@ fn emitButton(handle: widget.NodeHandle, btn: widget.WidgetKind.Button, resolved
         .border = .{},
         .userData = null,
     });
-    c.Clay__OpenTextElement(
-        clayString(btn.label),
-        c.Clay__StoreTextElementConfig(.{
-            .userData = null,
-            .textColor = clayColor(resolved.fg),
-            .fontId = 0,
-            .fontSize = @intFromFloat(resolved.font_size),
-            .letterSpacing = 0,
-            .lineHeight = 0,
-            .wrapMode = c.CLAY_TEXT_WRAP_NONE,
-            .textAlignment = c.CLAY_TEXT_ALIGN_CENTER,
-        }),
-    );
+    if (btn.icon != null) emitAnonymousFixedBox(resolved.font_size);
+    if (btn.label_visible) {
+        c.Clay__OpenTextElement(
+            clayString(btn.label),
+            c.Clay__StoreTextElementConfig(.{
+                .userData = null,
+                .textColor = clayColor(resolved.fg),
+                .fontId = 0,
+                .fontSize = @intFromFloat(resolved.font_size),
+                .letterSpacing = 0,
+                .lineHeight = 0,
+                .wrapMode = c.CLAY_TEXT_WRAP_NONE,
+                .textAlignment = c.CLAY_TEXT_ALIGN_CENTER,
+            }),
+        );
+    }
+    emitChildren(tree, handle, theme);
+    c.Clay__CloseElement();
+}
+
+fn emitAnonymousFixedBox(size: f32) void {
+    c.Clay__OpenElement();
+    c.Clay__ConfigureOpenElement(.{
+        .layout = .{ .sizing = .{ .width = fixedSizing(size), .height = fixedSizing(size) } },
+        .backgroundColor = .{},
+        .cornerRadius = .{},
+        .aspectRatio = .{},
+        .image = .{},
+        .floating = .{},
+        .custom = .{},
+        .clip = .{},
+        .border = .{},
+        .userData = null,
+    });
     c.Clay__CloseElement();
 }
 
@@ -514,8 +535,8 @@ fn emitContainer(
         .id = nodeId(handle),
         .layout = .{
             .sizing = .{
-                .width = growSizing(),
-                .height = growSizing(),
+                .width = if (cont.fit_main and cont.direction == .row) fitSizingMin(0) else growSizing(),
+                .height = if (cont.fit_main and cont.direction == .column) fitSizingMin(0) else growSizing(),
             },
             .padding = clayPadding(resolved.padding),
             .childGap = @intFromFloat(resolved.spacing),
@@ -1654,7 +1675,7 @@ fn emitCustom(handle: widget.NodeHandle, custom: widget.WidgetKind.Custom) void 
     c.Clay__CloseElement();
 }
 
-fn emitTextInput(handle: widget.NodeHandle, ti: widget.WidgetKind.TextInput, resolved: style_mod.ResolvedStyle) void {
+fn emitTextInput(handle: widget.NodeHandle, ti: *const widget.WidgetKind.TextInput, resolved: style_mod.ResolvedStyle) void {
     c.Clay__OpenElement();
     c.Clay__ConfigureOpenElement(.{
         .id = nodeId(handle),
@@ -1789,7 +1810,11 @@ fn clayPadding(edges: style_mod.Edges) c.Clay_Padding {
 
 fn clayString(content: []const u8) c.Clay_String {
     return .{
-        .isStaticallyAllocated = true,
+        // Widget text is borrowed and callers commonly reuse an allocation
+        // for different contents after rebuilding a projection. Clay's
+        // "static" cache hashes the pointer rather than the bytes, which made
+        // measurements depend on unrelated allocation/rebuild history.
+        .isStaticallyAllocated = false,
         .length = @intCast(content.len),
         .chars = content.ptr,
     };
@@ -2165,6 +2190,7 @@ fn popupShouldRender(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
 
 fn tooltipShouldRender(tree: *const widget.Tree, handle: widget.NodeHandle) bool {
     const node = tree.getConst(handle);
+    if (!node.kind.tooltip.visible) return false;
     const owner_handle = node.parent orelse return false;
     const owner = tree.getConst(owner_handle);
     return owner.interaction.hovered or owner.interaction.focused;
@@ -2473,6 +2499,76 @@ test "measureTextDimensions keeps width but stabilizes line metrics" {
     try std.testing.expectApproxEqAbs(@as(f32, 6), dims.descent, 0.01);
 }
 
+test "layout text cache keys borrowed strings by contents" {
+    const allocator = std.testing.allocator;
+    const min_memory = c.Clay_MinMemorySize();
+    const arena = try allocator.alloc(u8, min_memory);
+    defer allocator.free(arena);
+    _ = c.Clay_Initialize(.{ .capacity = min_memory, .memory = arena.ptr }, .{ .width = 300, .height = 100 }, .{});
+    defer c.Clay_SetCurrentContext(null);
+
+    const helper = struct {
+        fn measure(text: []const u8, font_size: f32, _: ?*anyopaque) TextDimensions {
+            var width: f32 = 0;
+            for (text) |byte| width += if (byte == 'W') font_size else font_size * 0.25;
+            return .{ .width = width, .height = font_size };
+        }
+    };
+    const measure_ctx = TextMeasureCtx{ .measureFn = &helper.measure };
+    var bytes = [_]u8{ 'i', 'i', 'i', 'i' };
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+    const text = try tree.addRoot(.{ .text = .{ .content = bytes[0..] } });
+    run(&tree, .default, &measure_ctx);
+    const narrow = tree.getConst(text).layout_rect.w;
+    @memset(bytes[0..], 'W');
+    run(&tree, .default, &measure_ctx);
+    const wide = tree.getConst(text).layout_rect.w;
+    try std.testing.expect(wide > narrow * 2);
+}
+
+test "text input content is measured from the tree node, not a stack copy" {
+    // Regression: emitTextInput must borrow the text_input's inline `buffer`
+    // from the live tree node. Passing the widget by value copied the 256-byte
+    // buffer onto emitTextInput's stack frame; clayString borrowed a slice into
+    // that copy, and Clay re-read the pointer during EndLayout after the frame
+    // had returned — yielding garbage bytes that crashed text shaping the
+    // moment the stack happened to be clobbered (e.g. a 17-char address bar).
+    const allocator = std.testing.allocator;
+    const min_memory = c.Clay_MinMemorySize();
+    const arena = try allocator.alloc(u8, min_memory);
+    defer allocator.free(arena);
+    _ = c.Clay_Initialize(.{ .capacity = min_memory, .memory = arena.ptr }, .{ .width = 300, .height = 100 }, .{});
+    defer c.Clay_SetCurrentContext(null);
+
+    const Capture = struct {
+        var input_ptr: ?[*]const u8 = null;
+        fn measure(text: []const u8, font_size: f32, _: ?*anyopaque) TextDimensions {
+            if (text.len == 10 and text[0] == 'a') input_ptr = text.ptr;
+            return .{ .width = @as(f32, @floatFromInt(text.len)) * font_size, .height = font_size };
+        }
+    };
+    Capture.input_ptr = null;
+    const measure_ctx = TextMeasureCtx{ .measureFn = &Capture.measure };
+
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+    const input = try tree.addRoot(.{ .text_input = .{} });
+    {
+        const node = tree.get(input);
+        node.kind.text_input.len = 10;
+        @memcpy(node.kind.text_input.buffer[0..10], "abcdefghij");
+    }
+
+    run(&tree, .default, &measure_ctx);
+
+    try std.testing.expect(Capture.input_ptr != null);
+    try std.testing.expectEqual(
+        tree.getConst(input).kind.text_input.content().ptr,
+        Capture.input_ptr.?,
+    );
+}
+
 test "popup layout is clamped into the viewport" {
     const allocator = std.testing.allocator;
     const min_memory = c.Clay_MinMemorySize();
@@ -2769,4 +2865,184 @@ test "wrapped text inside padded scroll area uses the visible content width" {
     const visible_width = scroll_rect.w - 24;
     try std.testing.expect(text_rect.w <= visible_width + 0.01);
     try std.testing.expect(text_rect.h > textMetrics(theme.font_size, null).height + 0.01);
+}
+
+// ── Property-based layout invariants ──
+//
+// Seeded-PRNG loops asserting structural invariants across many randomized
+// trees. Spacers are the fixed-size building block: `spacer.height` lays out as
+// a fixed height, so we can reason about packing, spacing, and overflow exactly.
+
+const prop_iterations = 300;
+
+fn propClayInit(allocator: std.mem.Allocator, width: f32, height: f32) ![]u8 {
+    const min_memory = c.Clay_MinMemorySize();
+    const arena = try allocator.alloc(u8, min_memory);
+    _ = c.Clay_Initialize(.{ .capacity = min_memory, .memory = arena.ptr }, .{ .width = width, .height = height }, .{});
+    return arena;
+}
+
+test "property: a column packs fixed children top-to-bottom with uniform gaps" {
+    const allocator = std.testing.allocator;
+    const arena = try propClayInit(allocator, 1000, 6000);
+    defer allocator.free(arena);
+    defer c.Clay_SetCurrentContext(null);
+
+    var prng = std.Random.DefaultPrng.init(0x676f_6f70_7061_636b); // "goop pack"
+    const rand = prng.random();
+
+    var trial: usize = 0;
+    while (trial < prop_iterations) : (trial += 1) {
+        const spacing: f32 = @floatFromInt(rand.intRangeAtMost(u32, 0, 24));
+        const n = rand.intRangeAtMost(usize, 1, 8);
+
+        var tree = widget.Tree.init(allocator);
+        defer tree.deinit();
+        const root = try tree.addRoot(.{ .container = .{ .direction = .column, .fit_main = true } });
+        tree.get(root).style_override = .{ .padding = style_mod.Edges.all(0), .spacing = spacing, .border_width = 0 };
+
+        var handles: [8]widget.NodeHandle = undefined;
+        var heights: [8]f32 = undefined;
+        var total: f32 = 0;
+        for (0..n) |i| {
+            const h: f32 = @floatFromInt(rand.intRangeAtMost(u32, 1, 120));
+            heights[i] = h;
+            handles[i] = try tree.addChild(root, .{ .spacer = .{ .width = 20, .height = h } });
+            total += h;
+        }
+
+        run(&tree, .default, null);
+
+        // Each child keeps its fixed height, follows the previous one by exactly
+        // `spacing`, and never overlaps.
+        var expected_y = tree.getConst(root).layout_rect.y;
+        for (0..n) |i| {
+            const rect = tree.getConst(handles[i]).layout_rect;
+            try std.testing.expectApproxEqAbs(heights[i], rect.h, 0.01);
+            try std.testing.expectApproxEqAbs(expected_y, rect.y, 0.02);
+            if (i > 0) {
+                const prev = tree.getConst(handles[i - 1]).layout_rect;
+                try std.testing.expect(rect.y + 0.01 >= prev.y + prev.h); // no overlap
+            }
+            expected_y = rect.y + rect.h + spacing;
+        }
+
+        // fit_main height is exactly the packed content, never distributed to the
+        // 6000px viewport.
+        const gaps = if (n > 0) @as(f32, @floatFromInt(n - 1)) * spacing else 0;
+        try std.testing.expectApproxEqAbs(total + gaps, tree.getConst(root).layout_rect.h, 0.05);
+    }
+}
+
+test "property: grow distributes surplus evenly, fit_main packs to content" {
+    const allocator = std.testing.allocator;
+    // Tall viewport so a grow column's surplus dwarfs any child's min height.
+    const viewport_h: f32 = 2000;
+    const reserved: f32 = 200; // a fixed sibling that eats part of the frame
+    const arena = try propClayInit(allocator, 800, viewport_h);
+    defer allocator.free(arena);
+    defer c.Clay_SetCurrentContext(null);
+
+    var prng = std.Random.DefaultPrng.init(0x676f_6f70_6469_7374); // "goop dist"
+    const rand = prng.random();
+
+    var trial: usize = 0;
+    while (trial < prop_iterations) : (trial += 1) {
+        const n = rand.intRangeAtMost(usize, 2, 6);
+        const fit = rand.boolean();
+
+        var tree = widget.Tree.init(allocator);
+        defer tree.deinit();
+        // Root frame grows to the viewport; the fixed spacer leaves a large
+        // surplus below it for the column under test.
+        const frame = try tree.addRoot(.{ .container = .{ .direction = .column } });
+        tree.get(frame).style_override = .{ .padding = style_mod.Edges.all(0), .spacing = 0, .border_width = 0 };
+        _ = try tree.addChild(frame, .{ .spacer = .{ .width = 10, .height = reserved } });
+
+        const col = try tree.addChild(frame, .{ .container = .{ .direction = .column, .fit_main = fit } });
+        tree.get(col).style_override = .{ .padding = style_mod.Edges.all(0), .spacing = 0, .border_width = 0 };
+        var kids: [6]widget.NodeHandle = undefined;
+        for (0..n) |i| kids[i] = try tree.addChild(col, .{ .container = .{ .direction = .column } });
+
+        run(&tree, .default, null);
+
+        const col_h = tree.getConst(col).layout_rect.h;
+        if (fit) {
+            // Packed to content: empty children stay at their min, so the column
+            // is a small fraction of the surplus rather than filling it.
+            try std.testing.expect(col_h < @as(f32, @floatFromInt(n)) * 60);
+        } else {
+            // Grows to fill the surplus, and shares it evenly among children.
+            try std.testing.expect(col_h > (viewport_h - reserved) * 0.9);
+            const first = tree.getConst(kids[0]).layout_rect.h;
+            for (1..n) |i| {
+                try std.testing.expectApproxEqAbs(first, tree.getConst(kids[i]).layout_rect.h, 1.0);
+            }
+        }
+    }
+}
+
+test "property: a scroll area overflows exactly when content exceeds the viewport" {
+    const allocator = std.testing.allocator;
+    const viewport_w: f32 = 500;
+    const viewport_h: f32 = 400;
+    const arena = try propClayInit(allocator, viewport_w, viewport_h);
+    defer allocator.free(arena);
+    defer c.Clay_SetCurrentContext(null);
+
+    var prng = std.Random.DefaultPrng.init(0x676f_6f70_7363_726c); // "goop scrl"
+    const rand = prng.random();
+
+    var trial: usize = 0;
+    while (trial < prop_iterations) : (trial += 1) {
+        var tree = widget.Tree.init(allocator);
+        defer tree.deinit();
+        const scroll = try tree.addRoot(.{ .scroll_area = .{} });
+        tree.get(scroll).style_override = .{ .padding = style_mod.Edges.all(0), .spacing = 0, .border_width = 0 };
+
+        // A stack of fixed-height rows. The scroll area lays out its children
+        // with a childGap of theme.spacing, so the content extent includes the
+        // inter-row gaps.
+        const gap = style_mod.Theme.default.spacing;
+        const n = rand.intRangeAtMost(usize, 1, 10);
+        var content_h: f32 = 0;
+        var last: widget.NodeHandle = undefined;
+        for (0..n) |i| {
+            const h: f32 = @floatFromInt(rand.intRangeAtMost(u32, 20, 90));
+            const wide: f32 = @floatFromInt(rand.intRangeAtMost(u32, 100, 900));
+            last = try tree.addChild(scroll, .{ .spacer = .{ .width = wide, .height = h } });
+            content_h += h;
+            if (i > 0) content_h += gap;
+        }
+
+        run(&tree, .default, null);
+
+        const scroll_rect = tree.getConst(scroll).layout_rect;
+        const bottom = tree.getConst(last).layout_rect.y + tree.getConst(last).layout_rect.h;
+        const v_overflow = content_h > viewport_h + 0.01;
+        // The clipped scroll box itself stays clamped to the viewport...
+        try std.testing.expect(scroll_rect.h <= viewport_h + 0.01);
+        try std.testing.expect(scroll_rect.w <= viewport_w + 0.01);
+        // ...but the laid-out content extends past it vertically exactly when it
+        // overflows.
+        if (v_overflow) {
+            try std.testing.expect(bottom > scroll_rect.y + scroll_rect.h - 0.01);
+        } else {
+            try std.testing.expect(bottom <= scroll_rect.y + scroll_rect.h + 0.01);
+        }
+
+        // Horizontal: each fixed-width row extends past the right edge exactly
+        // when it is wider than the viewport.
+        var it = tree.children(scroll);
+        while (it.next()) |child| {
+            const cr = tree.getConst(child).layout_rect;
+            const right = cr.x + cr.w;
+            const h_overflow = cr.w > viewport_w + 0.01;
+            if (h_overflow) {
+                try std.testing.expect(right > scroll_rect.x + scroll_rect.w + 0.01);
+            } else {
+                try std.testing.expect(right <= scroll_rect.x + scroll_rect.w + 0.01);
+            }
+        }
+    }
 }
