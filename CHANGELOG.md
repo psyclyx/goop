@@ -32,10 +32,12 @@ breaking changes between minor versions.
   (`zig build file-manager-demo -Dskia`) — the flag swaps the file manager's
   renderer and text-measurement layers behind a `fm_render` seam, so the snail
   build links no Skia and the Skia build links no snail (it measures text with
-  Skia's own `SkFont`). Needs a display + real GPU; icon/image ops are not yet
-  mapped, so toolbar/list icons and image previews do not draw. `WindowTarget`
-  now defers swapchain creation until the surface is sized and reports granular
-  errors instead of one opaque `SwapchainInitFailed`.
+  Skia's own `SkFont`). Icon/image ops are not yet mapped, so toolbar/list icons
+  and image previews do not draw. `WindowTarget` defers swapchain creation until
+  the surface is sized, reports granular errors, and requests
+  transfer/sampled image usage (where the surface supports it) so Skia can wrap
+  swapchain images as render targets. Verified rendering headlessly under weston
+  (GL) on a real GPU: the file manager's panels, tree, table, and text draw.
 
 ## 0.2.0 — 2026-08-18
 

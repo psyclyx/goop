@@ -472,7 +472,17 @@ pub const WindowTarget = struct {
 
         const families = [_]u32{ self.graphics_family, self.present_family };
         const separate = self.graphics_family != self.present_family;
-        const usage: vk.VkImageUsageFlags = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        // Skia wants the render target usable as a texture / transfer source, so
+        // request those alongside COLOR_ATTACHMENT where the surface supports it.
+        var usage: vk.VkImageUsageFlags = @intCast(vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+        inline for (.{
+            vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            vk.VK_IMAGE_USAGE_SAMPLED_BIT,
+        }) |flag| {
+            const f: vk.VkImageUsageFlags = @intCast(flag);
+            if (caps.supportedUsageFlags & f != 0) usage |= f;
+        }
         const create_info = std.mem.zeroInit(vk.VkSwapchainCreateInfoKHR, .{
             .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR)),
             .surface = self.surface,
