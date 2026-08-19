@@ -23,10 +23,12 @@ Each capability is a separate module. Add only what the application needs.
   backend dependency.
 - `goop_desktop` — commands and keyboard shortcuts.
 - `goop_chrome` — a caller-owned stock look built on the visual vocabulary.
+- Renderers: `goop_render_skia` (GPU/Ganesh, recommended) or `goop_render_vulkan`
+  (the original snail path). See [Rendering backends](#rendering-backends).
 - Native backend: `goop_snail` (text/vector preparation),
-  `goop_graphics_vulkan`, `goop_render_vulkan`, `goop_present_vulkan`,
-  `goop_platform_wayland`, and `goop_wayland_vulkan` (the sole Wayland/Vulkan
-  join). Each is split at its native ownership boundary.
+  `goop_graphics_vulkan`, `goop_present_vulkan`, `goop_platform_wayland`, and
+  `goop_wayland_vulkan` (the sole Wayland/Vulkan join). Each is split at its
+  native ownership boundary.
 
 There is no required rendering adapter or application framework between these
 choices. See [docs/architecture.md](docs/architecture.md) for the dependency
@@ -155,16 +157,40 @@ try chrome.emit(context.chromeState(), .{}, &encoder);
 `invalidate` and `deinit` explicitly discard Chrome-owned storage. Core owns
 neither the cache nor the stock look.
 
+## Rendering backends
+
+A renderer consumes the backend-neutral `goop_visual` operations. Two exist;
+they share the Vulkan device, WSI, presentation, and window layers, and differ
+only in the renderer.
+
+### Skia (GPU) — recommended
+
+`goop_render_skia` renders the visual vocabulary with Skia's GPU backend
+(Ganesh on Vulkan) and is the recommended backend. It binds a `GrDirectContext`
+to the shared `goop_graphics_vulkan` device and draws clips, surfaces, and text
+(via Skia's own `SkFont`/fontconfig stack) onto GPU surfaces. Skia is C++, so it
+links `libskia` through a small POD-only C-ABI shim compiled by the system g++;
+enable it with `-Dskia`. It is new and opt-in: the surface/text/clip vocabulary
+renders and is verified offscreen; icon and image ops and on-screen swapchain
+presentation are in progress.
+
+### snail + Vulkan — the original path
+
+`goop_render_vulkan` is goop's own renderer over `goop_snail`'s prepared
+text/vector data. goop was originally written to stress-test snail — it is a 2D,
+affine-only UI toolkit, which makes it a bad fit for snail, but it works. This
+path remains for that lineage and for callers already invested in it.
+
 ## Native stack
 
-The bundled backend is split at native ownership boundaries. A game that already
-has a window and renderer needs none of it.
+Below the renderer, the bundled backend is split at native ownership boundaries.
+A game that already has a window and renderer needs none of it.
 
 - `goop_snail` — text and vector preparation; owns no window.
 - `goop_graphics_vulkan` — Vulkan instance and device; defines the minimal
-  `RenderTarget` (`command_buffer`, `extent`, `frame_slot`).
-- `goop_render_vulkan` — UI render resources; separate `prepareVisuals`,
-  `updateVisualResources`, and `drawPreparedVisuals` phases.
+  `RenderTarget` (`command_buffer`, `extent`, `frame_slot`). Shared by both
+  renderers.
+- `goop_render_vulkan` / `goop_render_skia` — the two renderers above.
 - `goop_present_vulkan` — swapchain, render pass, synchronization, and frame
   lifecycle; produces a `RenderTarget`.
 - `goop_platform_wayland` — Wayland window and platform events; knows nothing
@@ -197,7 +223,8 @@ exe.root_module.addImport("goop_visual", goop_dep.module("goop_visual"));
 // Add the rest as their policy is chosen: goop_input, goop_image,
 // goop_components, goop_desktop, goop_chrome, goop_snail, goop_graphics_vulkan,
 // goop_render_vulkan, goop_present_vulkan, goop_platform_wayland,
-// goop_wayland_vulkan.
+// goop_wayland_vulkan. The Skia renderer (goop_render_skia) is gated behind the
+// -Dskia build option.
 ```
 
 ## Build and examples
@@ -213,6 +240,7 @@ zig build test-visual             # structural visual contract
 zig build test-fonts              # Fontconfig fallback + hinted placement
 zig build test-image-codecs       # native PNG/JPEG/WebP decoder contract
 zig build test-chrome             # stock look
+zig build test-skia -Dskia        # optional Skia GPU backend (needs libskia)
 zig build test-file-manager       # browser model/projection seams
 zig build build-demo              # build the Vulkan widget showcase
 zig build build-file-manager-demo # build the file-browser demo

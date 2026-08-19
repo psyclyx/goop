@@ -6,7 +6,16 @@ breaking changes between minor versions.
 
 ## Unreleased
 
-_In development._
+### Added
+
+- Optional Skia (GPU/Ganesh-on-Vulkan) rendering backend, `goop_render_skia`,
+  gated behind `-Dskia`. It consumes the same backend-neutral `goop_visual`
+  operations as the snail renderer and reuses the snail-agnostic
+  `goop_graphics_vulkan` device; only the renderer differs. Clips, surfaces, and
+  text (via Skia's own `SkFont`/fontconfig stack) render on the GPU and are
+  verified offscreen. The C++ shim is compiled by the system g++ to share
+  libskia's libstdc++ ABI. Icon/image ops and on-screen swapchain presentation
+  are in progress.
 
 ## 0.2.0 — 2026-08-18
 

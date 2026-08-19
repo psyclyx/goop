@@ -16,11 +16,18 @@ goop + goop_components + goop_visual ──> goop_chrome ──> caller renderer
 goop_visual ──> optional recorder
 
 goop_visual + goop_image ──> goop_snail ──> goop_render_vulkan
+goop_visual ─────────────────────────────> goop_render_skia   (-Dskia)
 goop_graphics_vulkan ─────────> goop_render_vulkan
+        ├─────────────────────> goop_render_skia
         ├─────────────────────> goop_present_vulkan ──> RenderTarget
         └─────────────────────> goop_wayland_vulkan <── WSI handles
 goop_platform_wayland ─────────────────────────────────┘
 ```
+
+`goop_render_skia` (GPU/Ganesh) and `goop_render_vulkan` (snail) are
+interchangeable renderers of the neutral `goop_visual` vocabulary; only
+`goop_render_vulkan` depends on snail. Everything below the renderer — the
+device, presentation, WSI, and window — is shared and snail-agnostic.
 
 Arrows point from a supplied contract to a consumer. The build
 wiring enforces the important negative dependencies: core, desktop,

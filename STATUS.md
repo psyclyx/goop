@@ -25,6 +25,11 @@ current tree; architecture contracts and examples live in
   cache hits/replay.
 - A Vulkan renderer that consumes a minimal caller-supplied render target and
   exposes CPU preparation, GPU resource update, and draw phases separately.
+- An optional Skia (GPU/Ganesh-on-Vulkan) renderer (`goop_render_skia`, behind
+  `-Dskia`) that draws the same `goop_visual` vocabulary on the shared
+  `goop_graphics_vulkan` device. Clips, surfaces, and Skia-font text render on
+  the GPU and are verified offscreen; icon/image ops and on-screen swapchain
+  presentation are still in progress.
 - Native Fontconfig fallback composition in the desktop demos and explicit
   Snail device-grid placement with ppem-specific TrueType hinting and
   grayscale-only Vulkan coverage.
