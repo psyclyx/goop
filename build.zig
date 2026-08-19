@@ -267,6 +267,25 @@ pub fn build(b: *std.Build) void {
         const skia_tests = b.addRunArtifact(b.addTest(.{ .root_module = render_skia_mod }));
         const skia_test_step = b.step("test-skia", "Run the Skia backend tests");
         skia_test_step.dependOn(&skia_tests.step);
+
+        // On-screen example: composes a Wayland window, a Vulkan surface/device,
+        // and the Skia WindowTarget. Needs a display + real GPU to run.
+        const skia_window_mod = b.createModule(.{
+            .root_source_file = b.path("examples/skia_window.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        skia_window_mod.addImport("goop_platform_wayland", platform_wayland_mod);
+        skia_window_mod.addImport("goop_wayland_vulkan", wayland_vulkan_mod);
+        skia_window_mod.addImport("goop_graphics_vulkan", graphics_vulkan_mod);
+        skia_window_mod.addImport("goop_render_skia", render_skia_mod);
+        skia_window_mod.addImport("goop_visual", visual_mod);
+        const skia_window_exe = b.addExecutable(.{ .name = "goop-skia-window", .root_module = skia_window_mod });
+        const build_skia_window = b.step("build-skia-window", "Build the on-screen Skia example");
+        build_skia_window.dependOn(&b.addInstallArtifact(skia_window_exe, .{}).step);
+        const run_skia_window = b.addRunArtifact(skia_window_exe);
+        const skia_window_step = b.step("skia-window", "Run the on-screen Skia example (needs a Wayland display + GPU)");
+        skia_window_step.dependOn(&run_skia_window.step);
     }
 
     // ── Core goop module ──

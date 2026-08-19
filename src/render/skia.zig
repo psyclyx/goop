@@ -31,6 +31,7 @@ extern fn goop_skia_flush(ctx: ?*anyopaque) void;
 
 extern fn goop_skia_surface_create(ctx: ?*anyopaque, width: c_int, height: c_int) ?*anyopaque;
 extern fn goop_skia_surface_wrap_vk_image(ctx: ?*anyopaque, image: ?*anyopaque, format: u32, width: c_int, height: c_int, usage: u32) ?*anyopaque;
+extern fn goop_skia_flush_present(ctx: ?*anyopaque, surface: ?*anyopaque, wait_sem: ?*anyopaque, signal_sem: ?*anyopaque, queue_family: u32) c_int;
 extern fn goop_skia_surface_destroy(surface: ?*anyopaque) void;
 extern fn goop_skia_surface_canvas(surface: ?*anyopaque) ?*anyopaque;
 extern fn goop_skia_surface_read_pixels(surface: ?*anyopaque, width: c_int, height: c_int, out_rgba: [*]u8) c_int;
@@ -70,6 +71,7 @@ pub const Error = error{
     SkiaContextInitFailed,
     SkiaSurfaceCreateFailed,
     SkiaReadbackFailed,
+    SkiaPresentFailed,
     BufferTooSmall,
 };
 
@@ -180,6 +182,15 @@ pub const Context = struct {
             return error.SkiaSurfaceCreateFailed;
         return .{ .handle = handle, .ctx = self.handle, .width = width, .height = height };
     }
+
+    /// Flush a wrapped swapchain surface for presentation: wait on `wait_sem`
+    /// (the acquire semaphore, may be null), signal `signal_sem` when Skia's
+    /// work completes, and transition the image to `PRESENT_SRC_KHR`. The caller
+    /// then presents the image waiting on `signal_sem`.
+    pub fn flushPresent(self: *Context, surf: *Surface, wait_sem: vk.VkSemaphore, signal_sem: vk.VkSemaphore, queue_family: u32) Error!void {
+        if (goop_skia_flush_present(self.handle, surf.handle, @ptrCast(wait_sem), @ptrCast(signal_sem), queue_family) != 0)
+            return error.SkiaPresentFailed;
+    }
 };
 
 /// A GPU render target. Its `encoder` replays `goop_visual` operations.
@@ -267,6 +278,221 @@ pub const Encoder = struct {
         _ = value;
     }
 };
+
+/// An on-screen Skia target: owns a swapchain over a `VkSurfaceKHR`, wraps each
+/// swapchain image as a Skia render target once, and drives acquire → render →
+/// present. GPU (Ganesh) backend only. This is the on-screen counterpart to
+/// `Context.createSurface`; the snail renderer's `goop_present_vulkan` is left
+/// untouched.
+///
+/// It synchronises with a `vkDeviceWaitIdle` after each present — correct and
+/// simple rather than pipelined; a consumer wanting frames in flight can build
+/// its own loop on `wrapVkImage`/`flushPresent`.
+pub const WindowTarget = struct {
+    ctx: *Context,
+    allocator: std.mem.Allocator,
+    device_handle: vk.VkDevice,
+    physical: vk.VkPhysicalDevice,
+    graphics_queue: vk.VkQueue,
+    present_queue: vk.VkQueue,
+    graphics_family: u32,
+    present_family: u32,
+    surface: vk.VkSurfaceKHR,
+
+    swapchain: vk.VkSwapchainKHR = null,
+    images: []vk.VkImage = &.{},
+    surfaces: []?*anyopaque = &.{},
+    format: vk.VkFormat = vk.VK_FORMAT_UNDEFINED,
+    extent: vk.VkExtent2D = .{ .width = 0, .height = 0 },
+    image_available: vk.VkSemaphore = null,
+    render_finished: vk.VkSemaphore = null,
+
+    pub const InitError = Error || error{ SwapchainInitFailed, OutOfMemory };
+
+    pub const Frame = struct { surface: Surface, image_index: u32 };
+
+    pub fn init(
+        ctx: *Context,
+        device: graphics.Device,
+        surface: vk.VkSurfaceKHR,
+        width: u32,
+        height: u32,
+        allocator: std.mem.Allocator,
+    ) InitError!WindowTarget {
+        if (ctx.backend != .vulkan) return error.SwapchainInitFailed;
+        var self = WindowTarget{
+            .ctx = ctx,
+            .allocator = allocator,
+            .device_handle = device.handle,
+            .physical = device.physical,
+            .graphics_queue = device.graphics_queue,
+            .present_queue = device.present_queue,
+            .graphics_family = device.graphics_family,
+            .present_family = device.present_family,
+            .surface = surface,
+        };
+        const sem_info = std.mem.zeroInit(vk.VkSemaphoreCreateInfo, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO)),
+        });
+        if (vk.vkCreateSemaphore(self.device_handle, &sem_info, null, &self.image_available) != vk.VK_SUCCESS)
+            return error.SwapchainInitFailed;
+        if (vk.vkCreateSemaphore(self.device_handle, &sem_info, null, &self.render_finished) != vk.VK_SUCCESS)
+            return error.SwapchainInitFailed;
+        try self.createSwapchain(width, height);
+        return self;
+    }
+
+    pub fn deinit(self: *WindowTarget) void {
+        _ = vk.vkDeviceWaitIdle(self.device_handle);
+        self.destroySwapchain();
+        if (self.image_available != null) vk.vkDestroySemaphore(self.device_handle, self.image_available, null);
+        if (self.render_finished != null) vk.vkDestroySemaphore(self.device_handle, self.render_finished, null);
+        self.* = undefined;
+    }
+
+    /// Rebuild the swapchain (e.g. after a resize).
+    pub fn resize(self: *WindowTarget, width: u32, height: u32) InitError!void {
+        _ = vk.vkDeviceWaitIdle(self.device_handle);
+        self.destroySwapchain();
+        try self.createSwapchain(width, height);
+    }
+
+    /// Acquire the next image and return a render target for it. `null` means
+    /// the swapchain is out of date and the caller should `resize`.
+    pub fn acquire(self: *WindowTarget) InitError!?Frame {
+        var index: u32 = 0;
+        const acquired = vk.vkAcquireNextImageKHR(
+            self.device_handle,
+            self.swapchain,
+            std.math.maxInt(u64),
+            self.image_available,
+            null,
+            &index,
+        );
+        if (acquired == vk.VK_ERROR_OUT_OF_DATE_KHR or acquired == vk.VK_SUBOPTIMAL_KHR) return null;
+        if (acquired != vk.VK_SUCCESS) return error.SwapchainInitFailed;
+        return .{
+            .surface = .{
+                .handle = self.surfaces[index].?,
+                .ctx = self.ctx.handle,
+                .width = self.extent.width,
+                .height = self.extent.height,
+            },
+            .image_index = index,
+        };
+    }
+
+    /// Present a rendered frame. `frame.surface` must have been drawn into.
+    pub fn present(self: *WindowTarget, frame: Frame) InitError!void {
+        var surf = frame.surface;
+        try self.ctx.flushPresent(&surf, self.image_available, self.render_finished, self.present_family);
+
+        var image_index = frame.image_index;
+        const present_info = std.mem.zeroInit(vk.VkPresentInfoKHR, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR)),
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &self.render_finished,
+            .swapchainCount = 1,
+            .pSwapchains = &self.swapchain,
+            .pImageIndices = &image_index,
+        });
+        _ = vk.vkQueuePresentKHR(self.present_queue, &present_info);
+        _ = vk.vkDeviceWaitIdle(self.device_handle);
+    }
+
+    fn createSwapchain(self: *WindowTarget, width: u32, height: u32) InitError!void {
+        var caps: vk.VkSurfaceCapabilitiesKHR = undefined;
+        if (vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(self.physical, self.surface, &caps) != vk.VK_SUCCESS)
+            return error.SwapchainInitFailed;
+
+        const surface_format = self.chooseFormat() catch return error.SwapchainInitFailed;
+        const extent = chooseSwapExtent(caps, width, height);
+        if (extent.width == 0 or extent.height == 0) return error.SwapchainInitFailed;
+
+        var image_count = caps.minImageCount + 1;
+        if (caps.maxImageCount > 0) image_count = @min(image_count, caps.maxImageCount);
+
+        const families = [_]u32{ self.graphics_family, self.present_family };
+        const separate = self.graphics_family != self.present_family;
+        const usage: vk.VkImageUsageFlags = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        const create_info = std.mem.zeroInit(vk.VkSwapchainCreateInfoKHR, .{
+            .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR)),
+            .surface = self.surface,
+            .minImageCount = image_count,
+            .imageFormat = surface_format.format,
+            .imageColorSpace = surface_format.colorSpace,
+            .imageExtent = extent,
+            .imageArrayLayers = 1,
+            .imageUsage = usage,
+            .imageSharingMode = @as(vk.VkSharingMode, @intCast(if (separate) vk.VK_SHARING_MODE_CONCURRENT else vk.VK_SHARING_MODE_EXCLUSIVE)),
+            .queueFamilyIndexCount = if (separate) @as(u32, 2) else 0,
+            .pQueueFamilyIndices = if (separate) families[0..].ptr else null,
+            .preTransform = caps.currentTransform,
+            .compositeAlpha = @as(vk.VkCompositeAlphaFlagBitsKHR, @intCast(vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)),
+            .presentMode = @as(vk.VkPresentModeKHR, @intCast(vk.VK_PRESENT_MODE_FIFO_KHR)),
+            .clipped = @as(vk.VkBool32, @intCast(vk.VK_TRUE)),
+        });
+        if (vk.vkCreateSwapchainKHR(self.device_handle, &create_info, null, &self.swapchain) != vk.VK_SUCCESS)
+            return error.SwapchainInitFailed;
+
+        var count: u32 = 0;
+        if (vk.vkGetSwapchainImagesKHR(self.device_handle, self.swapchain, &count, null) != vk.VK_SUCCESS)
+            return error.SwapchainInitFailed;
+        self.images = try self.allocator.alloc(vk.VkImage, count);
+        if (vk.vkGetSwapchainImagesKHR(self.device_handle, self.swapchain, &count, self.images.ptr) != vk.VK_SUCCESS)
+            return error.SwapchainInitFailed;
+
+        self.format = surface_format.format;
+        self.extent = extent;
+        self.surfaces = try self.allocator.alloc(?*anyopaque, count);
+        @memset(self.surfaces, null);
+        for (self.images, 0..) |image, i| {
+            const wrapped = goop_skia_surface_wrap_vk_image(
+                self.ctx.handle,
+                @ptrCast(image),
+                @intCast(self.format),
+                @intCast(extent.width),
+                @intCast(extent.height),
+                @intCast(usage),
+            ) orelse return error.SwapchainInitFailed;
+            self.surfaces[i] = wrapped;
+        }
+    }
+
+    fn destroySwapchain(self: *WindowTarget) void {
+        for (self.surfaces) |s| {
+            if (s) |handle| goop_skia_surface_destroy(handle);
+        }
+        if (self.surfaces.len > 0) self.allocator.free(self.surfaces);
+        if (self.images.len > 0) self.allocator.free(self.images);
+        if (self.swapchain != null) vk.vkDestroySwapchainKHR(self.device_handle, self.swapchain, null);
+        self.surfaces = &.{};
+        self.images = &.{};
+        self.swapchain = null;
+        self.extent = .{ .width = 0, .height = 0 };
+    }
+
+    fn chooseFormat(self: *WindowTarget) !vk.VkSurfaceFormatKHR {
+        var count: u32 = 0;
+        if (vk.vkGetPhysicalDeviceSurfaceFormatsKHR(self.physical, self.surface, &count, null) != vk.VK_SUCCESS or count == 0)
+            return error.SwapchainInitFailed;
+        const formats = try self.allocator.alloc(vk.VkSurfaceFormatKHR, count);
+        defer self.allocator.free(formats);
+        _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(self.physical, self.surface, &count, formats.ptr);
+        for (formats[0..count]) |f| {
+            if (f.format == vk.VK_FORMAT_B8G8R8A8_UNORM) return f;
+        }
+        return formats[0];
+    }
+};
+
+fn chooseSwapExtent(caps: vk.VkSurfaceCapabilitiesKHR, width: u32, height: u32) vk.VkExtent2D {
+    if (caps.currentExtent.width != std.math.maxInt(u32)) return caps.currentExtent;
+    return .{
+        .width = std.math.clamp(width, caps.minImageExtent.width, caps.maxImageExtent.width),
+        .height = std.math.clamp(height, caps.minImageExtent.height, caps.maxImageExtent.height),
+    };
+}
 
 /// Render a fixed scene into `out_rgba` (`width*height*4` premultiplied RGBA8)
 /// with Skia's CPU raster backend — proves the toolchain without a GPU.
@@ -449,7 +675,8 @@ test "skia wraps an external vulkan image as a render target" {
 
     const w: u32 = 96;
     const h: u32 = 64;
-    const format = vk.VK_FORMAT_R8G8B8A8_UNORM;
+    // BGRA is what real swapchains use — exercises the format→SkColorType map.
+    const format = vk.VK_FORMAT_B8G8R8A8_UNORM;
     const usage: u32 = @intCast(vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
         vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT | vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT |
         vk.VK_IMAGE_USAGE_SAMPLED_BIT);

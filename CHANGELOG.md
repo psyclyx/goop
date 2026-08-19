@@ -21,7 +21,13 @@ breaking changes between minor versions.
   `GOOP_SKIA_BACKEND={vulkan,cpu}` (read in the library) overrides the choice.
 - Skia can wrap a caller-owned `VkImage` (e.g. an acquired swapchain image) as a
   render target — the primitive on-screen presentation is built on, verified
-  offscreen on a real GPU. The compositor acquire/present loop around it remains.
+  offscreen on a real GPU.
+- On-screen presentation for the Skia backend: `WindowTarget` owns a swapchain
+  and drives acquire → render → present (`flushPresent` waits on the acquire
+  semaphore, signals the present semaphore, and transitions to `PRESENT_SRC`),
+  with a `zig build skia-window -Dskia` example. This path needs a Wayland
+  compositor and a real GPU; it compiles and links but is not exercised by the
+  headless test suite. The snail `goop_present_vulkan` path is untouched.
 
 ## 0.2.0 — 2026-08-18
 

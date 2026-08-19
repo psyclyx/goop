@@ -29,15 +29,19 @@
 #include "core/SkTypeface.h"
 
 #include "gpu/GpuTypes.h"
+#include "gpu/MutableTextureState.h"
+#include "gpu/ganesh/GrBackendSemaphore.h"
 #include "gpu/ganesh/GrBackendSurface.h"
 #include "gpu/ganesh/GrDirectContext.h"
 #include "gpu/ganesh/GrTypes.h"
 #include "gpu/ganesh/SkSurfaceGanesh.h"
+#include "gpu/ganesh/vk/GrVkBackendSemaphore.h"
 #include "gpu/ganesh/vk/GrVkBackendSurface.h"
 #include "gpu/ganesh/vk/GrVkDirectContext.h"
 #include "gpu/ganesh/vk/GrVkTypes.h"
 #include "gpu/vk/VulkanBackendContext.h"
 #include "gpu/vk/VulkanExtensions.h"
+#include "gpu/vk/VulkanMutableTextureState.h"
 #include "gpu/vk/VulkanTypes.h"
 
 #include "ports/SkFontMgr_fontconfig.h"
@@ -51,6 +55,19 @@ namespace {
 SkColor toSkColor(uint32_t rgba) {
     return SkColorSetARGB(rgba & 0xff, (rgba >> 24) & 0xff, (rgba >> 16) & 0xff,
                           (rgba >> 8) & 0xff);
+}
+
+// Map a VkFormat to the matching SkColorType. Swapchains are usually BGRA.
+SkColorType colorTypeForVkFormat(uint32_t format) {
+    switch (format) {
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_B8G8R8A8_SRGB:
+            return kBGRA_8888_SkColorType;
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        default:
+            return kRGBA_8888_SkColorType;
+    }
 }
 
 struct Context {
@@ -185,10 +202,42 @@ void *goop_skia_surface_wrap_vk_image(void *ctx_handle, void *vk_image,
     GrBackendRenderTarget target =
         GrBackendRenderTargets::MakeVk(width, height, info);
     sk_sp<SkSurface> surface = SkSurfaces::WrapBackendRenderTarget(
-        ctx->gr.get(), target, kTopLeft_GrSurfaceOrigin, kRGBA_8888_SkColorType,
-        nullptr, nullptr);
+        ctx->gr.get(), target, kTopLeft_GrSurfaceOrigin,
+        colorTypeForVkFormat(vk_format), nullptr, nullptr);
     if (!surface) return nullptr;
     return surface.release();
+}
+
+// Flush a wrapped swapchain surface for presentation: wait on the acquire
+// semaphore before Skia's work, signal the present semaphore when it is done,
+// and transition the image to VK_IMAGE_LAYOUT_PRESENT_SRC_KHR. Returns 0 when
+// the signal semaphore was submitted. `wait_sem` may be null.
+int goop_skia_flush_present(void *ctx_handle, void *surface_handle,
+                            void *wait_sem, void *signal_sem,
+                            uint32_t queue_family) {
+    auto ctx = static_cast<Context *>(ctx_handle);
+    if (!ctx->gr) return 1;
+    auto surface = static_cast<SkSurface *>(surface_handle);
+
+    if (wait_sem != nullptr) {
+        GrBackendSemaphore wait =
+            GrBackendSemaphores::MakeVk(static_cast<VkSemaphore>(wait_sem));
+        surface->wait(1, &wait, /*deleteSemaphoresAfterWait=*/false);
+    }
+
+    GrBackendSemaphore signal =
+        GrBackendSemaphores::MakeVk(static_cast<VkSemaphore>(signal_sem));
+    GrFlushInfo flush_info;
+    flush_info.fNumSemaphores = 1;
+    flush_info.fSignalSemaphores = &signal;
+
+    skgpu::MutableTextureState present_state =
+        skgpu::MutableTextureStates::MakeVulkan(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                                queue_family);
+    GrSemaphoresSubmitted submitted =
+        ctx->gr->flush(surface, flush_info, &present_state);
+    ctx->gr->submit();
+    return submitted == GrSemaphoresSubmitted::kYes ? 0 : 2;
 }
 
 void goop_skia_surface_destroy(void *surface) {

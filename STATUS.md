@@ -29,9 +29,11 @@ current tree; architecture contracts and examples live in
   `-Dskia`) that draws the same `goop_visual` vocabulary on the shared
   `goop_graphics_vulkan` device. Clips, surfaces, and Skia-font text render on
   the GPU and are verified offscreen, including wrapping a caller-owned
-  `VkImage` as a render target (the on-screen primitive). It auto-selects GPU
-  vs CPU raster (`GOOP_SKIA_BACKEND={vulkan,cpu}` overrides). Icon/image ops and
-  the swapchain acquire/present loop are still in progress.
+  `VkImage` as a render target. It auto-selects GPU vs CPU raster
+  (`GOOP_SKIA_BACKEND={vulkan,cpu}` overrides). On-screen output is wired via
+  `WindowTarget` + the `skia-window` example (swapchain acquire/render/present);
+  that path needs a display and is not covered by the headless suite. Icon/image
+  ops remain.
 - Native Fontconfig fallback composition in the desktop demos and explicit
   Snail device-grid placement with ppem-specific TrueType hinting and
   grayscale-only Vulkan coverage.
