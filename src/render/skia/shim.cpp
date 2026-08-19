@@ -15,6 +15,7 @@
 
 #include "core/SkCanvas.h"
 #include "core/SkColor.h"
+#include "core/SkColorSpace.h"
 #include "core/SkFont.h"
 #include "core/SkFontMgr.h"
 #include "core/SkFontStyle.h"
@@ -28,10 +29,13 @@
 #include "core/SkTypeface.h"
 
 #include "gpu/GpuTypes.h"
+#include "gpu/ganesh/GrBackendSurface.h"
 #include "gpu/ganesh/GrDirectContext.h"
 #include "gpu/ganesh/GrTypes.h"
 #include "gpu/ganesh/SkSurfaceGanesh.h"
+#include "gpu/ganesh/vk/GrVkBackendSurface.h"
 #include "gpu/ganesh/vk/GrVkDirectContext.h"
+#include "gpu/ganesh/vk/GrVkTypes.h"
 #include "gpu/vk/VulkanBackendContext.h"
 #include "gpu/vk/VulkanExtensions.h"
 #include "gpu/vk/VulkanTypes.h"
@@ -157,6 +161,34 @@ void *goop_skia_surface_create(void *ctx_handle, int width, int height) {
                 : SkSurfaces::Raster(info);
     if (!surface) return nullptr;
     return surface.release();  // owned by the caller until surface_destroy
+}
+
+// Wrap a caller-owned VkImage (e.g. a swapchain image) as a Ganesh render
+// target. This is the primitive on-screen presentation builds on: a compositor
+// hands us the acquired image, Skia renders into it, and the caller presents.
+void *goop_skia_surface_wrap_vk_image(void *ctx_handle, void *vk_image,
+                                      uint32_t vk_format, int width, int height,
+                                      uint32_t usage_flags) {
+    auto ctx = static_cast<Context *>(ctx_handle);
+    if (!ctx->gr) return nullptr;  // wrapping is meaningful only on the GPU path
+
+    GrVkImageInfo info;
+    info.fImage = static_cast<VkImage>(vk_image);
+    info.fImageTiling = VK_IMAGE_TILING_OPTIMAL;
+    info.fImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    info.fFormat = static_cast<VkFormat>(vk_format);
+    info.fImageUsageFlags = usage_flags;
+    info.fSampleCount = 1;
+    info.fLevelCount = 1;
+    info.fCurrentQueueFamily = VK_QUEUE_FAMILY_IGNORED;
+
+    GrBackendRenderTarget target =
+        GrBackendRenderTargets::MakeVk(width, height, info);
+    sk_sp<SkSurface> surface = SkSurfaces::WrapBackendRenderTarget(
+        ctx->gr.get(), target, kTopLeft_GrSurfaceOrigin, kRGBA_8888_SkColorType,
+        nullptr, nullptr);
+    if (!surface) return nullptr;
+    return surface.release();
 }
 
 void goop_skia_surface_destroy(void *surface) {

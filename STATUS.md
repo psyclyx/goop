@@ -28,8 +28,10 @@ current tree; architecture contracts and examples live in
 - An optional Skia (GPU/Ganesh-on-Vulkan) renderer (`goop_render_skia`, behind
   `-Dskia`) that draws the same `goop_visual` vocabulary on the shared
   `goop_graphics_vulkan` device. Clips, surfaces, and Skia-font text render on
-  the GPU and are verified offscreen; icon/image ops and on-screen swapchain
-  presentation are still in progress.
+  the GPU and are verified offscreen, including wrapping a caller-owned
+  `VkImage` as a render target (the on-screen primitive). It auto-selects GPU
+  vs CPU raster (`GOOP_SKIA_BACKEND={vulkan,cpu}` overrides). Icon/image ops and
+  the swapchain acquire/present loop are still in progress.
 - Native Fontconfig fallback composition in the desktop demos and explicit
   Snail device-grid placement with ppem-specific TrueType hinting and
   grayscale-only Vulkan coverage.

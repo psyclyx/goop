@@ -30,6 +30,7 @@ extern fn goop_skia_context_destroy(ctx: ?*anyopaque) void;
 extern fn goop_skia_flush(ctx: ?*anyopaque) void;
 
 extern fn goop_skia_surface_create(ctx: ?*anyopaque, width: c_int, height: c_int) ?*anyopaque;
+extern fn goop_skia_surface_wrap_vk_image(ctx: ?*anyopaque, image: ?*anyopaque, format: u32, width: c_int, height: c_int, usage: u32) ?*anyopaque;
 extern fn goop_skia_surface_destroy(surface: ?*anyopaque) void;
 extern fn goop_skia_surface_canvas(surface: ?*anyopaque) ?*anyopaque;
 extern fn goop_skia_surface_read_pixels(surface: ?*anyopaque, width: c_int, height: c_int, out_rgba: [*]u8) c_int;
@@ -166,6 +167,16 @@ pub const Context = struct {
 
     pub fn createSurface(self: *Context, width: u32, height: u32) Error!Surface {
         const handle = goop_skia_surface_create(self.handle, @intCast(width), @intCast(height)) orelse
+            return error.SkiaSurfaceCreateFailed;
+        return .{ .handle = handle, .ctx = self.handle, .width = width, .height = height };
+    }
+
+    /// Wrap a caller-owned `VkImage` (e.g. an acquired swapchain image) as a
+    /// render target. GPU backend only. This is the primitive on-screen
+    /// presentation is built on: render into the compositor's image, then the
+    /// caller presents it. `usage` must match the image's `VkImageUsageFlags`.
+    pub fn wrapVkImage(self: *Context, image: vk.VkImage, format: u32, width: u32, height: u32, usage: u32) Error!Surface {
+        const handle = goop_skia_surface_wrap_vk_image(self.handle, @ptrCast(image), format, @intCast(width), @intCast(height), usage) orelse
             return error.SkiaSurfaceCreateFailed;
         return .{ .handle = handle, .ctx = self.handle, .width = width, .height = height };
     }
@@ -399,6 +410,93 @@ test "skia ganesh renders visual ops on a headless vulkan device" {
     try surf.readPixels(&pixels);
 
     // The bright fill (blue 220) must appear over the dark clear (blue 28).
+    var saw_fill = false;
+    var i: usize = 0;
+    while (i < pixels.len) : (i += 4) {
+        if (pixels[i + 2] > 150) {
+            saw_fill = true;
+            break;
+        }
+    }
+    try std.testing.expect(saw_fill);
+}
+
+fn testMemoryTypeIndex(physical: vk.VkPhysicalDevice, type_bits: u32, properties: u32) !u32 {
+    var mem_props: vk.VkPhysicalDeviceMemoryProperties = undefined;
+    vk.vkGetPhysicalDeviceMemoryProperties(physical, &mem_props);
+    var i: u32 = 0;
+    while (i < mem_props.memoryTypeCount) : (i += 1) {
+        const suitable = (type_bits & (@as(u32, 1) << @intCast(i))) != 0;
+        const has_props = (mem_props.memoryTypes[i].propertyFlags & properties) == properties;
+        if (suitable and has_props) return i;
+    }
+    return error.NoSuitableMemoryType;
+}
+
+// Verifies the on-screen rendering primitive offscreen: wrap a caller-owned
+// VkImage (standing in for an acquired swapchain image), render into it on the
+// GPU, and read it back. The compositor acquire/present loop around this is
+// display-gated and not exercised here.
+test "skia wraps an external vulkan image as a render target" {
+    var instance = graphics.Instance.init("goop-skia-wrap", &.{}) catch return error.SkipZigTest;
+    defer instance.deinit();
+    var device = graphics.Device.init(std.testing.allocator, instance, null) catch return error.SkipZigTest;
+    defer device.deinit();
+    if (deviceClass(device.physical) != .real_gpu) return error.SkipZigTest;
+
+    var ctx = Context.initVulkan(instance, device) catch return error.SkipZigTest;
+    defer ctx.deinit();
+
+    const w: u32 = 96;
+    const h: u32 = 64;
+    const format = vk.VK_FORMAT_R8G8B8A8_UNORM;
+    const usage: u32 = @intCast(vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+        vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT | vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+        vk.VK_IMAGE_USAGE_SAMPLED_BIT);
+
+    var image: vk.VkImage = null;
+    const image_info = std.mem.zeroInit(vk.VkImageCreateInfo, .{
+        .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO)),
+        .imageType = @as(vk.VkImageType, @intCast(vk.VK_IMAGE_TYPE_2D)),
+        .format = format,
+        .extent = .{ .width = w, .height = h, .depth = 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = @as(vk.VkSampleCountFlagBits, @intCast(vk.VK_SAMPLE_COUNT_1_BIT)),
+        .tiling = @as(vk.VkImageTiling, @intCast(vk.VK_IMAGE_TILING_OPTIMAL)),
+        .usage = usage,
+        .sharingMode = @as(vk.VkSharingMode, @intCast(vk.VK_SHARING_MODE_EXCLUSIVE)),
+        .initialLayout = @as(vk.VkImageLayout, @intCast(vk.VK_IMAGE_LAYOUT_UNDEFINED)),
+    });
+    if (vk.vkCreateImage(device.handle, &image_info, null, &image) != vk.VK_SUCCESS) return error.SkipZigTest;
+    defer vk.vkDestroyImage(device.handle, image, null);
+
+    var reqs: vk.VkMemoryRequirements = undefined;
+    vk.vkGetImageMemoryRequirements(device.handle, image, &reqs);
+    var memory: vk.VkDeviceMemory = null;
+    const mem_alloc = std.mem.zeroInit(vk.VkMemoryAllocateInfo, .{
+        .sType = @as(vk.VkStructureType, @intCast(vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO)),
+        .allocationSize = reqs.size,
+        .memoryTypeIndex = testMemoryTypeIndex(device.physical, reqs.memoryTypeBits, vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) catch return error.SkipZigTest,
+    });
+    if (vk.vkAllocateMemory(device.handle, &mem_alloc, null, &memory) != vk.VK_SUCCESS) return error.SkipZigTest;
+    defer vk.vkFreeMemory(device.handle, memory, null);
+    if (vk.vkBindImageMemory(device.handle, image, memory, 0) != vk.VK_SUCCESS) return error.SkipZigTest;
+
+    var surf = try ctx.wrapVkImage(image, @intCast(format), w, h, usage);
+    defer surf.deinit();
+
+    var enc = surf.encoder();
+    enc.clear(.{ .r = 12, .g = 14, .b = 20 });
+    try enc.surface(.{
+        .bounds = .{ .x = 12, .y = 12, .w = 72, .h = 40 },
+        .color = .{ .r = 70, .g = 150, .b = 235 },
+        .corner_radius = 8,
+    });
+    ctx.flush();
+
+    var pixels: [w * h * 4]u8 = undefined;
+    try surf.readPixels(&pixels);
     var saw_fill = false;
     var i: usize = 0;
     while (i < pixels.len) : (i += 4) {

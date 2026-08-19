@@ -174,8 +174,9 @@ enable it with `-Dskia`. The renderer picks GPU (Ganesh) or Skia's CPU raster
 path automatically — GPU only for a real GPU, CPU raster otherwise (including
 software Vulkan such as lavapipe); override with
 `GOOP_SKIA_BACKEND={vulkan,cpu}`. It is new and opt-in: the surface/text/clip
-vocabulary renders and is verified offscreen; icon and image ops and on-screen
-swapchain presentation are in progress.
+vocabulary renders and is verified offscreen, including wrapping a caller-owned
+`VkImage` as a render target (the primitive for on-screen output). Icon/image
+ops and the swapchain acquire/present loop are the remaining edges.
 
 ### snail + Vulkan — the original path
 

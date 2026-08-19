@@ -19,6 +19,9 @@ breaking changes between minor versions.
 - The Skia backend auto-selects GPU (Ganesh) or Skia's CPU raster path: GPU only
   for a real GPU, CPU raster otherwise (including software Vulkan like lavapipe).
   `GOOP_SKIA_BACKEND={vulkan,cpu}` (read in the library) overrides the choice.
+- Skia can wrap a caller-owned `VkImage` (e.g. an acquired swapchain image) as a
+  render target — the primitive on-screen presentation is built on, verified
+  offscreen on a real GPU. The compositor acquire/present loop around it remains.
 
 ## 0.2.0 — 2026-08-18
 
