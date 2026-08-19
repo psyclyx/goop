@@ -229,18 +229,37 @@ pub fn build(b: *std.Build) void {
     // toolchain (`zig c++`) and linked against system `libskia`. Gated behind
     // `-Dskia` so consumers that do not want Skia link nothing.
     if (skia_enabled) {
+        // libskia is built against libstdc++, and Ganesh's init hands Skia a
+        // std::function it later invokes — so the shim must share libskia's
+        // C++ ABI. Rather than force Zig's clang to act as a libstdc++ compiler
+        // (which needs a pile of hand-fed stdlib include/lib paths), compile
+        // the shim with the system g++: it resolves its own libstdc++/glibc
+        // headers and ABI. Zig links the resulting object. Skia's own include
+        // comes from pkg-config; libstdc++'s path from g++ itself. No env vars.
+        const skia_cflags = b.run(&.{ "pkg-config", "--cflags-only-I", "skia" });
+        const libstdcxx = std.mem.trim(u8, b.run(&.{ "g++", "-print-file-name=libstdc++.so" }), " \r\n\t");
+
+        const shim_cc = b.addSystemCommand(&.{
+            "g++", "-std=c++17", "-fno-exceptions", "-fno-rtti", "-fPIC", "-c",
+        });
+        var cflag_it = std.mem.tokenizeAny(u8, skia_cflags, " \r\n\t");
+        while (cflag_it.next()) |tok| shim_cc.addArg(b.dupe(tok));
+        shim_cc.addFileArg(b.path("src/render/skia/shim.cpp"));
+        shim_cc.addArg("-o");
+        const shim_obj = shim_cc.addOutputFileArg("goop_skia_shim.o");
+
         const render_skia_mod = b.addModule("goop_render_skia", .{
             .root_source_file = b.path("src/render/skia.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
         });
-        render_skia_mod.link_libcpp = true;
         render_skia_mod.addImport("goop_visual", visual_mod);
-        render_skia_mod.addCSourceFile(.{
-            .file = b.path("src/render/skia/shim.cpp"),
-            .flags = &.{ "-std=c++17", "-fno-exceptions", "-fno-rtti" },
-        });
+        render_skia_mod.addObjectFile(shim_obj);
+        // Link libstdc++ by full path (g++ reports where it lives): `zig cc`'s
+        // -L/-l search does not resolve the nix store path, but a positional
+        // shared-object input does.
+        render_skia_mod.addObjectFile(.{ .cwd_relative = libstdcxx });
         render_skia_mod.linkSystemLibrary("skia", .{});
 
         const skia_tests = b.addRunArtifact(b.addTest(.{ .root_module = render_skia_mod }));

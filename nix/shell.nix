@@ -22,9 +22,14 @@
   shader-slang,
   wgpu-utils,
   skia,
+  stdenv,
 }:
 let
   fontconfigBundle = callPackage ./fontconfig.nix { };
+
+  # The optional Skia backend's C++ shim is compiled by g++ (it shares
+  # libskia's libstdc++ ABI); its libstdc++.so.6 must be loadable at runtime.
+  gccLib = lib.getLib stdenv.cc.cc;
 in
 mkShell {
   packages = [
@@ -62,5 +67,6 @@ mkShell {
     libjpeg_turbo
     libwebp
     skia
+    gccLib
   ];
 }
