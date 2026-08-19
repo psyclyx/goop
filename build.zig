@@ -228,6 +228,9 @@ pub fn build(b: *std.Build) void {
     // draw calls live in a POD-only C-ABI shim compiled by Zig's own C++
     // toolchain (`zig c++`) and linked against system `libskia`. Gated behind
     // `-Dskia` so consumers that do not want Skia link nothing.
+    // Hoisted so the file-manager Skia demo (wired after the demo modules
+    // exist) can reference the Skia renderer module.
+    var render_skia_mod_opt: ?*std.Build.Module = null;
     if (skia_enabled) {
         // libskia is built against libstdc++, and Ganesh's init hands Skia a
         // std::function it later invokes — so the shim must share libskia's
@@ -286,6 +289,8 @@ pub fn build(b: *std.Build) void {
         const run_skia_window = b.addRunArtifact(skia_window_exe);
         const skia_window_step = b.step("skia-window", "Run the on-screen Skia example (needs a Wayland display + GPU)");
         skia_window_step.dependOn(&run_skia_window.step);
+
+        render_skia_mod_opt = render_skia_mod;
     }
 
     // ── Core goop module ──
@@ -589,6 +594,34 @@ pub fn build(b: *std.Build) void {
 
     const file_manager_demo_step = b.step("file-manager-demo", "Build and run the file manager demo");
     file_manager_demo_step.dependOn(&run_file_manager_demo.step);
+
+    // Skia-rendered file manager: shares fm.* with the snail demo above but
+    // draws through goop_render_skia. Gated behind -Dskia; needs a display + GPU.
+    if (render_skia_mod_opt) |render_skia_mod| {
+        const fm_skia_mod = b.createModule(.{
+            .root_source_file = b.path("demo/file_manager/app_skia.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        fm_skia_mod.addImport("goop", goop_mod);
+        fm_skia_mod.addImport("goop_visual", visual_mod);
+        fm_skia_mod.addImport("goop_chrome", chrome_mod);
+        fm_skia_mod.addImport("goop_platform_wayland", platform_wayland_mod);
+        fm_skia_mod.addImport("goop_wayland_vulkan", wayland_vulkan_mod);
+        fm_skia_mod.addImport("goop_graphics_vulkan", graphics_vulkan_mod);
+        fm_skia_mod.addImport("goop_render_skia", render_skia_mod);
+        fm_skia_mod.addImport("file_manager", file_manager_mod);
+        fm_skia_mod.addImport("demo_text", demo_text_mod);
+        fm_skia_mod.addImport("demo_image_decoder", demo_image_decoder_mod);
+        const fm_skia_exe = b.addExecutable(.{ .name = "goop-file-manager-skia", .root_module = fm_skia_mod });
+        const build_fm_skia = b.step("build-file-manager-skia", "Build the Skia file manager demo");
+        build_fm_skia.dependOn(&b.addInstallArtifact(fm_skia_exe, .{}).step);
+        const run_fm_skia = b.addRunArtifact(fm_skia_exe);
+        if (b.args) |args| run_fm_skia.addArgs(args);
+        const fm_skia_step = b.step("file-manager-skia", "Run the Skia file manager demo (needs a display + GPU)");
+        fm_skia_step.dependOn(&run_fm_skia.step);
+    }
 
     // ── Tests ──
     const unit_tests = b.addTest(.{ .root_module = goop_mod });
