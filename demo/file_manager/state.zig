@@ -9,6 +9,7 @@ const image = @import("goop_image");
 const goop = @import("goop");
 const types = @import("types.zig");
 const ids = @import("ids.zig");
+const panel_animation = @import("panel_animation.zig");
 
 pub const Session = struct {
     running: bool = true,
@@ -38,7 +39,9 @@ pub const Model = struct {
     sort_column: types.BrowserSortColumn = .name,
     sort_direction: types.BrowserSortDirection = .ascending,
     sort_directories_together: bool = true,
+    show_hidden: bool = false,
     view_mode: types.BrowserViewMode = .list,
+    content_zoom: f32 = 1,
     show_sidebar: bool = true,
     show_preview: bool = true,
     show_info: bool = true,
@@ -83,6 +86,7 @@ pub const View = struct {
     ui_strings: std.ArrayListUnmanaged([]u8) = .empty,
     asset_ui_strings: std.ArrayListUnmanaged([]u8) = .empty,
     text_measure_ctx: ?*const goop.TextMeasureCtx = null,
+    panels: panel_animation.State = .{},
 };
 
 pub const Interaction = struct {
@@ -92,12 +96,20 @@ pub const Interaction = struct {
     context_target_path: ?[]u8 = null,
     rename_path: ?[]u8 = null,
     rename_input: goop.TextEditState = .{},
+    permission_path: ?[]u8 = null,
+    permission_draft: u16 = 0,
+    permission_commit_requested: bool = false,
+    permission_cancel_requested: bool = false,
     address_input: goop.TextEditState = .{ .placeholder = "Path" },
     rename_commit_requested: bool = false,
     rename_cancel_requested: bool = false,
     status_note: ?[]const u8 = null,
     pending_command: ?types.BrowserCommand = null,
     address_submit_requested: bool = false,
+    /// Raised by the About command; the composition root observes it to open a
+    /// real top-level About window, then clears it. Logic owns no window/GPU,
+    /// so it can only request — never open — a window.
+    about_requested: bool = false,
     ctrl_down: bool = false,
     shift_down: bool = false,
 };
@@ -108,6 +120,7 @@ pub const Interaction = struct {
 pub const Presentation = struct {
     folder_tree: std.ArrayListUnmanaged(FolderTreeItem) = .empty,
     preview: Preview = .{},
+    current_directory_stat: ?types.EntryStat = null,
     now_unix_seconds: ?i64 = null,
     home_available: bool = false,
     file_clipboard_available: bool = false,
@@ -115,7 +128,7 @@ pub const Presentation = struct {
     pub const FolderTreeItem = struct {
         path: []u8,
         parent_index: ?usize,
-        expanded: bool,
+        expansion: types.FolderTreeExpansion,
         selected: bool,
         has_children: bool,
     };
@@ -123,9 +136,26 @@ pub const Presentation = struct {
     pub const Preview = struct {
         text: ?[]u8 = null,
         image: ?image.Pixels = null,
+        directory: ?DirectoryPreview = null,
         image_id: image.ResourceId = .{ .value = 0x676f_6f70_7072_6576 },
         framed: bool = false,
     };
+
+    pub const DirectoryPreview = struct {
+        samples: std.ArrayListUnmanaged(DirectorySample) = .empty,
+        directory_count: usize = 0,
+        image_count: usize = 0,
+        text_count: usize = 0,
+        other_count: usize = 0,
+        approximate: bool = false,
+    };
+
+    pub const DirectorySample = struct {
+        name: []u8,
+        kind: DirectorySampleKind,
+    };
+
+    pub const DirectorySampleKind = enum { folder, image, text, file, symlink, other };
 };
 
 pub const Transfer = struct {

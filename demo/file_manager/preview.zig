@@ -2,7 +2,6 @@ const std = @import("std");
 
 const state_module = @import("state.zig");
 const types = @import("types.zig");
-const fs = @import("fs.zig");
 const format = @import("format.zig");
 const projection = @import("projection.zig");
 const image = @import("goop_image");
@@ -10,9 +9,6 @@ const allocator = std.heap.smp_allocator;
 
 const BrowserEntry = types.BrowserEntry;
 const allocUtf8LossyOwned = projection.allocUtf8LossyOwned;
-const browserEntryKind = fs.browserEntryKind;
-const resolveSymlinkTargetAlloc = fs.resolveSymlinkTargetAlloc;
-const joinPath = fs.joinPath;
 const formatSizeText = format.formatSizeText;
 
 pub const Input = struct {
@@ -96,94 +92,77 @@ pub fn appendPreviewEntryName(buffer: *std.ArrayListUnmanaged(u8), name: []const
     try appendPreviewPrintLine(buffer, "- {s}", .{lossy});
 }
 
-pub fn appendDirectoryPreviewSummary(
-    state: Input,
-    buffer: *std.ArrayListUnmanaged(u8),
-    path: []const u8,
-    loaded_entries: ?[]const BrowserEntry,
-) !void {
-    var directory_count: usize = 0;
-    var file_count: usize = 0;
-    var shown_names: usize = 0;
-    const name_limit = 10;
-
-    if (loaded_entries) |entries| {
-        for (entries) |entry| {
-            if (entry.isDirectory()) {
-                directory_count += 1;
-            } else {
-                file_count += 1;
-            }
-
-            if (shown_names >= name_limit) continue;
-            try appendPreviewEntryName(buffer, entry.name, entry.isDirectory());
-            shown_names += 1;
-        }
-    } else {
-        const io = state.io orelse return;
-        var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true, .follow_symlinks = false }) catch return;
-        defer dir.close(io);
-
-        var iter = dir.iterate();
-        while (try iter.next(io)) |dir_entry| {
-            const name = dir_entry.name;
-            if (name.len == 0) continue;
-
-            const full_path = try joinPath(allocator, path, name);
-            defer allocator.free(full_path);
-
-            const stat = std.Io.Dir.cwd().statFile(io, full_path, .{ .follow_symlinks = false }) catch continue;
-
-            const kind = browserEntryKind(stat.kind);
-            var is_directory = kind == .directory;
-            if (!is_directory and kind == .symlink) {
-                if (resolveSymlinkTargetAlloc(io, allocator, full_path)) |target_path| {
-                    defer allocator.free(target_path);
-                    const target_stat = std.Io.Dir.cwd().statFile(io, target_path, .{ .follow_symlinks = true }) catch continue;
-                    is_directory = browserEntryKind(target_stat.kind) == .directory;
-                } else |_| {}
-            }
-
-            if (is_directory) {
-                directory_count += 1;
-            } else {
-                file_count += 1;
-            }
-
-            if (shown_names >= name_limit) continue;
-            try appendPreviewEntryName(buffer, name, is_directory);
-            shown_names += 1;
-        }
-    }
-
-    const listing = try allocator.dupe(u8, buffer.items);
-    defer allocator.free(listing);
-    buffer.clearRetainingCapacity();
-
-    try appendPreviewPrintLine(buffer, "{d} directories, {d} files", .{ directory_count, file_count });
-    if (listing.len > 0) {
-        try appendPreviewLine(buffer, "");
-        try appendPreviewLine(buffer, "Contents:");
-        try appendPreviewLine(buffer, listing);
-    }
-}
-
 pub const SelectionPreview = struct {
     text: ?[]u8,
     image: ?image.Pixels = null,
+    directory: ?state_module.Presentation.DirectoryPreview = null,
     framed: bool = false,
 };
+
+fn directorySampleKind(entry: std.Io.Dir.Entry) state_module.Presentation.DirectorySampleKind {
+    return switch (entry.kind) {
+        .directory => .folder,
+        .sym_link => .symlink,
+        .file => blk: {
+            const extension = std.fs.path.extension(entry.name);
+            const image_extensions = [_][]const u8{ ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ppm", ".svg" };
+            for (image_extensions) |candidate| if (std.ascii.eqlIgnoreCase(extension, candidate)) break :blk .image;
+            const text_extensions = [_][]const u8{ ".txt", ".md", ".zig", ".zon", ".c", ".h", ".json", ".toml", ".nix", ".sh", ".css", ".html" };
+            for (text_extensions) |candidate| if (std.ascii.eqlIgnoreCase(extension, candidate)) break :blk .text;
+            break :blk .file;
+        },
+        else => .other,
+    };
+}
+
+fn allocDirectoryPreview(io: std.Io, model: *const state_module.Model, path: []const u8) !state_module.Presentation.DirectoryPreview {
+    var result: state_module.Presentation.DirectoryPreview = .{};
+    errdefer {
+        for (result.samples.items) |sample| allocator.free(sample.name);
+        result.samples.deinit(allocator);
+    }
+    var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true, .follow_symlinks = true });
+    defer dir.close(io);
+    var iterator = dir.iterate();
+    var scanned: usize = 0;
+    while (try iterator.next(io)) |entry| {
+        if (entry.name.len == 0) continue;
+        if (!model.show_hidden and entry.name[0] == '.') continue;
+        if (scanned == max_directory_preview_entries) {
+            result.approximate = true;
+            break;
+        }
+        scanned += 1;
+        const kind = directorySampleKind(entry);
+        switch (kind) {
+            .folder => result.directory_count += 1,
+            .image => result.image_count += 1,
+            .text => result.text_count += 1,
+            else => result.other_count += 1,
+        }
+        if (result.samples.items.len < max_directory_preview_samples) {
+            try result.samples.append(allocator, .{ .name = try allocator.dupe(u8, entry.name), .kind = kind });
+        }
+    }
+    return result;
+}
 
 pub fn allocSelectionPreview(state: Input) !SelectionPreview {
     var buffer: std.ArrayListUnmanaged(u8) = .empty;
     defer buffer.deinit(allocator);
     var framed = false;
     var image_preview: ?image.Pixels = null;
+    var directory_preview: ?state_module.Presentation.DirectoryPreview = null;
     errdefer if (image_preview) |*pixels| pixels.deinit();
+    errdefer if (directory_preview) |*directory| {
+        for (directory.samples.items) |sample| allocator.free(sample.name);
+        directory.samples.deinit(allocator);
+    };
 
     const selected_count = selectedPathCount(state);
     if (selected_count == 0) {
-        try appendDirectoryPreviewSummary(state, &buffer, state.model.current_dir, state.model.entries.items);
+        // A directory has no faithful bounded preview. Leave the panel empty
+        // without enumerating or changing the user's inspector layout.
     } else if (selected_count > 1) {
         var selected_directory_count: usize = 0;
         var selected_file_count: usize = 0;
@@ -233,12 +212,8 @@ pub fn allocSelectionPreview(state: Input) !SelectionPreview {
         }
 
         if (entry.canEnter()) {
-            const preview_path = entry.navigationPath();
-            const loaded_entries = if (std.mem.eql(u8, preview_path, state.model.current_dir))
-                state.model.entries.items
-            else
-                null;
-            try appendDirectoryPreviewSummary(state, &buffer, preview_path, loaded_entries);
+            buffer.clearRetainingCapacity();
+            if (state.io) |io| directory_preview = allocDirectoryPreview(io, state.model, entry.navigationPath()) catch null;
         } else {
             const preview_bytes = if (state.io) |io|
                 readFilePreviewBytesAlloc(io, allocator, entry.previewPath(), 8192) catch null
@@ -248,7 +223,7 @@ pub fn allocSelectionPreview(state: Input) !SelectionPreview {
                 defer allocator.free(bytes);
                 const encoded_format = image.detectFormat(bytes);
                 if (encoded_format != null and state.image_decoder != null and
-                    entry.size_bytes <= max_image_preview_bytes)
+                    (if (entry.target_stat) |target| target.size_bytes else entry.size_bytes) <= max_image_preview_bytes)
                 {
                     // Decoders require the complete encoded document. The
                     // text probe above intentionally permits a short read;
@@ -306,15 +281,14 @@ pub fn allocSelectionPreview(state: Input) !SelectionPreview {
         }
     }
 
-    if (buffer.items.len == 0) {
-        try appendPreviewLine(&buffer, "Preview unavailable.");
-    }
-
     return .{
         .text = if (buffer.items.len > 0) try allocator.dupe(u8, buffer.items) else null,
         .image = image_preview,
+        .directory = directory_preview,
         .framed = framed,
     };
 }
 
 const max_image_preview_bytes: u64 = 64 * 1024 * 1024;
+const max_directory_preview_entries: usize = 512;
+const max_directory_preview_samples: usize = 6;

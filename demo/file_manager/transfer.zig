@@ -60,6 +60,22 @@ pub fn setFileSelection(
     }
 }
 
+/// Prepare the interoperable payload set used by an OS drag source. The
+/// buffers live in Transfer so a platform backend may serve them after the
+/// pointer has left the application's surface.
+pub fn setDragSelection(transfer: *state.Transfer, paths: []const []const u8) !void {
+    transfer.drag_uri_list_buf.clearRetainingCapacity();
+    transfer.drag_plain_buf.clearRetainingCapacity();
+    transfer.drag_gnome_files_buf.clearRetainingCapacity();
+    try transfer.drag_gnome_files_buf.appendSlice(default_allocator, "copy\n");
+    for (paths) |path| {
+        try appendFileUri(default_allocator, &transfer.drag_uri_list_buf, path, "\r\n");
+        try appendFileUri(default_allocator, &transfer.drag_gnome_files_buf, path, "\n");
+        try transfer.drag_plain_buf.appendSlice(default_allocator, path);
+        try transfer.drag_plain_buf.append(default_allocator, '\n');
+    }
+}
+
 pub fn collectFilePaths(
     transfer: *const state.Transfer,
     paths: *std.ArrayListUnmanaged([]u8),
@@ -163,4 +179,19 @@ pub fn hexValue(byte: u8) ?u8 {
         'A'...'F' => byte - 'A' + 10,
         else => null,
     };
+}
+
+test "external drag payloads remain interoperable and escaped" {
+    var transfer: state.Transfer = .{};
+    defer deinit(&transfer);
+    try setDragSelection(&transfer, &.{ "/tmp/a b.txt", "/tmp/folder" });
+    try std.testing.expectEqualStrings(
+        "file:///tmp/a%20b.txt\r\nfile:///tmp/folder\r\n",
+        transfer.drag_uri_list_buf.items,
+    );
+    try std.testing.expectEqualStrings("/tmp/a b.txt\n/tmp/folder\n", transfer.drag_plain_buf.items);
+    try std.testing.expectEqualStrings(
+        "copy\nfile:///tmp/a%20b.txt\nfile:///tmp/folder\n",
+        transfer.drag_gnome_files_buf.items,
+    );
 }

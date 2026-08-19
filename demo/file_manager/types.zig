@@ -41,6 +41,10 @@ pub const BrowserCommand = enum {
     view_list,
     view_grid,
     toggle_sort_directories,
+    toggle_hidden,
+    zoom_in,
+    zoom_out,
+    zoom_reset,
     about,
 };
 
@@ -49,26 +53,23 @@ pub const FileClipboardAction = enum {
     cut,
 };
 
-/// Opaque icon vocabulary chosen by the file-browser view. Renderers may draw
-/// these with paths, sprites, an icon font, or any other graphics API.
-pub const DemoIcon = enum(u32) {
-    folder = 0,
-    file = 1,
-    symlink = 2,
-    home = 3,
-    back = 4,
-    up = 5,
-    refresh = 6,
-    list = 7,
-    grid = 8,
-    info = 9,
-};
-
 pub const BrowserEntryKind = enum {
     directory,
     file,
     symlink,
     other,
+};
+
+/// Filesystem metadata copied into renderer-neutral domain values.
+pub const EntryStat = struct {
+    inode: u64 = 0,
+    links: u64 = 0,
+    size_bytes: u64 = 0,
+    permissions: u64 = 0,
+    accessed_unix: ?i64 = null,
+    modified_unix: i64 = 0,
+    changed_unix: i64 = 0,
+    block_size: u64 = 0,
 };
 
 pub const BrowserPlace = struct {
@@ -87,8 +88,28 @@ pub const BrowserEntry = struct {
     kind: BrowserEntryKind,
     size_bytes: u64,
     modified_unix: i64,
+    inode: u64 = 0,
+    links: u64 = 0,
+    permissions: u64 = 0,
+    accessed_unix: ?i64 = null,
+    changed_unix: i64 = 0,
+    block_size: u64 = 0,
     target_path: ?[]u8 = null,
     target_kind: ?BrowserEntryKind = null,
+    target_stat: ?EntryStat = null,
+
+    pub fn linkStat(self: BrowserEntry) EntryStat {
+        return .{
+            .inode = self.inode,
+            .links = self.links,
+            .size_bytes = self.size_bytes,
+            .permissions = self.permissions,
+            .accessed_unix = self.accessed_unix,
+            .modified_unix = self.modified_unix,
+            .changed_unix = self.changed_unix,
+            .block_size = self.block_size,
+        };
+    }
 
     pub fn typeLabel(self: *const BrowserEntry) []const u8 {
         return switch (self.kind) {

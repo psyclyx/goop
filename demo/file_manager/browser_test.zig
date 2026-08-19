@@ -124,6 +124,38 @@ test "command activation reduces without tree access" {
     try std.testing.expect(!browser.domain.model.show_preview);
 }
 
+test "popup dismissal output clears retained context-menu visibility" {
+    var browser: state.Browser = .{};
+    defer deinitBrowser(&browser);
+    browser.domain.interaction.context_visible = true;
+
+    const event = goop.ControlEvent{ .popup_visibility_changed = .{
+        .element = ids.fixed(.context_popup),
+        .visible = false,
+    } };
+    var scope = behavior(&browser);
+    try std.testing.expect(try fm.update(&scope, emptyEvents(&.{event}), std.testing.io));
+    try std.testing.expect(!browser.domain.interaction.context_visible);
+}
+
+test "list and grid backgrounds target the current directory context menu" {
+    inline for (.{ ids.Fixed.asset_body_table, ids.Fixed.asset_grid }) |background| {
+        var browser: state.Browser = .{};
+        defer deinitBrowser(&browser);
+        browser.domain.model.current_dir = try allocator.dupe(u8, "/tmp");
+        const event = goop.ControlEvent{ .secondary_activated = .{
+            .element = ids.fixed(background),
+            .action = null,
+            .x = 120,
+            .y = 220,
+        } };
+        var scope = behavior(&browser);
+        try std.testing.expect(try fm.update(&scope, emptyEvents(&.{event}), std.testing.io));
+        try std.testing.expect(browser.domain.interaction.context_visible);
+        try std.testing.expectEqualStrings("/tmp", browser.domain.interaction.context_target_path.?);
+    }
+}
+
 test "journal order is preserved by reducer" {
     var browser: state.Browser = .{};
     defer deinitBrowser(&browser);
@@ -340,6 +372,64 @@ test "clear selection command reduces semantic selection state" {
     try std.testing.expect(browser.domain.model.selected_path == null);
 }
 
+test "zoom commands change content without rescaling application chrome" {
+    var browser: state.Browser = .{};
+    defer deinitBrowser(&browser);
+    var scope = behavior(&browser);
+    const zoom_in = goop.ControlEvent{ .activated = .{
+        .element = ids.commandElement(.toolbar, .zoom_in),
+        .action = ids.commandAction(.zoom_in),
+    } };
+    for (0..20) |_| _ = try fm.update(&scope, emptyEvents(&.{zoom_in}), std.testing.io);
+    try std.testing.expectEqual(@as(f32, 3), browser.domain.model.content_zoom);
+    try std.testing.expectEqual(@as(f32, 1), browser.viewport.ui_scale);
+    const reset = goop.ControlEvent{ .activated = .{
+        .element = ids.commandElement(.toolbar, .zoom_reset),
+        .action = ids.commandAction(.zoom_reset),
+    } };
+    _ = try fm.update(&scope, emptyEvents(&.{reset}), std.testing.io);
+    try std.testing.expectEqual(@as(f32, 1), browser.domain.model.content_zoom);
+}
+
+test "splitter and table resize outputs persist in browser layout state" {
+    var browser: state.Browser = .{};
+    defer deinitBrowser(&browser);
+    var scope = behavior(&browser);
+    const events = [_]goop.ControlEvent{
+        .{ .value_changed = .{ .element = ids.fixed(.nav_splitter), .value = .{ .scalar = 0.31 } } },
+        .{ .value_changed = .{ .element = ids.fixed(.detail_splitter), .value = .{ .scalar = 0.66 } } },
+        .{ .value_changed = .{ .element = ids.fixed(.preview_splitter), .value = .{ .scalar = 0.42 } } },
+        .{ .value_changed = .{ .element = ids.fixed(.asset_header_table), .value = .{ .column_fraction = .{ .column = 1, .fraction = 0.27 } } } },
+    };
+    try std.testing.expect(try fm.update(&scope, emptyEvents(&events), std.testing.io));
+    try std.testing.expectEqual(@as(f32, 0.31), browser.domain.model.nav_ratio);
+    try std.testing.expectEqual(@as(f32, 0.66), browser.domain.model.detail_ratio);
+    try std.testing.expectEqual(@as(f32, 0.42), browser.domain.model.preview_ratio);
+    try std.testing.expectEqual(@as(f32, 0.27), browser.domain.model.table_column_weights[1]);
+}
+
+test "hidden entries follow the model visibility policy" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "visible.txt", .data = "v" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".hidden.txt", .data = "h" });
+    const root_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root_path);
+
+    var browser: state.Browser = .{};
+    defer deinitBrowser(&browser);
+    browser.session.io = std.testing.io;
+    browser.domain.model.current_dir = try allocator.dupe(u8, root_path);
+    const filesystem = capabilities.filesystem(&browser.session, &browser.domain.model, &browser.domain.interaction);
+    try fs.loadDirectoryEntries(filesystem);
+    try std.testing.expectEqual(@as(usize, 1), browser.domain.model.entries.items.len);
+    try std.testing.expectEqualStrings("visible.txt", browser.domain.model.entries.items[0].name);
+
+    browser.domain.model.show_hidden = true;
+    try fs.loadDirectoryEntries(filesystem);
+    try std.testing.expectEqual(@as(usize, 2), browser.domain.model.entries.items.len);
+}
+
 test "projection assigns stable identities to every application control" {
     var browser: state.Browser = .{};
     defer deinitBrowser(&browser);
@@ -375,21 +465,56 @@ test "projection assigns stable identities to every application control" {
     try std.testing.expect(ctx.tree.findByElementId(asset_id) != null);
 }
 
+test "permission editor projects a compact uniquely identified bit matrix" {
+    var browser: state.Browser = .{};
+    defer deinitBrowser(&browser);
+    browser.domain.model.current_dir = try allocator.dupe(u8, "/");
+    try appendEntryOfKind(&browser, "a", "/a", .file);
+    browser.domain.model.entries.items[0].permissions = 0o754;
+    try model_ops.setSelectedPath(&browser.domain.model, "/a");
+    try model_ops.appendSelectedPathIfMissing(&browser.domain.model, "/a");
+    browser.domain.interaction.permission_path = try allocator.dupe(u8, "/a");
+    browser.domain.interaction.permission_draft = 0o754;
+
+    const text_measure = goop.TextMeasureCtx{ .measureFn = &testMeasureText };
+    browser.projection.text_measure_ctx = &text_measure;
+    var ctx = try goop.Context.init(allocator, .{ .width = 1000, .height = 700, .theme = style.fileManagerThemeForScale(1) });
+    defer ctx.deinit();
+    try view.buildWidgetTree(
+        capabilities.viewInput(&browser.viewport, &browser.domain.model, &browser.domain.interaction, &browser.domain.presentation),
+        capabilities.viewOutput(&browser.projection, &browser.domain.identities),
+        &ctx,
+    );
+    ctx.doLayout(&text_measure);
+    for (@import("permissions.zig").bits) |bit| {
+        const handle = ctx.tree.findByElementId(ids.fixed(bit.element)) orelse return error.TestUnexpectedResult;
+        try std.testing.expect(ctx.tree.getConst(handle).layout_rect.w > 0);
+    }
+    try std.testing.expect(ctx.tree.findByElementId(ids.fixed(.permission_apply)) != null);
+    try std.testing.expect(ctx.tree.findByElementId(ids.fixed(.permission_cancel)) != null);
+}
+
 test "file browser projects semantic entry icons in list and grid views" {
     var browser: state.Browser = .{};
     defer deinitBrowser(&browser);
     browser.domain.model.current_dir = try allocator.dupe(u8, "/tmp");
     try appendEntryOfKind(&browser, "folder", "/tmp/folder", .directory);
     try appendEntryOfKind(&browser, "file.txt", "/tmp/file.txt", .file);
-    try appendEntryOfKind(&browser, "link", "/tmp/link", .symlink);
+    try appendEntryOfKind(&browser, "folder-link", "/tmp/folder-link", .symlink);
+    browser.domain.model.entries.items[2].target_kind = .directory;
+    try appendEntryOfKind(&browser, "file-link", "/tmp/file-link", .symlink);
+    browser.domain.model.entries.items[3].target_kind = .file;
+    try appendEntryOfKind(&browser, "broken-link", "/tmp/broken-link", .symlink);
 
     const expected = [_]struct {
         path: []const u8,
         icon: goop.IconId,
     }{
-        .{ .path = "/tmp/folder", .icon = @intFromEnum(types.DemoIcon.folder) },
-        .{ .path = "/tmp/file.txt", .icon = @intFromEnum(types.DemoIcon.file) },
-        .{ .path = "/tmp/link", .icon = @intFromEnum(types.DemoIcon.symlink) },
+        .{ .path = "/tmp/folder", .icon = @intFromEnum(goop.StockIcon.folder) },
+        .{ .path = "/tmp/file.txt", .icon = @intFromEnum(goop.StockIcon.file) },
+        .{ .path = "/tmp/folder-link", .icon = @intFromEnum(goop.StockIcon.folder_symlink) },
+        .{ .path = "/tmp/file-link", .icon = @intFromEnum(goop.StockIcon.file_symlink) },
+        .{ .path = "/tmp/broken-link", .icon = @intFromEnum(goop.StockIcon.symlink) },
     };
 
     const text_measure = goop.TextMeasureCtx{ .measureFn = &testMeasureText };
@@ -462,9 +587,9 @@ test "file browser table marquee commits multiple rows after crossing child hits
     const second_rect = ctx.tree.getConst(second).layout_rect;
     const third_rect = ctx.tree.getConst(third).layout_rect;
     const scroll_rect = ctx.tree.getConst(scroll).layout_rect;
-    const x = table_rect.x + table_rect.w - 4;
+    const x = table_rect.x + table_rect.w * 0.5;
     const origin_y = @min(table_rect.y + table_rect.h, scroll_rect.y + scroll_rect.h) - 2;
-    try std.testing.expect(goop.hittest.hitTest(&ctx.tree, x, origin_y).?.eql(table));
+    try std.testing.expect(goop.hittest.hitTestWithTheme(&ctx.tree, x, origin_y, ctx.theme).?.eql(table));
 
     try ctx.pushEvent(.{ .mouse_button = .{ .button = .left, .state = .pressed, .x = x, .y = origin_y } });
     try std.testing.expectEqual(@as(usize, 0), (try ctx.processEvents()).items.len);
@@ -490,6 +615,46 @@ test "file browser table marquee commits multiple rows after crossing child hits
     try std.testing.expectEqual(@as(usize, 2), browser.domain.model.selected_paths.items.len);
     try std.testing.expect(model_ops.isPathSelected(&browser.domain.model, "/tmp/b"));
     try std.testing.expect(model_ops.isPathSelected(&browser.domain.model, "/tmp/c"));
+}
+
+test "wheel scrolling moves the projected file list without pointer motion" {
+    var browser: state.Browser = .{};
+    defer deinitBrowser(&browser);
+    browser.viewport.logical_width = 900;
+    browser.viewport.logical_height = 520;
+    browser.domain.model.current_dir = try allocator.dupe(u8, "/tmp");
+    browser.domain.model.show_sidebar = false;
+    browser.domain.model.show_preview = false;
+    browser.domain.model.show_info = false;
+    try appendEntries(&browser, 192);
+
+    const text_measure = goop.TextMeasureCtx{ .measureFn = &testMeasureText };
+    browser.projection.text_measure_ctx = &text_measure;
+    var ctx = try goop.Context.init(allocator, .{
+        .width = browser.viewport.logical_width,
+        .height = browser.viewport.logical_height,
+        .theme = style.fileManagerThemeForScale(1),
+    });
+    defer ctx.deinit();
+    const input = capabilities.viewInput(&browser.viewport, &browser.domain.model, &browser.domain.interaction, &browser.domain.presentation);
+    const output = capabilities.viewOutput(&browser.projection, &browser.domain.identities);
+    try view.buildWidgetTree(input, output, &ctx);
+    ctx.doLayout(&text_measure);
+    if (try view.refreshAssetViewportIfNeeded(input, output, &ctx)) ctx.doLayout(&text_measure);
+
+    const scroll = ctx.tree.findByElementId(ids.fixed(.file_panel_scroll)) orelse return error.TestUnexpectedResult;
+    const rect = ctx.tree.getConst(scroll).layout_rect;
+    try ctx.pushEvent(.{ .mouse_move = .{ .x = rect.x + rect.w * 0.5, .y = rect.y + rect.h * 0.5 } });
+    try ctx.pushEvent(.{ .mouse_scroll = .{ .dx = 0, .dy = 900 } });
+    const events = try ctx.processEvents();
+    var behavior_scope = behavior(&browser);
+    _ = try fm.update(&behavior_scope, events, std.testing.io);
+    if (try view.refreshAssetViewportIfNeeded(input, output, &ctx)) ctx.doLayout(&text_measure);
+
+    const refreshed = ctx.tree.findByElementId(ids.fixed(.file_panel_scroll)) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(ctx.tree.getConst(refreshed).kind.scroll_area.scroll_y > 0);
+    try std.testing.expect(browser.domain.model.file_panel_scroll_y > 0);
+    try std.testing.expect(browser.projection.assets.asset_visible_start > 0);
 }
 
 test "selection detail does not resize the asset list at ui scale 2" {
@@ -592,23 +757,22 @@ test "directory sorting respects the active field and grouping" {
     try std.testing.expect(fs.browserEntryLessThan(scope, older_dir, newer_file));
 }
 
-test "directory preview separates contents onto new lines" {
+test "directory selection has no synthetic preview content" {
     var browser: state.Browser = .{};
     defer deinitBrowser(&browser);
-    var buffer: std.ArrayListUnmanaged(u8) = .empty;
-    defer buffer.deinit(allocator);
-    const entries = [_]types.BrowserEntry{
-        .{ .name = @constCast("folder"), .path = @constCast("/tmp/folder"), .kind = .directory, .size_bytes = 0, .modified_unix = 0 },
-        .{ .name = @constCast("file.txt"), .path = @constCast("/tmp/file.txt"), .kind = .file, .size_bytes = 0, .modified_unix = 0 },
-    };
-    try preview.appendDirectoryPreviewSummary(
-        .{ .io = browser.session.io, .model = &browser.domain.model },
-        &buffer,
-        "/tmp",
-        &entries,
-    );
-    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "Contents:\n- folder/") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\n- file.txt") != null);
+    try appendEntryOfKind(&browser, "folder", "/tmp/folder", .directory);
+    try model_ops.setSelectedPath(&browser.domain.model, "/tmp/folder");
+    try model_ops.appendSelectedPathIfMissing(&browser.domain.model, "/tmp/folder");
+
+    var selection_preview = try preview.allocSelectionPreview(.{
+        .io = browser.session.io,
+        .model = &browser.domain.model,
+    });
+    defer if (selection_preview.text) |text| allocator.free(text);
+    defer if (selection_preview.image) |*pixels| pixels.deinit();
+    try std.testing.expect(selection_preview.text == null);
+    try std.testing.expect(selection_preview.image == null);
+    try std.testing.expect(!selection_preview.framed);
 }
 
 test "directory preview is not framed like file content" {
@@ -621,7 +785,62 @@ test "directory preview is not framed like file content" {
     });
     defer if (selection_preview.text) |text| allocator.free(text);
     defer if (selection_preview.image) |*pixels| pixels.deinit();
+    try std.testing.expect(selection_preview.text == null);
+    try std.testing.expect(selection_preview.image == null);
     try std.testing.expect(!selection_preview.framed);
+}
+
+test "selected directory preview is bounded structured data" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "folder/subdir");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "folder/photo.png", .data = "image" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "folder/readme.md", .data = "text" });
+    const root_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root_path);
+    const folder_path = try fs.joinPath(allocator, root_path, "folder");
+    defer allocator.free(folder_path);
+
+    var browser: state.Browser = .{};
+    defer deinitBrowser(&browser);
+    browser.session.io = std.testing.io;
+    try appendEntryOfKind(&browser, "folder", folder_path, .directory);
+    try model_ops.setSelectedPath(&browser.domain.model, folder_path);
+    try model_ops.appendSelectedPathIfMissing(&browser.domain.model, folder_path);
+    var selection_preview = try preview.allocSelectionPreview(.{ .io = std.testing.io, .model = &browser.domain.model });
+    defer {
+        if (selection_preview.text) |text| allocator.free(text);
+        if (selection_preview.image) |*pixels| pixels.deinit();
+        if (selection_preview.directory) |*directory| {
+            for (directory.samples.items) |sample| allocator.free(sample.name);
+            directory.samples.deinit(allocator);
+        }
+    }
+    const directory = selection_preview.directory orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 1), directory.directory_count);
+    try std.testing.expectEqual(@as(usize, 1), directory.image_count);
+    try std.testing.expectEqual(@as(usize, 1), directory.text_count);
+    try std.testing.expect(directory.samples.items.len <= 6);
+    try std.testing.expect(!selection_preview.framed);
+}
+
+test "details are filesystem metadata rather than display state or instructions" {
+    const source = @embedFile("view.zig");
+    for ([_][]const u8{
+        "Permissions",
+        "Inode",
+        "Links",
+        "Accessed",
+        "Modified",
+        "Metadata changed",
+        "I/O block size",
+    }) |field| try std.testing.expect(std.mem.indexOf(u8, source, field) != null);
+    for ([_][]const u8{
+        "Double-click to enter",
+        "Ctrl-click and Shift-click",
+        "Select a file to inspect",
+        "Sort: {s}, {s}{s} · View:",
+    }) |non_detail| try std.testing.expect(std.mem.indexOf(u8, source, non_detail) == null);
 }
 
 test "detail wrapping breaks long unspaced names" {
@@ -706,7 +925,7 @@ test "controller refreshes prepared folder data after expansion changes" {
     var found_grandchild = false;
     for (browser.domain.presentation.folder_tree.items) |item| {
         if (std.mem.eql(u8, item.path, child_path)) {
-            found_child = item.expanded;
+            found_child = item.expansion != .collapsed;
         } else if (std.mem.eql(u8, item.path, grandchild_path)) {
             found_grandchild = true;
         }

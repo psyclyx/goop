@@ -20,9 +20,13 @@ pub const preview = @import("preview.zig");
 pub const style = @import("style.zig");
 pub const transfer = @import("transfer.zig");
 pub const types = @import("types.zig");
+pub const permissions = @import("permissions.zig");
+pub const panel_animation = @import("panel_animation.zig");
 
 test {
     _ = controller;
     _ = view;
     _ = @import("browser_test.zig");
+    _ = permissions;
+    _ = panel_animation;
 }

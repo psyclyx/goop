@@ -25,6 +25,10 @@ pub fn deinit(value: *state.Presentation) void {
     value.folder_tree.deinit(allocator);
     if (value.preview.text) |text| allocator.free(text);
     if (value.preview.image) |*pixels| pixels.deinit();
+    if (value.preview.directory) |*directory| {
+        for (directory.samples.items) |sample| allocator.free(sample.name);
+        directory.samples.deinit(allocator);
+    }
     value.* = .{};
 }
 
@@ -32,7 +36,7 @@ fn appendFolder(
     value: *state.Presentation,
     path: []const u8,
     parent_index: ?usize,
-    expanded: bool,
+    expansion: types.FolderTreeExpansion,
     selected: bool,
     has_children: bool,
 ) !usize {
@@ -42,7 +46,7 @@ fn appendFolder(
     try value.folder_tree.append(allocator, .{
         .path = owned_path,
         .parent_index = parent_index,
-        .expanded = expanded,
+        .expansion = expansion,
         .selected = selected,
         .has_children = has_children,
     });
@@ -65,18 +69,23 @@ fn prepareFolderBranch(
     try fs.collectFolderTreeChildren(io, dir_path, &children);
 
     for (children.items, 0..) |child, index| {
+        if (!model.show_hidden and child.name[0] == '.' and
+            !model_ops.pathHasDirectoryPrefix(model.current_dir, child.path)) continue;
         if (!model_ops.shouldRenderFolderTreeChildForExpansion(model, parent_expansion, index, child.path)) continue;
         const expansion = model_ops.folderTreeExpansion(model, child.path);
-        const expanded = expansion != .collapsed;
         const item_index = try appendFolder(
             value,
             child.path,
             parent_index,
-            expanded,
+            expansion,
             std.mem.eql(u8, child.path, model.current_dir),
-            try fs.folderTreeDirectoryHasChildren(io, child.path),
+            try fs.folderTreeDirectoryHasChildren(
+                io,
+                child.path,
+                model.show_hidden or model_ops.pathHasDirectoryPrefix(model.current_dir, child.path),
+            ),
         );
-        if (expanded) try prepareFolderBranch(value, io, model, item_index, child.path, expansion);
+        if (expansion != .collapsed) try prepareFolderBranch(value, io, model, item_index, child.path, expansion);
     }
 }
 
@@ -86,9 +95,9 @@ fn prepareFolderTree(value: *state.Presentation, io: ?std.Io, model: *const stat
         value,
         "/",
         null,
-        root_expansion != .collapsed,
+        root_expansion,
         std.mem.eql(u8, model.current_dir, "/"),
-        if (io) |available| try fs.folderTreeDirectoryHasChildren(available, "/") else false,
+        if (io) |available| try fs.folderTreeDirectoryHasChildren(available, "/", model.show_hidden) else false,
     );
     if (io) |available| {
         if (root_expansion != .collapsed) {
@@ -127,6 +136,11 @@ pub fn refresh(
     errdefer deinit(&next);
 
     try prepareFolderTree(&next, io, model);
+    if (io) |available| {
+        if (std.Io.Dir.cwd().statFile(available, model.current_dir, .{ .follow_symlinks = true })) |stat| {
+            next.current_directory_stat = fs.entryStat(stat);
+        } else |_| {}
+    }
     const next_preview = try preview.allocSelectionPreview(.{
         .io = io,
         .model = model,
@@ -136,6 +150,7 @@ pub fn refresh(
     next.preview = .{
         .text = next_preview.text,
         .image = next_preview.image,
+        .directory = next_preview.directory,
         .image_id = .{
             .value = target.preview.image_id.value,
             .revision = target.preview.image_id.revision +% @intFromBool(image_changed),

@@ -98,6 +98,13 @@ pub fn clearRename(interaction: *state.Interaction) void {
     interaction.rename_cancel_requested = false;
 }
 
+pub fn clearPermissionEdit(interaction: *state.Interaction) void {
+    freeOptionalOwnedSlice(&interaction.permission_path);
+    interaction.permission_draft = 0;
+    interaction.permission_commit_requested = false;
+    interaction.permission_cancel_requested = false;
+}
+
 fn selectedPathIndex(model: *const state.Model, path: []const u8) ?usize {
     for (model.selected_paths.items, 0..) |selected, index| {
         if (std.mem.eql(u8, selected, path)) return index;
@@ -293,5 +300,6 @@ pub fn deinit(model: *state.Model, interaction: *state.Interaction) void {
     freeOptionalOwnedSlice(&model.last_click_path);
     freeOptionalOwnedSlice(&interaction.context_target_path);
     clearRename(interaction);
+    clearPermissionEdit(interaction);
     interaction.address_input = .{ .placeholder = "Path" };
 }

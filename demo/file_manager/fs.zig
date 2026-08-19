@@ -138,7 +138,6 @@ pub fn collectFolderTreeChildren(io: std.Io, dir_path: []const u8, children: *st
     while (try iter.next(io)) |dir_entry| {
         const name = dir_entry.name;
         if (name.len == 0) continue;
-
         const full_path = try joinPath(allocator, dir_path, name);
 
         const stat = std.Io.Dir.cwd().statFile(io, full_path, .{ .follow_symlinks = true }) catch {
@@ -168,7 +167,7 @@ pub fn collectFolderTreeChildren(io: std.Io, dir_path: []const u8, children: *st
     std.mem.sort(FolderTreeChild, children.items, {}, folderTreeChildLessThan);
 }
 
-pub fn folderTreeDirectoryHasChildren(io: std.Io, dir_path: []const u8) !bool {
+pub fn folderTreeDirectoryHasChildren(io: std.Io, dir_path: []const u8, show_hidden: bool) !bool {
     var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true, .follow_symlinks = false }) catch return false;
     defer dir.close(io);
 
@@ -176,7 +175,7 @@ pub fn folderTreeDirectoryHasChildren(io: std.Io, dir_path: []const u8) !bool {
     while (try iter.next(io)) |dir_entry| {
         const name = dir_entry.name;
         if (name.len == 0) continue;
-
+        if (!show_hidden and name[0] == '.') continue;
         const full_path = try joinPath(allocator, dir_path, name);
         defer allocator.free(full_path);
 
@@ -524,6 +523,7 @@ pub fn loadDirectoryEntries(state: Scope) !void {
     while (try iter.next(io)) |dir_entry| {
         const name = dir_entry.name;
         if (name.len == 0) continue;
+        if (!state.model.show_hidden and name[0] == '.') continue;
 
         const full_path = try joinPath(allocator, state.model.current_dir, name);
         errdefer allocator.free(full_path);
@@ -537,23 +537,18 @@ pub fn loadDirectoryEntries(state: Scope) !void {
         errdefer allocator.free(entry_name);
 
         const kind = browserEntryKind(stat.kind);
-        var size_bytes = stat.size;
-        var modified_unix = format.unixSecondsFromNanoseconds(stat.mtime.nanoseconds);
         var target_path: ?[]u8 = null;
         var target_kind: ?BrowserEntryKind = null;
+        var target_stat: ?types.EntryStat = null;
 
         if (kind == .symlink) {
             target_path = resolveSymlinkTargetAlloc(io, allocator, full_path) catch null;
             errdefer if (target_path) |path| allocator.free(path);
 
             if (target_path) |resolved_target| {
-                if (std.Io.Dir.cwd().statFile(io, resolved_target, .{ .follow_symlinks = true })) |target_stat| {
-                    target_kind = browserEntryKind(target_stat.kind);
-                    size_bytes = if (target_kind == .directory)
-                        0
-                    else
-                        target_stat.size;
-                    modified_unix = format.unixSecondsFromNanoseconds(target_stat.mtime.nanoseconds);
+                if (std.Io.Dir.cwd().statFile(io, resolved_target, .{ .follow_symlinks = true })) |target_file_stat| {
+                    target_kind = browserEntryKind(target_file_stat.kind);
+                    target_stat = entryStat(target_file_stat);
                 } else |_| {}
             }
         }
@@ -562,10 +557,17 @@ pub fn loadDirectoryEntries(state: Scope) !void {
             .name = entry_name,
             .path = full_path,
             .kind = kind,
-            .size_bytes = size_bytes,
-            .modified_unix = modified_unix,
+            .size_bytes = stat.size,
+            .modified_unix = format.unixSecondsFromNanoseconds(stat.mtime.nanoseconds),
+            .inode = @intCast(stat.inode),
+            .links = @intCast(stat.nlink),
+            .permissions = @intFromEnum(stat.permissions),
+            .accessed_unix = if (stat.atime) |timestamp| format.unixSecondsFromNanoseconds(timestamp.nanoseconds) else null,
+            .changed_unix = format.unixSecondsFromNanoseconds(stat.ctime.nanoseconds),
+            .block_size = @intCast(stat.block_size),
             .target_path = target_path,
             .target_kind = target_kind,
+            .target_stat = target_stat,
         };
         try state.model.entries.append(allocator, entry);
     }
@@ -587,6 +589,35 @@ pub fn loadDirectoryEntries(state: Scope) !void {
 
     try syncPrimarySelection(state);
     syncSelectionAnchor(state);
+}
+
+pub fn setPathPermissions(state: Scope, path: []const u8, mode: u16) !bool {
+    const io = try stateIo(state);
+    std.Io.Dir.cwd().setFilePermissions(
+        io,
+        path,
+        @enumFromInt(mode),
+        .{ .follow_symlinks = true },
+    ) catch {
+        state.interaction.status_note = "Unable to change permissions.";
+        return false;
+    };
+    try loadDirectoryEntries(state);
+    state.interaction.status_note = "Permissions updated.";
+    return true;
+}
+
+pub fn entryStat(stat: std.Io.File.Stat) types.EntryStat {
+    return .{
+        .inode = @intCast(stat.inode),
+        .links = @intCast(stat.nlink),
+        .size_bytes = stat.size,
+        .permissions = @intFromEnum(stat.permissions),
+        .accessed_unix = if (stat.atime) |timestamp| format.unixSecondsFromNanoseconds(timestamp.nanoseconds) else null,
+        .modified_unix = format.unixSecondsFromNanoseconds(stat.mtime.nanoseconds),
+        .changed_unix = format.unixSecondsFromNanoseconds(stat.ctime.nanoseconds),
+        .block_size = @intCast(stat.block_size),
+    };
 }
 
 pub fn setCurrentDirectory(state: Scope, path: []const u8, push_history: bool) !bool {

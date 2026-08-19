@@ -12,6 +12,7 @@ const capabilities = @import("capabilities.zig");
 const desktop = @import("goop_desktop");
 const commands = @import("commands.zig");
 const fs = @import("fs.zig");
+const permissions = @import("permissions.zig");
 
 const allocator = std.heap.smp_allocator;
 const BrowserCommand = types.BrowserCommand;
@@ -107,6 +108,34 @@ fn cancelActiveRename(state: *Scope) bool {
     if (state.domain.interaction.rename_path == null) return false;
     model_ops.clearRename(&state.domain.interaction);
     state.domain.interaction.status_note = null;
+    return true;
+}
+
+fn beginPermissionEdit(state: *Scope) !bool {
+    const entry = model_ops.selectedEntry(&state.domain.model);
+    const path = if (entry) |selected| selected.path else state.domain.model.current_dir;
+    const mode = if (entry) |selected|
+        (selected.target_stat orelse selected.linkStat()).permissions
+    else if (state.domain.presentation.current_directory_stat) |stat|
+        stat.permissions
+    else
+        return false;
+
+    model_ops.clearPermissionEdit(&state.domain.interaction);
+    state.domain.interaction.permission_path = try allocator.dupe(u8, path);
+    state.domain.interaction.permission_draft = permissions.normalized(mode);
+    state.domain.interaction.status_note = null;
+    return true;
+}
+
+fn commitPermissionEdit(state: *Scope) !bool {
+    const path = state.domain.interaction.permission_path orelse return false;
+    const mode = state.domain.interaction.permission_draft;
+    const changed = try fs.setPathPermissions(filesystemScope(state), path, mode);
+    if (changed) {
+        model_ops.clearPermissionEdit(&state.domain.interaction);
+        try refreshPresentation(state);
+    }
     return true;
 }
 
@@ -424,8 +453,31 @@ fn runBrowserCommand(state: *Scope, command: BrowserCommand) !bool {
             model_ops.syncSelectionAnchor(&state.domain.model);
             return true;
         },
+        .toggle_hidden => {
+            state.domain.model.show_hidden = !state.domain.model.show_hidden;
+            try fs.refreshCurrentDirectory(filesystemScope(state));
+            return true;
+        },
+        .zoom_in => {
+            const next = @min(state.domain.model.content_zoom + 0.25, 3);
+            if (next == state.domain.model.content_zoom) return false;
+            state.domain.model.content_zoom = next;
+            return true;
+        },
+        .zoom_out => {
+            const next = @max(state.domain.model.content_zoom - 0.25, 0.5);
+            if (next == state.domain.model.content_zoom) return false;
+            state.domain.model.content_zoom = next;
+            return true;
+        },
+        .zoom_reset => {
+            if (state.domain.model.content_zoom == 1) return false;
+            state.domain.model.content_zoom = 1;
+            return true;
+        },
         .about => {
-            state.domain.interaction.status_note = "goop files: a retained file manager component demo.";
+            // Ask the composition root to open a real top-level About window.
+            state.domain.interaction.about_requested = true;
             return false;
         },
     }
@@ -495,6 +547,8 @@ pub fn keyInput(
         .escape => {
             if (interaction.rename_path != null) {
                 interaction.rename_cancel_requested = true;
+            } else if (interaction.permission_path != null) {
+                interaction.permission_cancel_requested = true;
             } else if (!focused_is_text_input) {
                 interaction.pending_command = .clear_selection;
             }
@@ -596,6 +650,15 @@ fn applyTextOutput(state: *Scope, events: goop.ControlEvents, changed: goop.Text
 }
 
 fn applyToggleOutput(state: *Scope, changed: goop.ToggleChanged) !bool {
+    if (permissions.maskForElement(changed.element)) |mask| {
+        if (state.domain.interaction.permission_path == null) return false;
+        state.domain.interaction.permission_draft = permissions.withBit(
+            state.domain.interaction.permission_draft,
+            mask,
+            changed.value,
+        );
+        return true;
+    }
     if (ids.family(changed.element) != .folder) return false;
     const path = currentPathForElement(state, changed.element) orelse return false;
     const expansion = model_ops.folderTreeExpansion(&state.domain.model, path);
@@ -658,6 +721,15 @@ fn applyActivation(
         state.domain.interaction.address_submit_requested = true;
         return false;
     }
+    if (element == ids.fixed(.permission_edit)) return beginPermissionEdit(state);
+    if (element == ids.fixed(.permission_apply)) {
+        state.domain.interaction.permission_commit_requested = true;
+        return true;
+    }
+    if (element == ids.fixed(.permission_cancel)) {
+        state.domain.interaction.permission_cancel_requested = true;
+        return true;
+    }
     if (element == ids.fixed(.context_open)) {
         hideContextMenu(state);
         return openContextTarget(state);
@@ -691,7 +763,12 @@ fn applySecondaryActivation(state: *Scope, activation: goop.SecondaryActivation)
             break :blk asset_path;
         },
         .place, .folder, .breadcrumb => currentPathForElement(state, element) orelse return false,
-        .fixed => if (element == ids.fixed(.file_panel_scroll)) state.domain.model.current_dir else return false,
+        .fixed => if (element == ids.fixed(.file_panel_scroll) or
+            element == ids.fixed(.asset_body_table) or
+            element == ids.fixed(.asset_grid))
+            state.domain.model.current_dir
+        else
+            return false,
         else => return false,
     };
     try showContextMenuForPath(state, path, activation.x, activation.y);
@@ -710,6 +787,15 @@ fn finishRequestedActions(state: *Scope) !bool {
             .inactive => {},
             .closed, .blocked => rebuild = true,
         }
+    }
+    if (state.domain.interaction.permission_cancel_requested) {
+        state.domain.interaction.permission_cancel_requested = false;
+        model_ops.clearPermissionEdit(&state.domain.interaction);
+        rebuild = true;
+    }
+    if (state.domain.interaction.permission_commit_requested) {
+        state.domain.interaction.permission_commit_requested = false;
+        rebuild = try commitPermissionEdit(state) or rebuild;
     }
     if (state.domain.interaction.pending_command) |command| {
         state.domain.interaction.pending_command = null;
@@ -738,6 +824,12 @@ pub fn update(state: *Scope, events: goop.ControlEvents, io: std.Io) !bool {
         .value_changed => |changed| rebuild = applyValueOutput(state, changed) or rebuild,
         .sort_changed => |changed| rebuild = applySortOutput(state, changed) or rebuild,
         .scroll_changed => |changed| applyScrollOutput(state, changed),
+        .popup_visibility_changed => |changed| {
+            if (changed.element == ids.fixed(.context_popup)) {
+                state.domain.interaction.context_visible = changed.visible;
+                rebuild = true;
+            }
+        },
         .text_changed => |changed| rebuild = try applyTextOutput(state, events, changed) or rebuild,
         .toggle_changed => |changed| rebuild = try applyToggleOutput(state, changed) or rebuild,
         .drop => |drop| rebuild = try handleAssetDrop(state, drop) or rebuild,

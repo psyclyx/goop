@@ -99,6 +99,7 @@ pub fn browserCommandChecked(input: Input, command: types.BrowserCommand) bool {
         .view_list => input.model.view_mode == .list,
         .view_grid => input.model.view_mode == .grid,
         .toggle_sort_directories => input.model.sort_directories_together,
+        .toggle_hidden => input.model.show_hidden,
         else => false,
     };
 }
@@ -126,6 +127,10 @@ pub fn browserCommandEnabled(input: Input, command: types.BrowserCommand) bool {
         .view_list,
         .view_grid,
         .toggle_sort_directories,
+        .toggle_hidden,
+        .zoom_in,
+        .zoom_out,
+        .zoom_reset,
         .about,
         => true,
     };

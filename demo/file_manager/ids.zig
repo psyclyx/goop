@@ -33,6 +33,21 @@ pub const Fixed = enum(u56) {
     asset_body_table,
     asset_grid,
     rename_input,
+    permission_edit,
+    permission_owner_read,
+    permission_owner_write,
+    permission_owner_execute,
+    permission_owner_special,
+    permission_group_read,
+    permission_group_write,
+    permission_group_execute,
+    permission_group_special,
+    permission_other_read,
+    permission_other_write,
+    permission_other_execute,
+    permission_other_special,
+    permission_apply,
+    permission_cancel,
     preview_image,
     context_popup,
     context_open,
@@ -58,6 +73,10 @@ pub fn fixed(value: Fixed) ElementId {
 
 pub const CommandSurface = enum(u8) {
     toolbar = 1,
+    sidebar_header,
+    preview_header,
+    details_header,
+    breadcrumb,
     file_menu,
     edit_menu,
     view_menu,
@@ -178,4 +197,5 @@ test "command actions round trip" {
 
 test "command presentations have distinct elements and shared actions" {
     try std.testing.expect(commandElement(.toolbar, .refresh) != commandElement(.file_menu, .refresh));
+    try std.testing.expect(commandElement(.preview_header, .toggle_preview) != commandElement(.breadcrumb, .toggle_preview));
 }

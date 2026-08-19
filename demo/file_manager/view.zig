@@ -26,6 +26,8 @@ const presentation = @import("presentation.zig");
 const projection = @import("projection.zig");
 const virtualization = @import("virtualization.zig");
 const detail_text = @import("detail_text.zig");
+const permissions = @import("permissions.zig");
+const panel_animation = @import("panel_animation.zig");
 
 // ── Type aliases ──
 const BrowserEntry = types.BrowserEntry;
@@ -119,8 +121,8 @@ fn fileManagerDetailTitleStyle(s: *const Scope) goop.Style {
 fn fileManagerDetailMetaStyle(s: *const Scope) goop.Style {
     return style.fileManagerDetailMetaStyle(s.viewport.ui_scale);
 }
-fn fileManagerDetailHintStyle(s: *const Scope) goop.Style {
-    return style.fileManagerDetailHintStyle(s.viewport.ui_scale);
+fn fileManagerEmptyStateStyle(s: *const Scope) goop.Style {
+    return style.fileManagerEmptyStateStyle(s.viewport.ui_scale);
 }
 fn fileManagerPreviewBodyStyle(s: *const Scope) goop.Style {
     return style.fileManagerPreviewBodyStyle(s.viewport.ui_scale);
@@ -179,8 +181,6 @@ fn contextPasteEnabled(s: *const Scope) bool {
     return presentation.contextPasteEnabled(presentationInput(s));
 }
 const browserViewModeLabel = presentation.browserViewModeLabel;
-const sortColumnLabel = format.sortColumnLabel;
-const sortDirectionLabel = format.sortDirectionLabel;
 
 // allocation/string helpers
 const allocUtf8LossyOwned = projection.allocUtf8LossyOwned;
@@ -247,24 +247,32 @@ fn layoutDebug(state: *const Scope, comptime fmt: []const u8, args: anytype) voi
 }
 
 // ── Local helpers wrapping the px-constant helpers ──
+fn assetScale(state: *const Scope) f32 {
+    return state.viewport.ui_scale * state.domain.model.content_zoom;
+}
+
+fn assetPx(state: *const Scope, value: f32) f32 {
+    return value * assetScale(state);
+}
+
 fn browserGridItemWidthPx(state: *const Scope) f32 {
-    return uiPx(state, browser_grid_item_width);
+    return assetPx(state, browser_grid_item_width);
 }
 
 fn browserGridItemHeightPx(state: *const Scope) f32 {
-    return uiPx(state, browser_grid_item_height);
+    return assetPx(state, browser_grid_item_height);
 }
 
 fn browserGridColumnGapPx(state: *const Scope) f32 {
-    return uiPx(state, browser_grid_column_gap);
+    return assetPx(state, browser_grid_column_gap);
 }
 
 fn browserGridRowGapPx(state: *const Scope) f32 {
-    return uiPx(state, browser_grid_row_gap);
+    return assetPx(state, browser_grid_row_gap);
 }
 
 fn browserGridPaddingHPx(state: *const Scope) f32 {
-    return uiPx(state, browser_grid_padding_h);
+    return assetPx(state, browser_grid_padding_h);
 }
 
 fn browserTableDividerWidthPx(state: *const Scope) f32 {
@@ -313,13 +321,13 @@ fn browserViewportHeightEstimate(state: *const Scope) f32 {
 }
 
 fn browserListRowHeight(state: *const Scope) f32 {
-    return virtualization.listRowHeight(.{ .ui_scale = state.viewport.ui_scale, .text_measure_ctx = state.projection.text_measure_ctx });
+    return virtualization.listRowHeight(.{ .ui_scale = assetScale(state), .text_measure_ctx = state.projection.text_measure_ctx });
 }
 
 fn browserListWindowAt(state: *const Scope, viewport_height: f32, requested_scroll_y: f32) ListVirtualWindow {
     return virtualization.listWindow(
         state.domain.model,
-        .{ .ui_scale = state.viewport.ui_scale, .text_measure_ctx = state.projection.text_measure_ctx },
+        .{ .ui_scale = assetScale(state), .text_measure_ctx = state.projection.text_measure_ctx },
         viewport_height,
         requested_scroll_y,
     );
@@ -332,7 +340,7 @@ fn browserListWindow(state: *const Scope, viewport_height: f32) ListVirtualWindo
 fn browserGridWindowAt(state: *const Scope, viewport_width: f32, viewport_height: f32, requested_scroll_y: f32) GridVirtualWindow {
     return virtualization.gridWindow(
         state.domain.model,
-        .{ .ui_scale = state.viewport.ui_scale, .text_measure_ctx = state.projection.text_measure_ctx },
+        .{ .ui_scale = assetScale(state), .text_measure_ctx = state.projection.text_measure_ctx },
         viewport_width,
         viewport_height,
         requested_scroll_y,
@@ -351,6 +359,13 @@ fn addTextCell(state: *const Scope, ctx: *goop.Context, row: goop.NodeHandle, te
         .border_width = browserTableDividerWidthPx(state),
     });
     _ = try ctx.tree.addChild(cell, .{ .text = .{ .content = text, .overflow = .ellipsis } });
+}
+
+fn addAssetTextCell(state: *const Scope, ctx: *goop.Context, row: goop.NodeHandle, text: []const u8) !void {
+    const cell = try ctx.tree.addChild(row, .{ .table_cell = .{} });
+    _ = ctx.setStyle(cell, .{ .border_width = browserTableDividerWidthPx(state) });
+    const value = try ctx.tree.addChild(cell, .{ .text = .{ .content = text, .overflow = .ellipsis } });
+    _ = ctx.setStyle(value, .{ .font_size = assetPx(state, 14) });
 }
 
 fn addNameHeaderCell(state: *const Scope, ctx: *goop.Context, row: goop.NodeHandle, text: []const u8) !void {
@@ -387,7 +402,7 @@ fn addNameCell(state: *Scope, ctx: *goop.Context, row: goop.NodeHandle, entry: B
         .bg = .rgba(0, 0, 0, 0),
         .border_width = 0,
         .padding = goop.style.Edges.all(0),
-        .font_size = uiPx(state, 18),
+        .font_size = assetPx(state, 18),
     });
     if (isRenamingPath(state, entry.path)) {
         const input = try ctx.tree.addChild(cell, .{ .text_input = .{ .placeholder = state.domain.interaction.rename_input.placeholder } });
@@ -398,10 +413,11 @@ fn addNameCell(state: *Scope, ctx: *goop.Context, row: goop.NodeHandle, entry: B
         _ = ctx.setStyle(input, fileManagerRenameInputStyle(state));
         _ = ctx.focusWidget(input);
     } else {
-        _ = try ctx.tree.addChild(cell, .{ .text = .{
+        const label = try ctx.tree.addChild(cell, .{ .text = .{
             .content = try allocAssetEntryNameText(state, entry),
             .overflow = .ellipsis,
         } });
+        _ = ctx.setStyle(label, .{ .font_size = assetPx(state, 14) });
     }
     return cell;
 }
@@ -418,6 +434,21 @@ fn previewBodyFontSizePx(state: *const Scope) f32 {
     return style.previewBodyFontSizePx(state.viewport.ui_scale);
 }
 
+const Panel = enum { sidebar, preview, details };
+
+fn panelProgress(state: *const Scope, panel: Panel) f32 {
+    if (!state.projection.panels.initialized) return switch (panel) {
+        .sidebar => if (state.domain.model.show_sidebar) 1 else 0,
+        .preview => if (state.domain.model.show_preview) 1 else 0,
+        .details => if (state.domain.model.show_info) 1 else 0,
+    };
+    return switch (panel) {
+        .sidebar => state.projection.panels.sidebar.value,
+        .preview => state.projection.panels.preview.value,
+        .details => state.projection.panels.details.value,
+    };
+}
+
 pub fn clampDetailSplitterRatio(raw: f32, available: f32, min_first: f32, min_second: f32) f32 {
     const clamped = std.math.clamp(raw, 0, 1);
     if (available <= 0) return clamped;
@@ -430,18 +461,20 @@ pub fn clampDetailSplitterRatio(raw: f32, available: f32, min_first: f32, min_se
 
 fn browserBodyWidthPx(state: *const Scope) f32 {
     var width = @max(@as(f32, @floatFromInt(@max(state.viewport.logical_width, @as(u32, 1)))) - 1, 1);
-    if (state.domain.model.show_sidebar) {
+    const sidebar_progress = panelProgress(state, .sidebar);
+    if (sidebar_progress > 0) {
         const nav_ratio = clampDetailSplitterRatio(state.domain.model.nav_ratio, width, uiPx(state, 220), uiPx(state, 420));
-        width *= 1 - nav_ratio;
+        width *= 1 - nav_ratio * sidebar_progress;
     }
     return @max(width, 1);
 }
 
 fn inspectorPanelWidthPx(state: *const Scope) f32 {
     var width = browserBodyWidthPx(state);
-    if (state.domain.model.show_preview or state.domain.model.show_info) {
+    const inspector_progress = @max(panelProgress(state, .preview), panelProgress(state, .details));
+    if (inspector_progress > 0) {
         const detail_ratio = clampDetailSplitterRatio(state.domain.model.detail_ratio, width, uiPx(state, 360), uiPx(state, 300));
-        width *= 1 - detail_ratio;
+        width *= 1 - (1 - detail_ratio) * inspector_progress;
     }
     return @max(width, uiPx(state, 200));
 }
@@ -493,6 +526,25 @@ fn addStyledDetailText(
     const handle = try addDetailText(ctx, parent, text, overflow);
     _ = ctx.setStyle(handle, style_override);
     return handle;
+}
+
+fn addInspectorField(
+    state: *const Scope,
+    ctx: *goop.Context,
+    parent: goop.NodeHandle,
+    label: []const u8,
+    value: []const u8,
+) !void {
+    const row = try ctx.tree.addChild(parent, .{ .container = .{ .direction = .column } });
+    _ = ctx.setStyle(row, .{
+        .bg = .rgba(0, 0, 0, 0),
+        .border_width = 0,
+        .padding = uiEdgesAll(state, 0),
+        .spacing = uiPx(state, 1),
+        .border_radius = 0,
+    });
+    _ = try addStyledDetailText(ctx, row, label, .wrap, style.fileManagerInspectorLabelStyle(state.viewport.ui_scale));
+    _ = try addStyledDetailText(ctx, row, value, .wrap, style.fileManagerInspectorValueStyle(state.viewport.ui_scale));
 }
 
 // ── Asset view builders ──
@@ -581,15 +633,17 @@ fn buildListAssetView(state: *Scope, ctx: *goop.Context, scroll_handle: goop.Nod
     for (state.domain.model.entries.items[window.start..window.end]) |entry| {
         const row = try ctx.tree.addChild(table_body, .{ .table_row = .{
             .selected = isPathSelected(state, entry.path),
+            .selected_label_action = ids.commandAction(.rename),
+            .label_action_column = 0,
         } });
         try identify(ctx, row, try state.identities.idForPath(.asset, entry.path), null);
         _ = ctx.setStyle(row, .{
             .border_width = browserTableDividerWidthPx(state),
         });
         _ = try addNameCell(state, ctx, row, entry);
-        try addTextCell(state, ctx, row, try allocAssetFormattedTimestamp(state, entry.modified_unix));
-        try addTextCell(state, ctx, row, entry.typeLabel());
-        try addTextCell(state, ctx, row, try allocAssetFormattedSize(state, entry.kind, entry.size_bytes, entry.target_kind));
+        try addAssetTextCell(state, ctx, row, try allocAssetFormattedTimestamp(state, entry.modified_unix));
+        try addAssetTextCell(state, ctx, row, entry.typeLabel());
+        try addAssetTextCell(state, ctx, row, try allocAssetFormattedSize(state, entry.kind, entry.size_bytes, entry.target_kind));
     }
 
     scrollDebug(state, "build list scroll={d:.2} viewport_h={d:.2} window=[{}..{}) rows={} spacers=({d:.2},{d:.2})", .{
@@ -663,24 +717,20 @@ fn buildGridAssetView(state: *Scope, ctx: *goop.Context, scroll_handle: goop.Nod
 
     for (state.domain.model.entries.items[window.start..window.end]) |entry| {
         const item = try ctx.tree.addChild(grid, .{ .grid_item = .{
-            .label = try allocAssetUiEllipsizedUtf8Lossy(state, entry.name, uiPx(state, 104), ctx.theme.font_size),
+            .label = try allocAssetUiEllipsizedUtf8Lossy(state, entry.name, assetPx(state, 104), assetPx(state, 14)),
             .icon = browserEntryIconKind(entry),
             .icon_color = browserEntryIconColor(ctx.theme, entry, isPathSelected(state, entry.path)),
             .selected = isPathSelected(state, entry.path),
+            .selected_label_action = ids.commandAction(.rename),
         } });
         try identify(ctx, item, try state.identities.idForPath(.asset, entry.path), null);
         _ = ctx.setStyle(item, .{
-            .bg = if (entry.isDirectory())
-                .{ .r = 243, .g = 247, .b = 255, .a = 255 }
-            else
-                .{ .r = 252, .g = 252, .b = 253, .a = 255 },
-            .border = if (entry.isDirectory())
-                .{ .r = 184, .g = 204, .b = 233, .a = 255 }
-            else
-                .{ .r = 214, .g = 220, .b = 228, .a = 255 },
+            .bg = .rgba(0, 0, 0, 0),
+            .border = .rgba(0, 0, 0, 0),
             .border_width = 0,
             .padding = uiEdgesSymmetric(state, 10, 10),
             .border_radius = uiPx(state, 10),
+            .font_size = assetPx(state, 14),
         });
     }
 
@@ -708,7 +758,9 @@ fn buildAssetView(state: *Scope, ctx: *goop.Context, scroll_handle: goop.NodeHan
         state.projection.assets.asset_visible_start = 0;
         state.projection.assets.asset_visible_end = 0;
         state.projection.assets.asset_visible_columns = 0;
-        _ = try ctx.tree.addChild(scroll_handle, .{ .text = .{ .content = "This directory is empty." } });
+        const empty = try ctx.tree.addChild(scroll_handle, .{ .container = .{ .direction = .column } });
+        _ = ctx.setStyle(empty, fileManagerEmptyStateStyle(state));
+        _ = try ctx.tree.addChild(empty, .{ .text = .{ .content = "This directory is empty." } });
         return;
     }
 
@@ -837,19 +889,28 @@ fn refreshAssetViewport(state: *Scope, ctx: *goop.Context) !bool {
 // ── Icon geometry and visual metadata ──
 
 pub fn browserEntryIconKind(entry: BrowserEntry) goop.IconId {
-    const id: types.DemoIcon = switch (entry.kind) {
+    const id: goop.StockIcon = switch (entry.kind) {
         .directory => .folder,
-        .symlink => .symlink,
+        .symlink => switch (entry.target_kind orelse .other) {
+            .directory => .folder_symlink,
+            .file => .file_symlink,
+            else => .symlink,
+        },
         else => .file,
     };
     return @intFromEnum(id);
 }
 
 pub fn browserEntryIconColor(theme: goop.Theme, entry: BrowserEntry, selected: bool) goop.Color {
-    if (selected) return theme.accent;
+    _ = theme;
+    _ = selected;
     return switch (entry.kind) {
         .directory => .rgb(74, 120, 201),
-        .symlink => .rgb(44, 140, 134),
+        .symlink => switch (entry.target_kind orelse .other) {
+            .directory => .rgb(74, 120, 201),
+            .file => .rgb(118, 127, 141),
+            else => .rgb(44, 140, 134),
+        },
         else => .rgb(118, 127, 141),
     };
 }
@@ -1050,10 +1111,37 @@ fn addToolbarButton(
     enabled: bool,
     element: goop.ElementId,
     action: ?goop.ActionId,
+    icon: goop.StockIcon,
 ) !goop.NodeHandle {
-    const handle = try ctx.tree.addChildControl(parent, desktop.control.button(element, action, .{ .label = label }));
+    const handle = try ctx.tree.addChildControl(parent, desktop.control.button(element, action, .{
+        .label = label,
+        .icon = @intFromEnum(icon),
+        .label_visible = false,
+    }));
     _ = ctx.setStyle(handle, fileManagerToolbarButtonStyle(state, active, enabled));
+    const tooltip = try ctx.tree.addChild(handle, .{ .tooltip = .{ .placement = .below_start, .y = uiPx(state, 4) } });
+    _ = try ctx.tree.addChild(tooltip, .{ .text = .{ .content = label } });
     return handle;
+}
+
+fn commandIcon(command: BrowserCommand) goop.StockIcon {
+    return switch (command) {
+        .back => .back,
+        .forward => .forward,
+        .up => .up,
+        .home => .home,
+        .refresh => .refresh,
+        .toggle_sidebar => .sidebar,
+        .toggle_preview => .preview,
+        .toggle_info => .info,
+        .view_list => .list,
+        .view_grid => .grid,
+        .toggle_hidden => .hidden,
+        .zoom_in => .zoom_in,
+        .zoom_out => .zoom_out,
+        .zoom_reset => .zoom_reset,
+        else => .info,
+    };
 }
 
 fn addToolbarCommandButton(state: *const Scope, ctx: *goop.Context, parent: goop.NodeHandle, label: []const u8, command: BrowserCommand) !goop.NodeHandle {
@@ -1066,8 +1154,10 @@ fn addToolbarCommandButton(state: *const Scope, ctx: *goop.Context, parent: goop
         browserCommandEnabled(state, command),
         ids.commandElement(.toolbar, command),
         ids.commandAction(command),
+        commandIcon(command),
     );
 }
+
 
 fn addMenuCommandItem(
     state: *const Scope,
@@ -1083,9 +1173,19 @@ fn addMenuCommandItem(
         .shortcut = shortcut,
         .checked = browserCommandChecked(state, command),
         .disabled = !browserCommandEnabled(state, command),
+        .mnemonic = firstMnemonic(label),
     }));
     _ = ctx.setStyle(handle, fileManagerMenuItemStyle(state));
     return handle;
+}
+
+/// The access-key character for a label: its first ASCII letter. Underlined in
+/// the menu and matched when the menu is open (win32 convention).
+fn firstMnemonic(label: []const u8) ?u8 {
+    for (label) |c| {
+        if (std.ascii.isAlphabetic(c)) return c;
+    }
+    return null;
 }
 
 fn addContextMenuItem(
@@ -1143,17 +1243,22 @@ fn addFolderTreeItem(
     parent: goop.NodeHandle,
     path: []const u8,
     label: []const u8,
-    expanded: bool,
+    expansion: types.FolderTreeExpansion,
     selected: bool,
     has_children: bool,
 ) !goop.NodeHandle {
     const handle = try ctx.tree.addChild(parent, .{ .tree_item = .{
         .label = label,
         .group = 91,
-        .icon = @intFromEnum(types.DemoIcon.folder),
+        .icon = @intFromEnum(goop.StockIcon.folder),
         .icon_color = .rgb(74, 120, 201),
         .has_children = has_children,
-        .expanded = expanded,
+        .expanded = expansion != .collapsed,
+        .disclosure = switch (expansion) {
+            .collapsed => .collapsed,
+            .partial => .partial,
+            .expanded => .expanded,
+        },
         .selected = selected,
     } });
     _ = ctx.setStyle(handle, fileManagerFolderTreeItemStyle(state));
@@ -1180,7 +1285,7 @@ fn buildFolderTree(state: *Scope, ctx: *goop.Context, parent: goop.NodeHandle) !
             item_parent,
             item.path,
             try folderTreeLabel(state, item.path),
-            item.expanded,
+            item.expansion,
             item.selected,
             item.has_children,
         );
@@ -1231,7 +1336,7 @@ fn addTopMenu(
     menu_id: ids.Fixed,
     popup_id: ids.Fixed,
 ) !goop.NodeHandle {
-    const button = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = label } });
+    const button = try ctx.tree.addChild(menu_bar, .{ .menu = .{ .label = label, .mnemonic = firstMnemonic(label) } });
     try identifyFixed(ctx, button, menu_id);
     _ = ctx.setStyle(button, fileManagerMenuStyle(state));
     const popup = try ctx.tree.addChild(button, .{ .popup = .{ .placement = .below_start, .visible = false } });
@@ -1268,6 +1373,10 @@ fn buildTopMenu(state: *Scope, ctx: *goop.Context, root: goop.NodeHandle) !void 
     _ = try addMenuCommandItem(state, ctx, popup, "List View", .view_list, "", .view_menu);
     _ = try addMenuCommandItem(state, ctx, popup, "Grid View", .view_grid, "", .view_menu);
     _ = try addMenuCommandItem(state, ctx, popup, "Sort Directories Together", .toggle_sort_directories, "", .view_menu);
+    _ = try addMenuCommandItem(state, ctx, popup, "Show Hidden Files", .toggle_hidden, "Ctrl+H", .view_menu);
+    _ = try addMenuCommandItem(state, ctx, popup, "Zoom In", .zoom_in, "Ctrl++", .view_menu);
+    _ = try addMenuCommandItem(state, ctx, popup, "Zoom Out", .zoom_out, "Ctrl+-", .view_menu);
+    _ = try addMenuCommandItem(state, ctx, popup, "Reset Zoom", .zoom_reset, "Ctrl+0", .view_menu);
 
     popup = try addTopMenu(state, ctx, menu_bar, "Go", .menu_go, .menu_go_popup);
     _ = try addMenuCommandItem(state, ctx, popup, "Back", .back, "", .go_menu);
@@ -1287,10 +1396,7 @@ fn buildToolbar(state: *Scope, ctx: *goop.Context, root: goop.NodeHandle) !void 
     if (browserCommandEnabled(state, .up)) ctx.tree.setDropTarget(up, true);
     _ = try addToolbarCommandButton(state, ctx, toolbar, "Home", .home);
     _ = try addToolbarCommandButton(state, ctx, toolbar, "Refresh", .refresh);
-    _ = try ctx.tree.addChild(toolbar, .{ .spacer = .{ .width = uiPx(state, 6) } });
-    _ = try addToolbarCommandButton(state, ctx, toolbar, "Sidebar", .toggle_sidebar);
-    _ = try addToolbarCommandButton(state, ctx, toolbar, "Preview", .toggle_preview);
-    _ = try addToolbarCommandButton(state, ctx, toolbar, "Details", .toggle_info);
+    _ = try addToolbarCommandButton(state, ctx, toolbar, "Show Hidden Files", .toggle_hidden);
     _ = try ctx.tree.addChild(toolbar, .{ .spacer = .{ .width = uiPx(state, 8) } });
 
     const address = try ctx.tree.addChildControl(toolbar, desktop.control.textInput(
@@ -1301,13 +1407,21 @@ fn buildToolbar(state: *Scope, ctx: *goop.Context, root: goop.NodeHandle) !void 
     if (ctx.mutateKind(address)) |kind| kind.text_input = state.domain.interaction.address_input;
     _ = ctx.setStyle(address, fileManagerTextInputStyle(state));
 
-    _ = try addToolbarButton(state, ctx, toolbar, "Go", false, true, ids.fixed(.address_go), null);
+    _ = try addToolbarButton(state, ctx, toolbar, "Go", false, true, ids.fixed(.address_go), null, .go);
     _ = try ctx.tree.addChild(toolbar, .{ .spacer = .{ .width = uiPx(state, 8) } });
     _ = try addToolbarCommandButton(state, ctx, toolbar, "List", .view_list);
     _ = try addToolbarCommandButton(state, ctx, toolbar, "Grid", .view_grid);
+    _ = try ctx.tree.addChild(toolbar, .{ .spacer = .{ .width = uiPx(state, 8) } });
+    // Pane toggles, Explorer-style: one button per pane that reads as pressed
+    // while the pane is shown. The same control collapses and re-expands, so
+    // the affordance never moves.
+    _ = try addToolbarCommandButton(state, ctx, toolbar, "Sidebar", .toggle_sidebar);
+    _ = try addToolbarCommandButton(state, ctx, toolbar, "Preview", .toggle_preview);
+    _ = try addToolbarCommandButton(state, ctx, toolbar, "Details", .toggle_info);
 }
 fn buildContentHost(state: *Scope, ctx: *goop.Context, root: goop.NodeHandle, transparent: goop.Color) !goop.NodeHandle {
-    if (!state.domain.model.show_sidebar) {
+    const progress = panelProgress(state, .sidebar);
+    if (progress <= 0.001) {
         const content_host = try ctx.tree.addChild(root, .{ .container = .{ .direction = .column } });
         _ = ctx.setStyle(content_host, fileManagerPaneStyle(state, transparent));
         return content_host;
@@ -1315,10 +1429,10 @@ fn buildContentHost(state: *Scope, ctx: *goop.Context, root: goop.NodeHandle, tr
 
     const nav_splitter = try ctx.tree.addChild(root, .{ .splitter = .{
         .direction = .row,
-        .ratio = state.domain.model.nav_ratio,
-        .min_first = uiPx(state, 220),
+        .ratio = state.domain.model.nav_ratio * progress,
+        .min_first = if (progress >= 0.999) uiPx(state, 220) else 0,
         .min_second = uiPx(state, 420),
-        .thickness = uiPx(state, 8),
+        .thickness = uiPx(state, 10),
         .gap_thickness = 1,
     } });
     try identifyFixed(ctx, nav_splitter, .nav_splitter);
@@ -1329,6 +1443,7 @@ fn buildContentHost(state: *Scope, ctx: *goop.Context, root: goop.NodeHandle, tr
     const sidebar_header = try ctx.tree.addChild(sidebar, .{ .toolbar = .{} });
     _ = ctx.setStyle(sidebar_header, fileManagerPaneHeaderStyle(state));
     _ = try ctx.tree.addChild(sidebar_header, .{ .text = .{ .content = "Browse" } });
+    _ = try ctx.tree.addChild(sidebar_header, .{ .spacer = .{} });
 
     const sidebar_scroll = try ctx.tree.addChild(sidebar, .{ .scroll_area = .{
         .scroll_x = state.domain.model.sidebar_scroll_x,
@@ -1373,7 +1488,10 @@ fn buildContentHost(state: *Scope, ctx: *goop.Context, root: goop.NodeHandle, tr
 }
 
 fn buildInspectorPanels(state: *Scope, ctx: *goop.Context, content_host: goop.NodeHandle) !InspectorPanels {
-    if (!state.domain.model.show_preview and !state.domain.model.show_info) {
+    const preview_progress = panelProgress(state, .preview);
+    const detail_progress = panelProgress(state, .details);
+    const inspector_progress = @max(preview_progress, detail_progress);
+    if (inspector_progress <= 0.001) {
         const file_panel = try ctx.tree.addChild(content_host, .{ .container = .{ .direction = .column } });
         _ = ctx.setStyle(file_panel, fileManagerPaneStyle(state, fileManagerSurfaceColor()));
         return .{ .file_panel = file_panel };
@@ -1381,10 +1499,10 @@ fn buildInspectorPanels(state: *Scope, ctx: *goop.Context, content_host: goop.No
 
     const detail_splitter = try ctx.tree.addChild(content_host, .{ .splitter = .{
         .direction = .row,
-        .ratio = state.domain.model.detail_ratio,
+        .ratio = 1 - (1 - state.domain.model.detail_ratio) * inspector_progress,
         .min_first = uiPx(state, 360),
-        .min_second = uiPx(state, 300),
-        .thickness = uiPx(state, 8),
+        .min_second = if (inspector_progress >= 0.999) uiPx(state, 300) else 0,
+        .thickness = uiPx(state, 10),
         .gap_thickness = 1,
     } });
     try identifyFixed(ctx, detail_splitter, .detail_splitter);
@@ -1395,13 +1513,13 @@ fn buildInspectorPanels(state: *Scope, ctx: *goop.Context, content_host: goop.No
     const inspector_host = try ctx.tree.addChild(detail_splitter, .{ .container = .{ .direction = .column } });
     _ = ctx.setStyle(inspector_host, fileManagerPaneStyle(state, fileManagerSidebarColor()));
 
-    if (state.domain.model.show_preview and state.domain.model.show_info) {
+    if (preview_progress > 0.001 and detail_progress > 0.001) {
         const preview_splitter = try ctx.tree.addChild(inspector_host, .{ .splitter = .{
             .direction = .column,
-            .ratio = state.domain.model.preview_ratio,
-            .min_first = uiPx(state, 180),
-            .min_second = uiPx(state, 180),
-            .thickness = uiPx(state, 8),
+            .ratio = preview_progress / (preview_progress + detail_progress),
+            .min_first = if (preview_progress >= 0.999) uiPx(state, 180) else 0,
+            .min_second = if (detail_progress >= 0.999) uiPx(state, 180) else 0,
+            .thickness = uiPx(state, 10),
             .gap_thickness = 1,
         } });
         try identifyFixed(ctx, preview_splitter, .preview_splitter);
@@ -1415,8 +1533,8 @@ fn buildInspectorPanels(state: *Scope, ctx: *goop.Context, content_host: goop.No
 
     return .{
         .file_panel = file_panel,
-        .preview_panel = if (state.domain.model.show_preview) inspector_host else null,
-        .detail_panel = if (state.domain.model.show_info) inspector_host else null,
+        .preview_panel = if (preview_progress > 0.001) inspector_host else null,
+        .detail_panel = if (detail_progress > 0.001) inspector_host else null,
     };
 }
 
@@ -1428,10 +1546,8 @@ fn buildBreadcrumbBar(state: *Scope, ctx: *goop.Context, file_panel: goop.NodeHa
     ctx.tree.setDropTarget(root_button, true);
     try identify(ctx, root_button, try state.identities.idForPath(.breadcrumb, "/"), null);
     try projection.trackPath(&state.projection.assets.breadcrumb_paths, "/");
-    if (std.mem.eql(u8, state.domain.model.current_dir, "/")) return;
-
     var start: usize = 1;
-    while (start < state.domain.model.current_dir.len) {
+    while (!std.mem.eql(u8, state.domain.model.current_dir, "/") and start < state.domain.model.current_dir.len) {
         const end = std.mem.indexOfScalarPos(u8, state.domain.model.current_dir, start, '/') orelse state.domain.model.current_dir.len;
         _ = try ctx.tree.addChild(breadcrumb_bar, .{ .text = .{ .content = "/" } });
         const segment = state.domain.model.current_dir[start..end];
@@ -1443,12 +1559,14 @@ fn buildBreadcrumbBar(state: *Scope, ctx: *goop.Context, file_panel: goop.NodeHa
         try projection.trackPath(&state.projection.assets.breadcrumb_paths, path);
         start = end + 1;
     }
+    _ = try ctx.tree.addChild(breadcrumb_bar, .{ .spacer = .{} });
 }
 
 fn buildPreviewPanel(state: *Scope, ctx: *goop.Context, panel: goop.NodeHandle, transparent: goop.Color) !void {
     const preview_header = try ctx.tree.addChild(panel, .{ .toolbar = .{} });
     _ = ctx.setStyle(preview_header, fileManagerPaneHeaderStyle(state));
     _ = try ctx.tree.addChild(preview_header, .{ .text = .{ .content = "Preview" } });
+    _ = try ctx.tree.addChild(preview_header, .{ .spacer = .{} });
 
     const preview_scroll = try ctx.tree.addChild(panel, .{ .scroll_area = .{ .disable_horizontal_scroll = true } });
     _ = ctx.setStyle(preview_scroll, .{
@@ -1457,9 +1575,42 @@ fn buildPreviewPanel(state: *Scope, ctx: *goop.Context, panel: goop.NodeHandle, 
         .padding = uiEdgesSymmetric(state, 12, 12),
         .border_radius = 0,
     });
-    const preview_content = try ctx.tree.addChild(preview_scroll, .{ .container = .{ .direction = .column } });
+    const preview_content = try ctx.tree.addChild(preview_scroll, .{ .container = .{ .direction = .column, .fit_main = true } });
     _ = ctx.setStyle(preview_content, fileManagerDetailContentStyle(state));
     const prepared = state.domain.presentation.preview;
+    if (prepared.directory) |directory| {
+        const folder = try ctx.tree.addChild(preview_content, .{ .icon = .{
+            .kind = @intFromEnum(goop.StockIcon.folder),
+            .color = .rgb(74, 120, 201),
+        } });
+        _ = ctx.setStyle(folder, .{
+            .bg = .rgba(0, 0, 0, 0),
+            .border_width = 0,
+            .font_size = uiPx(state, 72),
+            .padding = uiEdgesAll(state, 4),
+            .border_radius = 0,
+        });
+
+        if (directory.samples.items.len > 0) {
+            const samples = try ctx.tree.addChild(preview_content, .{ .container = .{ .direction = .column } });
+            _ = ctx.setStyle(samples, .{ .bg = .rgb(251, 252, 254), .border = .rgb(218, 224, 232), .border_width = 1, .padding = uiEdgesSymmetric(state, 8, 6), .spacing = uiPx(state, 5), .border_radius = uiPx(state, 5) });
+            for (directory.samples.items) |sample| {
+                const line = try ctx.tree.addChild(samples, .{ .container = .{ .direction = .row } });
+                _ = ctx.setStyle(line, .{ .bg = .rgba(0, 0, 0, 0), .border_width = 0, .padding = uiEdgesAll(state, 0), .spacing = uiPx(state, 6), .border_radius = 0 });
+                const sample_icon: goop.StockIcon = switch (sample.kind) {
+                    .folder => .folder,
+                    .symlink => .file_symlink,
+                    else => .file,
+                };
+                _ = try ctx.tree.addChild(line, .{ .icon = .{ .kind = @intFromEnum(sample_icon), .color = if (sample.kind == .folder) .rgb(74, 120, 201) else .rgb(118, 127, 141) } });
+                _ = try addStyledDetailText(ctx, line, try allocUiUtf8Lossy(state, sample.name), .ellipsis, style.fileManagerInspectorValueStyle(state.viewport.ui_scale));
+            }
+        }
+
+        const total = directory.directory_count + directory.image_count + directory.text_count + directory.other_count;
+        const prefix = if (directory.approximate) "At least " else "";
+        _ = try addStyledDetailText(ctx, preview_content, try allocUiString(state, "{s}{d} items · {d} folders · {d} images · {d} text", .{ prefix, total, directory.directory_count, directory.image_count, directory.text_count }), .wrap, fileManagerDetailMetaStyle(state));
+    }
     if (prepared.image) |pixels| {
         const preview_width = uiPx(state, 260);
         const aspect = @as(f32, @floatFromInt(pixels.height)) /
@@ -1475,7 +1626,7 @@ fn buildPreviewPanel(state: *Scope, ctx: *goop.Context, panel: goop.NodeHandle, 
     }
     const preview_text = try allocUiWrappedText(
         state,
-        prepared.text orelse if (prepared.image == null) "Preview unavailable." else "",
+        prepared.text orelse "",
         previewBodyFontSizePx(state),
     );
     const preview_text_parent = if (prepared.framed) blk: {
@@ -1494,21 +1645,129 @@ fn buildPreviewPanel(state: *Scope, ctx: *goop.Context, panel: goop.NodeHandle, 
     }
 }
 
+fn addStatDetails(
+    state: *Scope,
+    ctx: *goop.Context,
+    parent: goop.NodeHandle,
+    stat: types.EntryStat,
+    prefix: []const u8,
+) !void {
+    const modified = try allocFormattedTimestampDetail(state, stat.modified_unix);
+    const changed = try allocFormattedTimestampDetail(state, stat.changed_unix);
+    try addInspectorField(state, ctx, parent, try allocUiString(state, "{s}Size", .{prefix}), try allocUiString(state, "{d} bytes", .{stat.size_bytes}));
+    try addInspectorField(state, ctx, parent, try allocUiString(state, "{s}Modified", .{prefix}), modified);
+    if (stat.accessed_unix) |accessed_unix| {
+        const accessed = try allocFormattedTimestampDetail(state, accessed_unix);
+        try addInspectorField(state, ctx, parent, try allocUiString(state, "{s}Accessed", .{prefix}), accessed);
+    }
+    try addInspectorField(state, ctx, parent, try allocUiString(state, "{s}Metadata changed", .{prefix}), changed);
+    try addInspectorField(state, ctx, parent, try allocUiString(state, "{s}Inode", .{prefix}), try allocUiString(state, "{d}", .{stat.inode}));
+    try addInspectorField(state, ctx, parent, try allocUiString(state, "{s}Links", .{prefix}), try allocUiString(state, "{d}", .{stat.links}));
+    try addInspectorField(state, ctx, parent, try allocUiString(state, "{s}I/O block size", .{prefix}), try allocUiString(state, "{d} bytes", .{stat.block_size}));
+}
+
+fn permissionControlStyle(state: *const Scope) goop.Style {
+    return .{
+        .fg = style.fileManagerInspectorValueStyle(state.viewport.ui_scale).fg,
+        .bg = .rgba(0, 0, 0, 0),
+        .border_width = 0,
+        .font_size = uiPx(state, 13),
+        .padding = uiEdgesAll(state, 2),
+        .border_radius = uiPx(state, 2),
+        .spacing = uiPx(state, 3),
+    };
+}
+
+fn addPermissionEditor(state: *Scope, ctx: *goop.Context, parent: goop.NodeHandle) !void {
+    var octal_buffer: [24]u8 = undefined;
+    try addInspectorField(
+        state,
+        ctx,
+        parent,
+        "Permissions",
+        try allocUiString(state, "{s}", .{permissions.format(&octal_buffer, state.domain.interaction.permission_draft)}),
+    );
+
+    const rows = [_]struct {
+        label: []const u8,
+        elements: [4]ids.Fixed,
+        masks: [4]u16,
+    }{
+        .{ .label = "Owner", .elements = .{ .permission_owner_read, .permission_owner_write, .permission_owner_execute, .permission_owner_special }, .masks = .{ 0o400, 0o200, 0o100, 0o4000 } },
+        .{ .label = "Group", .elements = .{ .permission_group_read, .permission_group_write, .permission_group_execute, .permission_group_special }, .masks = .{ 0o040, 0o020, 0o010, 0o2000 } },
+        .{ .label = "Everyone", .elements = .{ .permission_other_read, .permission_other_write, .permission_other_execute, .permission_other_special }, .masks = .{ 0o004, 0o002, 0o001, 0o1000 } },
+    };
+    const labels = [_][]const u8{ "R", "W", "X", "Special" };
+    for (rows) |row| {
+        const line = try ctx.tree.addChild(parent, .{ .container = .{ .direction = .row } });
+        _ = ctx.setStyle(line, .{ .bg = .rgba(0, 0, 0, 0), .border_width = 0, .padding = uiEdgesAll(state, 0), .spacing = uiPx(state, 5), .border_radius = 0 });
+        const who_style = style.fileManagerInspectorLabelStyle(state.viewport.ui_scale);
+        _ = try addStyledDetailText(ctx, line, row.label, .clip, who_style);
+        const label_width = goop.layout.measureTextDimensions(
+            row.label,
+            who_style.font_size orelse uiPx(state, 13),
+            state.projection.text_measure_ctx,
+        ).width;
+        _ = try ctx.tree.addChild(line, .{ .spacer = .{ .width = @max(uiPx(state, 62) - label_width, 0) } });
+        for (row.elements, row.masks, labels) |element, mask, label| {
+            const toggle = try ctx.tree.addChildControl(line, desktop.control.toggle(ids.fixed(element), null, .{
+                .label = label,
+                .checked = state.domain.interaction.permission_draft & mask != 0,
+            }));
+            _ = ctx.setStyle(toggle, permissionControlStyle(state));
+        }
+    }
+
+    const actions = try ctx.tree.addChild(parent, .{ .container = .{ .direction = .row } });
+    _ = ctx.setStyle(actions, .{ .bg = .rgba(0, 0, 0, 0), .border_width = 0, .padding = uiEdgesAll(state, 0), .spacing = uiPx(state, 6), .border_radius = 0 });
+    _ = try ctx.tree.addChild(actions, .{ .spacer = .{} });
+    const cancel = try ctx.tree.addChildControl(actions, desktop.control.button(ids.fixed(.permission_cancel), null, .{ .label = "Cancel" }));
+    _ = ctx.setStyle(cancel, style.fileManagerActionButtonStyle(state.viewport.ui_scale, false));
+    const apply = try ctx.tree.addChildControl(actions, desktop.control.button(ids.fixed(.permission_apply), null, .{ .label = "Apply" }));
+    _ = ctx.setStyle(apply, style.fileManagerActionButtonStyle(state.viewport.ui_scale, true));
+}
+
+fn addPermissionDetails(
+    state: *Scope,
+    ctx: *goop.Context,
+    parent: goop.NodeHandle,
+    path: []const u8,
+    mode: u64,
+    prefix: []const u8,
+    editable: bool,
+) !void {
+    if (editable and state.domain.interaction.permission_path != null and
+        std.mem.eql(u8, state.domain.interaction.permission_path.?, path))
+    {
+        try addPermissionEditor(state, ctx, parent);
+        return;
+    }
+
+    var buffer: [24]u8 = undefined;
+    const rendered = try allocUiString(state, "{s}", .{permissions.format(&buffer, mode)});
+    const label = try allocUiString(state, "{s}Permissions", .{prefix});
+    if (!editable) {
+        try addInspectorField(state, ctx, parent, label, rendered);
+        return;
+    }
+    const button = try ctx.tree.addChildControl(parent, desktop.control.button(
+        ids.fixed(.permission_edit),
+        null,
+        .{ .label = "" },
+    ));
+    _ = ctx.setStyle(button, .{
+        .bg = .rgba(0, 0, 0, 0),
+        .border_width = 0,
+        .padding = uiEdgesAll(state, 0),
+        .border_radius = uiPx(state, 2),
+    });
+    try addInspectorField(state, ctx, button, label, rendered);
+    const tooltip = try ctx.tree.addChild(button, .{ .tooltip = .{ .placement = .below_start, .y = uiPx(state, 3) } });
+    _ = try ctx.tree.addChild(tooltip, .{ .text = .{ .content = "Edit permissions" } });
+}
+
 fn addSingleSelectionDetails(state: *Scope, ctx: *goop.Context, detail_content: goop.NodeHandle) !void {
     const entry = selectedEntry(state).?;
-    const modified_text = try allocFormattedTimestampDetail(state, entry.modified_unix);
-    const size_text = try allocFormattedSize(state, entry.kind, entry.size_bytes, entry.target_kind);
-    const meta_text = if (size_text.len > 0)
-        try allocUiString(state, "{s} · {s} · {s}", .{
-            entry.typeLabel(),
-            size_text,
-            modified_text,
-        })
-    else
-        try allocUiString(state, "{s} · {s}", .{
-            entry.typeLabel(),
-            modified_text,
-        });
     _ = try addStyledDetailText(
         ctx,
         detail_content,
@@ -1516,40 +1775,25 @@ fn addSingleSelectionDetails(state: *Scope, ctx: *goop.Context, detail_content: 
         .wrap,
         fileManagerDetailTitleStyle(state),
     );
-    _ = try addStyledDetailText(ctx, detail_content, meta_text, .wrap, fileManagerDetailMetaStyle(state));
+    try addInspectorField(state, ctx, detail_content, "Type", entry.typeLabel());
 
-    const path_line = try std.fmt.allocPrint(allocator, "Path: {f}", .{std.unicode.fmtUtf8(entry.path)});
-    defer allocator.free(path_line);
-    _ = try addStyledDetailText(
-        ctx,
-        detail_content,
-        try allocUiDetailWrappedUtf8Lossy(state, path_line, detailCaptionFontSizePx(state)),
-        .wrap,
-        fileManagerDetailMetaStyle(state),
-    );
+    try addInspectorField(state, ctx, detail_content, "Path", try allocUiDetailWrappedUtf8Lossy(state, entry.path, detailCaptionFontSizePx(state)));
     if (entry.target_path) |target_path| {
-        const target_line = try std.fmt.allocPrint(allocator, "Target: {f}", .{std.unicode.fmtUtf8(target_path)});
-        defer allocator.free(target_line);
-        _ = try addStyledDetailText(
-            ctx,
-            detail_content,
-            try allocUiDetailWrappedUtf8Lossy(state, target_line, detailCaptionFontSizePx(state)),
-            .wrap,
-            fileManagerDetailMetaStyle(state),
-        );
+        try addInspectorField(state, ctx, detail_content, "Target", try allocUiDetailWrappedUtf8Lossy(state, target_path, detailCaptionFontSizePx(state)));
     }
-    _ = try addStyledDetailText(
+    const link_stat = entry.linkStat();
+    try addPermissionDetails(
+        state,
         ctx,
         detail_content,
-        if (entry.canEnter())
-            "Double-click to enter this folder."
-        else if (entry.kind == .symlink)
-            "Use Go or Open Link Target to follow this symbolic link."
-        else
-            "Text files preview inline here; other file types show a summary.",
-        .wrap,
-        fileManagerDetailHintStyle(state),
+        entry.path,
+        if (entry.target_stat) |target| target.permissions else link_stat.permissions,
+        if (entry.kind == .symlink) "Target " else "",
+        true,
     );
+    if (entry.kind == .symlink) try addPermissionDetails(state, ctx, detail_content, entry.path, link_stat.permissions, "Link ", false);
+    try addStatDetails(state, ctx, detail_content, link_stat, if (entry.kind == .symlink) "Link " else "");
+    if (entry.target_stat) |target_stat| try addStatDetails(state, ctx, detail_content, target_stat, "Target ");
 }
 
 fn addMultiSelectionDetails(state: *Scope, ctx: *goop.Context, detail_content: goop.NodeHandle, summary: BrowserSummary) !void {
@@ -1587,14 +1831,6 @@ fn addMultiSelectionDetails(state: *Scope, ctx: *goop.Context, detail_content: g
             fileManagerDetailMetaStyle(state),
         );
     }
-
-    _ = try addStyledDetailText(
-        ctx,
-        detail_content,
-        "Ctrl-click and Shift-click extend the current selection.",
-        .wrap,
-        fileManagerDetailHintStyle(state),
-    );
 }
 
 fn addDirectoryDetails(state: *Scope, ctx: *goop.Context, detail_content: goop.NodeHandle, summary: BrowserSummary) !void {
@@ -1617,40 +1853,18 @@ fn addDirectoryDetails(state: *Scope, ctx: *goop.Context, detail_content: goop.N
         .wrap,
         fileManagerDetailMetaStyle(state),
     );
-    _ = try addStyledDetailText(
-        ctx,
-        detail_content,
-        try allocUiString(state, "Sort: {s}, {s}{s} · View: {s}", .{
-            sortColumnLabel(state.domain.model.sort_column),
-            sortDirectionLabel(state.domain.model.sort_direction),
-            if (state.domain.model.sort_directories_together) ", directories together" else "",
-            browserViewModeLabel(state.domain.model.view_mode),
-        }),
-        .wrap,
-        fileManagerDetailMetaStyle(state),
-    );
-    const current_path_line = try std.fmt.allocPrint(allocator, "Path: {f}", .{std.unicode.fmtUtf8(state.domain.model.current_dir)});
-    defer allocator.free(current_path_line);
-    _ = try addStyledDetailText(
-        ctx,
-        detail_content,
-        try allocUiDetailWrappedUtf8Lossy(state, current_path_line, detailCaptionFontSizePx(state)),
-        .wrap,
-        fileManagerDetailMetaStyle(state),
-    );
-    _ = try addStyledDetailText(
-        ctx,
-        detail_content,
-        "Select a file to inspect it, or use Preview to skim folders and text files inline.",
-        .wrap,
-        fileManagerDetailHintStyle(state),
-    );
+    try addInspectorField(state, ctx, detail_content, "Path", try allocUiDetailWrappedUtf8Lossy(state, state.domain.model.current_dir, detailCaptionFontSizePx(state)));
+    if (state.domain.presentation.current_directory_stat) |stat| {
+        try addPermissionDetails(state, ctx, detail_content, state.domain.model.current_dir, stat.permissions, "", true);
+        try addStatDetails(state, ctx, detail_content, stat, "");
+    }
 }
 
 fn buildDetailPanel(state: *Scope, ctx: *goop.Context, panel: goop.NodeHandle, transparent: goop.Color, summary: BrowserSummary) !void {
     const detail_header = try ctx.tree.addChild(panel, .{ .toolbar = .{} });
     _ = ctx.setStyle(detail_header, fileManagerPaneHeaderStyle(state));
     _ = try ctx.tree.addChild(detail_header, .{ .text = .{ .content = "Details" } });
+    _ = try ctx.tree.addChild(detail_header, .{ .spacer = .{} });
     const detail_scroll = try ctx.tree.addChild(panel, .{ .scroll_area = .{ .disable_horizontal_scroll = true } });
     _ = ctx.setStyle(detail_scroll, .{
         .bg = transparent,
@@ -1658,7 +1872,7 @@ fn buildDetailPanel(state: *Scope, ctx: *goop.Context, panel: goop.NodeHandle, t
         .padding = uiEdgesSymmetric(state, 12, 12),
         .border_radius = 0,
     });
-    const detail_content = try ctx.tree.addChild(detail_scroll, .{ .container = .{ .direction = .column } });
+    const detail_content = try ctx.tree.addChild(detail_scroll, .{ .container = .{ .direction = .column, .fit_main = true } });
     _ = ctx.setStyle(detail_content, fileManagerDetailContentStyle(state));
 
     if (summary.selected_count == 1 and selectedEntry(state) != null) {
@@ -1764,6 +1978,18 @@ pub fn buildWidgetTree(
 ) !void {
     var state = scope(input, output);
     try buildTree(&state, ctx);
+}
+
+pub fn tickPanelAnimations(
+    input: capabilities.ViewInput,
+    output: capabilities.ViewOutput,
+    now_ns: u64,
+) panel_animation.Tick {
+    return output.projection.panels.tick(.{
+        .sidebar = input.model.show_sidebar,
+        .preview = input.model.show_preview,
+        .details = input.model.show_info,
+    }, now_ns);
 }
 
 /// Refresh only the virtualized asset projection after layout or scrolling.

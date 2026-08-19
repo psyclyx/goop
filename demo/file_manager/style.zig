@@ -18,15 +18,15 @@ pub fn uiEdgesSymmetric(ui_scale: f32, h: f32, v: f32) goop.style.Edges {
 }
 
 pub fn detailTitleFontSizePx(ui_scale: f32) f32 {
-    return uiPx(ui_scale, 16);
+    return uiPx(ui_scale, 17);
 }
 
 pub fn detailCaptionFontSizePx(ui_scale: f32) f32 {
-    return uiPx(ui_scale, 13);
+    return uiPx(ui_scale, 14.5);
 }
 
 pub fn previewBodyFontSizePx(ui_scale: f32) f32 {
-    return uiPx(ui_scale, 13);
+    return uiPx(ui_scale, 14.5);
 }
 
 pub fn fileManagerThemeForScale(ui_scale: f32) goop.Theme {
@@ -82,22 +82,55 @@ pub fn fileManagerMutedTextColor() goop.Color {
     return .rgb(100, 109, 123);
 }
 
+/// Command-bar style: borderless and transparent at rest, revealing a soft
+/// rounded fill on hover/press (Fluent toolbar convention). A toggled-on
+/// button (e.g. the active view mode) carries a persistent accent tint so it
+/// reads as selected. This is what the toolbar nav icons and breadcrumb
+/// segments use — no faint half-there boxes.
 pub fn fileManagerToolbarButtonStyle(ui_scale: f32, active: bool, enabled: bool) goop.Style {
+    const transparent = goop.Color.rgba(0, 0, 0, 0);
     return .{
-        .bg = if (active)
-            .rgb(222, 233, 249)
-        else if (enabled)
-            .rgb(247, 249, 252)
-        else
-            .rgb(240, 243, 247),
-        .fg = if (enabled) fileManagerThemeForScale(ui_scale).fg else fileManagerMutedTextColor(),
-        .border = if (active)
+        .bg = if (active) .rgb(217, 231, 250) else transparent,
+        .fg = if (!enabled)
+            fileManagerMutedTextColor()
+        else if (active)
             fileManagerThemeForScale(ui_scale).accent
         else
-            .rgb(209, 216, 226),
+            fileManagerThemeForScale(ui_scale).fg,
+        .bg_hover = if (active) .rgb(205, 223, 248) else .rgb(226, 234, 245),
+        .bg_active = .rgb(213, 226, 244),
+        .border = if (active) fileManagerThemeForScale(ui_scale).accent else transparent,
+        .border_width = if (active) uiPx(ui_scale, 1) else 0,
+        .padding = uiEdgesSymmetric(ui_scale, 9, 6),
+        .border_radius = uiPx(ui_scale, 6),
+    };
+}
+
+/// Defined chip for dialog actions: a solid surface with a clear border and a
+/// proper hover. `primary` fills with the accent (white label) and darkens on
+/// hover; the secondary form is a neutral white card.
+pub fn fileManagerActionButtonStyle(ui_scale: f32, primary: bool) goop.Style {
+    if (primary) {
+        return .{
+            .bg = .rgb(58, 126, 219),
+            .fg = .rgb(255, 255, 255),
+            .bg_hover = .rgb(46, 111, 201),
+            .bg_active = .rgb(38, 98, 182),
+            .border = .rgb(46, 108, 196),
+            .border_width = uiPx(ui_scale, 1),
+            .padding = uiEdgesSymmetric(ui_scale, 16, 7),
+            .border_radius = uiPx(ui_scale, 6),
+        };
+    }
+    return .{
+        .bg = .rgb(255, 255, 255),
+        .fg = fileManagerThemeForScale(ui_scale).fg,
+        .bg_hover = .rgb(240, 244, 249),
+        .bg_active = .rgb(230, 236, 244),
+        .border = .rgb(200, 208, 221),
         .border_width = uiPx(ui_scale, 1),
-        .padding = uiEdgesSymmetric(ui_scale, 10, 6),
-        .border_radius = uiPx(ui_scale, 5),
+        .padding = uiEdgesSymmetric(ui_scale, 16, 7),
+        .border_radius = uiPx(ui_scale, 6),
     };
 }
 
@@ -294,10 +327,35 @@ pub fn fileManagerDetailMetaStyle(ui_scale: f32) goop.Style {
     };
 }
 
-pub fn fileManagerDetailHintStyle(ui_scale: f32) goop.Style {
+pub fn fileManagerInspectorLabelStyle(ui_scale: f32) goop.Style {
     return .{
         .fg = fileManagerMutedTextColor(),
+        .font_size = uiPx(ui_scale, 13),
+    };
+}
+
+pub fn fileManagerInspectorValueStyle(ui_scale: f32) goop.Style {
+    return .{
+        .fg = .rgb(31, 37, 46),
         .font_size = detailCaptionFontSizePx(ui_scale),
+    };
+}
+
+pub fn fileManagerInspectorSectionStyle(ui_scale: f32) goop.Style {
+    return .{
+        .fg = .rgb(74, 84, 99),
+        .font_size = uiPx(ui_scale, 12),
+    };
+}
+
+pub fn fileManagerEmptyStateStyle(ui_scale: f32) goop.Style {
+    return .{
+        .fg = fileManagerMutedTextColor(),
+        .bg = .rgba(0, 0, 0, 0),
+        .border_width = 0,
+        .font_size = uiPx(ui_scale, 14.5),
+        .padding = uiEdgesAll(ui_scale, 24),
+        .border_radius = 0,
     };
 }
 
