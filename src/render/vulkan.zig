@@ -12,6 +12,7 @@ const snail = @import("snail");
 const DeviceAtlas = @import("vulkan/device_atlas.zig").DeviceAtlas;
 const PipelineRenderer = @import("vulkan/renderer.zig").PipelineRenderer;
 const target_mod = snail.render.target;
+const stock_icon = @import("stock_icon.zig");
 
 pub const Renderer = struct {
     allocator: std.mem.Allocator,
@@ -37,6 +38,7 @@ pub const Renderer = struct {
         max_instances: usize = 65_536,
         max_bindings: u32 = 8,
         layer_info_height: u32 = 256,
+        max_layer_info_height: u32 = 4096,
         max_images: u32 = 16,
         max_image_width: u32 = 2048,
         max_image_height: u32 = 2048,
@@ -67,6 +69,7 @@ pub const Renderer = struct {
         var atlas = try DeviceAtlas.init(allocator, device_context, text.pool(), .{
             .max_bindings = options.max_bindings,
             .layer_info_height = options.layer_info_height,
+            .max_layer_info_height = options.max_layer_info_height,
             .max_images = options.max_images,
             .max_image_width = options.max_image_width,
             .max_image_height = options.max_image_height,
@@ -74,7 +77,14 @@ pub const Renderer = struct {
         errdefer atlas.deinit();
 
         var bindings: [2]goop_snail.Binding = undefined;
-        try atlas.upload(allocator, &.{ text.atlas(), images.atlas() }, &bindings);
+        atlas.upload(allocator, &.{ text.atlas(), images.atlas() }, &bindings) catch |err| switch (err) {
+            error.NoFreeLayerInfoRows => try atlas.rebuild(
+                allocator,
+                &.{ text.atlas(), images.atlas() },
+                &bindings,
+            ),
+            else => return err,
+        };
 
         var pipelines = try PipelineRenderer.init(
             device_context,
@@ -191,14 +201,42 @@ pub const Renderer = struct {
     pub fn updateVisualResources(self: *Renderer, text: *const goop_snail.TextEngine) !void {
         const identity = text.atlasIdentity();
         if (!std.meta.eql(identity, self.uploaded_atlas_identity)) {
-            self.binding = try self.updateAtlasBinding(self.binding, text.atlas());
+            self.binding = self.updateAtlasBinding(self.binding, text.atlas()) catch |err| switch (err) {
+                error.NoFreeLayerInfoRows => {
+                    try self.rebuildAtlasBindings(text);
+                    return;
+                },
+                else => return err,
+            };
             self.uploaded_atlas_identity = identity;
         }
         const image_identity = self.images.atlasIdentity();
         if (!std.meta.eql(image_identity, self.uploaded_image_atlas_identity)) {
-            self.image_binding = try self.updateAtlasBinding(self.image_binding, self.images.atlas());
+            self.image_binding = self.updateAtlasBinding(self.image_binding, self.images.atlas()) catch |err| switch (err) {
+                error.NoFreeLayerInfoRows => {
+                    try self.rebuildAtlasBindings(text);
+                    return;
+                },
+                else => return err,
+            };
             self.uploaded_image_atlas_identity = image_identity;
         }
+    }
+
+    fn rebuildAtlasBindings(
+        self: *Renderer,
+        text: *const goop_snail.TextEngine,
+    ) !void {
+        var bindings: [2]goop_snail.Binding = undefined;
+        try self.atlas.rebuild(
+            self.allocator,
+            &.{ text.atlas(), self.images.atlas() },
+            &bindings,
+        );
+        self.binding = bindings[0];
+        self.image_binding = bindings[1];
+        self.uploaded_atlas_identity = text.atlasIdentity();
+        self.uploaded_image_atlas_identity = self.images.atlasIdentity();
     }
 
     fn updateAtlasBinding(
@@ -621,40 +659,65 @@ fn drawSurface(
     surface: visual.Surface,
     visible: visual.Rect,
 ) !void {
-    try drawColorRect(
-        self,
-        target,
-        text,
-        surface.bounds,
-        surface.color,
-        visible,
-    );
-
     const border = @min(
         @max(0, surface.border_width),
         @min(surface.bounds.w, surface.bounds.h) * 0.5,
     );
     if (border > 0 and surface.border_color.a > 0) {
-        const b = surface.bounds;
-        const edges = [_]visual.Rect{
-            .{ .x = b.x, .y = b.y, .w = b.w, .h = border },
-            .{ .x = b.x, .y = b.y + b.h - border, .w = b.w, .h = border },
-            .{ .x = b.x, .y = b.y + border, .w = border, .h = @max(0, b.h - border * 2) },
-            .{ .x = b.x + b.w - border, .y = b.y + border, .w = border, .h = @max(0, b.h - border * 2) },
+        try drawRoundedColorRect(self, target, text, surface.bounds, surface.border_color, surface.corner_radius, visible);
+        const inner = visual.Rect{
+            .x = surface.bounds.x + border,
+            .y = surface.bounds.y + border,
+            .w = @max(0, surface.bounds.w - border * 2),
+            .h = @max(0, surface.bounds.h - border * 2),
         };
-        for (edges) |edge| {
-            if (intersect(edge, visible)) |clipped| {
-                try drawColorRect(
-                    self,
-                    target,
-                    text,
-                    edge,
-                    surface.border_color,
-                    clipped,
-                );
-            }
-        }
+        try drawRoundedColorRect(self, target, text, inner, surface.color, @max(0, surface.corner_radius - border), visible);
+    } else {
+        try drawRoundedColorRect(self, target, text, surface.bounds, surface.color, surface.corner_radius, visible);
     }
+}
+
+fn drawRoundedColorRect(
+    self: *Renderer,
+    target: graphics.RenderTarget,
+    text: *goop_snail.TextEngine,
+    bounds: visual.Rect,
+    color: visual.Color,
+    requested_radius: f32,
+    visible: visual.Rect,
+) !void {
+    if (color.a == 0 or bounds.w <= 0 or bounds.h <= 0) return;
+    const radius = @min(@max(requested_radius, 0), @min(bounds.w, bounds.h) * 0.5);
+    if (radius < 0.75) {
+        if (intersect(bounds, visible)) |clipped| try drawColorRect(self, target, text, bounds, color, clipped);
+        return;
+    }
+
+    const bands: usize = @intFromFloat(@ceil(radius));
+    for (0..bands) |index| {
+        const y_offset = @min(@as(f32, @floatFromInt(index)), radius);
+        const band_height = @min(@as(f32, 1), radius - y_offset);
+        if (band_height <= 0) continue;
+        const inset = roundedBandInset(radius, y_offset + band_height * 0.5);
+        const width = @max(0, bounds.w - inset * 2);
+        const top = visual.Rect{ .x = bounds.x + inset, .y = bounds.y + y_offset, .w = width, .h = band_height };
+        const bottom = visual.Rect{ .x = bounds.x + inset, .y = bounds.y + bounds.h - y_offset - band_height, .w = width, .h = band_height };
+        if (intersect(top, visible)) |clipped| try drawColorRect(self, target, text, top, color, clipped);
+        if (intersect(bottom, visible)) |clipped| try drawColorRect(self, target, text, bottom, color, clipped);
+    }
+    const middle = visual.Rect{
+        .x = bounds.x,
+        .y = bounds.y + radius,
+        .w = bounds.w,
+        .h = @max(0, bounds.h - radius * 2),
+    };
+    if (intersect(middle, visible)) |clipped| try drawColorRect(self, target, text, middle, color, clipped);
+}
+
+fn roundedBandInset(radius: f32, y_from_edge: f32) f32 {
+    if (radius <= 0) return 0;
+    const dy = std.math.clamp(radius - y_from_edge, 0, radius);
+    return radius - @sqrt(@max(0, radius * radius - dy * dy));
 }
 
 const ColorRectMode = enum { skip, replace, blend };
@@ -705,51 +768,59 @@ fn drawIcon(
     visible: visual.Rect,
 ) !void {
     const b = icon.bounds;
-    const parts = switch (icon.kind) {
-        0 => [_]visual.Rect{
-            .{ .x = b.x + b.w * 0.07, .y = b.y + b.h * 0.28, .w = b.w * 0.86, .h = b.h * 0.58 },
-            .{ .x = b.x + b.w * 0.12, .y = b.y + b.h * 0.18, .w = b.w * 0.34, .h = b.h * 0.2 },
-            zero_rect,
-            zero_rect,
-        },
-        1, 2 => [_]visual.Rect{
-            .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.08, .w = b.w * 0.64, .h = b.h * 0.84 },
-            zero_rect,
-            zero_rect,
-            zero_rect,
-        },
-        7 => [_]visual.Rect{
-            .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.22, .w = b.w * 0.64, .h = b.h * 0.1 },
-            .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.46, .w = b.w * 0.64, .h = b.h * 0.1 },
-            .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.70, .w = b.w * 0.64, .h = b.h * 0.1 },
-            zero_rect,
-        },
-        8 => [_]visual.Rect{
-            .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.18, .w = b.w * 0.25, .h = b.h * 0.25 },
-            .{ .x = b.x + b.w * 0.57, .y = b.y + b.h * 0.18, .w = b.w * 0.25, .h = b.h * 0.25 },
-            .{ .x = b.x + b.w * 0.18, .y = b.y + b.h * 0.57, .w = b.w * 0.25, .h = b.h * 0.25 },
-            .{ .x = b.x + b.w * 0.57, .y = b.y + b.h * 0.57, .w = b.w * 0.25, .h = b.h * 0.25 },
-        },
-        else => [_]visual.Rect{
-            .{ .x = b.x + b.w * 0.2, .y = b.y + b.h * 0.2, .w = b.w * 0.6, .h = b.h * 0.6 },
-            zero_rect,
-            zero_rect,
-            zero_rect,
-        },
-    };
-    for (parts) |part| {
+    for (stock_icon.geometry(icon.kind)) |definition| {
+        const normalized = definition.rect;
+        const part = visual.Rect{
+            .x = b.x + b.w * normalized.x,
+            .y = b.y + b.h * normalized.y,
+            .w = b.w * normalized.w,
+            .h = b.h * normalized.h,
+        };
         if (part.w <= 0 or part.h <= 0) continue;
         if (intersect(part, visible)) |clipped| {
+            const part_color = switch (definition.tone) {
+                .base => icon.color,
+                .detail => iconDetailColor(icon.color),
+                .highlight => iconHighlightColor(icon.color),
+                .paper => iconPaperColor(icon.color),
+            };
             try drawColorRect(
                 self,
                 target,
                 text,
                 part,
-                icon.color,
+                part_color,
                 clipped,
             );
         }
     }
+}
+
+fn iconPaperColor(color: visual.Color) visual.Color {
+    return .{
+        .r = @intCast((@as(u16, color.r) + 255 * 5) / 6),
+        .g = @intCast((@as(u16, color.g) + 255 * 5) / 6),
+        .b = @intCast((@as(u16, color.b) + 255 * 5) / 6),
+        .a = color.a,
+    };
+}
+
+fn iconDetailColor(color: visual.Color) visual.Color {
+    return .{
+        .r = @intCast(@as(u16, color.r) * 3 / 5),
+        .g = @intCast(@as(u16, color.g) * 3 / 5),
+        .b = @intCast(@as(u16, color.b) * 3 / 5),
+        .a = color.a,
+    };
+}
+
+fn iconHighlightColor(color: visual.Color) visual.Color {
+    return .{
+        .r = @intCast((@as(u16, color.r) * 3 + 255) / 4),
+        .g = @intCast((@as(u16, color.g) * 3 + 255) / 4),
+        .b = @intCast((@as(u16, color.b) * 3 + 255) / 4),
+        .a = color.a,
+    };
 }
 
 const zero_rect = visual.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
@@ -822,6 +893,19 @@ test "surface alpha selects skip, replacement, or blended drawing" {
         ColorRectMode.replace,
         colorRectMode(.rgba(20, 30, 40, 255)),
     );
+}
+
+test "rounded rectangle bands remain symmetric and bounded" {
+    for (1..33) |radius_int| {
+        const radius: f32 = @floatFromInt(radius_int);
+        var previous = radius;
+        for (0..radius_int) |band| {
+            const inset = roundedBandInset(radius, @as(f32, @floatFromInt(band)) + 0.5);
+            try std.testing.expect(inset >= 0 and inset <= radius);
+            try std.testing.expect(inset <= previous + 0.0001);
+            previous = inset;
+        }
+    }
 }
 
 test "logical-to-physical scaling is explicit and complete" {

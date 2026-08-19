@@ -44,6 +44,35 @@ pub const TextOverflow = enum {
 /// Opaque icon identity interpreted by the look or renderer.
 pub const IconId = u32;
 
+/// Stable vocabulary provided by the stock desktop look. Applications remain
+/// free to use other opaque IDs with a renderer that understands them.
+pub const StockIcon = enum(IconId) {
+    folder = 0,
+    file = 1,
+    symlink = 2,
+    home = 3,
+    back = 4,
+    up = 5,
+    refresh = 6,
+    list = 7,
+    grid = 8,
+    info = 9,
+    folder_symlink = 10,
+    file_symlink = 11,
+    forward = 12,
+    sidebar = 13,
+    preview = 14,
+    zoom_in = 15,
+    zoom_out = 16,
+    zoom_reset = 17,
+    hidden = 18,
+    close = 19,
+    go = 20,
+    collapse_left = 21,
+    collapse_right = 22,
+    check = 23,
+};
+
 /// Semantic identity for an application-supplied visual. This is deliberately
 /// not a tree-storage handle: it survives reconciliation and can be understood
 /// by a renderer that has never imported Goop core.

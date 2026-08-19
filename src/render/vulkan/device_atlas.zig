@@ -26,7 +26,11 @@ const INFO_WIDTH: u32 = upload_plan.INFO_WIDTH;
 
 pub const Options = struct {
     max_bindings: u32 = 8,
+    /// Initial shared row capacity for atlas paint/layer records.
     layer_info_height: u32 = 256,
+    /// Hard application-side ceiling for dynamic layer-info growth. The
+    /// physical device's 2D image-height limit may lower this further.
+    max_layer_info_height: u32 = 4096,
     max_images: u32 = 16,
     max_image_width: u32 = 2048,
     max_image_height: u32 = 2048,
@@ -37,6 +41,37 @@ pub const Options = struct {
     /// worst case up front.
     initial_pages: u32 = 64,
 };
+
+fn uploadOptions(options: Options) upload_plan.Options {
+    return .{
+        .max_bindings = options.max_bindings,
+        .layer_info_height = options.layer_info_height,
+        .max_images = options.max_images,
+        .max_image_width = options.max_image_width,
+        .max_image_height = options.max_image_height,
+    };
+}
+
+fn requiredLayerInfoRows(atlases: []const *const snail.Atlas) !u32 {
+    var rows: u32 = 0;
+    for (atlases) |atlas| {
+        if (atlas.layer_info_data == null) continue;
+        rows = std.math.add(u32, rows, atlas.layer_info_height) catch
+            return error.LayerInfoCapacityExceeded;
+    }
+    return rows;
+}
+
+fn growthCapacity(current: u32, required: u32, ceiling: u32) !u32 {
+    if (current == 0 or current > ceiling) return error.InvalidCapacity;
+    if (required > ceiling) return error.LayerInfoCapacityExceeded;
+    var capacity = current;
+    while (capacity < required) {
+        const doubled = std.math.mul(u32, capacity, 2) catch ceiling;
+        capacity = @min(doubled, ceiling);
+    }
+    return capacity;
+}
 
 // ── Descriptor bindings (must match snail's shader ABI / reflection) ──
 pub const CURVE_BINDING: u32 = 0;
@@ -50,6 +85,7 @@ pub const DeviceAtlas = struct {
     allocator: std.mem.Allocator,
     ctx: graphics.Context,
     options: Options,
+    pool: *snail.PagePool,
 
     transfer_pool: vk.VkCommandPool = null,
 
@@ -71,6 +107,8 @@ pub const DeviceAtlas = struct {
     /// curve_page_texels`). Growth never exceeds this; a working set past it
     /// (physically enormous) degrades to partial rather than an OOB copy.
     max_gpu_pages: u32 = 0,
+    /// Bounded ceiling for rebuilding the shared layer-info image/planner.
+    max_layer_info_height: u32 = 0,
 
     curve_buffer: vk.VkBuffer = null,
     curve_memory: vk.VkDeviceMemory = null,
@@ -100,13 +138,7 @@ pub const DeviceAtlas = struct {
         pool: *snail.PagePool,
         options: Options,
     ) !Self {
-        const opts: upload_plan.Options = .{
-            .max_bindings = options.max_bindings,
-            .layer_info_height = options.layer_info_height,
-            .max_images = options.max_images,
-            .max_image_width = options.max_image_width,
-            .max_image_height = options.max_image_height,
-        };
+        const opts = uploadOptions(options);
         const flat = try upload_plan.FlatLayout.init(pool);
 
         // Clamp GPU capacity to what a uniform texel buffer can address here.
@@ -117,13 +149,24 @@ pub const DeviceAtlas = struct {
             @as(u64, flat.logical_pages),
         ));
         const max_gpu_pages = @max(@as(u32, 1), limit_pages);
+        const max_layer_info_height = @min(
+            options.max_layer_info_height,
+            props.limits.maxImageDimension2D,
+        );
+        if (options.layer_info_height == 0 or max_layer_info_height == 0 or
+            options.layer_info_height > max_layer_info_height)
+        {
+            return error.InvalidCapacity;
+        }
 
         var self: Self = .{
             .allocator = allocator,
             .ctx = ctx,
             .options = options,
+            .pool = pool,
             .flat = flat,
             .max_gpu_pages = max_gpu_pages,
+            .max_layer_info_height = max_layer_info_height,
             .capacity_pages = @min(@max(1, options.initial_pages), max_gpu_pages),
             .planner = try upload_plan.OwnedPlanner.init(allocator, pool, opts),
         };
@@ -176,6 +219,55 @@ pub const DeviceAtlas = struct {
         for (atlases, out_bindings) |atlas, *binding| {
             binding.* = try self.uploadPlanned(allocator, atlas, null);
         }
+    }
+
+    /// Rebuild all GPU atlas residency after the shared layer-info reservation
+    /// is exhausted. Bindings name planner-owned row reservations, so growing
+    /// just the image while retaining old bindings would be incorrect: all
+    /// live atlases must be replanned and uploaded together.
+    pub fn rebuild(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        atlases: []const *const snail.Atlas,
+        out_bindings: []Binding,
+    ) !void {
+        std.debug.assert(atlases.len == out_bindings.len);
+        if (atlases.len > @as(usize, @intCast(self.options.max_bindings))) {
+            return error.NoFreeBinding;
+        }
+        const required_rows = try requiredLayerInfoRows(atlases);
+        const next_height = try growthCapacity(
+            self.options.layer_info_height,
+            required_rows,
+            self.max_layer_info_height,
+        );
+
+        var next_options = self.options;
+        next_options.layer_info_height = next_height;
+        const planner_options = uploadOptions(next_options);
+        var next_planner = try upload_plan.OwnedPlanner.init(
+            self.allocator,
+            self.pool,
+            planner_options,
+        );
+        var planner_installed = false;
+        errdefer if (!planner_installed) next_planner.deinit();
+
+        // A rebuilt planner considers every page dirty, so recreating all GPU
+        // resources is both simpler and correct: the following batch restores
+        // curve, band, layer-info, and image data before returning bindings.
+        // Waiting on this queue also retires any prior frame that still reads
+        // the resources about to be replaced.
+        if (vk.vkQueueWaitIdle(self.ctx.graphics_queue) != vk.VK_SUCCESS) {
+            return error.VulkanError;
+        }
+        self.destroyGpuResources();
+        self.planner.deinit();
+        self.planner = next_planner;
+        planner_installed = true;
+        self.options = next_options;
+        try self.ensureGpuResources();
+        try self.upload(allocator, atlases, out_bindings);
     }
 
     /// Incrementally re-upload `atlas` into the slot `prev` already owns.
@@ -709,4 +801,31 @@ fn transitionImageLayout(cmd: vk.VkCommandBuffer, image: vk.VkImage, layer_count
     } else unreachable;
     const barrier = std.mem.zeroInit(vk.VkImageMemoryBarrier, .{ .sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = src_access, .dstAccessMask = dst_access, .oldLayout = old_layout, .newLayout = new_layout, .srcQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED, .image = image, .subresourceRange = .{ .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = layer_count } });
     vk.vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, null, 0, null, 1, &barrier);
+}
+
+test "layer info capacity grows geometrically within its ceiling" {
+    try std.testing.expectEqual(@as(u32, 256), try growthCapacity(256, 1, 4096));
+    try std.testing.expectEqual(@as(u32, 256), try growthCapacity(256, 256, 4096));
+    try std.testing.expectEqual(@as(u32, 512), try growthCapacity(256, 257, 4096));
+    try std.testing.expectEqual(@as(u32, 2048), try growthCapacity(256, 1500, 4096));
+    try std.testing.expectEqual(@as(u32, 4096), try growthCapacity(256, 4096, 4096));
+}
+
+test "layer info capacity rejects work beyond its explicit ceiling" {
+    try std.testing.expectError(
+        error.LayerInfoCapacityExceeded,
+        growthCapacity(256, 4097, 4096),
+    );
+}
+
+test "layer info growth covers every bounded required row count" {
+    const current: u32 = 16;
+    const ceiling: u32 = 1024;
+    for (0..ceiling + 1) |required| {
+        const required_rows: u32 = @intCast(required);
+        const capacity = try growthCapacity(current, required_rows, ceiling);
+        try std.testing.expect(capacity >= current);
+        try std.testing.expect(capacity >= required_rows);
+        try std.testing.expect(capacity <= ceiling);
+    }
 }

@@ -471,6 +471,37 @@ fn appendTextCommand(
     }).emit(&encoder);
 }
 
+/// Draw the win32-style access-key underline beneath the mnemonic character of
+/// a left-aligned label. No-op when the label has no mnemonic. `bounds` is the
+/// same rect passed to `appendTextCommand` (text drawn `.start`-aligned).
+fn appendMnemonicUnderline(
+    commands: *std.ArrayListUnmanaged(VisualOperation),
+    allocator: std.mem.Allocator,
+    bounds: Rect,
+    text: []const u8,
+    mnemonic: ?u8,
+    color: style.Color,
+    font_size: f32,
+    text_ctx: ?*const layout.TextMeasureCtx,
+) !void {
+    const idx = widget.mnemonicIndex(text, mnemonic) orelse return;
+    const prefix_w = layout.measureTextDimensions(text[0..idx], font_size, text_ctx).width;
+    const char_w = layout.measureTextDimensions(text[idx .. idx + 1], font_size, text_ctx).width;
+    const thickness = @max(@round(font_size * 0.07), 1);
+    try commands.append(allocator, .{ .surface = .{
+        .bounds = .{
+            .x = bounds.x + prefix_w,
+            .y = bounds.y + (bounds.h + font_size) * 0.5,
+            .w = @max(char_w, 3),
+            .h = thickness,
+        },
+        .color = color,
+        .border_color = .rgba(0, 0, 0, 0),
+        .border_width = 0,
+        .corner_radius = 0,
+    } });
+}
+
 fn appendIconCommand(
     commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
@@ -681,7 +712,18 @@ fn emitButton(
     in_floating_subtree: bool,
 ) !void {
     const rect = visual_ctx.visualRect(node.layout_rect);
-    const label_bounds = defaultTextBounds(rect, resolved);
+    const content_bounds = defaultTextBounds(rect, resolved);
+    const icon_size = resolved.font_size;
+    const icon_bounds = Rect{
+        .x = content_bounds.x,
+        .y = rect.y + (rect.h - icon_size) * 0.5,
+        .w = icon_size,
+        .h = icon_size,
+    };
+    const label_bounds = if (btn.icon != null)
+        customTextBounds(rect, resolved, icon_bounds.x + icon_bounds.w + resolved.spacing, rect.x + rect.w - resolved.padding.right - icon_bounds.x - icon_bounds.w - resolved.spacing)
+    else
+        content_bounds;
     var encoder = ComponentEncoder{ .commands = commands, .allocator = allocator };
     try (components.Button{
         .background = .{
@@ -693,12 +735,13 @@ fn emitButton(
         },
         .label = .{
             .bounds = label_bounds,
-            .content = btn.label,
+            .content = if (btn.label_visible) btn.label else "",
             .color = resolved.fg,
             .font_size = resolved.font_size,
         },
         .focus = focusRing(rect, theme, resolved.border_radius, node.interaction.focused),
     }).emit(&encoder);
+    if (btn.icon) |icon| try appendIconCommand(commands, allocator, icon_bounds, icon, resolved.fg);
     try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 }
 
@@ -868,7 +911,7 @@ fn emitTreeItem(
     try emitTreeItemDropIndicator(rect, item, resolved, theme, commands, allocator);
 
     if (has_children) {
-        try emitTreeDisclosure(disclosure_bounds, resolved, theme, item.expanded, commands, allocator);
+        try emitTreeDisclosure(disclosure_bounds, resolved, theme, item.disclosureState(), commands, allocator);
     }
     if (has_parent) {
         const connector_start_x = treeParentGuideCenterX(rect, resolved, theme, depth);
@@ -1042,8 +1085,11 @@ fn emitSelectable(
             style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
         else
             fill,
-        .border_color = if (selectable.internal.drop_preview or selectable.selected) theme.accent else resolved.border,
-        .border_width = if (selectable.internal.drop_preview or selectable.selected) 1 else 0,
+        // A selected row is defined by its translucent accent fill; no hard
+        // ring (that opaque border was the "too dark" halo). Drop previews keep
+        // the full accent outline as an unambiguous drag affordance.
+        .border_color = if (selectable.internal.drop_preview) theme.accent else resolved.border,
+        .border_width = if (selectable.internal.drop_preview) 1 else 0,
         .corner_radius = resolved.border_radius,
     } });
     const selectable_bounds = defaultTextBounds(rect, resolved);
@@ -1104,13 +1150,26 @@ fn emitGridItem(
         style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 72)
     else
         selectableBg(node, grid_item.selected, theme);
-    try commands.append(allocator, .{ .surface = .{
-        .bounds = rect,
-        .color = fill,
-        .border_color = if (grid_item.internal.drop_preview or grid_item.selected) theme.accent else resolved.border,
-        .border_width = if (grid_item.selected) 1 else resolved.border_width,
-        .corner_radius = resolved.border_radius,
-    } });
+    try commands.append(allocator, .{
+        .surface = .{
+            .bounds = rect,
+            // Grid selection is an adornment around the item, not a paint layer
+            // over its icon and label. Hover remains a light wash; selection and
+            // drop state use the outer border.
+            .color = if (grid_item.selected and !node.interaction.hovered and !node.interaction.pressed and !grid_item.internal.drag.active)
+                style.Color.rgba(theme.selection_bg.r, theme.selection_bg.g, theme.selection_bg.b, @min(theme.selection_bg.a, 40))
+            else
+                fill,
+            .border_color = if (grid_item.internal.drop_preview)
+                theme.accent
+            else if (grid_item.selected)
+                selectionBorder(theme)
+            else
+                resolved.border,
+            .border_width = if (grid_item.internal.drop_preview or grid_item.selected) 1 else 0,
+            .corner_radius = resolved.border_radius,
+        },
+    });
 
     const inner = defaultTextBounds(rect, resolved);
     const icon_size = @max(@min(inner.w, inner.h - resolved.font_size - theme.spacing), 0);
@@ -1121,35 +1180,18 @@ fn emitGridItem(
             .w = icon_size,
             .h = @min(icon_size, inner.h - resolved.font_size - theme.spacing),
         };
-        const icon_fill = if (grid_item.selected)
-            style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 96)
-        else
-            style.Color.rgba(theme.border.r, theme.border.g, theme.border.b, 72);
-        try commands.append(allocator, .{ .surface = .{
-            .bounds = icon_rect,
-            .color = icon_fill,
-            .border_color = if (grid_item.selected) theme.accent else resolved.border,
-            .border_width = 1,
-            .corner_radius = @min(resolved.border_radius, 8),
-        } });
-
         if (grid_item.icon) |icon| {
             try appendIconCommand(
                 commands,
                 allocator,
                 icon_rect,
                 icon,
-                if (grid_item.selected) theme.accent else grid_item.icon_color orelse resolved.fg,
+                grid_item.icon_color orelse resolved.fg,
             );
         }
     }
 
-    const label_bounds = Rect{
-        .x = inner.x,
-        .y = rect.y + rect.h - resolved.padding.bottom - resolved.font_size * 1.4,
-        .w = inner.w,
-        .h = resolved.font_size * 1.4,
-    };
+    const label_bounds = geometry.gridItemLabelRect(rect, resolved);
     try appendTextCommand(commands, allocator, label_bounds, grid_item.label, resolved.fg, resolved.font_size, .center, .ellipsis);
     try emitFocusRing(visual_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
@@ -1475,7 +1517,7 @@ fn emitMenu(
     theme: style.Theme,
     commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
-    _: ?*const layout.TextMeasureCtx,
+    text_ctx: ?*const layout.TextMeasureCtx,
     in_floating_subtree: bool,
 ) !void {
     _ = in_floating_subtree;
@@ -1492,6 +1534,7 @@ fn emitMenu(
     } });
     const menu_bounds = defaultTextBounds(rect, resolved);
     try appendTextCommand(commands, allocator, menu_bounds, menu.label, resolved.fg, resolved.font_size, .start, .visible);
+    try appendMnemonicUnderline(commands, allocator, menu_bounds, menu.label, menu.mnemonic, resolved.fg, resolved.font_size, text_ctx);
     try emitFocusRing(visual_ctx, node, theme, resolved.border_radius, commands, allocator);
 }
 
@@ -1572,20 +1615,16 @@ fn emitMenuItem(
 
     const check_bounds = customTextBounds(rect, resolved, rect.x + resolved.padding.left, reserve_width);
     if (item.checked) {
-        const indicator_size = @max(@min(@min(check_bounds.w, check_bounds.h) * 0.45, resolved.font_size * 0.5), 4);
+        // A real checkmark (stock icon) in the reserved left slot, replacing the
+        // old filled dot — the conventional "selected menu item" affordance.
+        const indicator_size = @max(@min(@min(check_bounds.w, check_bounds.h), resolved.font_size), 8);
         const indicator_bounds = Rect{
             .x = check_bounds.x + (check_bounds.w - indicator_size) * 0.5,
             .y = check_bounds.y + (check_bounds.h - indicator_size) * 0.5,
             .w = indicator_size,
             .h = indicator_size,
         };
-        try commands.append(allocator, .{ .surface = .{
-            .bounds = indicator_bounds,
-            .color = text_color,
-            .border_color = text_color,
-            .border_width = 0,
-            .corner_radius = indicator_size * 0.5,
-        } });
+        try appendIconCommand(commands, allocator, indicator_bounds, @intFromEnum(visual.StockIcon.check), text_color);
     }
 
     var label_right = rectRight(rect) - resolved.padding.right;
@@ -1600,6 +1639,7 @@ fn emitMenuItem(
     const label_left = check_bounds.x + reserve_width + gap;
     const label_bounds = customTextBounds(rect, resolved, label_left, @max(label_right - label_left, 0));
     try appendTextCommand(commands, allocator, label_bounds, item.label, text_color, resolved.font_size, .start, .ellipsis);
+    try appendMnemonicUnderline(commands, allocator, label_bounds, item.label, item.mnemonic, text_color, resolved.font_size, text_ctx);
 
     if (item.shortcut.len > 0) {
         const shortcut_bounds = customTextBounds(
@@ -1825,7 +1865,7 @@ fn emitSplitter(
     try emitChildren(visual_ctx, tree, handle, theme, commands, allocator, text_ctx, in_floating_subtree);
 
     const divider = geometry.splitterDividerRect(rect, splitter, resolved);
-    const handle_rect = snappedRect(geometry.splitterHandleRect(divider, splitter));
+    const handle_rect = snappedRect(geometry.splitterInteractionRect(rect, splitter, resolved));
     const visible_divider = splitterVisibleRect(divider, splitter.direction);
     const grip = splitterGripRect(handle_rect, splitter.direction);
     const divider_color = if (node.interaction.pressed)
@@ -2096,13 +2136,16 @@ fn focusRing(rect: Rect, theme: style.Theme, corner_radius: f32, focused: bool) 
 
 /// Resolve the background color for an interactive widget, accounting for
 /// pressed/hovered state.
-fn interactionBg(node: *const widget.Node, resolved: style.ResolvedStyle, theme: style.Theme) style.Color {
+fn interactionBg(node: *const widget.Node, resolved: style.ResolvedStyle, _: style.Theme) style.Color {
+    // Hover/active read from the resolved style so a widget can carry its own
+    // interaction palette (e.g. a primary accent button that darkens on hover);
+    // unset fields fall back to the theme through resolution.
     return if (node.interaction.drop_hovered)
-        style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 48)
+        style.Color.rgba(resolved.accent.r, resolved.accent.g, resolved.accent.b, 48)
     else if (node.interaction.pressed)
-        theme.bg_active
+        resolved.bg_active
     else if (node.interaction.hovered)
-        theme.bg_hover
+        resolved.bg_hover
     else
         resolved.bg;
 }
@@ -2118,6 +2161,15 @@ fn selectableBg(node: *const widget.Node, selected: bool, theme: style.Theme) st
         theme.bg_hover
     else
         .{ .r = 0, .g = 0, .b = 0, .a = 0 };
+}
+
+/// Fluent selection outline: a soft translucent accent rather than the hard,
+/// fully-opaque ring that read as "too dark" over the light theme. Used where
+/// an outline is wanted (grid icons); list rows lean on the translucent fill
+/// alone. Drop-target previews keep the full-strength accent so the drag
+/// affordance stays unambiguous.
+fn selectionBorder(theme: style.Theme) style.Color {
+    return style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 110);
 }
 
 fn emitDropTargetOverlay(
@@ -2543,7 +2595,7 @@ fn emitTreeDisclosure(
     bounds: Rect,
     resolved: style.ResolvedStyle,
     theme: style.Theme,
-    expanded: bool,
+    disclosure: widget.WidgetKind.TreeItem.Disclosure,
     commands: *std.ArrayListUnmanaged(VisualOperation),
     allocator: std.mem.Allocator,
 ) !void {
@@ -2551,8 +2603,12 @@ fn emitTreeDisclosure(
         commands,
         allocator,
         bounds,
-        if (expanded) "▾" else "▸",
-        if (expanded) theme.accent else resolved.fg,
+        switch (disclosure) {
+            .automatic, .collapsed => "▸",
+            .partial => "▿",
+            .expanded => "▾",
+        },
+        if (disclosure == .expanded or disclosure == .partial) theme.accent else resolved.fg,
         bounds.h,
         .center,
         .visible,
@@ -2761,22 +2817,6 @@ fn emitGridItemDragGhost(node: *const widget.Node, theme: style.Theme, commands:
     const resolved = node.style_override.resolve(theme);
     try emitDragGhostRect(item.internal.drag.rect, resolved, theme, commands, allocator);
     const inner = defaultTextBounds(item.internal.drag.rect, resolved);
-    const icon_size = @max(@min(inner.w, inner.h - resolved.font_size - theme.spacing), 0);
-    if (icon_size > 8) {
-        const icon_rect = Rect{
-            .x = inner.x + (inner.w - icon_size) * 0.5,
-            .y = inner.y,
-            .w = icon_size,
-            .h = @min(icon_size, inner.h - resolved.font_size - theme.spacing),
-        };
-        try commands.append(allocator, .{ .surface = .{
-            .bounds = icon_rect,
-            .color = style.Color.rgba(theme.accent.r, theme.accent.g, theme.accent.b, 68),
-            .border_color = dragGhostColor(theme.accent, 170),
-            .border_width = 1,
-            .corner_radius = @min(resolved.border_radius, 8),
-        } });
-    }
     const label_bounds = Rect{
         .x = inner.x,
         .y = item.internal.drag.rect.y + item.internal.drag.rect.h - resolved.padding.bottom - resolved.font_size * 1.4,
@@ -2851,6 +2891,7 @@ fn popupShouldDraw(tree: *const widget.Tree, _: widget.NodeHandle, node: *const 
 }
 
 fn tooltipShouldDraw(tree: *const widget.Tree, _: widget.NodeHandle, node: *const widget.Node) bool {
+    if (!node.kind.tooltip.visible) return false;
     const owner_handle = node.parent orelse return false;
     const owner = tree.getConst(owner_handle);
     return (owner.interaction.hovered or owner.interaction.focused) and node.layout_rect.w > 0 and node.layout_rect.h > 0;
@@ -2983,6 +3024,47 @@ test "stock chrome preserves opaque ids for passive and grid icons" {
     try std.testing.expect(found_grid);
 }
 
+test "grid item icon has no independent tile chrome" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+    const item = try tree.addRoot(.{ .grid_item = .{ .label = "Folder", .icon = 7, .selected = false } });
+    tree.get(item).layout_rect = .{ .x = 10, .y = 10, .w = 96, .h = 96 };
+    var visuals = try prepareVisuals(&tree, style.Theme.default, allocator, null, .{});
+    defer freeVisuals(&visuals, allocator);
+    var icon_count: usize = 0;
+    var nontransparent_surfaces: usize = 0;
+    for (visuals.commands) |command| switch (command) {
+        .icon => icon_count += 1,
+        .surface => |surface| nontransparent_surfaces += @intFromBool(surface.color.a != 0 or surface.border_width != 0),
+        else => {},
+    };
+    try std.testing.expectEqual(@as(usize, 1), icon_count);
+    try std.testing.expectEqual(@as(usize, 0), nontransparent_surfaces);
+}
+
+test "selected grid item remains translucent and adorns only the outer item" {
+    const allocator = std.testing.allocator;
+    var tree = widget.Tree.init(allocator);
+    defer tree.deinit();
+    const item = try tree.addRoot(.{ .grid_item = .{ .label = "Folder", .icon = 7, .selected = true } });
+    tree.get(item).layout_rect = .{ .x = 10, .y = 10, .w = 96, .h = 96 };
+    const theme = style.Theme.default;
+    var visuals = try prepareVisuals(&tree, theme, allocator, null, .{});
+    defer freeVisuals(&visuals, allocator);
+    try std.testing.expect(visuals.commands.len >= 3);
+    try std.testing.expectEqual(tree.getConst(item).layout_rect, visuals.commands[0].surface.bounds);
+    try std.testing.expect(visuals.commands[0].surface.color.a <= 40);
+    // Selection outline is a soft, translucent accent — same hue as the accent
+    // but never the fully-opaque ring that read as a "too dark" halo.
+    const outline = visuals.commands[0].surface.border_color;
+    try std.testing.expectEqual(theme.accent.r, outline.r);
+    try std.testing.expectEqual(theme.accent.g, outline.g);
+    try std.testing.expectEqual(theme.accent.b, outline.b);
+    try std.testing.expect(outline.a < 255);
+    try std.testing.expectEqual(@as(f32, 1), visuals.commands[0].surface.border_width);
+}
+
 test "canonical visual text carries resolved bounds" {
     const allocator = std.testing.allocator;
 
@@ -3063,13 +3145,15 @@ test "checked menu item emits checked indicator" {
     var visuals = try prepareVisuals(&tree, theme, allocator, null, .{});
     defer freeVisuals(&visuals, allocator);
 
+    // The selected marker is now a checkmark stock icon in the reserved slot,
+    // tinted with the foreground color — not a filled dot surface.
     var found_indicator = false;
     for (visuals.commands) |command| {
-        if (command != .surface) continue;
-        const box = command.surface;
-        if (box.bounds.w > 0 and box.bounds.w < 10 and box.bounds.h > 0 and box.bounds.h < 10) {
+        if (command != .icon) continue;
+        const icon = command.icon;
+        if (icon.kind == @intFromEnum(visual.StockIcon.check)) {
             found_indicator = true;
-            try std.testing.expectEqual(theme.fg, box.color);
+            try std.testing.expectEqual(theme.fg, icon.color);
         }
     }
     try std.testing.expect(found_indicator);
@@ -3595,6 +3679,7 @@ test "splitter paints thin divider and hover overlay" {
         .thickness = 8,
     } });
     tree.get(splitter).layout_rect = .{ .x = 10, .y = 20, .w = 100, .h = 40 };
+    tree.get(splitter).style_override = .{ .padding = .all(3) };
     tree.get(splitter).interaction.hovered = true;
 
     const theme = style.Theme.default;
@@ -3605,9 +3690,13 @@ test "splitter paints thin divider and hover overlay" {
     try std.testing.expect(dl.commands[1] == .surface);
     try std.testing.expect(dl.commands[2] == .surface);
     try std.testing.expect(dl.commands[3] == .surface);
-    try std.testing.expectApproxEqAbs(@as(f32, 60), dl.commands[1].surface.bounds.x, 0.01);
+    const node = tree.getConst(splitter);
+    const resolved = node.style_override.resolve(theme);
+    const expected_divider = snappedRect(geometry.splitterDividerRect(node.layout_rect, node.kind.splitter, resolved));
+    const expected_interaction = snappedRect(geometry.splitterInteractionRect(node.layout_rect, node.kind.splitter, resolved));
+    try std.testing.expectEqual(expected_divider, dl.commands[1].surface.bounds);
+    try std.testing.expectEqual(expected_interaction, dl.commands[2].surface.bounds);
     try std.testing.expectApproxEqAbs(@as(f32, 1), dl.commands[1].surface.bounds.w, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 56), dl.commands[2].surface.bounds.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 8), dl.commands[2].surface.bounds.w, 0.01);
 }
 
