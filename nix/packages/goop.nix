@@ -22,15 +22,15 @@
   noto-fonts,
   noto-fonts-cjk-sans,
   noto-fonts-color-emoji,
+  snail-src ? (import ../../npins).snail,
 }:
 let
-  npins = import ../../npins;
   fontconfigBundle = callPackage ../fontconfig.nix { };
 
   deps = linkFarm "zig-packages" [
     {
       name = "snail-0.19.0-vw75SJ_2BAEaJX7P0tjMgAKYdyhkURJdS7oJUuKjZlHE";
-      path = npins.snail;
+      path = snail-src;
     }
   ];
 

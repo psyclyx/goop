@@ -25,11 +25,18 @@ let
     };
 in
 {
-  nixpkgs ? npins.nixpkgs,
+  sources ? npins,
+  nixpkgs ? sources.nixpkgs,
   pkgs ? import nixpkgs { },
+  # snail is consumed as a Zig *source* via `zig build --system`; default to
+  # goop's own pin, superprojects override to a sibling checkout.
+  snail-src ? npins.snail,
+  ...
 }:
 let
-  finalPkgs = pkgs.extend overlay;
+  # Surface snail-src by name so goop.nix's `snail-src` callPackage arg
+  # resolves it (the shoal pattern).
+  finalPkgs = (pkgs.extend (_: _: { inherit snail-src; })).extend overlay;
 in
 rec {
   packages = mkPackages {
